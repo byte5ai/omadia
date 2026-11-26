@@ -11,6 +11,7 @@ import {
   setMcpOAuthClient,
   setMcpServerDelegation,
   type McpAuthStatus,
+  type McpRevocationOutcome,
 } from '@/app/_lib/agentBuilder';
 
 function errText(err: unknown): string {
@@ -50,6 +51,9 @@ export function McpAuthSection({
   // user-clickable link rather than auto-opening it: window.open() called after
   // an await chain is not treated as a user gesture and gets popup-blocked.
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  // What the last disconnect did at the provider. Shown until the next connect,
+  // because "disconnected" alone does not say whether access is gone there too.
+  const [revocation, setRevocation] = useState<McpRevocationOutcome | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -76,9 +80,15 @@ export function McpAuthSection({
 
   if (!status || !status.protected) return null;
 
+  // A token is stored but no longer works, which is not the same as never
+  // having connected: the row says so and keeps the disconnect action.
+  const tokenInvalid = !status.connected && Boolean(status.tokenInvalid);
+  const providerHost = status.issuerHost ?? status.issuer ?? '?';
+
   async function connect(): Promise<void> {
     setBusy(true);
     setError(null);
+    setRevocation(null);
     try {
       const r = await authorizeMcpServer(serverId);
       if (r.needsClient) {
@@ -115,6 +125,19 @@ export function McpAuthSection({
     }
   }
 
+  async function disconnect(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      setRevocation((await disconnectMcpServer(serverId)).revocation);
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveClient(): Promise<void> {
     if (!status?.issuer || clientId.trim() === '') return;
     setBusy(true);
@@ -140,7 +163,9 @@ export function McpAuthSection({
           {status.connected ? (
             <span className="text-[color:var(--success)]">{t('auth.connected')}</span>
           ) : (
-            <span className="text-[color:var(--warning)]">{t('auth.notConnected')}</span>
+            <span className="text-[color:var(--warning)]">
+              {tokenInvalid ? t('auth.expired') : t('auth.notConnected')}
+            </span>
           )}
         </span>
         {/* W2-4 — which acquisition mode this issuer is on. A badge rather than
@@ -170,28 +195,34 @@ export function McpAuthSection({
             {t('auth.modeDcr')}
           </span>
         ) : null}
-        {status.connected ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            busy={busy}
-            onClick={() => {
-              setBusy(true);
-              void disconnectMcpServer(serverId)
-                .then(refresh)
-                .catch((err: unknown) => setError(errText(err)))
-                .finally(() => setBusy(false));
-            }}
-          >
-            {t('auth.disconnect')}
-          </Button>
-        ) : (
+        {status.connected ? null : (
           <Button size="sm" variant="secondary" busy={busy} onClick={() => void connect()}>
             {t('auth.connect')}
           </Button>
         )}
+        {/* A dead token is still a stored one, so it can still be removed. */}
+        {status.connected || tokenInvalid ? (
+          <Button size="sm" variant="ghost" busy={busy} onClick={() => void disconnect()}>
+            {t('auth.disconnect')}
+          </Button>
+        ) : null}
       </div>
-      {!status.connected && !showClientForm ? (
+      {tokenInvalid ? (
+        <div className="text-[11px] text-[color:var(--fg-muted)]">{t('auth.expiredHint')}</div>
+      ) : null}
+      {revocation === 'revoked' ? (
+        <div className="text-[11px] text-[color:var(--fg-muted)]">
+          {t('auth.disconnectRevoked', { host: providerHost })}
+        </div>
+      ) : null}
+      {revocation === 'unsupported' || revocation === 'failed' ? (
+        <div className="text-[11px] text-[color:var(--warning)]">
+          {revocation === 'unsupported'
+            ? t('auth.disconnectUnsupported', { host: providerHost })
+            : t('auth.disconnectFailed', { host: providerHost })}
+        </div>
+      ) : null}
+      {!status.connected && !tokenInvalid && !showClientForm ? (
         <div className="text-[11px] text-[color:var(--fg-muted)]">
           {status.acquisitionMode === 'cimd'
             ? t('auth.hintCimd')

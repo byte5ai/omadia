@@ -7623,7 +7623,10 @@ the public-path mount and the `/api` gate):
 
 **Residual:** the shared TCP peer (`AUTH_LOGIN_CLIENT_ADDRESS=socket`) is never
 braked, because one sender would otherwise lock every operator out; a long
-random token stays the defence there. On a vouched address the brake is the
+random token stays the defence there. Boot says so: with a token set and
+`socket`, the middleware warns that wrong tokens are not braked, and warns
+again when the token is shorter than 32 characters
+(`adminTokenThrottleWarnings`). On a vouched address the brake is the
 address's, not the operator's: anyone behind the same public IPv4 (office or
 carrier NAT) or IPv6 prefix can fill it with ten wrong bearers and keep it full
 with one every 6 s, and the operator's right token then gets 429 too. Unlike

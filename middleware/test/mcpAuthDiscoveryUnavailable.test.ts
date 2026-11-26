@@ -311,6 +311,10 @@ describe('MCP operator routes on discovery failures', () => {
         completeAuthorization: () => Promise.reject(new Error('unused')),
         setManualClient: () => Promise.reject(new Error('unused')),
         getValidAccessToken: () => Promise.resolve(null),
+        tokenState: (id, u) => service.tokenState(id, u),
+        markTokenRejected: (id, u, t) => service.markTokenRejected(id, u, t),
+        disconnect: (s, u, o) => service.disconnect(s, u, o),
+        disconnectAll: (s, o) => service.disconnectAll(s, o),
       },
       mcpOAuthUserKey: 'operator',
     };

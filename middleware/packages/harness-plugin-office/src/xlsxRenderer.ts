@@ -41,6 +41,17 @@ const SHEET_NAME_EDGES = /^['\s]+|['\s]+$/g;
 const MAX_SHEET_NAME = 31;
 const RESERVED_SHEET_NAME = 'history';
 
+/**
+ * The first `max` UTF-16 units of `text`, without a high surrogate left at
+ * the end. A plain `slice` can cut an emoji in half, and the lone surrogate
+ * is not valid XML, so the file would not open.
+ */
+function sliceUnits(text: string, max: number): string {
+  const head = text.slice(0, max);
+  const last = head.charCodeAt(head.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? head.slice(0, -1) : head;
+}
+
 /** How Excel tells sheet names apart. */
 function sheetNameKey(name: string): string {
   return name.toLowerCase();
@@ -48,12 +59,11 @@ function sheetNameKey(name: string): string {
 
 /** A name Excel accepts for one sheet, before uniqueness. */
 function cleanSheetName(name: string, index: number): string {
-  const cleaned = name
+  const spaced = name
     .replace(ILLEGAL_SHEET_CHARS, ' ')
     .replace(/\s+/g, ' ')
-    .replace(SHEET_NAME_EDGES, '')
-    .slice(0, MAX_SHEET_NAME)
     .replace(SHEET_NAME_EDGES, '');
+  const cleaned = sliceUnits(spaced, MAX_SHEET_NAME).replace(SHEET_NAME_EDGES, '');
   const safe = cleaned.length > 0 ? cleaned : `Sheet${String(index + 1)}`;
   return sheetNameKey(safe) === RESERVED_SHEET_NAME ? `${safe}_` : safe;
 }
@@ -71,7 +81,7 @@ function resolveSheetNames(sheets: readonly SheetSpec[]): Array<SheetRename & { 
     let written = base;
     for (let n = 2; taken.has(sheetNameKey(written)); n += 1) {
       const suffix = ` (${String(n)})`;
-      written = `${base.slice(0, MAX_SHEET_NAME - suffix.length).trimEnd()}${suffix}`;
+      written = `${sliceUnits(base, MAX_SHEET_NAME - suffix.length).trimEnd()}${suffix}`;
     }
     taken.add(sheetNameKey(written));
     return { sheet, requested: sheet.name, written };

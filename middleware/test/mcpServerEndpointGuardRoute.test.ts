@@ -110,6 +110,10 @@ async function makeHarness(
       completeAuthorization: refuseOauth('completeAuthorization'),
       setManualClient: refuseOauth('setManualClient'),
       getValidAccessToken: () => Promise.resolve(null),
+      tokenState: refuseOauth('tokenState'),
+      markTokenRejected: refuseOauth('markTokenRejected'),
+      disconnect: refuseOauth('disconnect'),
+      disconnectAll: refuseOauth('disconnectAll'),
     },
     mcpOAuthUserKey: 'operator',
   };

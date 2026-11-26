@@ -20,7 +20,7 @@ import {
   serverOrigin,
   type DiscoveredAuth,
 } from './mcpAuthDiscovery.js';
-import { McpOAuthClient, type OAuthClientCredentials } from './mcpOAuthClient.js';
+import { McpOAuthClient, McpOAuthError, type OAuthClientCredentials } from './mcpOAuthClient.js';
 import {
   CIMD_CLIENT_NAME,
   CimdReachabilityCache,
@@ -29,12 +29,18 @@ import {
 import { redactedErrorText } from './secretRedaction.js';
 import { substituteMcpConfig } from '../agents/subAgentToolHydration.js';
 
-import type { AgentGraphStore, McpServerRow } from '@omadia/orchestrator';
+import type {
+  AgentGraphStore,
+  McpOAuthTokenInvalidReason,
+  McpServerRow,
+} from '@omadia/orchestrator';
 
 /** Minimal vault surface (matches SecretVault). */
 interface Vault {
   get(namespace: string, key: string): Promise<string | undefined>;
   set(namespace: string, key: string, value: string): Promise<void>;
+  listKeys(namespace: string): Promise<string[]>;
+  deleteKey(namespace: string, key: string): Promise<void>;
 }
 
 const VAULT_NS = '@omadia/mcp-oauth';
@@ -84,6 +90,24 @@ export interface McpAuthDescription {
    *  would hide the authorization UI of a server that may well need it. */
   readonly discoveryUnavailable?: boolean;
 }
+
+/** What the stored authorization of one (server, user) is worth (#1923).
+ *  `invalid` names why a stored token no longer counts: `expired` (past its
+ *  expiry with no refresh token), or one of the marks on the row. It is null
+ *  both when the token is fine and when there is none. */
+export interface McpTokenState {
+  readonly connected: boolean;
+  readonly invalid: 'expired' | McpOAuthTokenInvalidReason | null;
+}
+
+/** What a disconnect achieved at the authorization server (#1925). omadia's
+ *  own copy of the token is gone in every case; this says whether the grant is
+ *  gone at the provider too.
+ *   - `revoked`        the AS confirmed the revocation (RFC 7009)
+ *   - `unsupported`    the AS advertises no revocation endpoint
+ *   - `failed`         revocation was not possible or was not confirmed
+ *   - `not_connected`  there was no stored token to revoke */
+export type McpRevocationOutcome = 'revoked' | 'unsupported' | 'failed' | 'not_connected';
 
 export interface BeginAuthResult {
   readonly authorizeUrl: string;
@@ -175,8 +199,13 @@ export class McpOAuthService {
     });
   }
 
+  /** Vault key prefix of every token stored for one server. */
+  private tokenRefPrefix(serverId: string): string {
+    return `token/${serverId}/`;
+  }
+
   private tokenRef(serverId: string, userKey: string, kind: 'access' | 'refresh'): string {
-    return `token/${serverId}/${userKey}/${kind}`;
+    return `${this.tokenRefPrefix(serverId)}${userKey}/${kind}`;
   }
 
   private clientSecretRef(issuer: string): string {
@@ -242,7 +271,7 @@ export class McpOAuthService {
           this.deps.log?.(
             `[mcpOAuth] issuer rotated for ${server.name} (stored ${row.issuer} → discovered ${discovered.server.issuer}); dropping the stored token`,
           );
-          await this.deps.graph.deleteMcpOAuthToken(server.id, userKey);
+          await this.forgetToken(server.id, userKey);
           return null;
         }
         const client = await this.loadClient(discovered.server.issuer);
@@ -269,6 +298,14 @@ export class McpOAuthService {
         this.deps.log?.(
           `[mcpOAuth] refresh failed for ${server.name}: ${redactedErrorText(err, [refreshToken])}`,
         );
+        // Only an answer from the token endpoint says the grant is gone. A
+        // timeout or a 5xx leaves the row alone: the next call tries again.
+        if (err instanceof McpOAuthError && err.refused) {
+          await this.markTokenInvalid(server.id, userKey, 'refresh_failed', {
+            ref: refreshRefKey,
+            value: refreshToken,
+          });
+        }
         return (await this.deps.vault.get(VAULT_NS, accessRefKey)) ?? null;
       }
     })().finally(() => {
@@ -277,6 +314,175 @@ export class McpOAuthService {
 
     this.refreshInFlight.set(key, attempt);
     return attempt;
+  }
+
+  /** The MCP server refused a call that carried `rejectedToken`, this user's
+   *  access token at the time the call read it (#1923). */
+  async markTokenRejected(serverId: string, userKey: string, rejectedToken: string): Promise<void> {
+    await this.markTokenInvalid(serverId, userKey, 'rejected', {
+      ref: this.tokenRef(serverId, userKey, 'access'),
+      value: rejectedToken,
+    });
+  }
+
+  /** Bookkeeping for the status display. It never changes the outcome of the
+   *  call that noticed the problem, so a failed write is logged and dropped.
+   *
+   *  `evidence` names the credential the failure was about. A refusal of an
+   *  OLD token — a call that was in flight while the user re-authorized, or a
+   *  refresh that raced a new login — must not mark the fresh token the row
+   *  holds now, so the mark is only written while the vault still holds that
+   *  same credential under a ref the row still points at. The vault and the
+   *  row are separate stores, so a login landing between this read and the
+   *  UPDATE can still be marked; that window is the length of one query, and
+   *  the next login clears it. */
+  private async markTokenInvalid(
+    serverId: string,
+    userKey: string,
+    reason: McpOAuthTokenInvalidReason,
+    evidence: { readonly ref: string; readonly value: string },
+  ): Promise<void> {
+    try {
+      const row = await this.deps.graph.getMcpOAuthToken(serverId, userKey);
+      if (!row) return;
+      const stillHeld =
+        (row.accessTokenRef === evidence.ref || row.refreshTokenRef === evidence.ref) &&
+        (await this.deps.vault.get(VAULT_NS, evidence.ref)) === evidence.value;
+      if (!stillHeld) {
+        this.deps.log?.(
+          `[mcpOAuth] not marking the token of server ${serverId} as ${reason}: it was replaced since the failing call read it`,
+        );
+        return;
+      }
+      await this.deps.graph.markMcpOAuthTokenInvalid(serverId, userKey, reason);
+    } catch (err) {
+      this.deps.log?.(
+        `[mcpOAuth] could not mark the token of server ${serverId} as ${reason}: ${redactedErrorText(err)}`,
+      );
+    }
+  }
+
+  /** Whether (server, user) holds an authorization that still counts, read
+   *  from the stored row alone. Nothing is contacted. */
+  async tokenState(serverId: string, userKey: string): Promise<McpTokenState> {
+    const row = await this.deps.graph.getMcpOAuthToken(serverId, userKey);
+    if (!row) return { connected: false, invalid: null };
+    if (row.invalidReason) return { connected: false, invalid: row.invalidReason };
+    // An expired access token with a refresh token is one refresh away from
+    // working, so it still counts. Without one, nothing can renew it.
+    const expired = row.expiresAt !== null && row.expiresAt.getTime() <= Date.now();
+    if (expired && !row.refreshTokenRef) return { connected: false, invalid: 'expired' };
+    return { connected: true, invalid: null };
+  }
+
+  /** Remove omadia's copy of one user's token: the vault values, then the row.
+   *  In that order, so a failure in between leaves a row that still names what
+   *  is left to remove. Both vault keys go by name, whether or not the row
+   *  references them. */
+  private async forgetToken(serverId: string, userKey: string): Promise<void> {
+    await this.deps.vault.deleteKey(VAULT_NS, this.tokenRef(serverId, userKey, 'access'));
+    await this.deps.vault.deleteKey(VAULT_NS, this.tokenRef(serverId, userKey, 'refresh'));
+    await this.deps.graph.deleteMcpOAuthToken(serverId, userKey);
+  }
+
+  /**
+   * Disconnect one user from a server (#1925): revoke the grant at the
+   * authorization server where it offers that, then remove the stored token.
+   * The token is removed whatever the revocation did, because the caller asked
+   * for omadia to stop holding it. The outcome says what happened at the AS.
+   *
+   * `revoke: false` skips the provider entirely, for a server whose host the
+   * operator outbound rule refuses.
+   */
+  async disconnect(
+    server: McpServerRow,
+    userKey: string,
+    opts: { readonly revoke: boolean },
+  ): Promise<McpRevocationOutcome> {
+    const row = await this.deps.graph.getMcpOAuthToken(server.id, userKey);
+    let outcome: McpRevocationOutcome = 'not_connected';
+    if (row) outcome = opts.revoke ? await this.revokeAtProvider(server, row) : 'failed';
+    await this.forgetToken(server.id, userKey);
+    return outcome;
+  }
+
+  /** Disconnect every user of a server, for its deletion (#1925). Also removes
+   *  token values in the vault that no row points at any more. */
+  async disconnectAll(
+    server: McpServerRow,
+    opts: { readonly revoke: boolean },
+  ): Promise<readonly { userKey: string; revocation: McpRevocationOutcome }[]> {
+    const userKeys = await this.deps.graph.listMcpOAuthTokenUserKeys(server.id);
+    const results = await Promise.all(
+      userKeys.map(async (userKey) => ({
+        userKey,
+        revocation: await this.disconnect(server, userKey, opts),
+      })),
+    );
+    const prefix = this.tokenRefPrefix(server.id);
+    for (const key of await this.deps.vault.listKeys(VAULT_NS)) {
+      if (key.startsWith(prefix)) await this.deps.vault.deleteKey(VAULT_NS, key);
+    }
+    return results;
+  }
+
+  /** RFC 7009 revocation of a stored token. Never throws: a provider that is
+   *  down or refuses must not keep the token in omadia. */
+  private async revokeAtProvider(
+    server: McpServerRow,
+    row: NonNullable<Awaited<ReturnType<AgentGraphStore['getMcpOAuthToken']>>>,
+  ): Promise<Exclude<McpRevocationOutcome, 'not_connected'>> {
+    const refreshToken = row.refreshTokenRef
+      ? await this.deps.vault.get(VAULT_NS, row.refreshTokenRef)
+      : undefined;
+    const accessToken = await this.deps.vault.get(VAULT_NS, row.accessTokenRef);
+    try {
+      const discovered = await this.discovery.discover(this.resolveEndpoint(server));
+      const revocationEndpoint = discovered?.server.revocationEndpoint ?? null;
+      if (!discovered || !revocationEndpoint) return 'unsupported';
+      // Same rule as the refresh path: a token minted by another issuer is not
+      // sent to this one's endpoint.
+      if (row.issuer !== null && !sameIssuer(row.issuer, discovered.server.issuer)) {
+        this.deps.log?.(
+          `[mcpOAuth] not revoking the token of ${server.name}: it was issued by ${row.issuer}, the server now names ${discovered.server.issuer}`,
+        );
+        return 'failed';
+      }
+      const client = await this.loadClient(discovered.server.issuer);
+      if (!client) {
+        this.deps.log?.(
+          `[mcpOAuth] not revoking the token of ${server.name}: no OAuth client is stored for ${discovered.server.issuer}`,
+        );
+        return 'failed';
+      }
+      // The refresh token is the grant: revoking it ends the access tokens
+      // issued from it too (RFC 7009 §2.1). So the outcome is decided by the
+      // refresh token when there is one, by the access token otherwise.
+      const tokens = [
+        ...(refreshToken ? [{ token: refreshToken, tokenTypeHint: 'refresh_token' as const }] : []),
+        ...(accessToken ? [{ token: accessToken, tokenTypeHint: 'access_token' as const }] : []),
+      ];
+      const [deciding, ...rest] = tokens;
+      if (!deciding) return 'failed';
+      await this.client.revoke({ revocationEndpoint, client, ...deciding });
+      for (const extra of rest) {
+        // An AS may answer `unsupported_token_type` for an access token
+        // (RFC 7009 §2.2.1). The grant is already revoked.
+        try {
+          await this.client.revoke({ revocationEndpoint, client, ...extra });
+        } catch (err) {
+          this.deps.log?.(
+            `[mcpOAuth] ${server.name}: the grant is revoked, the ${extra.tokenTypeHint} revocation was not confirmed: ${redactedErrorText(err, [refreshToken, accessToken])}`,
+          );
+        }
+      }
+      return 'revoked';
+    } catch (err) {
+      this.deps.log?.(
+        `[mcpOAuth] revocation failed for ${server.name}: ${redactedErrorText(err, [refreshToken, accessToken])}`,
+      );
+      return 'failed';
+    }
   }
 
   /** Start the authorization flow: returns the URL to send the user to. */
@@ -363,6 +569,7 @@ export class McpOAuthService {
       authorizationEndpoint: flow.authorizationEndpoint ?? '',
       tokenEndpoint: flow.tokenEndpoint,
       registrationEndpoint: null,
+      revocationEndpoint: null,
       codeChallengeMethods: [] as string[],
       grantTypes: [] as string[],
       scopesSupported: [] as string[],

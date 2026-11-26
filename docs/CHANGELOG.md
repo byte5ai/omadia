@@ -49,6 +49,44 @@ changelog.
   not show the declaration before install yet (#2245).
 - The README note on ADR-0039 "Not swept yet" moved into a dated erratum in ADR-0039.
 
+### Fixed — MCP OAuth: dead tokens are reported, disconnect revokes the grant (#1923, #1925) (2026-11-26)
+
+- A stored token row used to read as "authorized" for as long as it existed. Migration
+  `0113_mcp_oauth_token_invalid.sql` adds `mcp_oauth_tokens.invalid_reason`
+  (`refresh_failed` | `rejected`, CHECK-constrained) and `invalid_at`. A refresh the token
+  endpoint refuses (4xx other than 408/425/429, or a 200 without `access_token`) marks
+  `refresh_failed`; a transport-level 401 from the MCP server to a call that carried the token
+  marks `rejected`. A JSON-RPC error or a tool's `isError` text never marks. The first mark
+  wins; only storing a new token (login or successful refresh) clears it. A refusal of a token
+  that was replaced meanwhile (an in-flight call during a re-login) does not mark the new one.
+- `GET /mcp-servers/:id/auth-status` adds `tokenInvalid`
+  (`expired` | `refresh_failed` | `rejected` | null), and `connected` is false for a marked
+  token or an expired one without a refresh token. The MCP Control Center says why.
+- `DELETE /mcp-servers/:id/token` now answers **200 `{ "revocation": … }`** instead of `204`,
+  with `revoked` | `unsupported` | `failed` | `not_connected`. Disconnect and
+  `DELETE /mcp-servers/:id` first revoke the grant at the authorization server (RFC 7009,
+  refresh token then access token, via the RFC 8414 `revocation_endpoint`, through the guarded
+  outbound fetch and the operator host rule), then remove the row and both vault values,
+  whether revocation worked or not.
+- New audit action `mcp_server.oauth_disconnect`, one row per removed authorization: server
+  name, identity, cause (`disconnect` | `server_delete`) and revocation outcome, never a token.
+- Decision record: ADR-0168.
+
+### Fixed — small review follow-ups: office files, admin token, builder prompt (2026-11-26)
+
+- xlsx: a sheet name cut to Excel's 31 characters could end on the first half of an emoji.
+  The lone surrogate is not valid XML and the workbook would not open. The cut (and the
+  ` (n)` uniqueness suffix) now drops a trailing high surrogate.
+- docx: a tab in text reached `<w:t>` raw and Word showed it as a space. Each tab is now a
+  `<w:tab/>` in the run, alongside the line-break handling from #1982.
+- ADMIN_TOKEN: with `AUTH_LOGIN_CLIENT_ADDRESS=socket` wrong tokens are never braked (the
+  shared TCP peer, accepted residual in docs/security-architecture.md §10zb). Boot now warns
+  about it and points at `xff:<n>` / `header:<name>`, and warns again for a token under 32
+  characters.
+- Builder prompt: the `ctx.knowledgeGraph.ingestFacts` example lacked `factId` and
+  `sourceTurnId`, so a plugin copying it was refused (ADR-0167 checks `fact:` ids). It now
+  builds the id with `factNodeId` and mentions only its own entity system.
+
 ### Fixed — Conductor canvas edges readable in dark mode (2026-11-25)
 
 - The transitions in the Conductor designer and the template preview were xyflow's `#3e3e3e`

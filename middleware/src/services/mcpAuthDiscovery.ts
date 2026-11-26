@@ -34,6 +34,9 @@ export interface AuthServerMetadata {
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
   readonly registrationEndpoint: string | null;
+  /** RFC 7009 `revocation_endpoint`, null when the AS advertises none. Without
+   *  it a disconnect can only forget the token; the grant lives on at the AS. */
+  readonly revocationEndpoint: string | null;
   readonly codeChallengeMethods: readonly string[];
   readonly grantTypes: readonly string[];
   readonly scopesSupported: readonly string[];
@@ -96,9 +99,9 @@ export function sameIssuer(a: string, b: string): boolean {
   return canonicalIssuer(a) !== '' && canonicalIssuer(a) === canonicalIssuer(b);
 }
 
-/** Answers a retry could change. Every other status is the server's own say and
- *  stands as "no document here". */
-function isRetryableStatus(status: number): boolean {
+/** Answers a retry could change. Every other status is the server's own say:
+ *  "no document here" for a metadata fetch, a refusal for a token request. */
+export function isRetryableStatus(status: number): boolean {
   return status >= 500 || status === 408 || status === 425 || status === 429;
 }
 
@@ -365,6 +368,7 @@ export class McpAuthDiscovery {
       authorizationEndpoint,
       tokenEndpoint,
       registrationEndpoint,
+      revocationEndpoint: str(doc['revocation_endpoint']),
       codeChallengeMethods: strArr(doc['code_challenge_methods_supported']),
       grantTypes: strArr(doc['grant_types_supported']),
       scopesSupported: strArr(doc['scopes_supported']),

@@ -283,6 +283,7 @@ export type {
   McpConfigField,
   McpDelegation,
   McpOAuthClientAcquisition,
+  McpOAuthTokenInvalidReason,
   McpRegistryRow,
   McpServerInput,
   McpServerRow,
@@ -321,6 +322,8 @@ export {
   mcpPoolScopeMatches,
   // The Discover route needs the same reading of a failed connect as a tool call.
   looksUnauthorized,
+  // #1923 — the narrower reading: did the transport itself refuse the token.
+  isTransportUnauthorized,
   // #545 — the tool-list cache rules (TTL normalisation + scope keying) are
   // the contract, unit-tested as pure functions like `mcpPoolScopeMatches`.
   mcpToolListTtlMs,

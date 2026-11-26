@@ -363,7 +363,10 @@ describe('MCP server mutations invalidate the pooled connection (#563)', { concu
     const res = await fetch(`${baseUrl}/api/v1/operator/mcp-servers/${SERVER_ID}/token`, {
       method: 'DELETE',
     });
-    assert.equal(res.status, 204);
+    // #1925 — the answer says what happened at the provider. This harness
+    // wires no OAuth service, so there was no authorization to revoke.
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { revocation: 'not_connected' });
     assert.deepEqual(changed, [SERVER_ID]);
   });
 });

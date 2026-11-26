@@ -246,6 +246,11 @@ export interface McpServerRow {
  *  reading or writing a delegation key out of grant config. */
 export type McpDelegation = 'per_user' | 'service';
 
+/** Why a stored MCP OAuth token is known not to work any more (#1923):
+ *  `refresh_failed` — the token endpoint answered the refresh and refused it;
+ *  `rejected` — the MCP server refused a call that carried the token. */
+export type McpOAuthTokenInvalidReason = 'refresh_failed' | 'rejected';
+
 /**
  * How omadia acquired the OAuth client it uses at an authorization server
  * (migration 0032, W2-4). All three modes are first-class and PERMANENT:
@@ -1530,6 +1535,8 @@ export class AgentGraphStore {
         scopes: string | null;
         /** Issuer that minted this token (W0-1) — null on pre-0031 rows. */
         issuer: string | null;
+        /** Set once the token is known not to work (#1923), null otherwise. */
+        invalidReason: McpOAuthTokenInvalidReason | null;
       }
     | undefined
   > {
@@ -1541,6 +1548,7 @@ export class AgentGraphStore {
       expires_at: Date | null;
       scopes: string | null;
       issuer?: string | null;
+      invalid_reason?: string | null;
     }>('SELECT * FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [serverId, userKey]);
     const r = rows[0];
     return r
@@ -1552,6 +1560,10 @@ export class AgentGraphStore {
           expiresAt: r.expires_at,
           scopes: r.scopes,
           issuer: r.issuer ?? null,
+          invalidReason:
+            r.invalid_reason === 'refresh_failed' || r.invalid_reason === 'rejected'
+              ? r.invalid_reason
+              : null,
         }
       : undefined;
   }
@@ -1567,6 +1579,8 @@ export class AgentGraphStore {
      *  the stored token instead of replaying it against a different AS. */
     issuer?: string | null;
   }): Promise<void> {
+    // A token that was just issued is a working one: the upsert clears whatever
+    // mark the previous token collected (#1923).
     await this.pool.query(
       `INSERT INTO mcp_oauth_tokens
          (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, issuer, updated_at)
@@ -1577,6 +1591,8 @@ export class AgentGraphStore {
          expires_at = EXCLUDED.expires_at,
          scopes = EXCLUDED.scopes,
          issuer = EXCLUDED.issuer,
+         invalid_reason = NULL,
+         invalid_at = NULL,
          updated_at = now()`,
       [
         input.serverId,
@@ -1602,6 +1618,22 @@ export class AgentGraphStore {
     );
     const r = rows[0];
     return r ? mapMcpServer(r) : undefined;
+  }
+
+  /** Mark a stored token as no longer working (#1923). The row stays, so the
+   *  token can still be revoked or replaced. The first mark wins: a refused
+   *  refresh is followed by a 401 for the same dead grant, and the cause is
+   *  the refusal. A no-op when there is no row. */
+  async markMcpOAuthTokenInvalid(
+    serverId: string,
+    userKey: string,
+    reason: McpOAuthTokenInvalidReason,
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_oauth_tokens SET invalid_reason = $3, invalid_at = now()
+        WHERE server_id = $1 AND user_key = $2 AND invalid_reason IS NULL`,
+      [serverId, userKey, reason],
+    );
   }
 
   async deleteMcpOAuthToken(serverId: string, userKey: string): Promise<void> {

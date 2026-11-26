@@ -692,11 +692,28 @@ if (ctx.knowledgeGraph) {
       extras: { score: 87, completedAt: new Date().toISOString() },
     },
   ]);
+  // Pflichtfelder: factId (aus factNodeId, Präfix `fact:`) und sourceTurnId,
+  // die externe Turn-Id, aus der der Fact stammt (`turn:<scope>:<time>`,
+  // z. B. aus einem searchTurns-Treffer). mentionedEntityIds nur aus den
+  // eigenen entity_systems (`<system>:<model>:<id>`), sonst KgEntityNamespaceError.
+  const subject = `audit ${runId}`;
+  const predicate = 'identified';
+  const object = `issue ${issueId}`;
   await ctx.knowledgeGraph.ingestFacts([
-    { subject: `audit:${runId}`, predicate: 'identified', object: `issue:${issueId}` },
+    {
+      factId: factNodeId(sourceTurnId, subject, predicate, object),
+      sourceTurnId,
+      subject,
+      predicate,
+      object,
+      mentionedEntityIds: [`audit-reports:AuditRun:${runId}`],
+    },
   ]);
 }
 ```
+
+`factNodeId` kommt aus `@omadia/plugin-api`
+(`import { factNodeId } from '@omadia/plugin-api';`).
 
 **Spec-Pflicht — entity_systems Whitelist:**
 ```

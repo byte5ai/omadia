@@ -5378,6 +5378,11 @@
     "auth": {
       "connected": "🔓 Autorisiert",
       "notConnected": "🔒 Nicht autorisiert",
+      "expired": "⚠️ Autorisierung abgelaufen",
+      "expiredHint": "Die gespeicherte Autorisierung funktioniert nicht mehr. Sie ist abgelaufen oder wurde beim Anbieter entzogen. Verbinde den Server neu, um sie zu erneuern.",
+      "disconnectRevoked": "Getrennt. {host} hat den Zugriff von omadia widerrufen.",
+      "disconnectUnsupported": "In omadia getrennt. {host} bietet keinen Widerruf von hier aus an, der Zugriff kann dort also noch aktiv sein. Entferne omadia in deinen Kontoeinstellungen bei {host}.",
+      "disconnectFailed": "In omadia getrennt, aber {host} hat den Widerruf nicht bestätigt. Der Zugriff kann dort noch aktiv sein. Entferne omadia in deinen Kontoeinstellungen bei {host}.",
       "connect": "Verbinden",
       "disconnect": "Trennen",
       "hintBrokered": "Dieser Server bietet automatische Client-Registrierung — einfach verbinden und einloggen, meist ohne Setup. Falls die Registrierung abgelehnt wird, wirst du gebeten, einmalig eine App zu registrieren.",

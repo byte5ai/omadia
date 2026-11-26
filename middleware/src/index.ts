@@ -32,7 +32,7 @@ import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
-import { createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
+import { adminTokenThrottleWarnings, createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
 import { parseClientAddressPolicy } from './auth/clientAddress.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
@@ -3373,6 +3373,20 @@ async function main(): Promise<void> {
                 // `unresolved` when there was none.
                 return auditIdentity(server, turnContext.current()?.mcpUserKey, mcpOAuthUserKey);
               },
+              // #1923 — the server answered 401 to the stored token. Recorded
+              // so the MCP Control Center stops calling it authorized.
+              onTokenRejected: async (cfg: McpServerConfig, token: string) => {
+                const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                if (!server) return;
+                const userKey = resolveMcpUserKey(
+                  server,
+                  turnContext.current()?.mcpUserKey,
+                  mcpOAuthUserKey,
+                );
+                if (userKey !== null) {
+                  await mcpOAuthService.markTokenRejected(server.id, userKey, token);
+                }
+              },
               onAuthFailure: async (cfg: McpServerConfig) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                 if (!server) return null;
@@ -4121,6 +4135,12 @@ async function main(): Promise<void> {
     })
   ) {
     console.log(`[middleware] admin token endpoints enabled at ${ADMIN_TOKEN_PATH} (bearer, before the session gate)`);
+    for (const warning of adminTokenThrottleWarnings(
+      config.ADMIN_TOKEN,
+      parseClientAddressPolicy(config.AUTH_LOGIN_CLIENT_ADDRESS),
+    )) {
+      console.warn(warning);
+    }
   } else {
     console.log('[middleware] admin endpoints DISABLED (ADMIN_TOKEN not set)');
   }
@@ -5093,6 +5113,23 @@ async function main(): Promise<void> {
           action: 'mcp_server.stdio_create',
           target: `mcp-server:${entry.serverId}`,
           after: { name: entry.serverName, source: entry.source },
+        });
+      },
+      // Issue #1925 — one row per removed MCP OAuth authorization.
+      auditMcpOAuthDisconnect: async (entry) => {
+        await adminAudit?.record({
+          actor: {
+            ...(entry.actorUserId ? { id: entry.actorUserId } : {}),
+            ...(entry.actor ? { email: entry.actor } : {}),
+          },
+          action: 'mcp_server.oauth_disconnect',
+          target: `mcp-server:${entry.serverId}`,
+          after: {
+            name: entry.serverName,
+            identity: entry.identity,
+            cause: entry.cause,
+            revocation: entry.revocation,
+          },
         });
       },
       // W5-1 — the operator surface for `public_mcp_key_bindings`, without
