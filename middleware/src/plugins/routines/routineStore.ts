@@ -42,9 +42,9 @@ export interface Routine {
   until?: Date | null;
   /** #2082 — when the owner was asked whether the routine should go on. */
   renewalAskedAt?: Date | null;
-  /** #1743 / ADR 0240 — IANA zone of the cron pattern (migration 0008); null = UTC. */
+  /** #1743 / ADR 0240 — IANA zone of the cron pattern (migration 0009); null = UTC. */
   timezone?: string | null;
-  /** #1745 — id of the agent that runs it (migration 0009); null = bound on its next run. */
+  /** #1745 — id of the agent that runs it (migration 0010); null = bound on its next run. */
   agentId?: string | null;
 }
 
@@ -125,9 +125,9 @@ interface RoutineRow {
   /** #2082 — migration 0006. */
   until: Date | null;
   renewal_asked_at: Date | null;
-  /** #1743 — migration 0008. */
+  /** #1743 — migration 0009. */
   timezone: string | null;
-  /** #1745 — migration 0009. */
+  /** #1745 — migration 0010. */
   agent_id: string | null;
 }
 

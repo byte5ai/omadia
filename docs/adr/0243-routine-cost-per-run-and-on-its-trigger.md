@@ -39,7 +39,7 @@ Chosen option: **B**.
 
 - Every run measures its model cost with the cost meter around the turn and the emitter's
   guard, also when the turn throws, and stores it in `routine_runs.cost_usd` (routines
-  migration `0011`). `GET /api/v1/routines/:id/runs` returns `costUsd` per run and
+  migration `0012`). `GET /api/v1/routines/:id/runs` returns `costUsd` per run and
   `totalCostUsd` for the routine.
 - A manual run's cost is booked on the routine's trigger (`TriggerService.bookManualSpend`:
   spend, monthly instance and agent spend, an audit row `fired` with

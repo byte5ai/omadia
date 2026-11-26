@@ -4863,6 +4863,28 @@ Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test
 `test/builder/builderChatRoutes.test.ts` (§ #2214), Web-UI
 `BuilderChatPane.stop.test.tsx`.
 
+### Security-Fasttrack W00 (Welle 5, 2026-11-26; ADR 0175–0178)
+
+- **MCP-OAuth-Callback (#1908, ADR-0175).** `completeAuthorization(state, code, iss,
+  completingUserKeyFor)` speichert nur, wenn die abschließende Session auf den Starter des Flows
+  abbildet; sonst `McpOAuthCompleterMismatchError` (403, nichts gespeichert). Der Callback bleibt
+  Public Path; `createOptionalSession` (`auth/requireAuth.ts`) hängt eine gültige Session an, ohne
+  selbst 401 zu antworten. Ausnahme nur Desktop-Kernel (`isDesktopLoopbackKernel` →
+  `mcpOAuthSessionlessCallback`). Der Auth-Failure-Hook in `index.ts` startet keinen Flow mehr und
+  schreibt keine Authorize-URL in den Modelltext.
+- **Tool-Ausgaben pro Turn (#1961, ADR-0177).** `PerTurnBuffer` (`@omadia/diagrams`); Office
+  und Diagrams legen Ausgaben unter der Turn-ID ab, der Sink (im Turn-Kontext aufgerufen) leert
+  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`.
+- **Signierte Links routengebunden (#1979, ADR-0176).** HMAC über `<route prefix><key>.<exp>`,
+  Router prüfen ihr Key-Layout.
+- **Attachments (#1960/#1962, ADR-0178).** `ChatTurnInput.storedAttachments`
+  (`StoredTurnAttachment`, channel-sdk 0.3.16) ist die einzige Quelle für Storage-Keys; der
+  `[attachments-info]`-Parser ist entfernt. Ingest bindet jeden Key an den Raum des Turns
+  (`AttachmentReader.bindToCurrentConversation`), Lesen braucht eine Bindung an den aktuellen
+  Raum. Store `attachmentBindings` immer publiziert (Postgres, sonst In-Memory). CLI-Agents
+  tragen `sessionScope` in den Loopback-Scope und binden ebenso. Migration `0114` löscht
+  Bindungen für Office-/Diagram-Keys. Teams setzt das Feld ab dem Release nach 0.45.1.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -8536,6 +8558,11 @@ Antwort gibt.
 
 ---
 
+- **W00-Folgepunkte (2026-11-26):** (1) CLI-Agents leeren keine Attachment-Sinks — Office-/
+  Diagram-Ausgaben eines CLI-Turns werden nicht ausgeliefert (ADR-0177). (2) Per-User-MCP-Connect
+  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) Teams: Uploads
+  einer Nachricht, die die Themenwechsel-Karte auslöst, werden nach dem Klick nicht ingestiert.
+
 ## 14. Commands (vom `middleware/`-Dir aus)
 
 ```bash
@@ -11370,7 +11397,7 @@ Entscheidungen: [ADR 0240](adr/0240-schedules-run-in-a-named-time-zone.md) (Zeit
 [ADR 0241](adr/0241-field-level-interning-exemption-for-kernel-state-tools.md) (feldweise
 Intern-Ausnahme), [ADR 0242](adr/0242-unattended-turns-for-routines-and-triggers.md)
 (unbeaufsichtigte Turns), [ADR 0243](adr/0243-routine-cost-per-run-and-on-its-trigger.md)
-(Kosten). Routinen-Migrationen 0007–0011.
+(Kosten). Routinen-Migrationen 0008–0012.
 
 - **Laufsteuerung** (`src/plugins/routines/routineRunControl.ts`): ein Lauf pro Routine
   *pro Prozess* (`InFlightRuns`; über Maschinen hinweg nur Cron at-most-once durch den
@@ -11385,14 +11412,14 @@ Intern-Ausnahme), [ADR 0242](adr/0242-unattended-turns-for-routines-and-triggers
   und `409 routines.agent_unavailable`; DTO-Felder `running`, `agentSlug`, `agentProblem`;
   Runs `costUsd`, Liste `totalCostUsd`; Vorschau `warnings`.
 - **Bindung an den Agenten per id** (`routineAgentBinding.ts`, Spalte `agent_id`): kein
-  Slug-Nachfolger, kein Default-Agent. Zeilen vor 0009 werden beim nächsten Lauf an den dann
+  Slug-Nachfolger, kein Default-Agent. Zeilen vor 0010 werden beim nächsten Lauf an den dann
   aktuellen Slug-Inhaber gebunden (akzeptiertes Restrisiko, wenn der Slug vorher übernommen
   wurde). End-of-Service pausiert die Routinen des Agenten (`routinesPaused`).
 - **`manage_routine`**: Zone pro Routine (`routines.timezone`, Ersteller-Zone aus
   `ChatTurnInput.userTimeZone`, sonst `PROACTIVE_TIMEZONE`), `checkCronSchedule` vor dem
   Speichern, `nextRun` mit Zone im Ergebnis, Ablehnungen als `ToolRefusalError`,
   `targetEmail` nicht mehr beworben.
-- **`ChatTurnInput.unattended`** (channel-sdk 0.3.16): Routine- und Trigger-Turns; keine
+- **`ChatTurnInput.unattended`** (channel-sdk 0.3.18): Routine- und Trigger-Turns; keine
   interaktiven Tools (auch auf dem CLI-Pfad), kein Card-Router, `UNATTENDED_DIRECTIVE`, kein
   „recent turns“-Block. Routine-Turns laufen außerhalb jedes Routines-Principals.
 - **Templates**: kein `html`, keine leeren `sections`, static-only ohne Turn, Status `silent`

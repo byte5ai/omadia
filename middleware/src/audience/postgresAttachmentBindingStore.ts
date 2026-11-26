@@ -51,3 +51,21 @@ export class PostgresAttachmentBindingStore implements AttachmentBindingStore {
     );
   }
 }
+
+/**
+ * #1960 (ADR-0178) — the same pins without Postgres (dev, single-instance
+ * desktop). Lives for the process lifetime: after a restart no upload is
+ * readable again until a channel states it anew, which is the safe side.
+ */
+export class InMemoryAttachmentBindingStore implements AttachmentBindingStore {
+  readonly #bindings = new Map<string, AttachmentScopeBinding>();
+
+  get(storageKey: string): Promise<AttachmentScopeBinding | undefined> {
+    return Promise.resolve(this.#bindings.get(storageKey));
+  }
+
+  bindIfAbsent(storageKey: string, binding: AttachmentScopeBinding): Promise<void> {
+    if (!this.#bindings.has(storageKey)) this.#bindings.set(storageKey, binding);
+    return Promise.resolve();
+  }
+}

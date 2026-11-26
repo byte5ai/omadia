@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-sdk",
-  "version": "0.3.16",
+  "version": "0.3.18",
   "private": true,
   "type": "module",
   "main": "dist/index.js",

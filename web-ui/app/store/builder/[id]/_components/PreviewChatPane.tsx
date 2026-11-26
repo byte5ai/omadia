@@ -77,6 +77,8 @@ export interface BuildStatusSnapshot {
   buildN?: number;
   reason?: string;
   errorCount?: number;
+  /** #1809 — `ok` build whose preview waits for a test credential. */
+  missingSetupKey?: string;
   /** Structured tsc diagnostics — surfaced both as Monaco markers in the
    *  Slot-Editor and as the expanded error list in the Preview pane. */
   errors?: ReadonlyArray<BuildErrorRow>;
@@ -270,7 +272,9 @@ export function PreviewChatPane({
               ? t('error.llmAccessMissing')
               : ev.code === 'builder.privacy_shield_required'
                 ? t('error.privacyShieldRequired')
-                : humanizeProviderError(ev.message, t('error.providerGeneric')),
+                : ev.code === 'builder.preview_secret_missing'
+                  ? t('error.testCredentialMissing')
+                  : humanizeProviderError(ev.message, t('error.providerGeneric')),
           );
           break;
         }
@@ -357,6 +361,9 @@ export function PreviewChatPane({
           ...(ev.buildN !== undefined ? { buildN: ev.buildN } : {}),
           ...(ev.reason !== undefined ? { reason: ev.reason } : {}),
           ...(totalIssueCount > 0 ? { errorCount: totalIssueCount } : {}),
+          ...(ev.missingSetupKey !== undefined
+            ? { missingSetupKey: ev.missingSetupKey }
+            : {}),
         };
         onBuildStatus?.(snapshot);
         setItems((prev) => {

@@ -33,9 +33,19 @@ export type SpecBusEvent =
   | {
       type: 'build_status';
       phase: 'building' | 'ok' | 'failed';
+      /** Set on every `ok` and on every `failed` that has a build number
+       *  (#1731) — AutoFix dedups per build, so a failure without it would
+       *  collapse onto one key. Absent when the build failed before a
+       *  number was assigned (spec / codegen / template). */
       buildN?: number;
+      /** A stable code (`tsc`, `codegen_failed`, `activate_failed: …`),
+       *  never a log line: no user e-mail, no draft id (#1733). */
       reason?: string;
       errorCount?: number;
+      /** #1809 — only with `ok`: the build compiled, but the preview could
+       *  not start because this setup value has no test credential yet.
+       *  Not a failed build; the UI asks for the credential instead. */
+      missingSetupKey?: string;
       /** Structured tsc errors (per-file, per-line) — surfaced so the
        *  Slot-Editor can hang Monaco markers on the exact source lines
        *  instead of forcing the operator to read a stderr-tail. Capped

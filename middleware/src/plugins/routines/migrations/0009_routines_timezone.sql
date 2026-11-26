@@ -7,4 +7,4 @@ ALTER TABLE routines
   ADD COLUMN IF NOT EXISTS timezone TEXT NULL;
 
 COMMENT ON COLUMN routines.timezone IS
-  '#1743 — IANA zone the cron pattern is evaluated in; NULL = UTC (rows from before migration 0008).';
+  '#1743 — IANA zone the cron pattern is evaluated in; NULL = UTC (rows from before migration 0009).';

@@ -297,7 +297,7 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     const t = await waitFor(() => triggerOf(routine.id), 'the routine trigger');
     assert.equal(t.timezone, 'Europe/Berlin');
 
-    // A row from before migration 0009 binds once, and only while unbound.
+    // A row from before migration 0010 binds once, and only while unbound.
     await pool.query('UPDATE routines SET agent_id = NULL WHERE id = $1', [routine.id]);
     await store.bindAgentId(routine.id, agentId);
     await store.bindAgentId(routine.id, 'someone-else');

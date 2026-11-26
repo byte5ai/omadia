@@ -40,7 +40,7 @@ changelog.
 
 - **Run control** (#1746, #1747, #1748, `routineRunControl.ts`): pausing or deleting a routine
   cancels its run in flight; the run is recorded as the new status `cancelled` (routines
-  migration `0007_routine_runs_cancelled`), not as `timeout`, and nothing is delivered. The
+  migration `0008_routine_runs_cancelled`), not as `timeout`, and nothing is delivered. The
   status is read once more before delivery, so a pause on another instance also holds. A run
   deleted mid-flight writes no run row (its history goes with the routine). A cancelled run
   does not count towards the trigger's circuit breaker. The abort signal reaches the agent
@@ -60,7 +60,7 @@ changelog.
   evaluates cron patterns in a named IANA zone and checks a recurring schedule before it is
   stored (`checkCronSchedule`: plain 5-field pattern, no `?`, no `@daily`/`L`/`W`/`#`, at
   least two upcoming runs, minimum gap). A routine stores its zone (routines migration
-  `0008_routines_timezone`): the creator's (`ChatTurnInput.userTimeZone`, now also on the
+  `0009_routines_timezone`): the creator's (`ChatTurnInput.userTimeZone`, now also on the
   turn context) or `PROACTIVE_TIMEZONE`; its trigger runs in it; rows without one stay UTC.
   `manage_routine` results name `timeZone` and `nextRun` (`2026-11-27 09:00 (Europe/Berlin)`).
   Existing routines whose pattern no longer passes are paused on boot with the reason.
@@ -75,7 +75,7 @@ changelog.
   `fieldExemptModelCopy`, all three dispatch seams); the tool is not served on the public MCP
   endpoint.
 - **Routines are bound to their agent by id** (#1744, #1745, `routineAgentBinding.ts`, routines
-  migration `0009_routines_agent_id`): a new agent that takes a deleted agent's slug no longer
+  migration `0010_routines_agent_id`): a new agent that takes a deleted agent's slug no longer
   takes over its routines, a routine without an agent never runs on the default agent, and a
   disabled or deleted agent is named in the run error (no more "configure the LLM API key").
   Such a routine is paused with the reason when the trigger engine would schedule it, `POST
@@ -85,7 +85,7 @@ changelog.
   are paused with the reason (`EndOfServiceReport.routinesPaused`, `routines_paused` in the
   agent route response and the audit).
 - **Unattended turns** (#1770, #1771, #1772, ADR 0242): `ChatTurnInput.unattended`
-  (`@omadia/channel-sdk` **0.3.16**), set by the routine runner and the trigger turn executor. Such a turn
+  (`@omadia/channel-sdk` **0.3.18**), set by the routine runner and the trigger turn executor. Such a turn
   offers no `ask_user_choice`/`suggest_follow_ups` (in-process and on the subscription CLI), runs no card router, gets a directive to
   state assumptions instead of asking, and gets no "recent turns" context block (earlier runs
   are not trusted facts). A routine turn runs outside any routines principal, so a smart-card
@@ -95,7 +95,7 @@ changelog.
   at save and preview (html was stored and then ignored on every run; a stored html template
   is treated as no template). A static-only template delivers its text without a paid agent
   turn. A run can stay silent: an answer of `[[nothing]]` (the trigger convention) ends it
-  with the new status `silent` (routines migration `0010_routine_runs_silent`), nothing is
+  with the new status `silent` (routines migration `0011_routine_runs_silent`), nothing is
   delivered, and it does not count towards the breaker. A slot response with a missing slot
   keeps the slots the model wrote (like the preview) instead of dropping all of them. Data
   sections report a source that was not called, returned prose instead of JSON rows, or names
@@ -103,10 +103,97 @@ changelog.
   records them as `template: …` in its error field.
 - **Routine cost** (#1776, ADR 0243, decided after recommendation, reversible): every run
   stores its metered model cost (`routine_runs.cost_usd`, routines migration
-  `0011_routine_runs_cost`; a failed turn still counts), `GET /api/v1/routines/:id/runs`
+  `0012_routine_runs_cost`; a failed turn still counts), `GET /api/v1/routines/:id/runs`
   returns `costUsd` per run and `totalCostUsd`, and a manual run's cost is booked on the
   routine's trigger (`TriggerService.bookManualSpend`: spend, monthly budgets, audit row
   `fired` / `manual_run`), so the operator trigger view shows every run.
+### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
+
+- `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the
+  only source of storage keys the turn ingests. The `[attachments-info]` text parser
+  (`attachmentsInfo.ts`) is gone: a block typed into a message reads nothing, on any channel.
+- Each stated upload is bound to the turn's conversation before it is read
+  (`AttachmentReader.bindToCurrentConversation`). A read no longer binds; `read_attachment` and the
+  ingest serve only keys bound to the current conversation and answer "not found" otherwise
+  (unbound keys, Office/Diagrams output, other chats, `http-default`).
+- The `attachmentBindings` store is published with the audience floor on or off (Postgres, else
+  in-memory).
+- **Migration `0114_attachment_bindings_drop_generated_outputs`** deletes bindings for the Office
+  (`documents/<tenant>/<sha256>/<file>`) and Diagrams (`<tenant>/<sha256>.png`) layouts, which only
+  a foreign first read could have created.
+- Needs the omadia-channel-teams release after 0.45.1 (sets `storedAttachments`); older Teams versions get no
+  auto-ingest of uploads until updated.
+
+### Security — Office and Diagrams outputs stay with their turn; signed links are route-bound (#1961, #1979, ADR-0176, ADR-0177) (2026-11-26)
+
+- `create_xlsx` / `create_docx` files and `render_diagram` images are filed under the id of
+  the turn that produced them (`PerTurnBuffer`, `@omadia/diagrams`) and the end-of-turn drain
+  returns only the finishing turn's. A concurrent turn no longer receives another chat's file;
+  two diagrams in one turn give two images. Diagrams reads the turn id through
+  `optional_requires: ["turnContext@1"]`. The `NativeToolAttachmentSink` doc states the rule
+  (no plugin-api signature change).
+- Both signers include the route prefix in the HMAC payload (`/diagrams/dl/…`,
+  `/documents/dl/…`) and each router serves only its own key layout. A link moved to the other
+  route is refused, so revoking one route's public-path grant takes full effect. Links signed
+  before this deploy stop working.
+- `@omadia/diagrams` 0.2.2, `@omadia/plugin-office` 0.1.5.
+
+### Security — MCP OAuth callback completes only for the user who started the flow (#1908, ADR-0175) (2026-11-26)
+
+- `McpOAuthService.completeAuthorization` takes the completing session's user key
+  (`completingUserKeyFor`) and refuses a different user or a browser without a session
+  before the code exchange (`McpOAuthCompleterMismatchError`, 403 page "started by a
+  different account"). The flow is consumed, nothing is stored.
+- The callback stays a public path; `createOptionalSession` (`auth/requireAuth.ts`) attaches
+  a valid session to it without answering 401.
+- A tool-call auth failure no longer starts a flow or writes the authorize URL (with its
+  `state`) into the model's text; the chat's Connect card starts the flow from the user's own
+  session.
+
+### Fixed — channel plugins get the SQL grant check and kernel-run migrations (ADR-0050) (2026-11-26)
+
+- A channel plugin that declares `permissions.sql` (Teams, byte5ai/omadia-channel-teams#74)
+  now gets the same treatment as a tool plugin (#838). The kernel reads the operator's grant
+  before the context is built, and only a grant for the declared ledger counts. With the grant
+  the plugin gets `ctx.sql`, and the kernel runs the ledger handoff and the declared migrations
+  before `activate()`.
+- Before this, `DefaultChannelRegistry` never passed `sqlGranted`. A channel was ungranted
+  forever and reached `graphPool` only through the grandfather row in
+  `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20`, which drifted from ADR-0050.
+- The steps now live in `middleware/src/plugins/pluginSqlBoot.ts`, shared by both runtimes.
+  The tool runtime is unchanged.
+- The `@omadia/channel-teams` `graphPool` row stays until Teams 0.46 is on the Hub and the
+  operator has granted its `permissions.sql`.
+
+### Docs — ADR 0225: a channel account is linked to an omadia user only through the kernel (2026-11-26)
+
+- Proposed (#1995). A pairing should link a channel account to an existing omadia user. The
+  kernel owns that link, and the plugin attests only the channel identity. Implementation
+  follows. Until it ships, a channel does not claim a link in its texts.
+
+### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
+
+The auto-rebuild scheduler and the preview routes now share one build-and-warm
+path (`plugins/builder/previewWarmBuild.ts`) that emits every `build_status`
+exactly once. Failed events carry `buildN` and a stable code as `reason`, so
+AutoFix fires once per failed build instead of once per process, a failure
+while AutoFix is off no longer blocks a later trigger (#1731), and the second
+`failed` event that carried the user's e-mail and draft id over the TypeScript
+error list is gone (#1733). `building` is emitted only when a build starts, so
+a warm cache hit no longer leaves the status on "building" (#1807). A setup
+value read at activation without a test credential throws the coded
+`PreviewSetupValueMissingError` and stays `ok` with `missingSetupKey`: no failed
+build, no "Fix with Builder", Publish says "missing test credential" (#1809).
+Saving or clearing test credentials schedules a rebuild, and the status route
+reports a green last build on a cold cache as `ok` instead of `idle` (#1792);
+an activation failure after a green build is `activate_failed:<code>` on the
+wire (message only in the server log and `get_build_status`), and a result for
+a superseded build is dropped. The workspace registers a listener for every
+spec-bus event type it handles, from one list the type checker keeps complete,
+so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
+appear (#1730). The builder prompt names `get_build_status` /
+`runtime_smoke_status` as the only source for build and smoke state (#1806).
+Contract: ADR-0230 (Proposed).
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

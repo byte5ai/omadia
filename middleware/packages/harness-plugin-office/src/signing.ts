@@ -4,17 +4,27 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * HMAC-SHA256 signing for the office-document proxy.
  *
  * Scheme:  `/documents/dl/<encoded-key>?exp=<unix-seconds>&sig=<hex>`
- * Payload: `<key>.<exp>` (prevents replay for a different key)
+ * Payload: `/documents/dl/<key>.<exp>` — the route prefix binds a link to the route
+ *          that issued it (#1979, ADR-0176): Office and Diagrams may share a
+ *          secret, and revoking one route's public-path grant must not leave
+ *          its files reachable through the other route.
  *
  * This is a deliberate copy of `@omadia/diagrams`' signing rather than a
  * reuse: that signer hard-codes the `/diagrams/` route prefix into the URL,
  * and office files must surface under `/documents/`. The HMAC scheme is
- * identical so the security properties carry over 1:1.
+ * the same apart from the route prefix in the payload.
  *
  * The secret lives in `document_url_secret` (vault) and never leaves the
  * process. Rotate by setting a new value — in-flight URLs become invalid
  * immediately.
  */
+
+/** The route this module signs for; part of every signed payload. */
+export const SIGNED_ROUTE_PREFIX = '/documents/dl/';
+
+function signedPayload(key: string, exp: number): string {
+  return `${SIGNED_ROUTE_PREFIX}${key}.${String(exp)}`;
+}
 
 export interface SignUrlParams {
   key: string;
@@ -29,11 +39,11 @@ export function signDocumentUrl(params: SignUrlParams): string {
   const now = params.nowSec ?? Math.floor(Date.now() / 1000);
   const exp = now + params.ttlSec;
   const sig = createHmac('sha256', params.secret)
-    .update(`${params.key}.${String(exp)}`)
+    .update(signedPayload(params.key, exp))
     .digest('hex');
   const encKey = encodeURIComponent(params.key);
   const base = params.publicBaseUrl.replace(/\/+$/, '');
-  return `${base}/documents/dl/${encKey}?exp=${String(exp)}&sig=${sig}`;
+  return `${base}${SIGNED_ROUTE_PREFIX}${encKey}?exp=${String(exp)}&sig=${sig}`;
 }
 
 export interface VerifySigParams {
@@ -50,7 +60,7 @@ export function verifyDocumentSig(params: VerifySigParams): boolean {
   if (!Number.isFinite(params.exp) || params.exp < now) return false;
   if (!/^[0-9a-f]+$/i.test(params.sig)) return false;
   const expected = createHmac('sha256', params.secret)
-    .update(`${params.key}.${String(params.exp)}`)
+    .update(signedPayload(params.key, params.exp))
     .digest('hex');
   const a = Buffer.from(expected, 'hex');
   const b = Buffer.from(params.sig, 'hex');
