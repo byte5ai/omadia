@@ -14,7 +14,8 @@
  *      so the bulk job dedupes the source MK on the next sweep.
  *
  * Unlike the Slice-9 Inconsistency-Detector, this detector is
- * **cosine-only** — no Haiku judgement pass. At ≥ 0.95 the content
+ * **cosine-only** — no Haiku judgement pass (auto-merge adds a deterministic
+ * same-numbers check, ADR-0190). At ≥ 0.95 the content
  * overlap is high enough that one is a refinement/restatement of the
  * other; the operator picks `keep_a` / `keep_b` / `not_duplicate`.
  *
@@ -44,13 +45,16 @@ export interface MergeCandidateDetectorDeps {
   /** Max candidates checked per source. Default 5. */
   topK?: number;
   /**
-   * Auto-merge threshold. When set, a flagged MK pair whose cosine is at or
-   * above this value is RESOLVED automatically (the duplicate is retired via
-   * `resolveMergeCandidate`) instead of only being flagged for an operator —
-   * so re-learned knowledge stops accumulating on any deployment without a
-   * manual cleanup pass. SAFETY: a `manuallyAuthored` (durable) node is NEVER
-   * deleted; when exactly one side is durable it always wins; when BOTH are
-   * durable the pair is left for an operator; otherwise the OLDER node wins.
+   * Auto-merge threshold (ADR-0190). When set, a flagged MK pair is RESOLVED
+   * automatically (the duplicate is retired via `resolveMergeCandidate`)
+   * instead of only being flagged for an operator — but only a NEAR-EXACT
+   * pair: cosine at or above this value AND the same numbers on both sides
+   * (a changed date or amount is a correction, not a duplicate). SAFETY:
+   * only a machine-made entry (auto-promoted, reaper, system) is ever
+   * retired; a hand-saved or `manuallyAuthored` (durable) entry is never
+   * deleted, and a pair of two such entries stays open for an operator.
+   * Two machine-made entries: the OLDER one wins. The resolution is audited
+   * as `system:auto-merge` with the cosine as the reason.
    * Undefined → auto-merge disabled (flag-only, legacy behaviour).
    */
   autoMergeThreshold?: number;
@@ -60,6 +64,37 @@ export interface MergeCandidateDetectorDeps {
 const DEFAULT_MIN_SIMILARITY = 0.95;
 const DEFAULT_EXCERPT_MIN_SIMILARITY = 0.97;
 const DEFAULT_TOP_K = 5;
+
+/** ADR-0190 — the job an automatic merge is audited as. */
+export const AUTO_MERGE_SYSTEM_ACTOR = 'system:auto-merge';
+
+/**
+ * ADR-0190 — `created_by` prefixes of entries no person saved: live and bulk
+ * auto-promotion (`auto:`), kernel jobs (`system:`), the scratch reaper.
+ * Everything else (`web:<user>`, channel identities) was saved on purpose.
+ */
+const MACHINE_MADE_CREATED_BY = /^(auto:|system:|scratch-reaper)/;
+
+/** True when a person saved the entry (or it is durable/operator-curated). */
+export function isUserSaved(node: GraphNode): boolean {
+  if (node.manuallyAuthored === true) return true;
+  return !MACHINE_MADE_CREATED_BY.test(String(node.props['created_by'] ?? ''));
+}
+
+/** The numbers an entry states, in order — dates, amounts, versions. */
+function numbersOf(node: GraphNode): string {
+  const text = `${String(node.props['summary'] ?? '')} ${String(node.props['rationale'] ?? '')}`;
+  return (text.match(/\d+/g) ?? []).join(' ');
+}
+
+/**
+ * ADR-0190 — near-exact: the two entries state the same numbers. A pair that
+ * differs only in a date or amount scores a high cosine but is a correction;
+ * it stays an open pair (and the contradiction check sees it).
+ */
+export function isNearExactDuplicate(a: GraphNode, b: GraphNode): boolean {
+  return numbersOf(a) === numbersOf(b);
+}
 
 export function createMergeCandidateDetector(
   deps: MergeCandidateDetectorDeps,
@@ -74,15 +109,16 @@ export function createMergeCandidateDetector(
 
   /**
    * Pick which of two near-duplicate MKs to KEEP, or null to leave for an
-   * operator. Durable (`manuallyAuthored`) is sacred: it is never the loser,
-   * and two durable nodes are never auto-merged. Otherwise the older node wins
-   * (it's the established one; the fresh re-statement is the duplicate).
+   * operator. ADR-0190: a hand-saved or durable (`manuallyAuthored`) entry is
+   * never the loser, and two of them are never auto-merged. Two machine-made
+   * entries: the older one wins (it's the established one; the fresh
+   * re-statement is the duplicate).
    */
   function decideKeeper(a: GraphNode, b: GraphNode): string | null {
-    const aDur = a.manuallyAuthored === true;
-    const bDur = b.manuallyAuthored === true;
-    if (aDur && bDur) return null; // both curated — hands off
-    if (aDur !== bDur) return aDur ? a.id : b.id; // the durable one wins
+    const aKept = isUserSaved(a);
+    const bKept = isUserSaved(b);
+    if (aKept && bKept) return null; // both saved on purpose — hands off
+    if (aKept !== bKept) return aKept ? a.id : b.id; // the saved one wins
     const aAt = String(a.props['created_at'] ?? '');
     const bAt = String(b.props['created_at'] ?? '');
     if (aAt && bAt && aAt !== bAt) return aAt < bAt ? a.id : b.id; // older wins
@@ -172,10 +208,12 @@ export function createMergeCandidateDetector(
             autoMergeThreshold !== undefined &&
             candidate.cosineSim >= autoMergeThreshold
           ) {
-            const keeper = decideKeeper(source, candidate.mk);
+            const keeper = isNearExactDuplicate(source, candidate.mk)
+              ? decideKeeper(source, candidate.mk)
+              : null;
             if (keeper === null) {
               log(
-                `[merge-detector] auto-merge SKIP ${source.id} vs ${candidate.mk.id}: both durable`,
+                `[merge-detector] auto-merge SKIP ${source.id} vs ${candidate.mk.id}: ${isNearExactDuplicate(source, candidate.mk) ? 'both saved on purpose' : 'numbers differ'} (left open)`,
               );
             } else {
               // duplicateOf is sorted ascending; keep_a keeps [0] (deletes [1]),
@@ -183,10 +221,15 @@ export function createMergeCandidateDetector(
               const resolution =
                 persisted.duplicateOf[0] === keeper ? 'keep_a' : 'keep_b';
               try {
+                // Authorised as the owner, audited as the job (ADR-0190).
                 await deps.graph.resolveMergeCandidate(
                   persisted.id,
                   resolution,
-                  { actorOmadiaUserId: viewer },
+                  {
+                    actorOmadiaUserId: viewer,
+                    systemActor: AUTO_MERGE_SYSTEM_ACTOR,
+                    reason: `auto-merge: cosine=${candidate.cosineSim.toFixed(3)} >= ${autoMergeThreshold.toFixed(2)}, same numbers, kept ${keeper}`,
+                  },
                 );
                 log(
                   `[merge-detector] auto-merged cosine=${candidate.cosineSim.toFixed(3)} kept=${keeper} (retired the duplicate)`,

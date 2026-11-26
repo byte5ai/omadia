@@ -8,6 +8,30 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.99.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`AclMutationOptions.systemActor?`** (ADR-0190): audit-only label
+  (`system:<job>`) for a mutation a kernel job decided. Authorisation still checks
+  `actorOmadiaUserId`; the audit row names the job (`SYSTEM_AUDIT_ACTOR_UUID` +
+  the label) and a resolved pair carries `resolved_by: null`.
+- **`SYSTEM_AUDIT_ACTOR_UUID`**: the nil uuid a job's audit row carries.
+- **`PROMOTION_RETIRED_PROP`** (`promotionRetired`): the Turn property that keeps a
+  turn out of auto and bulk promotion once an entry derived from it was deleted,
+  discarded or merged away, or the turn proved unpromotable.
+- **`BulkPromotePhaseResult.skipped?`**: turns the run left alone on purpose
+  (retired, no person owner, missing excerpt, narration), apart from `failed`.
+
+### Changed (behaviour)
+
+- `deleteMemory` on both bundled providers retires the entry's source turns and
+  dismisses its open contradiction and duplicate pairs (`closed_reason:
+  'memory_deleted'`); `resolveInconsistency` / `resolveMergeCandidate` refuse a
+  resolution that keeps a deleted side (`keeper_missing`).
+
 ## 1.98.0 — 2026-11-25
 
 Additive.

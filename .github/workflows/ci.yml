@@ -377,7 +377,9 @@ jobs:
           # 2 tests, #2236).
           # 790 → 795 with the batched neighbour read (kgNeighborsOfType.pg,
           # 2 in-memory + 3 Neon tests).
-          PG_TEST_FLOOR: '795'
+          # 795 → 797 with the memorable lifecycle (memorableLifecycle.pg,
+          # 2 Neon tests, ADR-0190).
+          PG_TEST_FLOOR: '797'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

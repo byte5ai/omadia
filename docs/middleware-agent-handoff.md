@@ -5146,6 +5146,28 @@ auf `unverified` herab. Nur `OdooEntity`/`ConfluencePage` — Plugin-Namespaces
 (`PluginEntity`) sind über `findEntities` nicht erreichbar. Begründung und
 Grenzen: `docs/security-architecture.md` §7c.
 
+### MemorableKnowledge-Lebenszyklus (ADR-0190, #1819/#1835/#1861/#1862/#1864)
+
+- **Retired Turns.** `deleteMemory` (Löschen auf `/memories`, Verwerfen im Chat,
+  aufgelöste Widerspruchs-/Duplikat-Paare, Auto-Merge) setzt auf jedem Quell-Turn
+  `properties.promotionRetired = { at, reason }`. Live- und Bulk-Promotion überspringen
+  solche Turns (`reason=retired`); ein manueller Save bleibt möglich.
+- **Ein Promotion-Pfad.** `createBulkPromotionService` bekommt einen eigenen
+  Excerpt-Extractor (Stored-Text-Privacy-Scope) und setzt `excerptRequired`,
+  `originAgent` (aus `<agentSlug>::…` der Turn-Scope) und die Member-Owner wie der
+  Live-Pfad. Turns ohne Personen-Owner (`key:<id>`, Public API) sind keine Kandidaten.
+  Ergebnis `promotePhase.skipped` zählt bewusst ausgelassene Turns.
+- **Auto-Merge** (`kg_auto_merge_enabled`, Default an; `kg_auto_merge_threshold`
+  Default 0.98, Flag-Floor 0.90): löst nur nahezu identische Paare mit gleichen Zahlen
+  und entfernt nur maschinell erzeugte Einträge (`created_by` `auto:`/`system:`/
+  `scratch-reaper`). Audit als `system:auto-merge` über
+  `AclMutationOptions.systemActor` (nil-UUID + Label, `resolved_by: null`).
+- **Paare.** Löschen schließt offene `Inconsistency`/`MergeCandidate`/
+  `ExcerptMergeCandidate`-Paare (`closed_reason: memory_deleted`); eine Auflösung, die
+  eine gelöschte Seite behalten würde, wirft `keeper_missing` (HTTP 409).
+- **Widerspruchs-Judge:** `maxTokens` 500; verlorene Verdicts lassen
+  `last_inconsistency_check_at` ungesetzt.
+
 ### Structured Datasets — CSV Import (#430)
 
 Separate Ablage neben dem eigentlichen Graph — bewusst KEINE Graph-Node-

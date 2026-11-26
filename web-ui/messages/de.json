@@ -6114,7 +6114,9 @@
     "startRun": "Bulk-Job starten",
     "resultTitle": "Ergebnis ({duration} ms)",
     "scorePhaseTitle": "Phase 1 · SCORE",
-    "promotePhaseTitle": "Phase 2 · PROMOTE"
+    "promotePhaseTitle": "Phase 2 · PROMOTE",
+    "skipped": "übersprungen",
+    "skippedHint": "Bewusst ausgelassen, nicht fehlgeschlagen: ein Eintrag aus diesem Turn wurde gelöscht, verworfen oder zusammengeführt, dem Turn gehört keine Person (Public API), der Auszug fehlte oder die Antwort war Agenten-Erzählung. Ausgemusterte und besitzerlose Turns werden nicht erneut angeboten."
   },
   "adminUpdate": {
     "title": "Update",
@@ -6306,7 +6308,7 @@
   "adminDuplicates": {
     "list": {
       "title": "Memory · Mögliche Duplikate",
-      "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
+      "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.90, solange Auto-Merge an ist, sonst ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Auto-Merge (Einstellung „Duplikate automatisch zusammenführen“ der Agent Runtime Extras, standardmäßig an) löst nur nahezu identische Paare selbst auf (cosine ≥ 0.98 und dieselben Zahlen) und entfernt dabei nur eine automatisch gespeicherte Kopie; der Audit-Trail nennt das System und den Wert. Von Hand gespeicherte Einträge werden nie automatisch gelöscht und bleiben hier als offene Paare. Wird eine Memory gelöscht, schließen sich ihre offenen Paare. Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
       "tabs": {
         "memories": "Memories",
         "excerpts": "Auszüge (Palaia)"
@@ -6364,6 +6366,7 @@
       },
       "openMemory": "zur Memory →",
       "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "keeperMissing": "Eine Seite dieses Paars existiert nicht mehr oder ist für dich nicht zugänglich. Sie zu behalten ist nicht möglich, deshalb sind die Optionen, die die andere Seite löschen würden, aus.",
       "memoryA": "Memory A",
       "memoryB": "Memory B",
       "status": "Status",
@@ -6461,6 +6464,7 @@
       },
       "openMemory": "zur Memory →",
       "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "keeperMissing": "Eine Seite dieses Paars existiert nicht mehr oder ist für dich nicht zugänglich. Sie zu behalten ist nicht möglich, deshalb sind die Optionen, die die andere Seite löschen würden, aus.",
       "memoryA": "Memory A",
       "memoryB": "Memory B",
       "severity": "Schweregrad",

@@ -73,6 +73,13 @@ interface JudgementResult {
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_MIN_SIMILARITY = 0.7;
 const DEFAULT_TOP_K = 5;
+/**
+ * #1861 — output budget of one judgement. The prompt allows a 200-character
+ * reason inside a JSON object; in German that alone can pass 100 tokens, and
+ * the old cap of 200 cut verdicts off inside `reason`. 500 leaves room for the
+ * longest answer the prompt asks for.
+ */
+export const JUDGEMENT_MAX_TOKENS = 500;
 
 const PROMPT = `You compare two MemorableKnowledge entries that the embedding similarity flagged as related. Decide whether they are factually CONSISTENT or contradict each other.
 
@@ -197,6 +204,9 @@ export function createInconsistencyDetector(
     const filtered = candidates.filter((c) => c.mk.id !== source.id).slice(0, topK);
     let created = 0;
     const run = deps.privacy?.('inconsistency-detector');
+    // #1861 — a verdict that was lost (failed call, unparseable or cut-off
+    // reply) leaves the entry unchecked, so the next bulk sweep judges it again.
+    let verdictLost = false;
 
     for (const candidate of filtered) {
       const request = buildUserMessage(source, candidate.mk);
@@ -212,7 +222,7 @@ export function createInconsistencyDetector(
       try {
         response = await deps.llm.complete({
           model,
-          maxTokens: 200,
+          maxTokens: JUDGEMENT_MAX_TOKENS,
           system: PROMPT,
           messages: [textMessage('user', masked.text)],
         });
@@ -220,14 +230,20 @@ export function createInconsistencyDetector(
         log(
           `[inconsistency] judgement Haiku call failed for ${memorableKnowledgeNodeId} vs ${candidate.mk.id}: ${err instanceof Error ? err.message : String(err)}`,
         );
+        verdictLost = true;
         continue;
       }
       const text = collectText(response.content);
       const judgement = parseJudgement(text);
       if (!judgement) {
+        const why =
+          response.finishReason === 'max_tokens'
+            ? ` (cut off at max_tokens=${String(JUDGEMENT_MAX_TOKENS)})`
+            : '';
         log(
-          `[inconsistency] unparseable judgement for ${memorableKnowledgeNodeId} vs ${candidate.mk.id}: ${text.slice(0, 120)}`,
+          `[inconsistency] unparseable judgement${why} for ${memorableKnowledgeNodeId} vs ${candidate.mk.id}: ${text.slice(0, 120)}`,
         );
+        verdictLost = true;
         continue;
       }
       if (judgement.compatible !== 'no') continue;
@@ -261,13 +277,18 @@ export function createInconsistencyDetector(
       }
     }
 
-    // Slice 9.5 — bump the marker last. We only reach this point after a
-    // full pass over the candidate window completed (the embed-call /
-    // search-call early-returns above leave the marker untouched on
-    // purpose, so the bulk job retries on the next sweep). A judgement-
-    // call failure on a single candidate still counts as "checked" —
-    // we made our best effort against the rest, no point in re-running
-    // the whole top-k.
+    // Slice 9.5 — bump the marker last, and only after every candidate got a
+    // verdict. The embed-call / search-call early-returns above leave the
+    // marker untouched so the bulk job retries on the next sweep; #1861 — a
+    // lost verdict does the same, otherwise the pair would never be judged
+    // again (the bulk check only picks entries without the marker). Pairs
+    // already flagged are idempotent on re-run.
+    if (verdictLost) {
+      log(
+        `[inconsistency] ${memorableKnowledgeNodeId} left unchecked: at least one verdict was lost — the next sweep retries`,
+      );
+      return { candidatesScanned: filtered.length, inconsistenciesCreated: created };
+    }
     try {
       await deps.graph.markMemorableKnowledgeInconsistencyChecked(source.id);
     } catch (err) {

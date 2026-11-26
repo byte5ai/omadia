@@ -4017,6 +4017,8 @@ export interface BulkPromoteRunResult {
     promoted: number;
     alreadyPromoted: number;
     belowThreshold: number;
+    /** ADR-0190 — left alone on purpose (retired, no person owner, no excerpt). */
+    skipped?: number;
     failed: number;
   };
   durationMs: number;

@@ -24,6 +24,7 @@ import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { parseLlmJson } from '@omadia/plugin-api';
 
+import type { OpenJobPrivacy } from './jobPrivacy.js';
 import { TURN_PATH_REASONING } from './turnPathReasoning.js';
 import type {
   EntryType,
@@ -44,6 +45,13 @@ export interface HaikuPalaiaExcerptExtractorOptions {
   maxTokens?: number;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
+  /**
+   * ADR-0190 — set for callers that send STORED turns (bulk promotion): the
+   * request is masked through the job's privacy run and the reply restored
+   * before it is parsed. Absent for the live turn path, which already passes
+   * the turn's wire variants and restores the excerpt itself.
+   */
+  privacy?: OpenJobPrivacy;
 }
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
@@ -132,13 +140,22 @@ export function createHaikuPalaiaExcerptExtractor(
           ? `<user>\n${userBlock}\n</user>\n<assistant>\n${cleanedAnswer}\n</assistant>`
           : `<assistant>\n${cleanedAnswer}\n</assistant>`;
 
+      const run = opts.privacy?.('excerpt-extractor');
+      const masked = run
+        ? await run.mask(turnPayload)
+        : { send: true as const, text: turnPayload };
+      if (!masked.send) {
+        log(`[excerpt-extractor] privacy: ${masked.reason} — excerpt skipped`);
+        return undefined;
+      }
+
       let response: LlmResponse;
       try {
         response = await opts.llm.complete({
           model,
           maxTokens,
           system: SYSTEM_PROMPT,
-          messages: [textMessage('user', turnPayload)],
+          messages: [textMessage('user', masked.text)],
           ...TURN_PATH_REASONING,
         });
       } catch (err) {
@@ -148,7 +165,8 @@ export function createHaikuPalaiaExcerptExtractor(
         return undefined;
       }
 
-      const replyText = collectText(response.content);
+      const rawReply = collectText(response.content);
+      const replyText = rawReply && run ? await run.restore(rawReply) : rawReply;
       if (!replyText) {
         log('[excerpt-extractor] empty response from Haiku');
         return undefined;

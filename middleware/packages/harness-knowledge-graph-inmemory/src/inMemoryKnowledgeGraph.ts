@@ -108,6 +108,8 @@ import {
   type TurnIngest,
   type TurnIngestResult,
   type TurnSearchHit,
+  PROMOTION_RETIRED_PROP,
+  SYSTEM_AUDIT_ACTOR_UUID,
 } from '@omadia/plugin-api';
 
 /**
@@ -1296,6 +1298,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.aclAudit.set(entry.memoryExternalId, list);
   }
 
+  /** ADR-0190 — `keeper_missing` when the entry a resolution keeps is gone. */
+  private assertKeeperExists(mkExternalId: string): void {
+    const node = this.nodes.get(mkExternalId);
+    if (!node || node.type !== 'MemorableKnowledge') {
+      throw Object.assign(new Error('keeper_missing'), {
+        code: 'keeper_missing',
+      });
+    }
+  }
+
   private requireMkOrThrow(memorableKnowledgeNodeId: string): GraphNode {
     const node = this.nodes.get(memorableKnowledgeNodeId);
     if (!node || node.type !== 'MemorableKnowledge') {
@@ -1391,10 +1403,17 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // Audit BEFORE delete (matches Neon semantics).
     this.appendAclAudit({
       memoryExternalId: memorableKnowledgeNodeId,
-      actorOmadiaUserId: actor.actorOmadiaUserId,
-      ...(actor.actorChannelIdentityId
-        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
-        : {}),
+      ...(actor.systemActor
+        ? {
+            actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+            actorChannelIdentityId: actor.systemActor,
+          }
+        : {
+            actorOmadiaUserId: actor.actorOmadiaUserId,
+            ...(actor.actorChannelIdentityId
+              ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+              : {}),
+          }),
       action: 'delete',
       beforeOwners: owners,
       afterOwners: null,
@@ -1404,10 +1423,44 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // dropping the parent + its edges; otherwise the edge-purge loop
     // below would orphan the excerpt nodes themselves.
     const excerptIdsToDrop: string[] = [];
+    const now = new Date().toISOString();
     for (const edge of this.edges.values()) {
       if (edge.type === 'EXCERPT_OF' && edge.to === node.id) {
         excerptIdsToDrop.push(edge.from);
       }
+      // ADR-0190 — mark the source turns retired from promotion (see Neon).
+      if (edge.type === 'DERIVED_FROM' && edge.from === node.id) {
+        const turn = this.nodes.get(edge.to);
+        if (turn && turn.type === 'Turn') {
+          turn.props = {
+            ...turn.props,
+            [PROMOTION_RETIRED_PROP]: { at: now, reason: 'memory_deleted' },
+          };
+        }
+      }
+    }
+    // ADR-0190 (#1862) — close the open pairs that lose their subject.
+    const excerptIds = new Set(excerptIdsToDrop);
+    for (const pair of this.nodes.values()) {
+      if (pair.props['status'] !== 'open') continue;
+      const mkPair = pair.props['mk_pair'];
+      const exPair = pair.props['excerpt_pair'];
+      const hit =
+        ((pair.type === 'Inconsistency' || pair.type === 'MergeCandidate') &&
+          Array.isArray(mkPair) &&
+          mkPair.includes(memorableKnowledgeNodeId)) ||
+        (pair.type === 'ExcerptMergeCandidate' &&
+          Array.isArray(exPair) &&
+          exPair.some((id) => excerptIds.has(String(id))));
+      if (!hit) continue;
+      pair.props = {
+        ...pair.props,
+        status: 'dismissed',
+        resolved_at: now,
+        resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
+        closed_reason: 'memory_deleted',
+        closed_memory: memorableKnowledgeNodeId,
+      };
     }
     for (const exId of excerptIdsToDrop) this.nodes.delete(exId);
 
@@ -2103,6 +2156,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       });
     }
 
+    // ADR-0190 (#1862) — the kept side must still exist.
+    if (resolution === 'a_wins' || resolution === 'b_wins') {
+      this.assertKeeperExists(
+        existing.conflictsWith[resolution === 'a_wins' ? 0 : 1],
+      );
+    }
     if (resolution === 'a_wins') {
       await this.deleteMemory(existing.conflictsWith[1], actor);
     } else if (resolution === 'b_wins') {
@@ -2121,7 +2180,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'dismiss' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
     };
     return this.hydrateInconsistency(externalId)!;
   }
@@ -2325,6 +2384,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         code: 'already_resolved',
       });
     }
+    if (resolution === 'keep_a' || resolution === 'keep_b') {
+      this.assertKeeperExists(
+        existing.duplicateOf[resolution === 'keep_a' ? 0 : 1],
+      );
+    }
     if (resolution === 'keep_a') {
       await this.deleteMemory(existing.duplicateOf[1], actor);
     } else if (resolution === 'keep_b') {
@@ -2343,7 +2407,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
     };
     return this.hydrateMergeCandidate(externalId)!;
   }
@@ -2762,7 +2826,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
     };
     return this.hydrateExcerptMergeCandidate(externalId)!;
   }

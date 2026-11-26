@@ -184,6 +184,34 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — memorable knowledge lifecycle: deleted stays deleted, safe auto-merge (ADR-0190) (2026-11-26)
+
+- **Deleted, discarded and merged-away entries stay gone (#1819).** `deleteMemory` (both
+  graph backends) marks each source turn `promotionRetired`; live and bulk promotion skip
+  such turns (`reason=retired`). Bulk promotion now creates entries like live
+  auto-promotion: excerpt required when an extractor is installed (masked through the
+  stored-text privacy scope), `origin_agent` from the turn's qualified scope, member
+  owners kept.
+- **Public API turns no longer block bulk promotion (#1864).** Turns whose user is no
+  omadia user (`key:<keyId>`) are left out of the candidate list and the "eligible"
+  count; promotion skips them as `no-person-owner` instead of failing on the owner schema.
+  The result has a new `skipped` count (also on `/admin/bulk-promote`, en+de); final
+  skips retire the turn.
+- **Auto-merge only merges near-exact copies (#1835).** New manifest switch
+  `kg_auto_merge_enabled` (Agent Runtime Extras, default on; `KG_AUTO_MERGE_ENABLED`
+  only when unset). Pairs are flagged from cosine 0.90; the job resolves only cosine ≥
+  0.98 (`kg_auto_merge_threshold`) with the same numbers on both sides, and only retires
+  a machine-made copy — hand-saved and durable entries are never deleted. The audit row
+  names `system:auto-merge` with the cosine (plugin-api 1.99.0
+  `AclMutationOptions.systemActor`), `resolved_by` is null. `/admin/duplicates` intro
+  describes this (en+de).
+- **Pairs close with their entry (#1862).** Deleting an entry dismisses its open
+  contradiction and duplicate pairs (`closed_reason: memory_deleted`). Resolving a pair
+  in favour of a side that no longer exists answers 409 `*.keeper_missing` and deletes
+  nothing; the detail pages disable those buttons and say why.
+- **Contradiction verdicts are no longer lost (#1861).** Judge output cap 200 → 500
+  tokens; a failed or unparseable verdict leaves the entry unchecked so the next bulk
+  sweep retries.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

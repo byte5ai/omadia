@@ -113,6 +113,8 @@ import {
   type Visibility,
   type EmbeddingClient,
   normalizeDatasetUuid,
+  PROMOTION_RETIRED_PROP,
+  SYSTEM_AUDIT_ACTOR_UUID,
 } from '@omadia/plugin-api';
 import {
   GRAPH_EDGE_TYPES,
@@ -2847,6 +2849,21 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { uuid: hit.id, owners };
   }
 
+  /** ADR-0190 — `keeper_missing` when the entry a resolution keeps is gone. */
+  private async assertKeeperExists(mkExternalId: string): Promise<void> {
+    const row = await this.pool.query(
+      `SELECT 1 FROM graph_nodes
+        WHERE tenant_id = $1 AND external_id = $2 AND type = 'MemorableKnowledge'
+        LIMIT 1`,
+      [this.tenantId, mkExternalId],
+    );
+    if (row.rows.length === 0) {
+      throw Object.assign(new Error('keeper_missing'), {
+        code: 'keeper_missing',
+      });
+    }
+  }
+
   private assertActorIsOwner(
     owners: string[],
     actorOmadiaUserId: string,
@@ -2961,15 +2978,64 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // memory (even though there's no FK).
       await this.writeAclAudit(client, {
         memoryExternalId: memorableKnowledgeNodeId,
-        actorOmadiaUserId: actor.actorOmadiaUserId,
-        ...(actor.actorChannelIdentityId
-          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
-          : {}),
+        ...auditActorOf(actor),
         action: 'delete',
         beforeOwners: owners,
         afterOwners: null,
         ...(actor.reason ? { reason: actor.reason } : {}),
       });
+      // ADR-0190 — the source turns keep a mark, so auto and bulk promotion
+      // do not mint the deleted (discarded, merged-away) entry again from
+      // them. The DERIVED_FROM edges go with the node below.
+      await client.query(
+        `UPDATE graph_nodes
+            SET properties = properties || jsonb_build_object(
+                  '${PROMOTION_RETIRED_PROP}',
+                  jsonb_build_object('at', $3::text, 'reason', 'memory_deleted'))
+          WHERE tenant_id = $1
+            AND type = 'Turn'
+            AND id IN (
+              SELECT to_node FROM graph_edges
+               WHERE tenant_id = $1 AND from_node = $2 AND type = 'DERIVED_FROM'
+            )`,
+        [this.tenantId, uuid, new Date().toISOString()],
+      );
+      // ADR-0190 (#1862) — open contradictions and duplicate candidates that
+      // involve this entry, or one of its excerpts, lose their subject. Close
+      // them as dismissed with the reason, so the operator is not offered to
+      // delete the other side as the "loser" of a pair that no longer exists.
+      // A resolution that deletes this entry overwrites its own pair after.
+      await client.query(
+        `UPDATE graph_nodes
+            SET properties = properties || jsonb_build_object(
+                  'status', 'dismissed',
+                  'resolved_at', $3::text,
+                  'resolved_by', $4::text,
+                  'closed_reason', 'memory_deleted',
+                  'closed_memory', $5::text)
+          WHERE tenant_id = $1
+            AND properties->>'status' = 'open'
+            AND (
+              (type IN ('Inconsistency', 'MergeCandidate')
+                AND properties->'mk_pair' @> jsonb_build_array($5::text))
+              OR (type = 'ExcerptMergeCandidate'
+                AND EXISTS (
+                  SELECT 1 FROM graph_edges xe
+                    JOIN graph_nodes x ON x.id = xe.from_node
+                   WHERE xe.tenant_id = $1
+                     AND xe.to_node = $2
+                     AND xe.type = 'EXCERPT_OF'
+                     AND graph_nodes.properties->'excerpt_pair' @> jsonb_build_array(x.external_id)
+                ))
+            )`,
+        [
+          this.tenantId,
+          uuid,
+          new Date().toISOString(),
+          resolvedByOf(actor),
+          memorableKnowledgeNodeId,
+        ],
+      );
       // Slice 6.5 — cascade-delete the PalaiaExcerpt nodes attached
       // to this MK. The EXCERPT_OF edges are auto-cleaned by graph_edges
       // FK CASCADE on either side, but the Excerpt nodes themselves are
@@ -4041,6 +4107,15 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const terminalStatus: InconsistencyStatus =
       resolution === 'dismiss' ? 'dismissed' : 'resolved';
 
+    // ADR-0190 (#1862) — a resolution that keeps one side and deletes the
+    // other needs the kept side to exist; otherwise it would delete the last
+    // copy of the knowledge. Refused before anything is deleted.
+    if (resolution === 'a_wins' || resolution === 'b_wins') {
+      const keeper =
+        existing.conflictsWith[resolution === 'a_wins' ? 0 : 1];
+      await this.assertKeeperExists(keeper);
+    }
+
     // a_wins / b_wins: delete the loser BEFORE marking resolved so a
     // failed delete (not_an_owner) leaves the inconsistency open.
     if (resolution === 'a_wins') {
@@ -4057,7 +4132,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       status: terminalStatus,
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
       // Defensive: ensure mk_pair lands in the next-write even if the
       // existing record predates the schema field.
       mk_pair: existing.conflictsWith,
@@ -4350,6 +4425,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const terminalStatus: MergeCandidateStatus =
       resolution === 'not_duplicate' ? 'dismissed' : 'resolved';
 
+    // ADR-0190 (#1862) — never delete the other side when the keeper is gone.
+    if (resolution === 'keep_a' || resolution === 'keep_b') {
+      await this.assertKeeperExists(
+        existing.duplicateOf[resolution === 'keep_a' ? 0 : 1],
+      );
+    }
     if (resolution === 'keep_a') {
       await this.deleteMemory(existing.duplicateOf[1], actor);
     } else if (resolution === 'keep_b') {
@@ -4362,7 +4443,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       status: terminalStatus,
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
       mk_pair: existing.duplicateOf,
     };
     const validated = validateNodeProps('MergeCandidate', nextProps);
@@ -5972,6 +6053,37 @@ function audienceFilter(
   if (audience === undefined) return null;
   const members = canonicalOwners(audience);
   return members.length === 0 ? EMPTY_AUDIENCE : JSON.stringify(members);
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * ADR-0190 — who an audit row names: the kernel job (nil uuid + its
+ * `system:<job>` label) when `systemActor` is set, else the person.
+ */
+function auditActorOf(actor: AclMutationOptions): {
+  actorOmadiaUserId: string;
+  actorChannelIdentityId?: string;
+} {
+  if (actor.systemActor) {
+    return {
+      actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+      actorChannelIdentityId: actor.systemActor,
+    };
+  }
+  return {
+    actorOmadiaUserId: actor.actorOmadiaUserId,
+    ...(actor.actorChannelIdentityId
+      ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+      : {}),
+  };
+}
+
+/** ADR-0190 — `resolved_by` of a pair: the person's uuid, null for a job. */
+function resolvedByOf(actor: AclMutationOptions): string | null {
+  if (actor.systemActor) return null;
+  return UUID_RE.test(actor.actorOmadiaUserId) ? actor.actorOmadiaUserId : null;
 }
 
 function vectorLiteral(v: readonly number[]): string {

@@ -5,7 +5,9 @@
  * the configured threshold, materialises a MemorableKnowledge node with
  * `derivedFromTurnIds=[turnId]` + `aclOwners=[userId]`. Idempotent by
  * lookup against the DERIVED_FROM edge so a re-run on the same turn
- * does not produce duplicates.
+ * does not produce duplicates, and final by the turn's
+ * `promotionRetired` mark (ADR-0190): once an entry derived from the turn
+ * was deleted, discarded or merged away, the turn is not promoted again.
  *
  * Significance lives on `graph_nodes.significance` (column, not JSONB
  * property). Capture-filter writes it via NeonKnowledgeGraph.ingestTurn
@@ -26,11 +28,55 @@
  */
 
 import type { Pool } from 'pg';
+import { PROMOTION_RETIRED_PROP } from '@omadia/plugin-api';
 import type {
   KnowledgeGraph,
   MemorableKind,
   PalaiaExcerpt,
 } from '@omadia/plugin-api';
+
+/**
+ * ADR-0190 — memorable knowledge is owned by omadia users (uuid). A turn
+ * whose user is no person — a Public API turn runs as `key:<keyId>` — has
+ * nobody to own the entry; the graph schema refuses such an owner.
+ */
+const OMADIA_USER_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isOmadiaUserId(id: string): boolean {
+  return OMADIA_USER_ID_RE.test(id);
+}
+
+/** SQL predicate twin of {@link isOmadiaUserId} for a `user_id` column. */
+export const OMADIA_USER_ID_SQL =
+  "~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'";
+
+/** Why a turn was retired from promotion (ADR-0190). */
+export type PromotionRetiredReason =
+  | 'memory_deleted'
+  | 'no_person_owner'
+  | 'hygiene';
+
+/**
+ * ADR-0190 — keep a turn out of auto and bulk promotion for good. Written by
+ * the KG when an entry derived from the turn is deleted, discarded or merged
+ * away, and by bulk promotion for a turn that can never be promoted.
+ */
+export async function retireTurnFromPromotion(
+  pool: Pool,
+  tenantId: string,
+  turnId: string,
+  reason: PromotionRetiredReason,
+): Promise<void> {
+  await pool.query(
+    `UPDATE graph_nodes
+        SET properties = properties || jsonb_build_object(
+              '${PROMOTION_RETIRED_PROP}',
+              jsonb_build_object('at', $3::text, 'reason', $4::text))
+      WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'`,
+    [tenantId, turnId, new Date().toISOString(), reason],
+  );
+}
 
 export interface PromoteTurnInput {
   pool: Pool;
@@ -108,6 +154,10 @@ export interface PromoteTurnResult {
     | 'missing-turn'
     | 'tail-only'
     | 'no-excerpt'
+    /** ADR-0190 — an entry derived from the turn was deleted or merged away. */
+    | 'retired'
+    /** ADR-0190 — the turn's user or owners are no omadia users (Public API). */
+    | 'no-person-owner'
     | 'error';
   mkId?: string;
   significance: number | null;
@@ -133,14 +183,24 @@ export async function promoteTurnIfSignificant(
     log(`[promotion] skip turn=${input.turnId} reason=no-owners (member-scoped room not known)`);
     return { promoted: false, reason: 'no-owners', significance: null };
   }
+  // ADR-0190 (#1864) — only people own memorable knowledge. A Public API turn
+  // (`key:<keyId>`) or an owner list with such ids would fail the graph's
+  // schema on every attempt; skip it as what it is instead of an error.
+  const ownerIds = input.owners ?? [input.userId];
+  if (!ownerIds.every(isOmadiaUserId)) {
+    log(`[promotion] skip turn=${input.turnId} reason=no-person-owner`);
+    return { promoted: false, reason: 'no-person-owner', significance: null };
+  }
 
   try {
     const sigRow = await input.pool.query<{
       significance: number | null;
       tail_only: boolean;
+      retired: boolean;
     }>(
       `SELECT significance,
-              COALESCE((properties->>'tailOnly')::boolean, FALSE) AS tail_only
+              COALESCE((properties->>'tailOnly')::boolean, FALSE) AS tail_only,
+              properties ? '${PROMOTION_RETIRED_PROP}' AS retired
          FROM graph_nodes
        WHERE external_id = $1 AND tenant_id = $2 AND type = 'Turn'
        LIMIT 1`,
@@ -163,6 +223,14 @@ export async function promoteTurnIfSignificant(
     if (sigRow.rows[0]!.tail_only) {
       log(`[promotion] skip turn=${input.turnId} reason=tail-only`);
       return { promoted: false, reason: 'tail-only', significance };
+    }
+
+    // ADR-0190 (#1819) — an entry derived from this turn was deleted,
+    // discarded or merged away: the person's decision stands, the turn does
+    // not mint it again (a manual save stays possible).
+    if (sigRow.rows[0]!.retired) {
+      log(`[promotion] skip turn=${input.turnId} reason=retired`);
+      return { promoted: false, reason: 'retired', significance };
     }
 
     if (significance === null) {

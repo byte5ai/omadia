@@ -1633,7 +1633,25 @@ export interface AclMutationOptions {
   actorChannelIdentityId?: string;
   /** Optional rationale shown in the audit trail. */
   reason?: string;
+  /**
+   * ADR-0190 — the mutation is a kernel job's decision, not the person's
+   * (`system:<job>`, e.g. `system:auto-merge`). Audit only: authorisation
+   * still checks `actorOmadiaUserId`, but the audit row names the job (nil
+   * actor uuid, `actor_channel_identity_id` = this label) and a resolved
+   * pair carries `resolved_by: null` instead of the person's id.
+   */
+  systemActor?: string;
 }
+
+/** ADR-0190 — the actor uuid an audit row carries when a kernel job acted. */
+export const SYSTEM_AUDIT_ACTOR_UUID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * ADR-0190 — Turn property that keeps a turn out of auto and bulk promotion
+ * once a memorable knowledge entry derived from it was deleted, discarded or
+ * merged away, or the turn proved unpromotable. Value: `{ at, reason }`.
+ */
+export const PROMOTION_RETIRED_PROP = 'promotionRetired';
 
 /**
  * Danger-Zone bulk-purge selector for MemorableKnowledge. `tenantId` is
