@@ -3,11 +3,12 @@ import { afterEach, describe, it } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-// Both from the built entry point, like `dataActions.ts`: the capture is an
+// Both from the built entry point, like `mcpReadTool.ts`: the capture is an
 // AsyncLocalStorage, and two module graphs would hold two of them.
 import { McpManager, mcpNativeHandler, type McpServerConfig } from '@omadia/orchestrator';
 
 import { createDataActionRunner } from '../src/triggers/dataActions.js';
+import { mcpReadToolInvoker } from '../src/triggers/mcpReadTool.js';
 import { isSandboxListenDenied } from './_helpers/listenLoopback.js';
 
 /**
@@ -100,7 +101,11 @@ describe('MCP structuredContent in the data side channel (#547)', () => {
       transport: 'http',
       endpoint: peer.url,
     };
-    const invoke = mcpNativeHandler(manager, cfg, 'list_projects');
+    const handler = mcpNativeHandler(manager, cfg, 'list_projects');
+    let labelled = 0;
+    const invoke = mcpReadToolInvoker(handler, async () => {
+      labelled += 1;
+    });
     const runner = createDataActionRunner(() => new Map([['mcp__structured__list_projects', invoke]]));
 
     const result = await runner.run('agent', { tool: 'mcp__structured__list_projects', input: {} });
@@ -109,5 +114,13 @@ describe('MCP structuredContent in the data side channel (#547)', () => {
     if (!result.ok) return;
     assert.deepEqual(result.rows, ROWS);
     assert.deepEqual(result.columns, ['id', 'name']);
+    assert.equal(labelled, 1, 'the read labels the turn like any harness read');
+  });
+
+  it('control: the bare handler hands the runner prose it cannot read', async () => {
+    const handler = async (): Promise<string> => 'Found two projects: Alpha and Beta.';
+    const runner = createDataActionRunner(() => new Map([['t', handler]]));
+    const result = await runner.run('agent', { tool: 't', input: {} });
+    assert.equal(result.ok, false);
   });
 });

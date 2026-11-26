@@ -92,10 +92,11 @@ export function delegationBlockedMessage(serverName: string): string {
  */
 export function delegationBlockedUnattendedMessage(serverName: string): string {
   return (
-    `🔒 The MCP server "${serverName}" is set to per-user delegation, but this unattended run ` +
-    `(routine, trigger or workflow) has no user identity to act as. Nothing was sent to the server. ` +
-    `Re-create the routine from a signed-in chat so it runs as its owner, or have an operator switch ` +
-    `this server to a shared service identity in the MCP Control Center.`
+    `🔒 The MCP server "${serverName}" is set to per-user delegation, but this call (a routine, ` +
+    `trigger, workflow or API-key call) has no user identity to act as. Nothing was sent to the server. ` +
+    `A routine runs as its owner only when it was created from a signed-in chat: delete it and create ` +
+    `it again there. Otherwise have an operator switch this server to a shared service identity in ` +
+    `the MCP Control Center.`
   );
 }
 

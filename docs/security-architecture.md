@@ -771,12 +771,24 @@ This keeps the supply chain explicit:
   (`toolIdempotency.ts`, `ToolDispatchService`). A restart, a second instance
   or an expired or evicted record executes the write again, so the key is a
   retry-safety mitigation and does not make a write run at most once
-  (`src/mcp/README.md`, Idempotency). Without a key, the MCP client may retry
-  the call once after a transport failure. On the chat path a verifier
-  re-entry replays every external call the first run recorded and executes
-  none of them again (a sub-agent whose data the shield interned runs again,
-  with its own calls replayed, §7c); a turn without that replay ledger keeps
-  the same single retry, so an MCP write whose reply was lost can run twice.
+  (`src/mcp/README.md`, Idempotency). Without a key, the MCP client re-sends
+  a call whose answer was lost (timeout, dropped connection, HTTP 5xx) only
+  when its server declares the tool `readOnlyHint` or `idempotentHint`, or
+  when the server provably never ran it (failed connect, session 404); any
+  other such call returns "outcome unknown" (ADR-0205). On the chat path a
+  verifier re-entry replays every external call the first run recorded and
+  executes none of them again (a sub-agent whose data the shield interned runs
+  again, with its own calls replayed, §7c). A server that wrongly declares a
+  write tool idempotent can still get it twice.
+- MCP delegation (ADR-0206). A `per_user` OAuth-protected server receives no
+  request at all from a caller without a user identity (`blockedReason`); a
+  server without OAuth has no per-user credential and is called as before.
+  Routines record the creating turn's MCP identity (session OAuth key or
+  attested channel identity, never a client header) in `routines.mcp_user_key`
+  and act as their owner, also when an operator fires one by hand. Unattended
+  callers (workflows, routines, triggers) never start an OAuth flow and never
+  park an input request; they get a typed `auth_required` / `input_required`
+  failure.
   Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).

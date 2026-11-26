@@ -58,10 +58,16 @@ Chosen option: **A**.
   that carried an `Mcp-Session-Id` (MCP session management: the server does not know the
   session and the client MUST start a new one) are re-sent for every tool, also under an
   exactly-once idempotency scope.
+- **What counts as answerless.** A timeout, a dropped or reset connection, a
+  transient-looking JSON-RPC error (`-32000`/`-32001`), and an HTTP 5xx from the transport
+  (a proxy may answer 5xx after the upstream ran the call). Classified on the error itself,
+  never on the composed failure text, which carries server and tool names.
 - **Outcome unknown.** Every other answerless request returns
   `Error: outcome unknown — … Tell the user to check the result in the target system before
   trying again.` (`mcpOutcomeUnknownError`) and audits as `fail` with
-  `outcome_unknown: <reason>`. It never goes through the auth-prompt fallback.
+  `outcome_unknown: <reason>`. Only a token-less call may instead get the connect prompt, when
+  the auth provider has one (an OAuth server that refuses unauthenticated calls by dropping
+  the connection).
 - **One audit row per attempt.** An attempt that is followed by a re-send gets its own
   `fail` row that says it was sent again.
 - **End of life (replaces the ADR-0008 bullet for tool calls).** A failed tool call drops
@@ -89,8 +95,10 @@ Chosen option: **A**.
 - 🔴 **Bad:** A server that lies about `idempotentHint` gets its tool re-sent. The damage is
   bounded to that server's own tool and is the server's declaration.
 - 🔴 **Bad:** A hung stdio child is no longer killed by a call timeout; it stays pooled until
-  the transport closes, an operator invalidates it, or it idles out. Before, every timeout
-  restarted it — and with it every neighbour's in-flight call.
+  the transport closes or an operator invalidates the server. While callers keep using it,
+  it never idles out (every use refreshes the idle clock), so each call waits out its full
+  timeout. Before, every timeout restarted it — and with it every neighbour's in-flight
+  call. A drop after consecutive timeouts is left for a follow-up.
 - ⚪ **Neutral:** `MCP_CALL_MAX_ATTEMPTS` stays 2 and the attempts still share one budget
   (ADR-0079), so the timeout hierarchy is unchanged.
 

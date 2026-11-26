@@ -685,7 +685,8 @@ import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.
 import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
-import { turnContext } from '@omadia/orchestrator';
+import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
+import { mcpReadToolInvoker } from './triggers/mcpReadTool.js';
 import { ConsultationStore } from './consultation/consultationStore.js';
 import { createConsultationBroker } from './consultation/consultationBroker.js';
 import { DiscretionStore } from './discretion/discretionStore.js';
@@ -3389,16 +3390,24 @@ async function main(): Promise<void> {
                   await mcpOAuthService.markTokenRejected(server.id, userKey, token);
                 }
               },
-              // #1906 — checked before anything is sent: a `per_user`
-              // server with no caller identity gets no request at all, so
-              // "Nothing was sent to the server" is now true.
+              // #1906 / ADR-0206 — checked before anything is sent: a
+              // `per_user` OAuth server with no caller identity gets no
+              // request at all, so "Nothing was sent to the server" is true.
+              // Only OAuth servers: delegation decides whose OAuth token a
+              // call carries, and a server without OAuth (stdio, open, static
+              // vault headers) has no per-user credential to withhold —
+              // blocking it would break every identity-less caller (trigger,
+              // API key) of the many servers created with the default.
               blockedReason: async (cfg: McpServerConfig) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                 if (!server) return null;
                 const ctx = turnContext.current();
                 const userKey = resolveMcpUserKey(server, ctx?.mcpUserKey, mcpOAuthUserKey);
                 if (userKey !== null) return null;
-                return ctx?.mcpUnattended === true
+                if (!(await mcpOAuthService.isProtected(server))) return null;
+                const noHuman =
+                  ctx?.mcpUnattended === true || currentDispatchCaller()?.principalKind === 'api_key';
+                return noHuman
                   ? delegationBlockedUnattendedMessage(server.name)
                   : delegationBlockedMessage(server.name);
               },
@@ -5458,14 +5467,29 @@ async function main(): Promise<void> {
       ownChannelKey: (slug, channel) => getRegistry()?.channelIdentityFor(slug, channel)?.channelKey,
       dataPlanGuardOf: (slug) => getRegistry()?.get(slug)?.built.dataPlanGuard,
       // The agent's OWN read tools: granted plugin tools without write
-      // capabilities, never a sub-agent's inner tools (`via`), never MCP
-      // tools (they need a person's identity a trigger firing lacks).
+      // capabilities, and MCP tools their server declares read-only — never
+      // a sub-agent's inner tools (`via`).
       readToolsOf: (slug) => {
         const entry = getRegistry()?.get(slug);
         if (!entry) return undefined;
         const tools = new Map<string, (input: unknown) => Promise<string>>();
         for (const def of entry.built.bundle.raw.offeredToolDefinitions()) {
-          if (def.via !== undefined || def.invoke !== undefined) continue;
+          if (def.via !== undefined) continue;
+          if (def.invoke !== undefined) {
+            if (def.readOnly !== true) continue;
+            const invokeMcp = def.invoke;
+            // #547 — the rows are the call's `structuredContent`, not its
+            // text mirror (often prose). The fast-path invoker refuses a call
+            // without an attributable caller (a trigger firing), and an
+            // unattended or identity-less call is refused by the manager
+            // (ADR-0206), so the identity concern that kept MCP tools out of
+            // data actions is answered at the call.
+            tools.set(
+              def.name,
+              mcpReadToolInvoker(invokeMcp, () => entry.built.bundle.raw.labelHarnessRead(def.name)),
+            );
+            continue;
+          }
           const handler = nativeToolRegistry.get(def.name)?.handler;
           if (!handler) continue;
           // #2079 — what the read brought in labels the turn (S5 discretion):

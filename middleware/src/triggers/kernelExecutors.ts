@@ -41,6 +41,15 @@ import { conversationIdOf, deliveryAddressOf } from './recipientGrants.js';
 import type { Trigger } from './types.js';
 
 /** The agent answers this, alone, when nothing is worth telling. */
+
+/**
+ * ADR-0206 — a fresh, unattended turn scope for work of a trigger firing: no
+ * OAuth flow, no parked input, and never the identity of whatever turn happens
+ * to be open.
+ */
+function runUnattended<T>(work: () => Promise<T>): Promise<T> {
+  return turnContext.run({ turnId: '', turnDate: today(), mcpUnattended: true }, work);
+}
 export const NOTHING_TO_SAY = '[[nothing]]';
 
 export interface AgentChat {
@@ -206,7 +215,8 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
   };
   return {
     ...checks,
-    runDataAction: (trigger, action) => deps.dataActions.run(trigger.agentSlug, action),
+    // ADR-0206 — a firing's data action has no human either.
+    runDataAction: (trigger, action) => runUnattended(() => deps.dataActions.run(trigger.agentSlug, action)),
     async post(trigger, text) {
       const withheld = await refusedByDiscretion(trigger);
       if (withheld) return withheld;
@@ -250,7 +260,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       // MCP calls are unattended. A fresh scope, so a firing never inherits
       // the identity of whatever turn happens to be open.
       const unattended = (work: () => Promise<SemanticAnswer>): Promise<SemanticAnswer> =>
-        turnContext.run({ turnId: '', turnDate: today(), mcpUnattended: true }, work);
+        runUnattended(work);
       const chat = (): Promise<SemanticAnswer> =>
         discretion && room
           ? runWithSeededDiscretion(

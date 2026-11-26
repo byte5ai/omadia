@@ -73,6 +73,11 @@ async function startPeer(): Promise<Peer> {
           inputRequests: [{ name: 'customerNumber', required: true }],
         },
       });
+    } else if (tool === 'timeout_report') {
+      reply({ error: { code: -32602, message: 'invalid params' } });
+    } else if (tool === 'proxy_502') {
+      res.writeHead(502, { 'content-type': 'text/plain' });
+      res.end('bad gateway');
     } else if (tool === 'unauthorized') {
       reply({ error: { code: -32001, message: 'Unauthorized' } });
     } else {
@@ -210,6 +215,24 @@ describe('McpManager typed call outcomes (ADR-0206)', () => {
     assert.equal(result.status, 'input_required');
     assert.match(result.text, /^Error: .*needs input from a user/);
     assert.equal(store.size(), 0);
+  });
+
+  it('a JSON-RPC error of a tool whose name says "timeout" is the server\'s answer', async (t) => {
+    const p = await start(t);
+    if (!p) return;
+    manager = new McpManager();
+    const result = await manager.callToolResult(cfgFor(p.url), 'timeout_report', {});
+    assert.equal(result.status, 'failed');
+    assert.match(result.text, /invalid params/);
+  });
+
+  it('an HTTP 5xx after sending is an unknown outcome, not a plain failure (ADR-0205)', async (t) => {
+    const p = await start(t);
+    if (!p) return;
+    manager = new McpManager();
+    const result = await manager.callToolResult(cfgFor(p.url), 'proxy_502', {});
+    assert.equal(result.status, 'outcome_unknown');
+    assert.equal(p.toolCalls(), 1, 'not re-sent');
   });
 
   it('an attended input_required call is parked as before', async (t) => {

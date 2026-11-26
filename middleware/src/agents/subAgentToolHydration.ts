@@ -566,6 +566,8 @@ export function registerDbSubAgentTools(
               // skill-bound MCP call reaches a `per_user` server with no
               // identity, audits as `unresolved` and fails closed.
               ...(current.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
+              // ADR-0206 — an unattended run stays unattended here.
+              ...(current.mcpUnattended ? { mcpUnattended: true } : {}),
               // #2204/#2208 — the turn's graph read boundary (the box, by
               // reference) and viewer. An MCP call does not read the graph
               // today; carried so nothing inside this scope can fall into the

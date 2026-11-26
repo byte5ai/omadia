@@ -627,6 +627,10 @@ function looksTransient(text: string): boolean {
 
 const HTTP_NOT_FOUND = 404;
 
+/** The literal an auth provider records for a call with no identity to act
+ *  as (`UNRESOLVED_IDENTITY` in the kernel's `mcpDelegation.ts`). */
+const UNRESOLVED_ACTING_IDENTITY = 'unresolved';
+
 /**
  * #1945 — the server answered HTTP 404 to a request that carried an
  * `Mcp-Session-Id`: it no longer knows the session (restart, redeploy, another
@@ -648,8 +652,23 @@ function isSessionNotFound(err: unknown, session: McpSession): boolean {
  * "Request timed out" (-32001) as the same error class; those are not answers.
  */
 function isServerAnswer(err: unknown): boolean {
-  if (!(err instanceof McpError) && !(err instanceof ModernProtocolError)) return false;
-  return !looksTransient(err.message);
+  if (sentWithoutAnswer(err)) return false;
+  return err instanceof McpError || err instanceof ModernProtocolError;
+}
+
+const HTTP_SERVER_ERROR_MIN = 500;
+
+/**
+ * ADR-0205 — the request reached the server (or a proxy in front of it) and no
+ * answer of the server came back: a timeout, a dropped or reset connection, or
+ * an HTTP 5xx from a proxy, which may arrive after the upstream already ran
+ * the call. Read off the error itself, never off a composed failure string.
+ */
+function sentWithoutAnswer(err: unknown): boolean {
+  if (err instanceof ModernSdkHttpError && typeof err.status === 'number') {
+    return err.status >= HTTP_SERVER_ERROR_MIN;
+  }
+  return looksTransient(msg(err));
 }
 
 /** ADR-0206 — an unattended caller hit a server that wants authorization. */
@@ -1174,7 +1193,12 @@ export class McpManager {
         calledAt: new Date(),
         // W0-1: never left blank. An unattributable call is recorded AS
         // unattributable rather than silently omitted.
-        actingIdentity: actingIdentity ?? ctx?.mcpUserKey ?? caller.principal,
+        // #1921 — an API-key call that resolved no user is recorded as the key.
+        actingIdentity:
+          caller.principal !== null &&
+          (actingIdentity === null || actingIdentity === UNRESOLVED_ACTING_IDENTITY)
+            ? caller.principal
+            : (actingIdentity ?? ctx?.mcpUserKey ?? null),
       });
     } catch {
       /* the audit trail must never break a tool call */
@@ -1610,7 +1634,7 @@ export class McpManager {
         const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
         if (
           attempt < MCP_CALL_MAX_ATTEMPTS &&
-          looksTransient(failure) &&
+          looksTransient(msg(err)) &&
           token !== null &&
           remainingBudgetMs() !== null
         ) {
@@ -1735,7 +1759,9 @@ export class McpManager {
             status: 'failed',
           });
         }
-        if (!looksTransient(failure)) {
+        // Classified on the error's own message, never on `failure`, which
+        // also carries the server and tool names.
+        if (!sentWithoutAnswer(err)) {
           await this.noteTokenRejected(cfg, token, err);
           return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity, {
             unattended,
@@ -1754,6 +1780,22 @@ export class McpManager {
           );
           lastFailure = failure;
           continue;
+        }
+        // A token-less call to an OAuth server that refuses unauthenticated
+        // calls by dropping the connection: the connect prompt is the answer
+        // (never for an unattended caller, ADR-0206).
+        if (token === null && !unattended && this.options?.auth) {
+          let authMessage: string | null = null;
+          try {
+            authMessage = await this.options.auth.onAuthFailure(cfg);
+          } catch {
+            /* fall through to outcome unknown */
+          }
+          if (authMessage) {
+            this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
+            recordMcpAuthPrompt(authMessage);
+            return { text: authMessage, status: 'auth_required' };
+          }
         }
         const unknown = mcpOutcomeUnknownError(cfg.name, toolName, msg(err), resendSafe);
         this.emitCall(

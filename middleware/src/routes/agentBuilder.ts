@@ -67,6 +67,7 @@ import {
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import {
   auditIdentity,
+  delegationBlockedMessage,
   parseDelegation,
   resolveMcpUserKey,
 } from '../services/mcpDelegation.js';
@@ -408,6 +409,23 @@ export function createAgentBuilderRouter(
           : undefined;
         if (!server) return null;
         return auditIdentity(server, turnContext.current()?.mcpUserKey, options.mcpOAuthUserKey);
+      },
+      // #1906 — same rule as the runtime manager: a `per_user` OAuth server
+      // with no identity to act as gets no request from a test call either.
+      blockedReason: async (cfg: McpServerConfig): Promise<string | null> => {
+        if (!options.mcpOAuth) return null;
+        const graph = options.getGraphStore();
+        const server = graph
+          ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
+          : undefined;
+        if (!server) return null;
+        const userKey = resolveMcpUserKey(
+          server,
+          turnContext.current()?.mcpUserKey,
+          options.mcpOAuthUserKey,
+        );
+        if (userKey !== null) return null;
+        return (await options.mcpOAuth.isProtected(server)) ? delegationBlockedMessage(server.name) : null;
       },
       // Discover/test-call surface needs-auth via the route's describeAuth path,
       // so the manager itself doesn't need to synthesize a prompt here.

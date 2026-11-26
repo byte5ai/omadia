@@ -53,22 +53,34 @@ Chosen option: **A**.
   test call — read `status` and never the text. A delivered result is `ok` whatever its
   text says.
 - **Unattended mode.** `opts.unattended`, defaulting to `turnContext.mcpUnattended`, marks
-  a caller with no human: Conductor action steps pass it, routine runs and trigger firings
-  set it on the turn scope (the orchestrator carries it into its own turn scope like
-  `mcpUserKey`). In that mode an auth failure never reaches `onAuthFailure` (which begins
+  a caller with no human: Conductor action steps pass it, routine runs, trigger firings and
+  trigger data actions set it on a fresh turn scope. Every scope that is rebuilt rather than
+  spread carries it like `mcpUserKey` (orchestrator turn and stream scopes, plugin
+  `ctx.mcp`, skill-bound MCP tools, consultations). In that mode an auth failure never reaches `onAuthFailure` (which begins
   an OAuth flow) and returns a plain `auth_required` refusal; an `input_required` answer is
   not parked and returns an `input_required` refusal. A Conductor step fails on every
   status but `ok`.
 - **Blocked before sending.** The auth provider may answer `blockedReason(cfg)` before
-  anything is resolved or dialled. The runtime provider does so for a `per_user` server
-  with no caller identity; the manager then sends nothing and returns `blocked`. A failure
-  the server answered (an `isError` result, a JSON-RPC error) is no longer turned into an
-  auth prompt only because the call had no token.
+  anything is resolved or dialled. The runtime provider and the Builder router's provider
+  do so for a `per_user` server **that is OAuth-protected** (`McpOAuthService.isProtected`)
+  and has no caller identity; the manager then sends nothing and returns `blocked`.
+  Delegation decides whose OAuth token a call carries. A server without OAuth (stdio, open,
+  static vault headers) holds no per-user credential to withhold, and blocking it would
+  break every identity-less caller (trigger firings, API keys) of the many servers created
+  with the `per_user` default. That is a deliberate deviation from #1906's expectation and
+  reversible. A failure the server answered (an `isError` result, a JSON-RPC error) is no
+  longer turned into an auth prompt only because the call had no token.
 - **Routine identity.** A routine records the creating turn's `mcpUserKey` (the
   authenticated session's OAuth key, or the channel identity's IdP subject — never a
   client header) in `routines.mcp_user_key` (routines migration 0007) and runs as it. A
-  routine without one keeps failing closed on `per_user` servers, with a message that no
-  longer tells a signed-in owner to sign in.
+  routine without one keeps failing closed on `per_user` OAuth servers, with a message that
+  no longer tells a signed-in owner to sign in. The owner deletes it and creates it again
+  from a signed-in chat (a repeat create returns the existing routine).
+- **MCP tools as data actions.** A read tool its server declares `readOnlyHint` is now one
+  of the agent's own read tools for `deliver_data` (#547). Its rows are the call's
+  `structuredContent`, captured for that one call. The identity concern that kept MCP tools
+  out of data actions is answered at the call: the fast-path invoker needs an attributable
+  caller, and an identity-less or unattended call is refused as above.
 - **Audit caller.** `auditCaller` derives the audit row's caller in this order: an explicit
   skill/plugin override, the sub-agent named by `LocalSubAgent` (`mcpSubAgentName`), an
   API-key dispatch (`ToolDispatchCallerContext.principalKind = 'api_key'`, set by the public
@@ -85,7 +97,12 @@ Chosen option: **A**.
   `per_user` servers until it is re-created from a signed-in chat.
 - 🔴 **Bad:** The recorded identity is the one of the creating turn. If the owner later
   disconnects the server, the routine fails closed like any call without a token; if an
-  operator reassigns the routine, it still acts as the creator.
+  operator reassigns the routine, it still acts as the creator. An operator who fires a
+  routine by hand (`POST /routines/:id/trigger`) runs it with the owner's per-user token.
+- 🔴 **Bad:** `routines.user_id` may come from `resolveUserId` (which falls back to a
+  header), while `mcp_user_key` always comes from the session or an attested channel
+  identity. The two can name different people for a routine created through a client that
+  sends the header; the MCP identity is the trustworthy one.
 - ⚪ **Neutral:** The fast path's own turn id is still not visible to the audit; its rows now
   carry no turn instead of the placeholder.
 
