@@ -6934,7 +6934,10 @@
       "errorPrefix": "Fehler: {error}",
       "emptyAll": "Noch keine Memories. Erstelle eine via Chat oder POST /api/v1/memory.",
       "emptyKind": "Keine Memories vom Typ „{kind}“. Filter zurücksetzen oder andere Art wählen.",
-      "ownerCount": "{count, plural, one {# Owner} other {# Owner}}"
+      "ownerCount": "{count, plural, one {# Owner} other {# Owner}}",
+      "loadMore": "Mehr laden",
+      "loadingMore": "lädt weitere…",
+      "shownCount": "{count, plural, one {# Eintrag angezeigt} other {# Einträge angezeigt}} — es gibt weitere."
     },
     "detail": {
       "actions": {
@@ -6943,7 +6946,8 @@
         "shrink": "Owner entfernt",
         "delete": "gelöscht",
         "edit": "bearbeitet",
-        "editExcerpt": "Excerpt bearbeitet"
+        "editExcerpt": "Auszug bearbeitet",
+        "deleteExcerpt": "Auszug gelöscht"
       },
       "sources": {
         "llm": "LLM-extrahiert",

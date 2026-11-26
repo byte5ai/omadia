@@ -6934,7 +6934,10 @@
       "errorPrefix": "Error: {error}",
       "emptyAll": "No memories yet. Create one via chat or POST /api/v1/memory.",
       "emptyKind": "No memories of kind “{kind}”. Reset the filter or pick another kind.",
-      "ownerCount": "{count, plural, one {# owner} other {# owners}}"
+      "ownerCount": "{count, plural, one {# owner} other {# owners}}",
+      "loadMore": "Load more",
+      "loadingMore": "Loading more…",
+      "shownCount": "{count, plural, one {# entry shown} other {# entries shown}} — more are available."
     },
     "detail": {
       "actions": {
@@ -6943,7 +6946,8 @@
         "shrink": "owner removed",
         "delete": "deleted",
         "edit": "edited",
-        "editExcerpt": "excerpt edited"
+        "editExcerpt": "excerpt edited",
+        "deleteExcerpt": "excerpt deleted"
       },
       "sources": {
         "llm": "LLM-extracted",

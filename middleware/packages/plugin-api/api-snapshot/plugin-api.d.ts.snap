@@ -1682,6 +1682,7 @@ skippedDerivedFrom: number;
 export interface ListMemorableKnowledgeOptions {
 limit?: number;
 kind?: MemorableKind;
+offset?: number;
 }
 export type AclAction = 'create' | 'expand' | 'shrink' | 'delete' | 'edit' | 'edit_excerpt'
 | 'delete_excerpt';

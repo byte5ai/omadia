@@ -34,8 +34,8 @@ const KIND_BADGE: Record<MemorableKind, string> = {
 /**
  * Slice 3 polish — list of MemorableKnowledge nodes the session user
  * is INVOLVED in AND an ACL-owner of. Backend at /api/v1/memory enforces
- * the strict-ACL gate; this page just renders the result and adds a
- * kind-filter on top.
+ * the strict-ACL gate; this page renders the result page by page ("load
+ * more", #1853) and adds a kind-filter on top.
  *
  * The legacy /memory route (file-browser over the virtual-FS memories)
  * stays untouched — different concept, different data.
@@ -47,6 +47,9 @@ export default function MemoriesPage(): React.ReactElement {
   const [filter, setFilter] = useState<MemorableKind | 'all'>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // #1853: the list is paged; `nextCursor` names the next page, null = done.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -55,13 +58,36 @@ export default function MemoriesPage(): React.ReactElement {
       const opts = filter === 'all' ? {} : { kind: filter };
       const res = await listMemories(opts);
       setItems(res.items);
+      setNextCursor(res.nextCursor ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setItems([]);
+      setNextCursor(null);
     } finally {
       setLoading(false);
     }
   }, [filter]);
+
+  const loadMore = useCallback(async (): Promise<void> => {
+    if (nextCursor === null) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const res = await listMemories({
+        ...(filter === 'all' ? {} : { kind: filter }),
+        cursor: nextCursor,
+      });
+      setItems((prev) => {
+        const seen = new Set(prev.map((mk) => mk.id));
+        return [...prev, ...res.items.filter((mk) => !seen.has(mk.id))];
+      });
+      setNextCursor(res.nextCursor ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [filter, nextCursor]);
 
   useEffect(() => {
     queueMicrotask(() => void load());
@@ -184,6 +210,21 @@ export default function MemoriesPage(): React.ReactElement {
               </li>
             ))}
           </ul>
+        )}
+        {!loading && items.length > 0 && nextCursor !== null && (
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <span className="text-xs text-[color:var(--fg-muted)]">
+              {t('list.shownCount', { count: items.length })}
+            </span>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void loadMore()}
+              disabled={loadingMore}
+            >
+              {loadingMore ? t('list.loadingMore') : t('list.loadMore')}
+            </Button>
+          </div>
         )}
       </section>
     </main>

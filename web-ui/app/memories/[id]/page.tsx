@@ -48,6 +48,7 @@ const ACTION_BADGE: Record<MemorableAclAction, string> = {
   delete: 'bg-[color:var(--danger)]/20 text-[color:var(--danger)]',
   edit: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
   edit_excerpt: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
+  delete_excerpt: 'bg-[color:var(--danger)]/20 text-[color:var(--danger)]',
 };
 
 /** Stable translation-key suffixes per audit action (`memories.detail.actions.*`). */
@@ -58,6 +59,7 @@ const ACTION_KEYS: Record<MemorableAclAction, string> = {
   delete: 'delete',
   edit: 'edit',
   edit_excerpt: 'editExcerpt',
+  delete_excerpt: 'deleteExcerpt',
 };
 
 const SOURCE_BADGE: Record<ExcerptSource, string> = {

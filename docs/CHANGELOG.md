@@ -167,6 +167,14 @@ Contract: ADR-0230 (Proposed).
   migration wrote unasked (the built-in defaults) count as boot-written. ADR-0193 records
   the rule (`src/plugins/envSeededConfig.ts`); the variables are now in `.env.example` and
   handoff §10.
+- **#1853** `/memories` reaches every entry: `GET /api/v1/memory` takes an opaque `cursor`
+  and answers `nextCursor` (null on the last page; a full page is followed by a one-row
+  probe), backed by the new optional `ListMemorableKnowledgeOptions.offset`
+  (plugin-api 1.99.0, both providers, ties broken by id). The page shows how many entries
+  are loaded and a "Load more" button. The history labels `delete_excerpt` ("excerpt
+  deleted") with a badge. Owner checks on an existing entry of another user now answer 404
+  `memory.not_found` like an unknown id (`/:id/audit`, owners, PATCH, DELETE, excerpts)
+  instead of 403 `memory.not_an_owner` (ADR-0019 disclosure "none", ADR-0104).
 
 ### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
 

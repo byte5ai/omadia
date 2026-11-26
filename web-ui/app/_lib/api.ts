@@ -3795,11 +3795,15 @@ export interface MemorableKnowledgeNode {
 
 export interface ListMemoriesResponse {
   items: MemorableKnowledgeNode[];
+  /** Pass as `cursor` to read the next page; `null` on the last page
+   *  (#1853). Absent on older middleware builds. */
+  nextCursor?: string | null;
 }
 
 export interface ListMemoriesOptions {
   kind?: MemorableKind;
   limit?: number;
+  cursor?: string;
 }
 
 export async function listMemories(
@@ -3808,6 +3812,7 @@ export async function listMemories(
   const params = new URLSearchParams();
   if (opts.kind) params.set('kind', opts.kind);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.cursor !== undefined) params.set('cursor', opts.cursor);
   const qs = params.toString();
   return getJson<ListMemoriesResponse>(`/v1/memory${qs ? `?${qs}` : ''}`);
 }
@@ -3918,7 +3923,8 @@ export type MemorableAclAction =
   | 'shrink'
   | 'delete'
   | 'edit'
-  | 'edit_excerpt';
+  | 'edit_excerpt'
+  | 'delete_excerpt';
 
 export interface MemorableAclAuditEntry {
   id: string;

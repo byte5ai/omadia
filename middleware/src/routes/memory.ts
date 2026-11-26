@@ -96,7 +96,15 @@ const PatchMemorySchema = z
 const ListQuerySchema = z.object({
   kind: z.enum(MEMORABLE_KINDS).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
+  /** Opaque paging cursor from a previous response's `nextCursor` (#1853). */
+  cursor: z
+    .string()
+    .regex(/^\d{1,9}$/)
+    .optional(),
 });
+
+/** Page size when the caller sends no `limit`. */
+const DEFAULT_LIST_LIMIT = 50;
 
 const AuditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
@@ -117,8 +125,11 @@ function mapErrorToHttp(err: unknown): { status: number; code: string } {
     switch (code) {
       case 'memory_not_found':
         return { status: 404, code: 'memory.not_found' };
+      // #1853 (ADR-0019 disclosure 'none'): a non-owner gets the same 404
+      // as for an id that does not exist, so the answer never confirms that
+      // someone else's entry exists.
       case 'not_an_owner':
-        return { status: 403, code: 'memory.not_an_owner' };
+        return { status: 404, code: 'memory.not_found' };
       case 'cannot_remove_last_owner':
         return { status: 409, code: 'memory.cannot_remove_last_owner' };
       case 'empty_patch':
@@ -207,14 +218,30 @@ export function createMemoryRouter(deps: {
       return;
     }
     try {
-      const opts: { kind?: MemorableKind; limit?: number } = {};
-      if (parsed.data.kind) opts.kind = parsed.data.kind;
-      if (parsed.data.limit !== undefined) opts.limit = parsed.data.limit;
-      const nodes = await deps.graph.listMemorableKnowledgeFor(
-        sessionUserId,
-        opts,
-      );
-      res.json({ items: nodes });
+      // #1853: page with `cursor`. A full page is followed by a one-row
+      // probe so the last page does not offer an empty "load more".
+      const limit = parsed.data.limit ?? DEFAULT_LIST_LIMIT;
+      const offset =
+        parsed.data.cursor !== undefined ? Number(parsed.data.cursor) : 0;
+      const kindOpt = parsed.data.kind ? { kind: parsed.data.kind } : {};
+      const nodes = await deps.graph.listMemorableKnowledgeFor(sessionUserId, {
+        ...kindOpt,
+        limit,
+        offset,
+      });
+      const hasMore =
+        nodes.length === limit &&
+        (
+          await deps.graph.listMemorableKnowledgeFor(sessionUserId, {
+            ...kindOpt,
+            limit: 1,
+            offset: offset + limit,
+          })
+        ).length > 0;
+      res.json({
+        items: nodes,
+        nextCursor: hasMore ? String(offset + limit) : null,
+      });
     } catch (err) {
       const { status, code } = mapErrorToHttp(err);
       res.status(status).json({ code });
@@ -464,7 +491,8 @@ export function createMemoryRouter(deps: {
       // owned the MK at delete-time).
       const lastKnownOwners = latest.afterOwners ?? latest.beforeOwners;
       if (!lastKnownOwners.includes(sessionUserId)) {
-        res.status(403).json({ code: 'memory.not_an_owner' });
+        // #1853: same 404 as an unknown id (see mapErrorToHttp).
+        res.status(404).json({ code: 'memory.not_found' });
         return;
       }
       res.json({ items: entries });

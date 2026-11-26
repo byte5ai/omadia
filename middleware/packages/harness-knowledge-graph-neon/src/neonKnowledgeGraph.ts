@@ -2771,6 +2771,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     opts: ListMemorableKnowledgeOptions = {},
   ): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+    const offset = Math.max(0, Math.floor(opts.offset ?? 0));
     const userExtId = userNodeId(omadiaUserId);
     // INVOLVED edges go MK → User; "memory I'm involved in" = inbound.
     // Slice 3 — additionally gate by `acl_owners @> [omadiaUserId]`
@@ -2786,9 +2787,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
          AND user_node.type = 'User'
          AND mk.properties->'acl_owners' @> jsonb_build_array($3::text)
          AND ($4::text IS NULL OR mk.properties->>'kind' = $4)
-       ORDER BY mk.created_at DESC
-       LIMIT $5`,
-      [this.tenantId, userExtId, omadiaUserId, opts.kind ?? null, limit],
+       ORDER BY mk.created_at DESC, mk.id DESC
+       LIMIT $5 OFFSET $6`,
+      [this.tenantId, userExtId, omadiaUserId, opts.kind ?? null, limit, offset],
     );
     return rows.rows.map(rowToNode);
   }

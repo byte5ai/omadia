@@ -8,6 +8,17 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.99.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`ListMemorableKnowledgeOptions.offset`** (optional): skip that many
+  entries of the newest-first list, so `listMemorableKnowledgeFor` can page
+  past `limit` (#1853). Both bundled providers implement it and break ties on
+  equal `created_at` by id, so pages do not overlap.
+
 ## 1.98.0 — 2026-11-25
 
 Additive.
