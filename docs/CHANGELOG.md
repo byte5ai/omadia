@@ -48,11 +48,11 @@ changelog.
 - With a resolved person the purge also deletes their datasets, the processes they created
   and their `User` / `ChannelIdentity` nodes; channel turns are matched by `<kind>:<id>`
   (#1843). The account-delete dialog says memory and data stay and points to the purge.
-- **Migration** `harness-knowledge-graph-neon` **0037_process_created_by** — nullable
+- **Migration** `harness-knowledge-graph-neon` **0038_process_created_by** — nullable
   `processes.created_by_omadia_user_id` + partial index; `write_process` stamps the turn's
   omadia user id, the bounded `processMemory@1` sets it from the turn, never from the plugin.
 - `memory_purge_audit.deleted_detail` (jsonb, added by the audit store's idempotent DDL) keeps
-  all layer counts. plugin-api 1.99.0 also adds `MemorableKnowledgeCount` /
+  all layer counts. plugin-api 1.100.0 also adds `MemorableKnowledgeCount` /
   `MemorableKnowledgePurgeResult`, `findOmadiaUserIdByChannelIdentity?`,
   `count/purgeUserIdentity?`, `ProcessMemoryService.count/purgeByCreator?`,
   `WriteProcessInput.createdByOmadiaUserId` and `SYSTEM_ACTOR_OMADIA_USER_ID`.
@@ -67,7 +67,7 @@ changelog.
   removes the entry. `runDurableRulesSync` runs at boot and after a purge of axis `all`.
 - Owner-less memorable knowledge can be deleted one by one: `GET|DELETE
   /api/v1/admin/memory/ownerless[/:id]` (audited first, owned entries → 409) and the Danger
-  Zone section "Memories without an owner". plugin-api **1.99.0** adds the optional
+  Zone section "Memories without an owner". plugin-api **1.100.0** adds the optional
   `listOwnerlessMemorableKnowledge` / `deleteOwnerlessMemory`; `admin_audit` action
   `memory.ownerless_delete`.
 - Memory tool (#1832): error texts carry only model-facing `/memories/…` paths (the namespacer

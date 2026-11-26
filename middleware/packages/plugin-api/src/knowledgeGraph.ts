@@ -302,7 +302,7 @@ export interface KnowledgeGraph {
    * ADR-0185 (#1829, #1831) — MemorableKnowledge with an empty `acl_owners`:
    * entries the system created (scratch reaper, seeded rules). Nobody passes
    * the owner gate of {@link deleteMemory}, so an operator lists them here,
-   * newest first. Optional (1.99.0): a provider without it has no operator
+   * newest first. Optional (1.100.0): a provider without it has no operator
    * view of them.
    */
   listOwnerlessMemorableKnowledge?(
@@ -348,7 +348,7 @@ export interface KnowledgeGraph {
     filter: MemorableKnowledgePurgeFilter,
   ): Promise<MemorableKnowledgePurgeResult>;
   /**
-   * #1840 / #1843 (1.99.0) — the omadia user id (cluster root) a channel
+   * #1840 / #1843 (1.100.0) — the omadia user id (cluster root) a channel
    * identity belongs to, e.g. `('web', <users.id>)` for an account or
    * `('telegram', <telegram user id>)` for a channel-only user. `null` when
    * no such identity exists. Optional.
@@ -358,7 +358,7 @@ export interface KnowledgeGraph {
     channelUserId: string,
   ): Promise<string | null>;
   /**
-   * #1843 (1.99.0) — the person's identity nodes: the `User` cluster root
+   * #1843 (1.100.0) — the person's identity nodes: the `User` cluster root
    * and every `ChannelIdentity` linked to it (they carry display name and
    * e-mail). `count` 0 means no cluster with this id. Optional.
    */
@@ -1699,7 +1699,7 @@ export interface MemorableKnowledgePurgeFilter {
   originAgent?: string;
   /**
    * Restrict to MK whose `properties->'acl_owners'` contains this user id.
-   * #1842 (1.99.0): erases that OWNER, not every entry they share. An entry
+   * #1842 (1.100.0): erases that OWNER, not every entry they share. An entry
    * they own alone is deleted; an entry with other owners stays and only
    * loses them as owner (one `memory_acl_audit` `shrink` row each).
    */

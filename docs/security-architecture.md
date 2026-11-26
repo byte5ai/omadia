@@ -7229,7 +7229,7 @@ leave a record of who did it.
   other owners only loses the person (a `memory_acl_audit` `shrink` row with
   the operator as actor). With a resolved person the purge also deletes their
   datasets, the processes they created (`processes.created_by_omadia_user_id`,
-  migration 0037; processes stored before it have no creator and are not
+  migration 0038; processes stored before it have no creator and are not
   selected) and their `User` / `ChannelIdentity` nodes (name, e-mail) — last,
   so the earlier layers still resolve them. Preview and audit row carry the
   extra counts (`deleted_detail`).

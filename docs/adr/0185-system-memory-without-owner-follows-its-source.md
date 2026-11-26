@@ -48,7 +48,7 @@ reach.
   entry per file under `/memories/_rules/` (README excluded), and the entry of a file that is
   gone is deleted.
 - **Owner-less delete is its own primitive.** `KnowledgeGraph.listOwnerlessMemorableKnowledge?`
-  and `deleteOwnerlessMemory?` (plugin-api 1.99.0, optional, `kernel-only` on the bounded
+  and `deleteOwnerlessMemory?` (plugin-api 1.100.0, optional, `kernel-only` on the bounded
   service). The delete refuses an entry with an owner (`has_owners` → HTTP 409) and writes a
   `memory_acl_audit` `delete` row. A system delete (the sync) records the nil UUID
   `SYSTEM_ACTOR_OMADIA_USER_ID` as actor, since the column is a NOT NULL uuid.

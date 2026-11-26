@@ -9036,8 +9036,8 @@ Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security
 
 Achse `user` seit ADR-0186 (#1840/#1842/#1843): `resolveUserSelector` (`services/memoryPurgeUser.ts`)
 liest omadia-User-ID, Konto-ID (`web:<users.id>`) oder `<kanal>~<id>`; geteilte
-`MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.99.0),
-dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migration 0037) und
+`MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.100.0),
+dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migration 0038) und
 `User`/`ChannelIdentity`-Knoten. Response-Felder zusätzlich `kgDeownedCount|kgExcerptCount|
 datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
 `omadiaUserId`.
