@@ -4615,10 +4615,9 @@ export class Orchestrator {
       // recall legs are unchanged (tail + entity + hybrid-FTS); the
       // assembler adds per-agent block/boost (when the KG provider
       // publishes agentPriorities@1) + manual_authored × 1.3 + greedy
-      // fill against a configured token budget. agentId='orchestrator-default'
-      // for the main chat path; sub-agents that consume the retriever
-      // directly should pass their manifest identity.id so per-agent
-      // priorities apply.
+      // fill against a configured token budget. `agentId` is this
+      // orchestrator's agent (its slug, `default` on a legacy single-agent
+      // boot), so agent_priorities entries apply under that id (#1820).
       const result = await this.contextRetriever.assembleForBudget({
         userMessage: input.userMessage,
         ...(wireUserMessage !== undefined && wireUserMessage !== input.userMessage

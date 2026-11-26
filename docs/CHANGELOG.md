@@ -249,6 +249,15 @@ Contract: ADR-0230 (Proposed).
   orchestrator's trust rules state that a corrected entry is the user's latest word and
   outranks older turns, notes and insights with another value. A user edit does not set
   `manually_authored` (ADR-0190: that flag means operator-curated, durable tier).
+- **Knowledge-graph priorities take effect as offered (#1820).** `/admin/kg-priorities`
+  pre-filled the agent id `orchestrator-default`, which no agent runs under; it now offers
+  the installed agents (`GET /api/v1/operator/agents`, preselecting the instance's default
+  agent; free text only when the list is unavailable). The route accepted `turn:` and
+  `Session::` ids, but Session nodes are `session:<scope>` and recall matched only turn
+  ids: it now accepts `turn:` and `session:` (the `Session::` form is refused), and the
+  retriever applies a session entry to every turn of that session, a turn entry winning
+  over its session's. Existing `Session::` rows stay listed and can be removed; they never
+  applied.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

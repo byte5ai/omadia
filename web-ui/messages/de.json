@@ -6528,7 +6528,7 @@
   "adminKgPriorities": {
     "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",
     "agentIdLabel": "Agent-ID",
-    "agentIdPlaceholder": "de.byte5.agent.calendar oder orchestrator-default",
+    "agentIdPlaceholder": "Agent-Slug, z. B. default",
     "load": "Laden",
     "newEntryTitle": "Neuer Eintrag",
     "weightIgnoredTitle": "weight ignoriert für block",
@@ -6542,7 +6542,11 @@
     "colAction": "Aktion",
     "colWeight": "Gewicht",
     "colReason": "Grund",
-    "colUpdated": "Aktualisiert"
+    "colUpdated": "Aktualisiert",
+    "agentOption": "{name} ({slug})",
+    "agentIdHint": "Der Recall sucht Prioritäten unter dem Slug des Agenten, der im Chat antwortet.",
+    "entryPlaceholder": "turn:SCOPE:ZEIT oder session:SCOPE",
+    "entryHint": "Ein Turn-Eintrag gilt für diesen Turn; ein Session-Eintrag (session:SCOPE, wie im Graphen) gilt für jeden Turn dieser Session."
   },
   "adminDatasets": {
     "title": "Wissen · Datensätze",

@@ -8,7 +8,13 @@ interface AgentPrioritiesDeps {
   store: AgentPrioritiesStore;
 }
 
-const ENTRY_EXTERNAL_ID_RE = /^(turn:|Session::)/;
+/**
+ * #1820 — the entry kinds recall applies: a turn (`turn:<scope>:<time>`) or a
+ * whole session (`session:<scope>`, the graph's Session node id), which then
+ * applies to every turn of that session. The old `Session::` form matched no
+ * node and is refused.
+ */
+const ENTRY_EXTERNAL_ID_RE = /^(turn|session):\S/;
 
 const UpsertBodySchema = z.object({
   action: z.enum(['block', 'boost']),
@@ -29,8 +35,8 @@ const UpsertBodySchema = z.object({
  *   DELETE /:agentId/:entryId        — remove
  *
  * `entryId` is URL-encoded by the caller (entry external IDs contain
- * colons). Server validates the format matches `turn:*` or `Session::*`
- * to defend against accidental writes from malformed admin payloads.
+ * colons). Server validates the format matches `turn:*` or `session:*`
+ * (#1820) to defend against accidental writes from malformed admin payloads.
  */
 export function createAgentPrioritiesRouter(
   deps: AgentPrioritiesDeps,
@@ -64,7 +70,7 @@ export function createAgentPrioritiesRouter(
     if (!ENTRY_EXTERNAL_ID_RE.test(entryExternalId)) {
       res.status(400).json({
         error:
-          'invalid entry_external_id — expected `turn:<scope>:<time>` or `Session::<scope>`',
+          'invalid entry_external_id — expected `turn:<scope>:<time>` or `session:<scope>`',
       });
       return;
     }

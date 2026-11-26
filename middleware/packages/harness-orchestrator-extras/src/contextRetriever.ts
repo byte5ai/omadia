@@ -18,6 +18,7 @@ import {
   type TurnSearchHit,
   isEvidencedPlanStepDone,
   MEMORY_CORRECTED_AT_PROP,
+  sessionNodeId,
 } from '@omadia/plugin-api';
 
 import type {
@@ -828,7 +829,8 @@ export class ContextRetriever {
         excluded.push({ turnId: c.turnId, reason: 'audience-scope' });
         continue;
       }
-      const pri = prioritiesIndex.get(c.turnId);
+      // #1820 — a turn entry wins; a session entry applies to every turn of it.
+      const pri = prioritiesIndex.get(c.turnId) ?? prioritiesIndex.get(sessionNodeId(c.scope));
       if (pri?.action === 'block') {
         excluded.push({ turnId: c.turnId, reason: 'agent-blocked' });
         continue;

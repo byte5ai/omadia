@@ -11,8 +11,9 @@ import { Button } from '@/app/_components/ui/Button';
  *
  * Operator table for the per-agent block/boost list consumed by the
  * `ContextRetriever.assembleForBudget` assembler. Each row:
- *   - agent ID (e.g. de.byte5.agent.calendar)
- *   - entry_external_id (turn ID or session ID)
+ *   - agent ID — the slug of an installed agent (#1820: picked from the
+ *     operator agent list, preselecting the instance's default agent)
+ *   - entry_external_id (`turn:<scope>:<time>` or `session:<scope>`)
  *   - action (block | boost)
  *   - weight (for boost; default 1.3)
  *   - reason (optional)
@@ -35,12 +36,38 @@ type AgentPriorityRecord = {
 };
 
 const STAT_BASE = '/bot-api/v1/admin/kg-priorities';
-const DEFAULT_AGENT = 'orchestrator-default';
+const AGENTS_URL = '/bot-api/v1/operator/agents';
+/** #1820 — the agent id a legacy single-agent boot recalls under. */
+const LEGACY_AGENT_ID = 'default';
+
+/** One agent the picker offers: recall looks priorities up by its slug. */
+type AgentOption = { slug: string; name: string };
+
+type OperatorAgentsBody = {
+  agents?: Array<{ id: string; slug: string; name: string }>;
+  default_agent_id?: string | null;
+};
+
+/**
+ * #1820 — the installed agents and the one to preselect: the instance's
+ * default agent (who answers an unaddressed chat), else the first one. Empty
+ * when the list cannot be read; the page then falls back to free text.
+ */
+async function loadAgentOptions(): Promise<{ options: AgentOption[]; preselect: string | null }> {
+  const res = await fetch(AGENTS_URL, { cache: 'no-store' });
+  if (!res.ok) return { options: [], preselect: null };
+  const body = (await res.json()) as OperatorAgentsBody;
+  const agents = body.agents ?? [];
+  const options = agents.map((a) => ({ slug: a.slug, name: a.name }));
+  const preferred = agents.find((a) => a.id === body.default_agent_id) ?? agents[0];
+  return { options, preselect: preferred?.slug ?? null };
+}
 
 export default function KgPrioritiesPage(): React.ReactElement {
   const t = useTranslations('adminKgPriorities');
   const format = useFormatter();
-  const [agentId, setAgentId] = useState<string>(DEFAULT_AGENT);
+  const [agentId, setAgentId] = useState<string>('');
+  const [agentOptions, setAgentOptions] = useState<AgentOption[] | null>(null);
   const [records, setRecords] = useState<AgentPriorityRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -67,6 +94,20 @@ export default function KgPrioritiesPage(): React.ReactElement {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [agentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadAgentOptions()
+      .catch(() => ({ options: [], preselect: null }))
+      .then(({ options, preselect }) => {
+        if (cancelled) return;
+        setAgentOptions(options);
+        setAgentId((current) => (current !== '' ? current : (preselect ?? LEGACY_AGENT_ID)));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     // Fetch-on-mount: reload()'s only synchronous setState is setError(null),
@@ -159,17 +200,34 @@ export default function KgPrioritiesPage(): React.ReactElement {
           {t('agentIdLabel')}
         </label>
         <div className="mt-2 flex gap-3">
-          <input
-            type="text"
-            value={agentId}
-            onChange={(e) => { setAgentId(e.target.value); }}
-            placeholder={t('agentIdPlaceholder')}
-            className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
-          />
+          {agentOptions !== null && agentOptions.length > 0 ? (
+            <select
+              value={agentId}
+              onChange={(e) => { setAgentId(e.target.value); }}
+              aria-label={t('agentIdLabel')}
+              className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
+            >
+              {agentOptions.map((a) => (
+                <option key={a.slug} value={a.slug}>
+                  {t('agentOption', { name: a.name, slug: a.slug })}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={agentId}
+              onChange={(e) => { setAgentId(e.target.value); }}
+              placeholder={t('agentIdPlaceholder')}
+              aria-label={t('agentIdLabel')}
+              className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
+            />
+          )}
           <Button variant="secondary" onClick={() => { void reload(); }}>
             {t('load')}
           </Button>
         </div>
+        <p className="mt-2 text-xs text-[color:var(--fg-muted)]">{t('agentIdHint')}</p>
       </section>
 
       {error !== null ? (
@@ -187,7 +245,8 @@ export default function KgPrioritiesPage(): React.ReactElement {
             type="text"
             value={draftEntry}
             onChange={(e) => { setDraftEntry(e.target.value); }}
-            placeholder="turn:scope:2026-05-08T08:00:00.000Z"
+            placeholder={t('entryPlaceholder')}
+            aria-label={t('colEntryExternalId')}
             className="lg:col-span-5 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           />
           <select
@@ -236,6 +295,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
             {busy === 'upsert' ? '…' : 'Add'}
           </Button>
         </div>
+        <p className="mt-2 text-xs text-[color:var(--fg-muted)]">{t('entryHint')}</p>
       </section>
 
       <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 overflow-x-auto">

@@ -6528,7 +6528,7 @@
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
     "agentIdLabel": "Agent ID",
-    "agentIdPlaceholder": "de.byte5.agent.calendar or orchestrator-default",
+    "agentIdPlaceholder": "Agent slug, e.g. default",
     "load": "Load",
     "newEntryTitle": "New entry",
     "weightIgnoredTitle": "weight ignored for block",
@@ -6542,7 +6542,11 @@
     "colAction": "Action",
     "colWeight": "Weight",
     "colReason": "Reason",
-    "colUpdated": "Updated"
+    "colUpdated": "Updated",
+    "agentOption": "{name} ({slug})",
+    "agentIdHint": "Recall looks priorities up under the slug of the agent that answers the chat.",
+    "entryPlaceholder": "turn:SCOPE:TIME or session:SCOPE",
+    "entryHint": "A turn entry applies to that turn; a session entry (session:SCOPE, as in the graph) applies to every turn of that session."
   },
   "adminDatasets": {
     "title": "Knowledge · Datasets",
