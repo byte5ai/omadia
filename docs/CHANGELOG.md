@@ -36,6 +36,34 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP and Builder audit coverage (#1740, #1951) (2026-11-26)
+
+- MCP server administration, tool discovery, verdict acknowledgements, grants,
+  registries, OAuth and public bindings write operator audit rows. The audit
+  page offers a common MCP filter for these and existing MCP events.
+- Core migration `0115_mcp_oauth_flow_audit_actor` retains the signed-in
+  initiator until the OAuth flow is consumed. Callbacks that pass the
+  completer check and persist a token record that initiator (ADRs 0175, 0246).
+- Local ZIP uploads and Builder publishes record package version and source.
+  The owner's Builder history shows manual spec and slot edits and groups
+  consecutive saves from one editing burst (ADR-0245).
+
+### Fixed — routine and operator audit coverage (#1752, #1764) (2026-11-26)
+
+- Routine pause, resume, trigger, template changes and deletion identify the
+  routine owner separately from the acting operator. Deletes retain the name,
+  cron and channel. Template rows describe format and section types.
+- Agent, helper, working-mode, model, provider, binding and plugin setting
+  changes use the signed-in operator's audit identity. Plugin credentials,
+  arbitrary configuration values and agent instructions stay out of the trail.
+- Agent status transitions retain the existing `agent.disable` event in both
+  directions. The end-of-service action runs only when disabling.
+
+### Fixed — audit test and orb setup (#2185, #2186) (2026-11-26)
+
+- The role-holders PostgreSQL test runs the auth migrator and deletes only its own audit rows.
+- Orb dependency installation skips the unused ONNX Runtime CUDA download and keeps CPU support.
+
 ### Security — the last standalone grandfather row is gone (#838) (2026-11-26)
 
 - `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` is empty. Its last row,

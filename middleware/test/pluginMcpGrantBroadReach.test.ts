@@ -46,6 +46,7 @@ async function harness(holders: string[]): Promise<Harness> {
     listMcpServers: () => Promise.resolve([{ id: JIRA, name: 'jira', status: 'enabled', discoveredTools: [] }]),
     listToolGrantsForAgent: () => Promise.resolve([]),
     listPluginMcpGrantsForPlugins: () => Promise.resolve([]),
+    listGrantedServerIdsForPlugin: () => Promise.resolve([]),
     upsertPluginMcpGrant: (pluginId: string, serverId: string) => {
       writes.push(`${pluginId}->${serverId}`);
       return Promise.resolve();
@@ -115,13 +116,16 @@ describe('#2054 — a plugin MCP grant is checked for every agent holding the pl
     const ok = await put(h, { pluginId: ODOO, mcpServerId: JIRA, confirmBroadReach: true });
     assert.equal(ok.status, 200);
     assert.deepEqual(h.writes, [`${ODOO}->${JIRA}`]);
-    assert.deepEqual(h.audits.map((a) => [a.action, a.target]), [['agent.broad_reach_grant', 'agent:a-sales']]);
+    assert.deepEqual(h.audits.map((a) => [a.action, a.target]), [
+      ['mcp_server.plugin_grant_change', `mcp-server:${JIRA}`],
+      ['agent.broad_reach_grant', 'agent:a-sales'],
+    ]);
   });
 
   it('no agent holds the plugin: nothing to confirm', async () => {
     h = await harness([]);
     const ok = await put(h, { pluginId: ODOO, mcpServerId: JIRA });
     assert.equal(ok.status, 200);
-    assert.equal(h.audits.length, 0);
+    assert.deepEqual(h.audits.map((row) => row.action), ['mcp_server.plugin_grant_change']);
   });
 });
