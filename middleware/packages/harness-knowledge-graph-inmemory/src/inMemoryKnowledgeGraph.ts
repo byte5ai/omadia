@@ -1822,6 +1822,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     opts: MemorableKnowledgeSearchOptions,
   ): Promise<MemorableKnowledgeHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    // An empty audience is not an audience and matches nothing (plugin-api
+    // `ownersCoverAudience`); Neon returns [] before querying (#2224).
+    if (isEmptyAudience(opts.audienceOwners)) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const hits: MemorableKnowledgeHit[] = [];
@@ -1880,6 +1883,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     opts: ExcerptSearchOptions,
   ): Promise<PalaiaExcerptHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    if (isEmptyAudience(opts.audienceOwners)) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const hits: PalaiaExcerptHit[] = [];
@@ -3756,4 +3760,9 @@ function cosine(a: readonly number[], b: readonly number[]): number {
   }
   if (na === 0 || nb === 0) return Number.NaN;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** An audience that canonicalises to no owner matches nothing (mirrors Neon's `EMPTY_AUDIENCE`). */
+function isEmptyAudience(audience: readonly string[] | undefined): boolean {
+  return audience !== undefined && canonicalOwners(audience).length === 0;
 }

@@ -482,14 +482,6 @@ export interface Divergence {
 
 export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
   {
-    id: 'empty-audience-inmemory',
-    oracle: 'an empty audience matches nothing (PA ownersCoverAudience)',
-    code: 'InMemory MK/excerpt search with audienceOwners [] still admits operator-authored rows; Neon returns []',
-    confirmed:
-      'step 2, aclContract.test.ts (todo): 50 operator-authored memories and their excerpts come back for audienceOwners []; Neon returns none',
-  },
-
-  {
     id: 'excerpt-parent-recheck',
     oracle: 'an excerpt of a team-visible MK is visible to a non-owner when its parent is',
     code: 'excerpt-only hits re-read the parent with getMemorableKnowledge(id, viewer), which is owner-only',

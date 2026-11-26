@@ -19,12 +19,18 @@ import {
   type ChatParticipantsProvider,
 } from '@omadia/orchestrator';
 import {
+  EDIT_PROCESS_TOOL_NAME,
   QUERY_PROCESSES_TOOL_NAME,
   RUN_STORED_PROCESS_TOOL_NAME,
+  WRITE_PROCESS_TOOL_NAME,
+  createEditProcessHandler,
   createQueryProcessesHandler,
   createRunStoredProcessHandler,
+  createWriteProcessHandler,
+  editProcessToolSpec,
   queryProcessesToolSpec,
   runStoredProcessToolSpec,
+  writeProcessToolSpec,
 } from '@omadia/orchestrator/dist/tools/processMemoryTool.js';
 import { ContextRetriever } from '@omadia/orchestrator-extras';
 import type { EmbeddingClient, KnowledgeGraph, MemoryStore, ProcessMemoryService } from '@omadia/plugin-api';
@@ -92,6 +98,40 @@ export interface TurnSweep {
   readonly viewer: Viewer;
   readonly mode: Mode;
   readonly sightings: readonly Sighting[];
+  /** Neon only: what `edit_process` / `write_process` passed on to the store. */
+  readonly processWrites?: ProcessWriteLog;
+}
+
+/**
+ * #2223 — the write probe. Every turn tries to edit every process of its
+ * tenant and to write into another agent's scope and into an unqualified
+ * one. The store behind the two write tools is dry: it records what reached
+ * it and changes nothing, so the seeded world stays as it is for the next
+ * turn.
+ */
+export interface ProcessWriteLog {
+  /** Process ids `edit_process` passed to `service.edit`. */
+  readonly edited: string[];
+  /** Scopes `write_process` passed to `service.write`. */
+  readonly written: string[];
+}
+
+/** The unqualified scope the write probe asks for. */
+export const PROBE_WRITE_SCOPE = 'probe-write';
+
+function dryProcesses(raw: ProcessMemoryService, log: ProcessWriteLog): ProcessMemoryService {
+  return {
+    ...raw,
+    get: (id) => raw.get(id),
+    async edit(input) {
+      log.edited.push(input.id);
+      return { ok: false, reason: 'not-found' };
+    },
+    async write(input) {
+      log.written.push(input.scope);
+      return { ok: false, reason: 'invalid-title', message: 'dry run' };
+    },
+  };
 }
 
 const CANARY = /CANARY-[A-Z]+-\d{5}Z/gi;
@@ -144,9 +184,10 @@ const MEMORY_PROBES = [
   '/memories/contexts',
 ];
 
-function firstProbe(): ModelStep {
+function firstProbe(writeProbe: readonly { tool: string; input: unknown }[] = []): ModelStep {
   return {
     tools: [
+      ...writeProbe,
       ...MEMORY_PROBES.map((path) => ({ tool: 'memory', input: { command: 'view', path } })),
       { tool: 'query_knowledge_graph', input: { query: 'stats' } },
       { tool: 'query_knowledge_graph', input: { query: 'list_sessions', limit: 100 } },
@@ -574,6 +615,7 @@ function buildAgent(
   provider: LlmProvider,
   shielded: boolean,
   recall: RecallLimits = 'wide',
+  writeLog?: ProcessWriteLog,
 ) {
   const stores = seeded.stores[tenant];
   const graph = sweepGraph(stores.graph);
@@ -619,6 +661,17 @@ function buildAgent(
       handler: createRunStoredProcessHandler(stores.processes),
       spec: runStoredProcessToolSpec,
     });
+    if (writeLog) {
+      const dry = dryProcesses(stores.processes, writeLog);
+      nativeToolRegistry.register(EDIT_PROCESS_TOOL_NAME, {
+        handler: createEditProcessHandler(dry),
+        spec: editProcessToolSpec,
+      });
+      nativeToolRegistry.register(WRITE_PROCESS_TOOL_NAME, {
+        handler: createWriteProcessHandler(dry),
+        spec: writeProcessToolSpec,
+      });
+    }
   }
   built.orchestrator.registerDomainTool(
     probePlugin(graph, stores.memory, stores.processes) as unknown as Parameters<typeof built.orchestrator.registerDomainTool>[0],
@@ -633,10 +686,14 @@ export async function sweepTurn(
   mode: Mode,
   recall: RecallLimits = 'wide',
 ): Promise<TurnSweep> {
+  const writeLog: ProcessWriteLog | undefined = seeded.stores[viewer.tenant].processes
+    ? { edited: [], written: [] }
+    : undefined;
+  const writeProbe = writeLog ? processWriteProbe(seeded, viewer) : [];
   let round = 0;
   const model = scriptedModel((request) => {
     round += 1;
-    return round === 1 ? firstProbe() : followUps(request, round);
+    return round === 1 ? firstProbe(writeProbe) : followUps(request, round);
   });
   const { orchestrator } = buildAgent(
     seeded,
@@ -646,6 +703,7 @@ export async function sweepTurn(
     model.provider,
     viewer.shielded,
     recall,
+    writeLog,
   );
 
   const origin = originOf(viewer.context);
@@ -686,6 +744,9 @@ export async function sweepTurn(
   if (first) record('context', JSON.stringify({ system: first.system, messages: first.messages }));
   const last = model.requests.at(-1);
   for (const e of last ? exchanges(last) : []) {
+    // The write probe names the ids itself (they embed the title's slug); what
+    // it reaches is checked through `processWrites`, not by canaries.
+    if (e.tool === EDIT_PROCESS_TOOL_NAME || e.tool === WRITE_PROCESS_TOOL_NAME) continue;
     record(
       e.tool === 'memory'
         ? 'memory-tool'
@@ -702,7 +763,25 @@ export async function sweepTurn(
     );
   }
   record('client-stream', JSON.stringify(toClient));
-  return { viewer, mode, sightings };
+  return { viewer, mode, sightings, ...(writeLog ? { processWrites: writeLog } : {}) };
+}
+
+/** Edit every process of the viewer's tenant; write into another agent's scope and an unqualified one. */
+function processWriteProbe(seeded: Seeded, viewer: Viewer): { tool: string; input: unknown }[] {
+  const ids = seeded.world.byStore.process
+    .filter((p) => p.tenant === viewer.tenant)
+    .map((p) => seeded.location.get(p.canary))
+    .filter((id): id is string => id !== undefined);
+  const other = AGENT_KEYS.find((a) => a !== viewer.agent)!;
+  const write = (scope: string) => ({
+    tool: WRITE_PROCESS_TOOL_NAME,
+    input: { title: 'Probe: Schreibversuch', steps: ['a'], scope },
+  });
+  return [
+    ...ids.map((id) => ({ tool: EDIT_PROCESS_TOOL_NAME, input: { id, title: 'Probe: Geaendert' } })),
+    write(`${AGENTS[other]}::probe`),
+    write(PROBE_WRITE_SCOPE),
+  ];
 }
 
 /**

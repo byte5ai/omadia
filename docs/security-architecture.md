@@ -1083,7 +1083,13 @@ The surfaces that boundary must cover, and how each one does:
   only this agent's processes, and none in a context-bound `enforce-strict` /
   `members` turn, where recall skips processes too. A process the turn may not
   read answers like a missing one. With no boundary set (the public MCP
-  endpoint, jobs) they return no process (ADR-0044).
+  endpoint, jobs) they return no process (ADR-0044). The write tools follow
+  the same rule (#2223): `edit_process` changes only a process the turn may
+  read (anything else answers like a missing id), and `write_process` stores
+  only in this agent's scopes (an unqualified scope is qualified with the
+  agent; another agent's scope is refused) and nothing in a context-bound
+  turn or without a boundary, since processes carry no owners. The bounded
+  `processMemory@1` write applies the same rule (`processWriteScope`).
 - **Topics (#1851, ADR 0045):** a topic's name and description are written
   from its members' summaries, so a topic is content of every member.
   Re-cluster (`topicClustering.ts`) groups only memories with the same owner
@@ -1109,7 +1115,8 @@ by someone who does not own it, and never reaches a context-bound
 
 Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
-  `audienceOwners` and returns everything. The in-tree providers honour it.
+  `audienceOwners` and returns everything. The in-tree providers honour it;
+  both return nothing for an empty audience (in-memory since #2224).
 - Only turns that carry a `TurnOrigin` are context-bound.
 - #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
   lists and reads every tab.

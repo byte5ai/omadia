@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Security — process write tools bounded to the turn's agent (#2223, #2224) (2026-11-26)
+
+- `edit_process` loads the record first and changes only a process the turn may read
+  (`currentProcessReadFilter`): another agent's process, or any process in a context-bound
+  `enforce-strict` / `members` turn or outside a bounded turn, answers like a missing id.
+- `write_process` stores only in this agent's scopes (`processWriteScope`,
+  `@omadia/orchestrator`): an unqualified scope is qualified with the agent, another agent's
+  scope is refused, and nothing is written in a context-bound turn or without a boundary. The
+  bounded `processMemory@1` write for plugins applies the same rule.
+- `InMemoryKnowledgeGraph` returns no memorable knowledge and no excerpt for an empty
+  `audienceOwners`, like Neon (#2224); the `empty-audience-inmemory` divergence is gone.
+- The canary sweep (Neon) gained a write probe: every viewer edits every process of its tenant
+  and writes into another agent's scope through a dry store; only processes the oracle lets it
+  read and its own qualified scope may reach the store.
+
 ### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
 
 - `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the
