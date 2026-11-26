@@ -22,7 +22,8 @@ import {
   collectRequiredSlotIds,
   parseSlotResponse,
 } from './narrativeSlotContract.js';
-import type { RoutineOutputTemplate } from './routineOutputTemplate.js';
+import { isStaticOnlyTemplate, type RoutineOutputTemplate } from './routineOutputTemplate.js';
+import { NOTHING_TO_SAY } from '../../triggers/kernelExecutors.js';
 import { renderRoutineTemplate } from './routineTemplateRenderer.js';
 import { routineTurnContext } from './routineTurnContext.js';
 import type { RoutineAgentResolution } from './routineAgentBinding.js';
@@ -821,6 +822,10 @@ export class RoutineRunner {
       result = turn.result;
       cardBody = turn.cardBody;
       countsKnown = turn.published === undefined;
+      // #1761 — delivered, but the template could not show everything.
+      if (turn.warnings && turn.warnings.length > 0) {
+        errorMessage = `template: ${turn.warnings.join('; ')}`;
+      }
 
       if (signal.aborted) {
         // Agent finished after the timer fired (or the routine was paused or
@@ -830,6 +835,11 @@ export class RoutineRunner {
         errorMessage = status === 'timeout'
           ? 'agent finished after timeout, delivery skipped'
           : abortMessage(signal, 'run cancelled, delivery skipped');
+        return;
+      }
+      // #1760 — nothing worth telling: a successful run without a delivery.
+      if (turn.silent) {
+        status = 'silent';
         return;
       }
       // #1746 — the routine may have been paused or deleted on another
@@ -984,6 +994,14 @@ export class RoutineRunner {
       unattended: true,
       extraSystemHint: routineRunHint(routine, new Date()),
     });
+    if (routine.outputTemplate !== null && isStaticOnlyTemplate(routine.outputTemplate)) {
+      // #1760 — nothing for a model to do: deliver the text, skip the paid turn.
+      return this.composeTemplatedAnswer(routine, routine.outputTemplate, new Map(), {
+        answer: '',
+        toolCalls: 0,
+        iterations: 0,
+      });
+    }
     if (routine.outputTemplate === null) {
       // The scope is deliberate, and it must match the templated branch below.
       // `orchestrator.runTurn` reads `turnContext.current()` as its parent and
@@ -993,12 +1011,13 @@ export class RoutineRunner {
       // templated branch, which does open one, would behave differently for the
       // same routine. Same routine, same owner, two identities, decided by
       // whether an output template happens to be configured.
-      return routineTurnContext.outside(() =>
+      const plain = await routineTurnContext.outside(() =>
         turnContext.run(
           { turnId: '', turnDate: today(), abortSignal: signal },
           () => runAgentTurn(orchestrator, input(routine.prompt)),
         ),
       );
+      return isNothingToSay(plain.result.answer) ? { ...plain, silent: true } : plain;
     }
 
     const template = routine.outputTemplate;
@@ -1032,6 +1051,7 @@ export class RoutineRunner {
         ),
     ));
 
+    if (isNothingToSay(llmTurn.result.answer)) return { ...llmTurn, silent: true };
     const composed = this.composeTemplatedAnswer(
       routine,
       template,
@@ -1076,19 +1096,21 @@ export class RoutineRunner {
     template: RoutineOutputTemplate,
     rawToolResults: ReadonlyMap<string, unknown>,
     llmResult: ChatTurnResult,
-  ): {
-    readonly result: ChatTurnResult;
-    readonly cardBody?: readonly unknown[];
-  } {
-    const parsed = parseSlotResponse(llmResult.answer, template);
+  ): RoutineTurn {
+    const warnings: string[] = [];
+    const required = collectRequiredSlotIds(template);
+    const parsed = required.length > 0 ? parseSlotResponse(llmResult.answer, template) : undefined;
     let slots: Readonly<Record<string, string>>;
-    if (parsed.ok) {
-      slots = parsed.value.slots;
+    if (!parsed || parsed.ok) {
+      slots = parsed?.ok ? parsed.value.slots : emptySlotsFor(template);
     } else {
       this.log(
-        `[routines/runner] routine ${routine.id} ('${routine.name}') slot-parse failed: ${parsed.reason} — falling back to empty slots`,
+        `[routines/runner] routine ${routine.id} ('${routine.name}') slot-parse failed: ${parsed.reason} — keeping the slots it did write`,
       );
-      slots = emptySlotsFor(template);
+      // #1760 — like the preview: a slot the model did not write renders
+      // empty, the ones it wrote stay.
+      slots = { ...emptySlotsFor(template), ...salvageSlots(llmResult.answer) };
+      warnings.push(`the model's slot response was incomplete (${parsed.reason}); missing slots are empty`);
     }
     const rendered = renderRoutineTemplate({
       template,
@@ -1099,10 +1121,12 @@ export class RoutineRunner {
       this.log(
         `[routines/runner] routine ${routine.id} ('${routine.name}') template render failed: ${rendered.reason} — sending LLM answer verbatim`,
       );
-      return { result: llmResult };
+      return { result: llmResult, warnings: [`the template could not be rendered (${rendered.reason}); the model's answer was sent instead`] };
     }
+    warnings.push(...rendered.warnings);
+    const withWarnings = warnings.length > 0 ? { warnings } : {};
     if (rendered.format === 'markdown') {
-      return { result: { ...llmResult, answer: rendered.text } };
+      return { result: { ...llmResult, answer: rendered.text }, ...withWarnings };
     }
     // adaptive-card: produce a markdown fallback so non-card channels
     // still receive a readable `text` body, and side-channel the items
@@ -1119,6 +1143,7 @@ export class RoutineRunner {
     return {
       result: { ...llmResult, answer: fallbackText },
       cardBody: rendered.items,
+      ...withWarnings,
     };
   }
 }
@@ -1130,7 +1155,10 @@ export class RoutineRunner {
  */
 export function routineRunHint(routine: Pick<Routine, 'timezone'>, now: Date): string {
   const zone = routine.timezone ?? UTC_ZONE;
-  return `This is a scheduled run of a routine. Current time: ${formatInTimeZone(now, zone)}.`;
+  return (
+    `This is a scheduled run of a routine. Current time: ${formatInTimeZone(now, zone)}. ` +
+    `If the routine asks to report only under a condition and it is not met, answer exactly ${NOTHING_TO_SAY} and nothing is sent.`
+  );
 }
 
 /** What one routine turn produced. */
@@ -1142,6 +1170,33 @@ interface RoutineTurn {
    * only on that path, where the runner must not publish it again.
    */
   readonly published?: SemanticAnswer;
+  /** #1760 — the agent answered that nothing is worth telling: no delivery. */
+  readonly silent?: boolean;
+  /** #1761 — template problems recorded on the run (delivered anyway). */
+  readonly warnings?: readonly string[];
+}
+
+/** #1760 — the agent's "nothing worth telling" answer (ADR 0020 triggers). */
+function isNothingToSay(answer: string): boolean {
+  return answer.trim().startsWith(NOTHING_TO_SAY);
+}
+
+/** #1760 — the string slots a model wrote, from a response that failed the strict parse. */
+function salvageSlots(answer: string): Record<string, string> {
+  const start = answer.indexOf('{');
+  const end = answer.lastIndexOf('}');
+  if (start < 0 || end <= start) return {};
+  try {
+    const parsed = JSON.parse(answer.slice(start, end + 1)) as { slots?: unknown };
+    if (typeof parsed.slots !== 'object' || parsed.slots === null) return {};
+    return Object.fromEntries(
+      Object.entries(parsed.slots as Record<string, unknown>).filter(
+        (e): e is [string, string] => typeof e[1] === 'string',
+      ),
+    );
+  } catch {
+    return {};
+  }
 }
 
 /** The published answer with another text (its data-free variant dropped). */

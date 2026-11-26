@@ -78,11 +78,14 @@ export type PreviewRoutineTemplateResponse =
       ok: true;
       format: 'markdown';
       text: string;
+      /** #1761 — data sections whose source could not give rows. */
+      warnings: readonly string[];
     }
   | {
       ok: true;
       format: 'adaptive-card';
       items: readonly unknown[];
+      warnings: readonly string[];
     }
   | { ok: false; reason: string };
 
@@ -108,7 +111,7 @@ export interface RoutineRunSummaryDto {
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
-  status: 'ok' | 'error' | 'timeout' | 'cancelled';
+  status: 'ok' | 'error' | 'timeout' | 'cancelled' | 'silent';
   errorMessage: string | null;
   iterations: number | null;
   toolCalls: number | null;
@@ -502,8 +505,8 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       });
       const response: PreviewRoutineTemplateResponse = result.ok
         ? result.format === 'markdown'
-          ? { ok: true, format: 'markdown', text: result.text }
-          : { ok: true, format: 'adaptive-card', items: result.items }
+          ? { ok: true, format: 'markdown', text: result.text, warnings: result.warnings }
+          : { ok: true, format: 'adaptive-card', items: result.items, warnings: result.warnings }
         : { ok: false, reason: result.reason };
       res.json(response);
     },

@@ -275,7 +275,10 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
         const base = { costUsd: metered.costUsd, modelCalls: metered.value.modelCalls };
         // #1746 — a run its owner cancelled (pause, delete) is no failure:
         // it must not count towards the circuit breaker.
-        if (!row || !ran || row.lastRunStatus === 'cancelled') return { delivered: false, ...base };
+        // #1760 — a silent run (nothing worth telling) is a success without a delivery.
+        if (!row || !ran || row.lastRunStatus === 'cancelled' || row.lastRunStatus === 'silent') {
+          return { delivered: false, ...base };
+        }
         return row.lastRunStatus === 'ok'
           ? { delivered: true, ...base }
           : { delivered: false, ...base, error: row.lastRunError ?? `routine run ${row.lastRunStatus ?? 'failed'}` };

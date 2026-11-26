@@ -62,14 +62,22 @@ export interface RenderRoutineTemplateOptions {
    * carries explicit currency metadata; for v1 we keep it global.
    */
   readonly currency?: string;
+  /**
+   * #1761 — called once per data section whose source cannot give rows: the
+   * tool was not called, returned prose instead of JSON, or the path does not
+   * name a list. The section still renders its empty text; the caller records
+   * the problem (run history, editor warning) so it is not read as "no rows".
+   */
+  readonly onSourceProblem?: (problem: string) => void;
 }
 
 export type RenderRoutineTemplateResult =
-  | { readonly ok: true; readonly format: 'markdown'; readonly text: string }
+  | { readonly ok: true; readonly format: 'markdown'; readonly text: string; readonly warnings: readonly string[] }
   | {
       readonly ok: true;
       readonly format: 'adaptive-card';
       readonly items: readonly unknown[];
+      readonly warnings: readonly string[];
     }
   | { readonly ok: false; readonly reason: string };
 
@@ -79,19 +87,30 @@ export function renderRoutineTemplate(
   options: RenderRoutineTemplateOptions,
 ): RenderRoutineTemplateResult {
   const { template } = options;
+  // #1761 — one warning per problem, even when a source feeds two sections.
+  const warnings: string[] = [];
+  const withProblems: RenderRoutineTemplateOptions = {
+    ...options,
+    onSourceProblem: (problem) => {
+      if (!warnings.includes(problem)) warnings.push(problem);
+      options.onSourceProblem?.(problem);
+    },
+  };
   if (template.format === 'markdown') {
-    return { ok: true, format: 'markdown', text: renderMarkdown(options) };
+    return { ok: true, format: 'markdown', text: renderMarkdown(withProblems), warnings };
   }
   if (template.format === 'adaptive-card') {
     return {
       ok: true,
       format: 'adaptive-card',
-      items: renderAdaptiveCardItems(options),
+      items: renderAdaptiveCardItems(withProblems),
+      warnings,
     };
   }
+  // A stored template from before #1759 can still carry another format.
   return {
     ok: false,
-    reason: `format '${template.format}' is not yet supported`,
+    reason: `format '${String(template.format)}' is not supported`,
   };
 }
 
@@ -170,11 +189,7 @@ function adaptiveCardItemsForTable(
   section: RoutineDataTableSection,
   options: RenderRoutineTemplateOptions,
 ): unknown[] {
-  const rows = resolveRows(
-    section.sourceTool,
-    section.sourcePath,
-    options.rawToolResults,
-  );
+  const rows = resolveRows(section.sourceTool, section.sourcePath, options.rawToolResults, options.onSourceProblem);
   const title = resolveTitle(section.title, section.titleSlot, options.slots);
   const items: unknown[] = [];
   if (title !== undefined) items.push(titleBlock(title));
@@ -198,11 +213,7 @@ function adaptiveCardItemsForList(
   section: RoutineDataListSection,
   options: RenderRoutineTemplateOptions,
 ): unknown[] {
-  const rows = resolveRows(
-    section.sourceTool,
-    section.sourcePath,
-    options.rawToolResults,
-  );
+  const rows = resolveRows(section.sourceTool, section.sourcePath, options.rawToolResults, options.onSourceProblem);
   const title = resolveTitle(section.title, section.titleSlot, options.slots);
   const items: unknown[] = [];
   if (title !== undefined) items.push(titleBlock(title));
@@ -317,7 +328,7 @@ function renderDataTable(
   section: RoutineDataTableSection,
   options: RenderRoutineTemplateOptions,
 ): string {
-  const rows = resolveRows(section.sourceTool, section.sourcePath, options.rawToolResults);
+  const rows = resolveRows(section.sourceTool, section.sourcePath, options.rawToolResults, options.onSourceProblem);
   const title = resolveTitle(section.title, section.titleSlot, options.slots);
   if (rows.length === 0) {
     return composeTitled(title, renderEmpty(section.emptyText));
@@ -383,7 +394,7 @@ function renderDataList(
   section: RoutineDataListSection,
   options: RenderRoutineTemplateOptions,
 ): string {
-  const rows = resolveRows(section.sourceTool, section.sourcePath, options.rawToolResults);
+  const rows = resolveRows(section.sourceTool, section.sourcePath, options.rawToolResults, options.onSourceProblem);
   const title = resolveTitle(section.title, section.titleSlot, options.slots);
   if (rows.length === 0) {
     return composeTitled(title, renderEmpty(section.emptyText));
@@ -401,16 +412,30 @@ function resolveRows(
   sourceTool: string,
   sourcePath: string | undefined,
   rawToolResults: ReadonlyMap<string, unknown>,
+  onSourceProblem?: (problem: string) => void,
 ): ReadonlyArray<Record<string, unknown>> {
   const captured = rawToolResults.get(sourceTool);
-  if (captured === undefined) return [];
+  if (captured === undefined) {
+    onSourceProblem?.(`source tool '${sourceTool}' was not called in this run`);
+    return [];
+  }
   const parsed = coerceCapturedValue(captured);
-  if (parsed === undefined) return [];
+  if (parsed === undefined) {
+    onSourceProblem?.(`source tool '${sourceTool}' returned text, not JSON rows (a tool that answers in prose, like an agent's query tool, cannot feed a data section)`);
+    return [];
+  }
   const rooted =
     sourcePath !== undefined
       ? readSourcePath(parsed, sourcePath)
       : parsed;
-  if (!Array.isArray(rooted)) return [];
+  if (!Array.isArray(rooted)) {
+    onSourceProblem?.(
+      sourcePath !== undefined
+        ? `source tool '${sourceTool}': '${sourcePath}' is not a list`
+        : `source tool '${sourceTool}' did not return a list; set sourcePath to the list inside its result`,
+    );
+    return [];
+  }
   const rows: Array<Record<string, unknown>> = [];
   for (const r of rooted) {
     if (r !== null && typeof r === 'object' && !Array.isArray(r)) {

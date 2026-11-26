@@ -200,21 +200,31 @@ describe('PUT /v1/routines/:id/template', () => {
     assert.equal(body.code, 'routines.not_found');
   });
 
-  it('rejects format html with template_invalid (parser pre-empts renderer)', async () => {
+  // #1759 — html was saved and then ignored on every run; it is refused.
+  it('rejects format html with template_invalid on save', async () => {
     h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000005'));
     const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000005/template`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        template: { format: 'html', sections: [] },
+        template: { format: 'html', sections: [{ kind: 'static-markdown', text: 'hi' }] },
       }),
     });
-    // `parseRoutineOutputTemplate` accepts `html` structurally — the
-    // renderer rejects it later. So this should actually succeed; the
-    // operator gets the html-format save and only sees the rendering
-    // failure at preview/trigger time. Confirms the schema/renderer
-    // boundary is the right place to gate format support.
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'routines.template_invalid');
+    assert.match(body.message, /'html' is not supported/);
+  });
+
+  // #1760 — a template without sections renders nothing on every run.
+  it('rejects a template without sections', async () => {
+    h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000005'));
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000005/template`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ template: { format: 'markdown', sections: [] } }),
+    });
+    assert.equal(res.status, 400);
   });
 });
 
@@ -311,21 +321,34 @@ describe('POST /v1/routines/preview-template', () => {
     assert.equal(body.code, 'routines.template_missing');
   });
 
-  it('renderer-rejected format (html) returns ok:false in body, not HTTP 400', async () => {
+  it('html is refused at preview like at save (#1759)', async () => {
+    const res = await fetch(`${h.baseUrl}/v1/routines/preview-template`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ template: { format: 'html', sections: [{ kind: 'static-markdown', text: 'hi' }] } }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { code: string };
+    assert.equal(body.code, 'routines.template_invalid');
+  });
+
+  it('warns about a data section whose source tool returned prose (#1761)', async () => {
     const template: RoutineOutputTemplate = {
-      format: 'html',
-      sections: [],
+      format: 'markdown',
+      sections: [
+        { kind: 'data-list', sourceTool: 'query_hr', itemTemplate: '{{name}}', emptyText: 'none' },
+      ],
     };
     const res = await fetch(`${h.baseUrl}/v1/routines/preview-template`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ template }),
+      body: JSON.stringify({ template, rawToolResults: { query_hr: 'Anna and Ben are out today.' } }),
     });
-    // Schema accepts html; renderer rejects → 200 with ok:false.
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { ok: false; reason: string };
-    assert.equal(body.ok, false);
-    assert.match(body.reason, /'html' is not yet supported/);
+    const body = (await res.json()) as { ok: true; text: string; warnings: string[] };
+    assert.equal(body.text, 'none');
+    assert.equal(body.warnings.length, 1);
+    assert.match(body.warnings[0]!, /'query_hr' returned text, not JSON rows/);
   });
 
   it('does not touch the routine store (stateless preview)', async () => {

@@ -6,7 +6,7 @@ import {
 } from './routineOutputTemplate.js';
 
 export type RoutineStatus = 'active' | 'paused';
-export type RoutineRunStatus = 'ok' | 'error' | 'timeout' | 'cancelled';
+export type RoutineRunStatus = 'ok' | 'error' | 'timeout' | 'cancelled' | 'silent';
 
 export interface Routine {
   id: string;

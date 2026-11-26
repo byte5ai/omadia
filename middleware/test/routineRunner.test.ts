@@ -1813,3 +1813,56 @@ describe('#1770 / #1771 / #1772 — a routine turn is unattended and outside any
     assert.match(seen[0]!.input.extraSystemHint ?? '', /scheduled run of a routine\. Current time: \d{4}-\d\d-\d\d \d\d:\d\d \(Europe\/Berlin\)/);
   });
 });
+
+describe('#1759 / #1760 / #1761 — template run outcomes', () => {
+  it('a static-only template delivers its text without running a turn', async () => {
+    const stub = makeStubOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: stub.orchestrator, agentCallsRef: stub.calls, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: { format: 'markdown', sections: [{ kind: 'static-markdown', text: 'Stand-up in 5 Minuten.' }] },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(stub.calls.length, 0, 'no paid turn');
+    assert.equal(sender.calls[0]!.message.text, 'Stand-up in 5 Minuten.');
+    assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+
+  it('an answer of [[nothing]] ends the run silent, with nothing delivered', async () => {
+    const stub = makeStubOrchestrator({ answerText: '[[nothing]]' });
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: stub.orchestrator, agentCallsRef: stub.calls, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: { format: 'markdown', sections: [{ kind: 'narrative-slot', id: 'intro' }] },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts[0]!.status, 'silent');
+    assert.equal(h.runsStore.inserts[0]!.errorMessage, null);
+  });
+
+  it('records template problems on a delivered run and keeps the slots the model did write', async () => {
+    const stub = makeStubOrchestrator({ answerText: '{"slots":{"intro":"Hallo"}}' });
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: stub.orchestrator, agentCallsRef: stub.calls, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: {
+        format: 'markdown',
+        sections: [
+          { kind: 'narrative-slot', id: 'intro' },
+          { kind: 'narrative-slot', id: 'outro' },
+          { kind: 'data-list', sourceTool: 'query_hr', itemTemplate: '{{name}}', emptyText: 'none' },
+        ],
+      },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls[0]!.message.text, 'Hallo\n\nnone');
+    const run = h.runsStore.inserts[0]!;
+    assert.equal(run.status, 'ok');
+    assert.match(run.errorMessage ?? '', /^template: the model's slot response was incomplete \(missing required slot 'outro'\)/);
+    assert.match(run.errorMessage ?? '', /'query_hr' was not called/);
+  });
+});

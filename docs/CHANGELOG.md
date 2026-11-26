@@ -90,6 +90,16 @@ changelog.
   are not trusted facts). A routine turn runs outside any routines principal, so a smart-card
   "run now" inside a chat turn no longer offers `manage_routine` to the run, and the run is
   told the current time in its zone.
+- **Output templates** (#1759, #1760, #1761): `format: 'html'` and `sections: []` are refused
+  at save and preview (html was stored and then ignored on every run; a stored html template
+  is treated as no template). A static-only template delivers its text without a paid agent
+  turn. A run can stay silent: an answer of `[[nothing]]` (the trigger convention) ends it
+  with the new status `silent` (routines migration `0010_routine_runs_silent`), nothing is
+  delivered, and it does not count towards the breaker. A slot response with a missing slot
+  keeps the slots the model wrote (like the preview) instead of dropping all of them. Data
+  sections report a source that was not called, returned prose instead of JSON rows, or names
+  no list: the renderer returns `warnings`, the preview shows them, and a delivered run
+  records them as `template: …` in its error field.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
