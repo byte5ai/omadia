@@ -1959,6 +1959,26 @@ describe('review fixes — withheld answers and the pause reason', () => {
     await run;
     assert.equal(h.runsStore.inserts[0]!.status, 'cancelled');
     assert.match(h.store.rows.get(routine.id)!.lastRunError ?? '', /its agent 'SEO' was disabled/);
+
+
+describe('#1766 — an empty answer is checked before the AI disclosure is folded in', () => {
+  it('fails the run instead of delivering a disclosure line alone', async () => {
+    const orchestrator: OrchestratorLike = {
+      runTurn: () =>
+        Promise.resolve({
+          answer: '   ',
+          toolCalls: 0,
+          iterations: 1,
+          aiDisclosure: { text: 'KI-generiert', level: 'standard' },
+        } as unknown as ChatTurnResult),
+    };
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts[0]!.status, 'error');
+    assert.match(h.runsStore.inserts[0]!.errorMessage ?? '', /empty answer/);
   });
 });
 describe('RoutineRunner — MCP identity of a run (#1907, ADR-0206)', () => {

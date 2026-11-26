@@ -908,6 +908,11 @@ export class RoutineRunner {
         return;
       }
 
+      // #1766 — an empty answer is checked on the model's own text, before
+      // the AI disclosure is folded in: a disclosure line alone is not an answer.
+      if (!turn.published && result.answer.trim() === '' && !cardBody) {
+        throw new Error('routine produced an empty answer; nothing was delivered');
+      }
       const finished = result;
       const published = turn.published
         ? { value: turn.published, costUsd: 0 }

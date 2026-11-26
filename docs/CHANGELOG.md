@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routines: deliveries, cleanup and the routines page (W23, 2026-11-26)
+
+- **Deliveries in the web chat** (#1755, #1756, #1766, #1775): the next turn of a chat gets its
+  recent routine deliveries as a labelled block (which routine, when, what it wrote;
+  `routineDeliveryContext.ts`, `routes/chat.ts`), so a follow-up can quote and discuss them
+  instead of denying them. An empty run is detected on the model's own text before the AI
+  disclosure is folded in, so a disclosure line alone is never delivered. The run's Privacy
+  Shield receipt is stored on the delivery (`ChatMessage.privacyReceipt`, server-written
+  only; a client PUT cannot add or change it) and shown like a chat turn's. The routine badge
+  names the delivery time, and a visible chat re-reads its deliveries every minute.
+
 ### Fixed — routine runs: cancel, timeout, one run at a time, subscription CLI (W22, 2026-11-26)
 
 - **Run control** (#1746, #1747, #1748, `routineRunControl.ts`): pausing or deleting a routine

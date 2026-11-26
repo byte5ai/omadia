@@ -1,4 +1,4 @@
-import type { MemoryStore } from '@omadia/plugin-api';
+import type { MemoryStore, PrivacyReceipt } from '@omadia/plugin-api';
 
 import { withSessionLock } from './chatSessionLock.js';
 import { mergeServerProactiveMessages } from './chatSessionProactive.js';
@@ -74,6 +74,13 @@ export interface ChatMessage {
   /** #1896 — a deliberate NO_REPLY turn: empty content, the chat shows no
    *  bubble for it. */
   silent?: true;
+  /**
+   * #1775 — the Privacy Shield receipt of the turn that produced this
+   * message. Written by the server only for a routine delivery whose run
+   * wrote one (the web chat's own turns keep theirs client-side); rendered
+   * like a chat turn's receipt card.
+   */
+  privacyReceipt?: PrivacyReceipt;
 }
 
 export interface ChatProactiveMarker {
@@ -575,6 +582,8 @@ export class ChatSessionStore {
       routineName?: string;
       droppedAttachments?: number;
       droppedInteractive?: string;
+      /** #1775 — the run's Privacy Shield receipt, when the shield acted. */
+      privacyReceipt?: PrivacyReceipt;
     },
   ): Promise<'appended' | 'not_found'> {
     if (!ID_RE.test(id)) return 'not_found';
@@ -599,6 +608,7 @@ export class ChatSessionStore {
         startedAt: message.deliveredAt,
         finishedAt: message.deliveredAt,
         proactive,
+        ...(message.privacyReceipt !== undefined ? { privacyReceipt: message.privacyReceipt } : {}),
       };
       await this.save({
         ...existing,

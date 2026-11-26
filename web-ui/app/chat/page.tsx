@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
   type KeyboardEvent,
 } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
 import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
@@ -1554,9 +1554,15 @@ function ProactiveBadge({
   proactive: NonNullable<Message['proactive']>;
 }): React.ReactElement {
   const t = useTranslations('chat');
+  const format = useFormatter();
   const label = proactive.routineName
     ? t('proactiveRoutineBadge', { name: proactive.routineName })
     : t('proactiveBadge');
+  // #1755 — when the routine delivered it, in the reader's locale and zone.
+  const deliveredAt = format.dateTime(new Date(proactive.deliveredAt), {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
   // What the text-only web delivery had to drop, named from the marker in
   // the reader's language (the server stores counts, not prose).
   const attachments = proactive.droppedAttachments ?? 0;
@@ -1569,8 +1575,16 @@ function ProactiveBadge({
   }
   return (
     <div className="mb-2 flex flex-col items-start gap-1 text-[11px]">
-      <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
-        {label}
+      <span className="inline-flex items-center gap-2">
+        <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
+          {label}
+        </span>
+        <time
+          dateTime={new Date(proactive.deliveredAt).toISOString()}
+          className="text-[color:var(--fg-muted)]"
+        >
+          {t('proactiveDeliveredAt', { time: deliveredAt })}
+        </time>
       </span>
       {dropped.map((note) => (
         <span key={note} className="text-[color:var(--fg-muted)]">

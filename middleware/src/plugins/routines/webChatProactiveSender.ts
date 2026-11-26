@@ -168,6 +168,9 @@ export function createWebChatProactiveSender(
         ...(routine ? { routineId: routine.id, routineName: routine.name } : {}),
         ...(attachmentCount > 0 ? { droppedAttachments: attachmentCount } : {}),
         ...(message.interactive ? { droppedInteractive: message.interactive.kind } : {}),
+        // #1775 — the run's receipt, shown like a chat turn's (ADR 0093: only
+        // present when the shield acted).
+        ...(message.privacyReceipt ? { privacyReceipt: message.privacyReceipt } : {}),
       });
       // Deleted while the turn ran: gone for good, like the pre-flight case.
       if (outcome === 'not_found') throw goneError(sessionId);

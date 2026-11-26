@@ -1781,6 +1781,7 @@
     "composerSendHint": "↵ senden · ⇧↵ neue Zeile",
     "proactiveRoutineBadge": "Geplante Routine · {name}",
     "proactiveBadge": "Geplante Nachricht",
+    "proactiveDeliveredAt": "Zugestellt {time}",
     "proactiveDroppedAttachments": "{count, plural, one {# Anhang} other {# Anhänge}} dieser Routine-Ausgabe {count, plural, one {kann} other {können}} im Web-Chat nicht angezeigt werden.",
     "proactiveDroppedInteractive": "{kind, select, choice {Eine Auswahlkarte} slots {Eine Terminauswahl} topic {Eine Themen-Rückfrage} routine_list {Eine Routinenliste} mcp_input {Ein Eingabeformular} other {Ein interaktives Element}} dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.",
     "resetPartialNotice": "Nur in diesem Browser geleert — der Server war nicht erreichbar und kann diese Unterhaltung noch enthalten, zumindest ihre geplanten Routine-Nachrichten, die hier wieder auftauchen können. Starte den Chat später noch einmal neu, um ihn auch auf dem Server zu leeren.",
