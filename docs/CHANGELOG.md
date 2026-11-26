@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Security — plugins declare `odoo` / `confluence` themselves (ADR-0167) (2026-11-26)
+
+- Owner decision: the manifest loader no longer strips `odoo` and `confluence` from
+  `permissions.graph.entity_systems` (the OB-29-2 `RESERVED_SYSTEMS`). integration-odoo and
+  integration-confluence can now declare their system (integration-odoo#11,
+  integration-confluence#8). The kernel's node namespaces (`turn`, `session`, … and any value
+  with a colon) are still dropped at load and refused by the write guard; both use
+  `isKernelReservedSystem` (`middleware/src/platform/kernelNodeNamespaces.ts`).
+- ADR-0167 is Accepted. It names the trigger that ends the transition for undeclared writers
+  (#2244) and the residual that any plugin may declare `odoo` / `confluence`; the store does
+  not show the declaration before install yet (#2245).
+- The README note on ADR-0039 "Not swept yet" moved into a dated erratum in ADR-0039.
+
 ### Fixed — MCP OAuth: dead tokens are reported, disconnect revokes the grant (#1923, #1925) (2026-11-26)
 
 - A stored token row used to read as "authorized" for as long as it existed. Migration

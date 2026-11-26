@@ -726,9 +726,11 @@ patch_spec({ patches: [
 ]})
 ```
 
-Reservierte `system`-Strings ('odoo', 'confluence', etc.) sind
-**host-only** und werden im Manifest-Loader gestrippt — versuch nicht
-sie in die Whitelist zu schreiben. Wenn dein Plugin Personen-Entities
+Fremde `system`-Strings wie 'odoo' oder 'confluence' gehören den
+Integrations-Plugins, die diese Stammdaten synchronisieren — schreib sie
+nicht in die Whitelist eines neuen Plugins; der Operator sieht die
+Deklaration und lehnt sie ab. Kernel-Namespaces ('turn', 'session', …)
+streicht der Manifest-Loader ohnehin (ADR-0167). Wenn dein Plugin Personen-Entities
 braucht: schau erst `read_reference name=odoo-hr` ob es nicht schon
 einen Provider gibt; falls ja → `ctx.knowledgeGraph.searchTurns(...)`
 statt eigenen Ingest.

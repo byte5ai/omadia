@@ -101,3 +101,7 @@ Chosen option: **A**, in steps.
 
 - Related: [ADR-0035](0035-postgres-tests-are-found-by-name-and-held-by-a-floor.md),
   ADR-0016, ADR-0019, `docs/security-architecture.md` (known residuals).
+
+## Errata
+
+- 2026-11-26: "Not swept yet" no longer includes plugins that hold the graph services. Since [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md) (#2233) the canary sweep covers them through the entry point `plugin-service`, in all four modes, on both backends and in one run outside a turn; such a plugin gets the bounded form, not the raw service. Skill-bound tools are still not swept.

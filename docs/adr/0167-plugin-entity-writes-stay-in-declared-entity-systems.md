@@ -2,11 +2,13 @@
 
 ## Status
 
-Proposed
+Accepted
 
-- **Date:** 2026-11-25
+- **Date:** 2026-11-25; the end of the transition decided by the owner on 2026-11-26.
 - **Deciders:** Review follow-up of #2233 (owner task "Follow-ups aus dem Review von #2233"),
-  refines [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md).
+  refines [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md); landed in
+  #2242. The owner (Marcel) decided on 2026-11-26 to lift the reservation of `odoo` and
+  `confluence` (#2247).
 - **Number:** 0165 and 0166 are reserved by PR C of the ADR-deviation session (#2238).
 
 ## Context and Problem Statement
@@ -69,15 +71,21 @@ Chosen option: **A**.
   bounded service, held only to the kernel-namespace and `factId` checks above. The first
   write per plugin and process logs a `[security-audit]` warning that names the plugin
   and the method.
-- **How the transition ends is open.** The manifest loader strips the host-reserved
-  systems `odoo` and `confluence` from every plugin's `entity_systems` (OB-29-2,
-  `RESERVED_SYSTEMS` in `middleware/src/plugins/manifestLoader.ts`). The two plugins
-  that write those systems therefore cannot declare them: a declaration leaves an empty
-  list, so they stay undeclared writers and the transition never ends. Open question for
-  the owner: a kernel map from reserved system to owning plugin id
-  (`odoo → @omadia/integration-odoo`, `confluence → @omadia/integration-confluence`)
-  that grants exactly that plugin its system, after which undeclared means refused
-  (option B), recorded by a new ADR.
+- **`odoo` and `confluence` are declared, not reserved.** Until 2026-11-26 the manifest
+  loader stripped these two host-reserved systems from every plugin's `entity_systems`
+  (OB-29-2, `RESERVED_SYSTEMS`), so the plugins that write them could not declare them.
+  The reservation is lifted: integration-odoo declares `[odoo]`, integration-confluence
+  `[confluence]` (integration-odoo#11, integration-confluence#8). The loader still drops
+  the kernel namespaces and any value with a colon (`isKernelReservedSystem` in
+  `middleware/src/platform/kernelNodeNamespaces.ts`, shared with the write guard), so the
+  summary the operator sees is what the plugin can write. A kernel map from system to
+  owning plugin was the alternative; it was not chosen, because it would hard-code two
+  plugin ids in the kernel and need a kernel release for every new integration.
+- **How the transition ends.** It ends when both plugin releases that declare their
+  system are published on the Hub and installed on our instance, and the logs show no
+  undeclared-writer warning since. Then one kernel PR removes the undeclared pass from
+  `entityWriteGuard`: undeclared means no entity or fact writes (option B), recorded by a
+  new ADR that refines this one. #2244 tracks the trigger.
 - **Unchanged.** Modules holding the raw service (`GRAPH_BOUNDARY_IMPLEMENTERS`: fact
   extraction in orchestrator-extras, the providers) are not bound by this rule.
 
@@ -88,8 +96,11 @@ Chosen option: **A**.
 - 🟢 **Good:** The accessor and the service enforce one rule from one function.
 - 🔴 **Bad (residual):** Until the transition ends, a plugin that declares nothing can
   still write any system that is not a kernel namespace, `odoo` and `confluence`
-  included. The warning makes that visible in the logs. It does not prevent it. The end
-  of the transition is an open question (see above).
+  included. The warning makes that visible in the logs. It does not prevent it.
+- 🔴 **Bad (residual):** Any plugin may declare `odoo` or `confluence` and then write
+  Odoo or Confluence master-data nodes. Nothing ties a system to one plugin; the bound is
+  the operator, who must see the declaration before install. The store and install views
+  do not show `entity_systems` yet (#2245).
 - 🔴 **Bad (behaviour change):** A plugin whose facts mention entities of a system it
   does not declare, or whose `factId` is not a fact id, now gets an error from
   `ctx.knowledgeGraph.ingestFacts`. The contract had said such mentions were fine. No
@@ -98,9 +109,8 @@ Chosen option: **A**.
 - 🔴 **Bad (residual):** A fact's `sourceTurnId` is not checked. A plugin can link its own
   fact to any turn it knows the id of. That changes no entity's capturing turns, because
   the edge starts at the fact node, but the fact is shown wherever that turn is.
-- ⚪ **Neutral:** Follow-up: decide how a reserved system is granted to its owning plugin
-  (open question above). Until then integration-odoo#11 and integration-confluence#8
-  wait: declaring `odoo` / `confluence` in their manifests has no effect today.
+- ⚪ **Neutral:** Follow-ups: integration-odoo#11 and integration-confluence#8 (declare),
+  #2244 (end of the transition), #2245 (show the declaration before install).
 
 ## Pros and Cons of the Options
 
@@ -126,4 +136,6 @@ Chosen option: **A**.
 - [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md): the bounded services
   and `KG_METHOD_ACCESS`.
 - Tests: `middleware/test/boundedGraphServices.test.ts` (ADR-0167 cases),
-  `middleware/test/agent-reference-maximum/kgAccessor.test.ts`.
+  `middleware/test/agent-reference-maximum/kgAccessor.test.ts`,
+  `middleware/test/entitySystemsManifest.test.ts` (loader keeps `odoo` / `confluence`,
+  drops kernel namespaces).

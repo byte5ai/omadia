@@ -1986,15 +1986,17 @@ export class SubAgentBudgetExceededError extends Error {
  * Plugin-facing knowledge-graph accessor. Wraps the host's `knowledgeGraph`
  * service with namespace-validation on writes, and exposes a curated subset
  * of read methods. Plugins MUST declare their custom system namespaces in
- * `manifest.permissions.graph.entity_systems` to enable writes; the builtin
- * systems `'odoo'` and `'confluence'` are reserved for the host integrations
- * and rejected for plugin-side ingest even if listed.
+ * `manifest.permissions.graph.entity_systems` to enable writes. `'odoo'` and
+ * `'confluence'` are declared like any other system by the plugin that
+ * writes them; the kernel's node namespaces (`'turn'`, `'session'`, …) are
+ * never an entity system (ADR-0167).
  *
  * Why a wrapper?
  *   1. Auditable: ops can inspect every plugin's declared entity_systems
  *      without grepping plugin source.
  *   2. Defensive: a plugin bug that constructs `system: 'odoo'` (e.g. typo,
- *      copy-paste) cannot silently corrupt the Odoo namespace.
+ *      copy-paste) cannot silently corrupt the Odoo namespace unless the
+ *      plugin declared it.
  *   3. Symmetric: parallels `SubAgentAccessor` (whitelist + permission
  *      errors) and `MemoryAccessor` (scope-isolation).
  *

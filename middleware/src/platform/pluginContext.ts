@@ -1070,8 +1070,8 @@ export function createPluginContext(
   });
 
   // OB-29-2 — KnowledgeGraphAccessor: present iff the manifest declares
-  // permissions.graph.entity_systems with at least one (non-reserved)
-  // namespace AND a 'knowledgeGraph' provider is registered.
+  // permissions.graph.entity_systems with at least one namespace that is not
+  // a kernel node namespace (ADR-0167) AND a 'knowledgeGraph' provider is registered.
   const knowledgeGraph = createKnowledgeGraphAccessor({
     callerAgentId: agentId,
     entitySystems: extractEntitySystems(agentId, catalog),

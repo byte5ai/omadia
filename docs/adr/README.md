@@ -233,19 +233,8 @@ that date.
 | 0164 | [Plugin OAuth runs in a kernel broker driven by a declarative provider descriptor](0164-declarative-oauth-broker-for-plugins.md) | Accepted | 2026-11-25 |
 | 0165 | [The model gateway is an admission check in every adapter; the CLI path is refused under a privacy guard](0165-model-gateway-is-an-admission-check-per-adapter.md) | Accepted | 2026-11-25 |
 | 0166 | [Own database roles for archetype plugins are opt-in; `graphPool` for archetypes is deprecated](0166-archetype-plugin-database-roles-are-opt-in.md) | Accepted | 2026-11-25 |
-| 0167 | [A plugin's entity writes stay in its declared entity systems](0167-plugin-entity-writes-stay-in-declared-entity-systems.md) | Proposed | 2026-11-25 |
+| 0167 | [A plugin's entity writes stay in its declared entity systems](0167-plugin-entity-writes-stay-in-declared-entity-systems.md) | Accepted | 2026-11-25 |
 | 0168 | [MCP OAuth token lifecycle: invalidation marks and revoke-on-disconnect](0168-mcp-oauth-token-lifecycle-invalidation-marks-and-revoke-on-disconnect.md) | Accepted | 2026-11-26 |
-
-### Later notes on Accepted records
-
-Accepted records stay as written. These notes say where a later record changed
-what one of them describes.
-
-- **0039, "Not swept yet":** the canary sweep has covered plugins that hold the
-  graph services since [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md)
-  (#2233). The entry point is `plugin-service`, in all four modes and on both
-  backends, plus one run outside a turn. Such a plugin now gets the bounded form,
-  not the raw service. Skill-bound tools are still not swept.
 
 ### The agent model (0012–0022)
 

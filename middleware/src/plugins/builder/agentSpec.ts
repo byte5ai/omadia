@@ -237,8 +237,9 @@ const GraphPermissionSchema = z
   .object({
     /** Entity-system namespaces this plugin owns (e.g. 'audit-reports',
      *  'personal-notes'). The kernel rejects `ingestEntities` calls whose
-     *  `system` field is outside this list. Reserved names ('odoo',
-     *  'confluence', etc.) are stripped at manifest-load time. */
+     *  `system` field is outside this list. The kernel's node
+     *  namespaces ('turn', 'session', …) are stripped at manifest-load time
+     *  (ADR-0167). */
     entity_systems: z.array(z.string().min(1)).default([]),
     reads: z.array(z.string()).default([]),
     writes: z.array(z.string()).default([]),

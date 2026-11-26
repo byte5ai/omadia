@@ -29,6 +29,7 @@ import type {
   ToolSideEffect,
 } from '../api/admin-v1.js';
 import { PLUGIN_KINDS, TOOL_SIDE_EFFECTS } from '../api/admin-v1.js';
+import { isKernelReservedSystem } from '../platform/kernelNodeNamespaces.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
 import { readArchetypeManifest, type ArchetypeManifestDescriptor } from './archetypeManifest.js';
 import { readAgentTemplates, type AgentTemplate } from './agentTemplateManifest.js';
@@ -998,13 +999,13 @@ export function extractPermissions(
     typeof rawBudget === 'number' && Number.isFinite(rawBudget)
       ? Math.max(0, Math.floor(rawBudget))
       : 5;
-  // OB-29-2 — strip the host-reserved system namespaces. Plugin-side ingest
-  // for 'odoo'/'confluence' is rejected by the underlying schema anyway,
-  // but filtering here makes the audit-summary truthful (operator sees
-  // exactly what the plugin can write, not what the plugin asked for).
-  const RESERVED_SYSTEMS = new Set(['odoo', 'confluence']);
+  // ADR-0167 — a plugin declares every system it writes, `odoo` and
+  // `confluence` included (they were host-reserved and stripped here until
+  // ADR-0167). The kernel's own node namespaces stay reserved: dropped here,
+  // so the summary the operator sees is what the plugin can write, and
+  // refused again by the write guard.
   const entitySystems = extractStringArray(graph?.['entity_systems']).filter(
-    (s) => !RESERVED_SYSTEMS.has(s),
+    (s) => !isKernelReservedSystem(s),
   );
   // OB-29-3 — LLM permissions.
   const llm = asRecord(permissions?.['llm']);
