@@ -58,6 +58,30 @@ changelog.
 - Human deadlines and reminder intervals must be positive ISO-8601 durations. The builder describes strict approvals and shows validation warnings in chat and after publishing.
 - The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
 
+### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
+
+The auto-rebuild scheduler and the preview routes now share one build-and-warm
+path (`plugins/builder/previewWarmBuild.ts`) that emits every `build_status`
+exactly once. Failed events carry `buildN` and a stable code as `reason`, so
+AutoFix fires once per failed build instead of once per process, a failure
+while AutoFix is off no longer blocks a later trigger (#1731), and the second
+`failed` event that carried the user's e-mail and draft id over the TypeScript
+error list is gone (#1733). `building` is emitted only when a build starts, so
+a warm cache hit no longer leaves the status on "building" (#1807). A setup
+value read at activation without a test credential throws the coded
+`PreviewSetupValueMissingError` and stays `ok` with `missingSetupKey`: no failed
+build, no "Fix with Builder", Publish says "missing test credential" (#1809).
+Saving or clearing test credentials schedules a rebuild, and the status route
+reports a green last build on a cold cache as `ok` instead of `idle` (#1792);
+an activation failure after a green build is `activate_failed:<code>` on the
+wire (message only in the server log and `get_build_status`), and a result for
+a superseded build is dropped. The workspace registers a listener for every
+spec-bus event type it handles, from one list the type checker keeps complete,
+so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
+appear (#1730). The builder prompt names `get_build_status` /
+`runtime_smoke_status` as the only source for build and smoke state (#1806).
+Contract: ADR-0230 (Proposed).
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

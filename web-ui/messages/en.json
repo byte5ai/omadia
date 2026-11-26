@@ -3601,6 +3601,7 @@
       "buildStatusLabel": "Build status",
       "buildBusLive": "live",
       "buildBusReconnecting": "reconnecting",
+      "buildWaitingForCredential": "waiting for test credential {key}",
       "buildBusIdle": "idle",
       "buildSse": "SSE {status}",
       "buildErrorsHeading": "{count} TypeScript errors",
@@ -3790,7 +3791,8 @@
           "unknownTurn": "Unknown error during the preview turn",
           "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
           "llmAccessMissing": "The Plugin Builder needs LLM access (an API key or a connected subscription).",
-          "privacyShieldRequired": "Your organization requires the Privacy Shield. The preview chat runs without it, so it is turned off."
+          "privacyShieldRequired": "Your organization requires the Privacy Shield. The preview chat runs without it, so it is turned off.",
+          "testCredentialMissing": "The agent reads a setup value at startup that has no test credential yet. Enter it under “Credentials”, then the preview rebuilds on its own."
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the plugin correctly detects the missing service and throws. Install the plugin in your instance to test the real data path.",
         "agentStuck": {
