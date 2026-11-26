@@ -33,6 +33,7 @@ import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/ind
 import { parseSessionScope } from '../../packages/harness-channel-sdk/src/scopeId.js';
 import type { TurnOrigin } from '../../packages/harness-channel-sdk/src/turnOrigin.js';
 
+import { borrowPool } from '../../src/platform/borrowedPool.js';
 import { KG_METHOD_ACCESS } from '../../src/platform/boundedGraphServices.js';
 import { createPluginContext } from '../../src/platform/pluginContext.js';
 import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
@@ -747,3 +748,36 @@ export async function sweepPluginServicesOutsideTurn(seeded: Seeded): Promise<st
   const text = await probe.handle({ part: 'service' });
   return [...new Set((text.match(CANARY) ?? []).map((c) => c.toUpperCase()))];
 }
+
+/**
+ * ADR-0255 — a plugin holding the borrowed `graphPool` reads the kernel's
+ * graph and process tables. Every probe goes through the guarded pool a
+ * granted upload gets; returns every canary that came back. `control` runs
+ * the same probes on the raw pool, which must find them.
+ */
+export async function sweepPluginGraphPool(seeded: Seeded, control = false): Promise<string[]> {
+  const raw = seeded.pool;
+  if (!raw) throw new Error('graphPool probe: the backend has no pool');
+  const pool = control ? raw : borrowPool(raw, '@acme/granted-upload', { guardStatements: true });
+  const texts: string[] = [];
+  for (const sql of [
+    'SELECT properties::text AS t FROM graph_nodes',
+    'SELECT properties::text AS t FROM public.graph_nodes',
+    'SELECT properties::text AS t FROM "graph_nodes"',
+    'SELECT properties::text AS t FROM GRAPH_NODES',
+    'SELECT n.properties::text AS t FROM graph_edges e JOIN graph_nodes n ON n.id = e.from_node',
+    'WITH x AS (SELECT properties::text AS t FROM graph_nodes) SELECT t FROM x',
+    'SELECT row_to_json(p)::text AS t FROM processes p',
+    'SELECT row_to_json(h)::text AS t FROM process_history h',
+    "SELECT query_to_xml('select properties from graph_' || 'nodes', true, true, '')::text AS t",
+  ]) {
+    try {
+      const res = await pool.query<{ t: string }>(sql);
+      texts.push(...res.rows.map((r) => String(r.t)));
+    } catch (err) {
+      texts.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  return [...new Set((texts.join('\n').match(CANARY) ?? []).map((c) => c.toUpperCase()))];
+}
+

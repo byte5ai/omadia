@@ -15,6 +15,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { seedInMemory } from './backends.js';
 import {
+  sweepPluginGraphPool,
   sweepPluginServicesOutsideTurn,
   sweepRegisteredGraphTool,
   sweepTurn,
@@ -192,6 +193,15 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
       assert.deepEqual(unshared, []);
       assert.ok(got.length > 0, 'CONTROL: the shared trees are read');
     });
+    // ADR-0255 — a granted plugin's borrowed graphPool names no kernel table.
+    // Neon only: the in-memory backend has no pool.
+    if (backend === 'neon') {
+      it('graphPool: a granted plugin reads no kernel graph or process table', async (t) => {
+        if (!seeded?.pool) return t.skip('no test database');
+        assert.deepEqual(await sweepPluginGraphPool(seeded), []);
+        assert.ok((await sweepPluginGraphPool(seeded, true)).length > 0, 'CONTROL: the raw pool reads the canaries');
+      });
+    }
     for (const mode of modes) {
       // The kernel-native registration of the graph tool (subscription-CLI
       // path) knows no turn. Positive control: the in-turn graph tool above

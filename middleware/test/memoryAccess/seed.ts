@@ -110,6 +110,8 @@ export interface Seeded {
   readonly location: ReadonlyMap<string, string>;
   /** Items the stores could not take (process memory on the in-memory graph). */
   readonly skipped: readonly Item[];
+  /** The Postgres pool the Neon backend wrote through (ADR-0255 probe). */
+  readonly pool?: import('pg').Pool;
 }
 
 const TIME_BASE = Date.UTC(2026, 9, 1, 8, 0, 0);
