@@ -1,6 +1,6 @@
 import type { DraftStore } from './draftStore.js';
-import type { PreviewHandle } from './previewRuntime.js';
-import { invokeToolsOnHandle, type RuntimeSmokeResult } from './runtimeSmoke.js';
+import type { PreviewActivateOptions, PreviewHandle } from './previewRuntime.js';
+import { runRuntimeSmoke, type RuntimeSmokeResult } from './runtimeSmoke.js';
 import type { SpecBusEvent, SpecEventBus } from './specEventBus.js';
 import { parseAgentSpec } from './agentSpec.js';
 
@@ -30,14 +30,18 @@ export interface SmokeStatusSnapshot extends Omit<RuntimeSmokeEvent, 'type'> {
  * never await the smoke; the SSE consumer picks up the events as they
  * arrive.
  *
- * Reuses the just-activated PreviewHandle (the same one the chat
- * surface uses) — no separate sandbox, no double-extract, no
- * disk-collision with the preview-cache's dir layout.
+ * #1778 — the smoke activates its OWN instance of the build with stub
+ * setup values and `ctx.smokeMode === true` (`runRuntimeSmoke`), never the
+ * warm preview handle: that one holds the operator's test credentials, and
+ * a smoke on it ran every tool — writes included — against real systems
+ * after every build. Tools declared `side_effects: 'write'` are not called.
  */
 
 export interface RuntimeSmokeOrchestratorDeps {
   draftStore: DraftStore;
   bus: SpecEventBus;
+  /** Activates the smoke's own stub instance (`PreviewRuntime.activate`). */
+  activate: (opts: PreviewActivateOptions) => Promise<PreviewHandle>;
   /** Per-tool timeout, default 10s (mirrors invokeToolsOnHandle default). */
   toolTimeoutMs?: number;
   logger?: (...args: unknown[]) => void;
@@ -47,9 +51,18 @@ export interface RuntimeSmokeOrchestratorDeps {
   runAsJob?: <T>(startedBy: string, work: () => Promise<T>) => Promise<T>;
 }
 
+/** One fresh build to smoke: its number and its plugin ZIP. */
+export interface SmokeTarget {
+  readonly rev: number;
+  readonly zipBuffer: Buffer;
+  readonly userEmail: string;
+  readonly draftId: string;
+}
+
 export class RuntimeSmokeOrchestrator {
   private readonly draftStore: DraftStore;
   private readonly bus: SpecEventBus;
+  private readonly activate: RuntimeSmokeOrchestratorDeps['activate'];
   private readonly toolTimeoutMs: number | undefined;
   private readonly log: (...args: unknown[]) => void;
   private readonly runAsJob: NonNullable<RuntimeSmokeOrchestratorDeps['runAsJob']>;
@@ -65,41 +78,38 @@ export class RuntimeSmokeOrchestrator {
   constructor(deps: RuntimeSmokeOrchestratorDeps) {
     this.draftStore = deps.draftStore;
     this.bus = deps.bus;
+    this.activate = deps.activate;
     this.toolTimeoutMs = deps.toolTimeoutMs;
     this.log = deps.logger ?? (() => {});
     this.runAsJob = deps.runAsJob ?? ((_by, work) => work());
   }
 
   /**
-   * Fire-and-forget. Skips the smoke if `handle.rev` has already been
+   * Fire-and-forget. Skips the smoke if `rev` has already been
    * smoked for this draft. Otherwise emits `runtime_smoke_status:running`
    * synchronously (so the UI can flip its indicator immediately) and
    * runs the per-tool invocations on a detached promise that emits the
    * terminal event when done.
    */
-  attemptSmoke(opts: {
-    handle: PreviewHandle;
-    userEmail: string;
-    draftId: string;
-  }): void {
-    const { handle, userEmail, draftId } = opts;
+  attemptSmoke(opts: SmokeTarget): void {
+    const { rev, userEmail, draftId } = opts;
     const last = this.lastSmokedRev.get(draftId);
-    if (last !== undefined && last >= handle.rev) {
+    if (last !== undefined && last >= rev) {
       return;
     }
     // Reserve the rev BEFORE the async work so concurrent ensureWarm
     // returns don't race-fire two smoke runs for the same build.
-    this.lastSmokedRev.set(draftId, handle.rev);
+    this.lastSmokedRev.set(draftId, rev);
 
     this.emitSmoke(draftId, {
       type: 'runtime_smoke_status',
       phase: 'running',
-      buildN: handle.rev,
+      buildN: rev,
     });
 
     // The smoke runs the draft's tools, which may ask a model: one operator
     // job per smoke run, attributed to the draft's operator.
-    void this.runAsJob(userEmail, () => this.runDetached({ handle, userEmail, draftId })).catch(
+    void this.runAsJob(userEmail, () => this.runDetached(opts)).catch(
       (err: unknown) => {
         this.log('runtime smoke: operator job not started', draftId, err);
       },
@@ -125,12 +135,9 @@ export class RuntimeSmokeOrchestrator {
     this.lastStatus.set(draftId, { ...rest, smokedAt: new Date().toISOString() });
   }
 
-  private async runDetached(opts: {
-    handle: PreviewHandle;
-    userEmail: string;
-    draftId: string;
-  }): Promise<void> {
-    const { handle, userEmail, draftId } = opts;
+  private async runDetached(opts: SmokeTarget): Promise<void> {
+    const { userEmail, draftId } = opts;
+    const handle = { rev: opts.rev };
     let result: RuntimeSmokeResult;
     try {
       const draft = await this.draftStore.load(userEmail, draftId);
@@ -157,15 +164,17 @@ export class RuntimeSmokeOrchestrator {
         });
         return;
       }
-      result = await invokeToolsOnHandle({
-        handle,
+      result = await runRuntimeSmoke({
+        zipBuffer: opts.zipBuffer,
         spec,
+        draftId,
+        rev: opts.rev,
+        activate: this.activate,
         ...(this.toolTimeoutMs !== undefined ? { toolTimeoutMs: this.toolTimeoutMs } : {}),
       });
     } catch (err) {
-      // invokeToolsOnHandle itself shouldn't throw — but if the
-      // handle.toolkit access blows up (cached handle was closed by
-      // a concurrent invalidate), surface as activate_failed for UI.
+      // runRuntimeSmoke reports activation failures itself; anything that
+      // still throws is surfaced as activate_failed for the UI.
       this.emitSmoke(draftId, {
         type: 'runtime_smoke_status',
         phase: 'failed',
@@ -185,6 +194,7 @@ export class RuntimeSmokeOrchestrator {
       phase: result.ok ? 'ok' : 'failed',
       buildN: handle.rev,
       reason: result.reason,
+      ...(result.activateError !== undefined ? { activateError: result.activateError } : {}),
       results: result.results.map((r) => ({
         toolId: r.toolId,
         status: r.status,

@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder runtime smoke: a green result needs a handler that ran, on stub credentials (2026-11-26)
+
+The post-build runtime smoke activates its own instance of the fresh build with
+stub setup values (`'smoke-test'`) and `ctx.smokeMode === true` instead of the
+warm preview handle with the operator's test credentials, and never calls a
+tool the spec declares `side_effects: 'write'` (`skipped`; all skipped →
+`writes_skipped`) (#1778). A tool whose input schema rejects the synthetic input
+(`validation_failed`) now fails the smoke, because its handler never ran; an
+upstream 401/403 on the stub credentials stays a controlled exit
+(`auth_rejected`) (#1727, decision by recommendation, reversible). ADR-0232
+(Proposed) supersedes the smoke criterion of ADR-0056.
+
 ### Fixed — Builder codegen: playbook lists, escaped spec text, clean tsc errors, `requires:`, linted spec writes (2026-11-26)
 
 #1729: `manifest.yaml` now carries `playbook.not_for` and `playbook.example_prompts` exactly as in the spec, written through the YAML AST (the index-bound `NOT_FOR_CASE_1` / `EXAMPLE_PROMPT_1/2` placeholders are gone from both boilerplates); empty lists build, and a tool without `output` gets no `output_schema` instead of the search-result default. #1736: placeholder values are encoded for the file they land in (`codegenPlaceholders.ts`: JSON and YAML through their AST, TS/JS string-escaped, HTML-escaped), so a description with `"` or `\` no longer breaks `package.json` / `manifest.yaml`; a value that itself contains `{{…}}` is refused with the spec field named. #1739: `scripts/build-zip.mjs` (both boilerplates, identical) ends a failed step with one `✗ build-zip: …` line and exit 1 instead of throwing, and `parseTscErrors` no longer folds stack frames, `node:internal`, `throw new Error` or `file:///…` lines into the last tsc error. #1779: codegen writes `requires: ['<service>@^<major>']` for every `external_reads` service (`codegenRequires.ts`); the major comes from the provider's `provides:` (new `ServiceTypeRegistration.major`, filled at activation in `index.ts`), and a provider without one fails codegen with the field named, so preview and install judge the same declaration. #1795: `PATCH /api/v1/builder/drafts/:id/spec` runs the manifest linter like `patch_spec` and answers `422 builder.manifest_lint_failed` with the violations, nothing stored; `lint_spec` reports manifest-linter violations as `manifest.<kind>` errors.

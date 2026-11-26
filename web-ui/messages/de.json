@@ -3769,6 +3769,8 @@
           "running": "smoke #{buildN} läuft …",
           "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
           "okTools": "Smoke #{buildN} ✓ ({count} {count, plural, one {Tool} other {Tools}} ok)",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {das Tool schreibt} other {alle # Tools schreiben}}, darum hat der Smoke es nicht aufgerufen",
+          "writesSkippedSuffix": "{count, plural, one { · # schreibendes Tool nicht aufgerufen} other { · # schreibende Tools nicht aufgerufen}}",
           "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
           "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"

@@ -16,7 +16,11 @@
  * the change on both sides and bump the snapshot test on each.
  */
 
-import type { BuildErrorRow } from './builderTypes';
+import {
+  isSmokeToolFailure,
+  type BuildErrorRow,
+  type RuntimeSmokeToolStatus,
+} from './builderTypes';
 
 const MAX_ITEMS = 5;
 const CLOSER =
@@ -25,7 +29,7 @@ const CLOSER =
 
 export interface SmokeToolResult {
   toolId: string;
-  status: 'ok' | 'timeout' | 'threw' | 'validation_failed';
+  status: RuntimeSmokeToolStatus;
   durationMs: number;
   errorMessage?: string;
 }
@@ -95,7 +99,7 @@ function formatSmokeFailed(
   input: Extract<ComposeFixPromptInput, { kind: 'smoke_failed' }>,
 ): string {
   const all = input.smokeResults ?? [];
-  const failed = all.filter((r) => r.status !== 'ok');
+  const failed = all.filter((r) => isSmokeToolFailure(r.status));
   const header = buildHeader(
     input.buildN,
     `runtime smoke test caught ${String(failed.length)} failing tool(s)`,

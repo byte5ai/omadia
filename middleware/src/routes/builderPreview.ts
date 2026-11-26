@@ -778,10 +778,17 @@ async function ensureWarmHandle(opts: {
   draftId: string;
 }): ReturnType<PreviewCache['ensureWarm']> {
   const { deps, email, draftId } = opts;
-  const handle = await warmPreview(deps, { userEmail: email, draftId });
-  // B.9-3: kick off runtime-smoke after every fresh build. Dedup'd per
-  // (draftId, rev) inside the orchestrator — cached-handle returns no-op.
-  deps.runtimeSmokeOrchestrator?.attemptSmoke({ handle, userEmail: email, draftId });
+  const { handle, builtZip } = await warmPreview(deps, { userEmail: email, draftId });
+  // B.9-3: runtime smoke after every fresh build, on its own stub instance
+  // of the ZIP (#1778). A cache hit built nothing and smokes nothing.
+  if (builtZip) {
+    deps.runtimeSmokeOrchestrator?.attemptSmoke({
+      rev: handle.rev,
+      zipBuffer: builtZip,
+      userEmail: email,
+      draftId,
+    });
+  }
   return handle;
 }
 

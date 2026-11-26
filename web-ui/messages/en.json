@@ -3769,6 +3769,8 @@
           "running": "smoke #{buildN} running …",
           "okNoTools": "smoke #{buildN} ✓ (no tools declared)",
           "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {the tool writes} other {all # tools write}}, so the smoke did not call it",
+          "writesSkippedSuffix": "{count, plural, one { · # write tool not called} other { · # write tools not called}}",
           "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
           "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
           "fixWithBuilder": "Fix with builder"

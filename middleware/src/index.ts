@@ -316,6 +316,7 @@ import {
 import { loadBuildTemplateConfig } from './plugins/builder/buildTemplateConfig.js';
 import {
   registerServiceType,
+  serviceMajorFromProvides,
   unregisterServiceType,
 } from './plugins/builder/serviceTypeRegistry.js';
 import { BuildPipeline } from './plugins/builder/buildPipeline.js';
@@ -1968,9 +1969,11 @@ async function main(): Promise<void> {
       const serviceTypes = entry.plugin.service_types ?? [];
       if (serviceTypes.length === 0) return;
       for (const st of serviceTypes) {
+        const major = serviceMajorFromProvides(st.service, entry.plugin.provides);
         registerServiceType(st.service, {
           providedBy: entry.plugin.id,
           typeImport: { from: st.type.from, name: st.type.name },
+          ...(major !== undefined ? { major } : {}),
         });
       }
       registeredServiceTypesByPlugin.set(
@@ -7325,7 +7328,7 @@ async function main(): Promise<void> {
       // their build status on the spec bus. `warmPreview` emits every
       // `build_status` exactly once (#1731/#1733/#1807/#1809); a thrown
       // error here is already reported and only logged by the scheduler.
-      const handle = await warmPreview(
+      const { handle, builtZip } = await warmPreview(
         {
           previewCache,
           buildPipeline: builderBuildPipeline,
@@ -7335,13 +7338,16 @@ async function main(): Promise<void> {
         },
         { userEmail, draftId },
       );
-      // B.9-3: fire-and-forget runtime smoke. Dedup'd per (draftId, rev)
-      // inside the orchestrator — no-op on an unchanged handle.
-      builderRuntimeSmokeOrchestrator.attemptSmoke({
-        handle,
-        userEmail,
-        draftId,
-      });
+      // B.9-3: fire-and-forget runtime smoke on its own stub instance of the
+      // fresh build (#1778). Dedup'd per (draftId, rev) in the orchestrator.
+      if (builtZip) {
+        builderRuntimeSmokeOrchestrator.attemptSmoke({
+          rev: handle.rev,
+          zipBuffer: builtZip,
+          userEmail,
+          draftId,
+        });
+      }
     },
   });
 
@@ -7359,6 +7365,8 @@ async function main(): Promise<void> {
   const builderRuntimeSmokeOrchestrator = new RuntimeSmokeOrchestrator({
     draftStore,
     bus: builderSpecBus,
+    // #1778 — the smoke's own stub activation, never the warm preview.
+    activate: (activateOpts) => previewRuntime.activate(activateOpts),
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
@@ -7580,6 +7588,7 @@ async function main(): Promise<void> {
           schedule: (userEmail: string, draftId: string) =>
             builderRebuildScheduler.schedule(userEmail, draftId),
         },
+        knownPluginIds: () => pluginCatalog.list().map((entry) => entry.plugin.id),
       },
       // Issue #56 — paginated audit-log surface
       audit: { draftStore },
