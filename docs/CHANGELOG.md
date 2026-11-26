@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Subscription CLI runs under the Privacy Shield instead of being refused (#2239, #2241; ADR-0195, ADR-0196) (2026-11-26)
+
+- Agents on the Claude subscription (`claude-cli`) now answer on instances with a privacy
+  guard. The CLI turn gets its own privacy handle (`Orchestrator.cliTurnPrivacy`,
+  `cliTurnPrivacy.ts`); message, steering hint, recall and replayed history are masked
+  before the spawn, loopback tool results are interned, and the v4 tools are offered. The
+  stream is restored, including placeholders split across two chunks
+  (`StreamSurrogateRestorer`). The answer takes the server render and the restore; the
+  receipt is attached to `done`. A guard without a handle still refuses before the spawn.
+- Builder and preview-chat CLI sub-agents run as operator jobs outside the shield, like
+  their API-key path; only `OMADIA_PRIVACY_FORCE_GUARDED` refuses them (decided per
+  recommendation, reversible). The conductor workflow builder reports a CLI privacy refusal
+  as `ConductorBuilderUnavailableError` (503).
+- ADR-0195 supersedes the CLI part of ADR-0165.
+
 ### Changed — Privacy Shield: per-operation intern exemptions, diagrams and transcripts (#1866, #1967, #1985; ADR-0197, ADR-0198) (2026-11-26)
 
 - `query_dataset` hands the model `list_datasets` and `get_schema` (column names and types,

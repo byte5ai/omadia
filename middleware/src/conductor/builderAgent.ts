@@ -20,7 +20,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { OrchestratorRegistry } from '@omadia/orchestrator';
+import { isCliPrivacyRefusal, isPromptMaskBlockedNotice, type OrchestratorRegistry } from '@omadia/orchestrator';
 import { resolveLocalizedText, validate } from '@omadia/conductor-core';
 import type {
   KnownRefs,
@@ -152,6 +152,11 @@ export interface ConductorBuilderAgentDeps {
   log?: (msg: string) => void;
 }
 
+/** #2241 — the answer text is a privacy refusal (CLI or blocked prompt mask). */
+function isPrivacyRefusalReply(text: string): boolean {
+  return isCliPrivacyRefusal(text) || isPromptMaskBlockedNotice(text.trim());
+}
+
 /** The minimal SemanticAnswer shape we depend on (the orchestrator chat result). */
 interface ChatAnswerLike {
   text: string;
@@ -233,6 +238,13 @@ export class ConductorBuilderAgent {
       // #2085 — parse the prose, never side-channel rows rendered into `text`.
       const raw = typeof answer?.textWithoutData === 'string' ? answer.textWithoutData : answer?.text;
       const text = typeof raw === 'string' ? raw : '';
+      // #2241 / ADR-0196 — a privacy refusal is not a builder reply: the
+      // default agent could not run the turn under the Privacy Shield.
+      if (isPrivacyRefusalReply(text)) {
+        throw new ConductorBuilderUnavailableError(
+          `builder Agent '${slug}' refused the turn under the Privacy Shield — the workflow builder is unavailable until that agent can run guarded turns`,
+        );
+      }
       const parsed = parseTurnResponse(text);
       const applyRes = applyGraphPatches(baseGraph, parsed.patches);
       const validation = validate(applyRes.graph, knownRefs);

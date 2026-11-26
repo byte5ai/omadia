@@ -5328,7 +5328,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus). Fail-closed (#1535): Läuft kein `privacy.redact@1`-Provider, wird jeder Chat-Turn mit einer Absage beantwortet statt ungeschützt zu laufen (`PrivacyShieldRequiredError`); Turns auf dem Abo-CLI-Provider (`claude-cli`), der keinen Shield hat, werden immer abgelehnt. Instanz, Admin-UI und Store laufen weiter, damit der Guard repariert werden kann. |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus). Fail-closed (#1535): Läuft kein `privacy.redact@1`-Provider, wird jeder Chat-Turn mit einer Absage beantwortet statt ungeschützt zu laufen (`PrivacyShieldRequiredError`); Turns auf dem Abo-CLI-Provider (`claude-cli`) laufen seit ADR-0195 mit eigenem Privacy-Handle und werden nur abgelehnt, wenn keins gebaut werden kann (kein Guard aktiv). Instanz, Admin-UI und Store laufen weiter, damit der Guard repariert werden kann. |
 
 **Sichtbarkeit (#1508, #1507).** `GET /api/v1/admin/runtime/privacy-posture`
 (hinter `requireAuth`, nicht in `/health`) liefert
@@ -6987,10 +6987,9 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   über die Platzhalter-Map des Turns (Restore in der Antwort), als eigener
   Egress des Turns gebucht; `blocked` lässt den Turn scheitern. Wiederholte
   User-Nachrichten folgen weiter dem Flag. Offen: Ein Provider ohne
-  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an), und
-  der Abo-CLI-Replay (`CliChatAgent.maskHistory`, heute ohne Handle und damit
-  inert) maskiert Antworten noch über `maskUserPrompt`; beim Einbau eines
-  Handles dort (#1087) dieselbe Regel übernehmen.
+  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an). Der
+  Abo-CLI-Replay (`CliChatAgent.maskHistory`) hat seit ADR-0195 ein Handle und
+  maskiert Antworten über `maskReplayedAnswer` nach derselben Regel.
 - **Plugin-Permissions sind keine Sandbox.** Die Manifest-`permissions`
   schalten nur die `PluginContext`-Accessoren frei. Ein Plugin läuft als
   vertrauenswürdiges JavaScript im Middleware-Prozess und erreicht globales
@@ -7270,7 +7269,9 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   und die Naht lässt sie heute unverändert durch. Ausnahme: Die Schema-Absage
   für ein Steuerzeichen (`… control character U+0001 …`) kommt als
   `U[masked:phone]` beim Modell an, weil C0 `+0001` als Telefonnummer liest.
-- **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Abo-CLI-Pfad** läuft seit ADR-0195 (#2239) mit eigenem Privacy-Handle; die
+  Builder-/Preview-Sub-Agents laufen als Operator-Jobs außerhalb des Shields
+  (ADR-0196).
 - **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
   Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
   `Error:`-Texte nur als Withheld-Notice und kann sich nicht am Hinweis
