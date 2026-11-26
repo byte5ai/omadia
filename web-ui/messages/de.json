@@ -7660,7 +7660,8 @@
       "submit": "Agent anlegen",
       "submitting": "Wird angelegt…",
       "failed": "Der Agent konnte nicht angelegt werden: {detail}",
-      "loadFailed": "Die Ersteinrichtung konnte nicht geladen werden: {detail}"
+      "loadFailed": "Die Ersteinrichtung konnte nicht geladen werden: {detail}",
+      "renameHint": "Der Slug wird aus dem Namen gebildet – ein anderer Name ergibt also einen anderen Slug."
     },
     "confirmDefaultTitle": "{agent} zum Default-Agenten machen?",
     "confirmDefaultBody": "{agent} erreicht alle {count} angebundenen Systeme. Als Default-Agent beantwortet er Nachrichten, die an keinen Agenten gerichtet sind; wer schreibt, ohne einen Agenten zu nennen, erreicht damit jedes dieser Systeme. Die Änderung wird im Audit-Log festgehalten.",

@@ -7660,7 +7660,8 @@
       "submit": "Create agent",
       "submitting": "Creating…",
       "failed": "The agent could not be created: {detail}",
-      "loadFailed": "The first-run setup could not be loaded: {detail}"
+      "loadFailed": "The first-run setup could not be loaded: {detail}",
+      "renameHint": "The slug is derived from the name, so a different name gives the agent a different slug."
     },
     "confirmDefaultTitle": "Make {agent} a default agent?",
     "confirmDefaultBody": "{agent} can reach all {count} connected systems. As a default agent it answers messages addressed to no agent, so everyone who writes without naming an agent reaches every one of these systems. The change is recorded in the audit log.",
