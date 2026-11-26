@@ -286,6 +286,7 @@ import { PreviewRuntime } from './plugins/builder/previewRuntime.js';
 import { PreviewCache } from './plugins/builder/previewCache.js';
 import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
+import { warmPreview } from './plugins/builder/previewWarmBuild.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
 import { PreviewDraftAgents } from './plugins/builder/previewDraftAgents.js';
 import {
@@ -7347,115 +7348,27 @@ async function main(): Promise<void> {
       previewCache.invalidate(userEmail, draftId);
     },
     rebuild: async (userEmail, draftId) => {
-      // B.6-6: emit build-status events on the spec bus so the Workspace
-      // header surfaces a live indicator for out-of-band rebuilds (PATCH
-      // /spec without a chat turn). The PreviewChatPane already gets
-      // build_status via PreviewStreamEvent during in-band turns; this
-      // bus path covers the rebuild-while-not-chatting case.
-      builderSpecBus.emit(draftId, { type: 'build_status', phase: 'building' });
-      try {
-        const handle = await previewCache.ensureWarm({
-          userEmail,
-          draftId,
-          build: async () => {
-            const result = await builderBuildPipeline.run({ userEmail, draftId });
-            if (!result.buildResult.ok) {
-              // Log stdout/stderr tails so we can diagnose `reason=unknown`
-              // failures from middleware.log instead of having to surface
-              // them through the SSE wire (B.6-12.1 diag).
-              console.log(
-                `[builder] auto-rebuild failed reason=${result.buildResult.reason} ` +
-                  `exit=${String(result.buildResult.exitCode)} ` +
-                  `errors=${String(result.buildResult.errors.length)} ` +
-                  `draft=${draftId}`,
-              );
-              if (result.buildResult.stdoutTail) {
-                console.log(
-                  `[builder] stdout-tail draft=${draftId}:\n${result.buildResult.stdoutTail}`,
-                );
-              }
-              if (result.buildResult.stderrTail) {
-                console.log(
-                  `[builder] stderr-tail draft=${draftId}:\n${result.buildResult.stderrTail}`,
-                );
-              }
-              builderSpecBus.emit(draftId, {
-                type: 'build_status',
-                phase: 'failed',
-                reason: result.buildResult.reason,
-                errorCount: result.buildResult.errors.length,
-                // Cap to 50 — SSE frame budget. Editor only needs enough
-                // to highlight the visible failures; the full list is
-                // available via the Preview-pane error view.
-                errors: result.buildResult.errors.slice(0, 50).map((e) => ({
-                  file: e.path,
-                  line: e.line,
-                  column: e.col,
-                  code: e.code,
-                  message: e.message,
-                })),
-              });
-              throw new Error(
-                `[builder] auto-rebuild failed for ${userEmail}/${draftId}: ${result.buildResult.reason}`,
-              );
-            }
-            // In vault-backed mode this lazy-loads any secrets persisted in
-            // a previous middleware run. No-op when the buffer is heap-only.
-            await previewSecretBuffer.warm(userEmail, draftId);
-            builderSpecBus.emit(draftId, {
-              type: 'build_status',
-              phase: 'ok',
-              buildN: result.buildN,
-            });
-            // Split buffer by field-type — same pattern as
-            // builderPreview.ensureWarmHandle. Pre-fix this used
-            // draft.slots as configValues (slots are code chunks, not
-            // config) so ctx.config.require('foo') always threw.
-            const allBufferValues = previewSecretBuffer.get(userEmail, draftId);
-            const setupFields = (result.draft.spec.setup_fields ?? []) as ReadonlyArray<unknown>;
-            const fieldByKey = new Map<string, string>();
-            for (const raw of setupFields) {
-              if (!raw || typeof raw !== 'object') continue;
-              const f = raw as { key?: unknown; type?: unknown };
-              if (typeof f.key !== 'string') continue;
-              fieldByKey.set(f.key, typeof f.type === 'string' ? f.type : 'string');
-            }
-            const splitConfigValues: Record<string, unknown> = {};
-            const splitSecretValues: Record<string, string> = {};
-            for (const [k, v] of Object.entries(allBufferValues)) {
-              const t = fieldByKey.get(k);
-              if (t === undefined) continue;
-              if (t === 'secret' || t === 'oauth') splitSecretValues[k] = v;
-              else splitConfigValues[k] = v;
-            }
-            return {
-              zipBuffer: result.buildResult.zip,
-              rev: result.buildN,
-              configValues: splitConfigValues,
-              secretValues: splitSecretValues,
-            };
-          },
-        });
-        // B.9-3: fire-and-forget runtime smoke after the auto-rebuild
-        // scheduler's path. Dedup'd per (draftId, rev) inside the
-        // orchestrator — no-op when the cache returned an unchanged handle.
-        builderRuntimeSmokeOrchestrator.attemptSmoke({
-          handle,
-          userEmail,
-          draftId,
-        });
-      } catch (err) {
-        // If `build:` was never invoked (cache short-circuited or something
-        // upstream threw), make sure we don't leave the UI stuck on
-        // "building". Re-emitting `failed` is safe — clients always treat
-        // the latest event as authoritative.
-        builderSpecBus.emit(draftId, {
-          type: 'build_status',
-          phase: 'failed',
-          reason: err instanceof Error ? err.message : String(err),
-        });
-        throw err;
-      }
+      // B.6-6: out-of-band rebuilds (PATCH /spec without a chat turn) report
+      // their build status on the spec bus. `warmPreview` emits every
+      // `build_status` exactly once (#1731/#1733/#1807/#1809); a thrown
+      // error here is already reported and only logged by the scheduler.
+      const handle = await warmPreview(
+        {
+          previewCache,
+          buildPipeline: builderBuildPipeline,
+          previewSecretBuffer,
+          bus: builderSpecBus,
+          logTag: 'auto-rebuild',
+        },
+        { userEmail, draftId },
+      );
+      // B.9-3: fire-and-forget runtime smoke. Dedup'd per (draftId, rev)
+      // inside the orchestrator — no-op on an unchanged handle.
+      builderRuntimeSmokeOrchestrator.attemptSmoke({
+        handle,
+        userEmail,
+        draftId,
+      });
     },
   });
 
@@ -8055,6 +7968,10 @@ async function main(): Promise<void> {
     operatorAuth,
     eventCatalogRegistry,
     resolver: channelPluginResolver,
+    // omadia#838 — channels that declare `permissions.sql` get the grant
+    // check and kernel-run migrations of ADR-0050, like the tool runtime.
+    sqlGrantStore,
+    packagePathOf: (agentId) => channelPluginResolver.packagePathOf(agentId),
     coreApi: channelCoreApi,
     routes: routeRegistry,
     webSockets: webSocketRegistry,

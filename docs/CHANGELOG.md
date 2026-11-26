@@ -79,6 +79,51 @@ changelog.
   `state`) into the model's text; the chat's Connect card starts the flow from the user's own
   session.
 
+### Fixed — channel plugins get the SQL grant check and kernel-run migrations (ADR-0050) (2026-11-26)
+
+- A channel plugin that declares `permissions.sql` (Teams, byte5ai/omadia-channel-teams#74)
+  now gets the same treatment as a tool plugin (#838). The kernel reads the operator's grant
+  before the context is built, and only a grant for the declared ledger counts. With the grant
+  the plugin gets `ctx.sql`, and the kernel runs the ledger handoff and the declared migrations
+  before `activate()`.
+- Before this, `DefaultChannelRegistry` never passed `sqlGranted`. A channel was ungranted
+  forever and reached `graphPool` only through the grandfather row in
+  `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20`, which drifted from ADR-0050.
+- The steps now live in `middleware/src/plugins/pluginSqlBoot.ts`, shared by both runtimes.
+  The tool runtime is unchanged.
+- The `@omadia/channel-teams` `graphPool` row stays until Teams 0.46 is on the Hub and the
+  operator has granted its `permissions.sql`.
+
+### Docs — ADR 0225: a channel account is linked to an omadia user only through the kernel (2026-11-26)
+
+- Proposed (#1995). A pairing should link a channel account to an existing omadia user. The
+  kernel owns that link, and the plugin attests only the channel identity. Implementation
+  follows. Until it ships, a channel does not claim a link in its texts.
+
+### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
+
+The auto-rebuild scheduler and the preview routes now share one build-and-warm
+path (`plugins/builder/previewWarmBuild.ts`) that emits every `build_status`
+exactly once. Failed events carry `buildN` and a stable code as `reason`, so
+AutoFix fires once per failed build instead of once per process, a failure
+while AutoFix is off no longer blocks a later trigger (#1731), and the second
+`failed` event that carried the user's e-mail and draft id over the TypeScript
+error list is gone (#1733). `building` is emitted only when a build starts, so
+a warm cache hit no longer leaves the status on "building" (#1807). A setup
+value read at activation without a test credential throws the coded
+`PreviewSetupValueMissingError` and stays `ok` with `missingSetupKey`: no failed
+build, no "Fix with Builder", Publish says "missing test credential" (#1809).
+Saving or clearing test credentials schedules a rebuild, and the status route
+reports a green last build on a cold cache as `ok` instead of `idle` (#1792);
+an activation failure after a green build is `activate_failed:<code>` on the
+wire (message only in the server log and `get_build_status`), and a result for
+a superseded build is dropped. The workspace registers a listener for every
+spec-bus event type it handles, from one list the type checker keeps complete,
+so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
+appear (#1730). The builder prompt names `get_build_status` /
+`runtime_smoke_status` as the only source for build and smoke state (#1806).
+Contract: ADR-0230 (Proposed).
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`
