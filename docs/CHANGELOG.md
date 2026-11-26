@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Security — the last standalone grandfather row is gone (#838) (2026-11-26)
+
+- `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` is empty. Its last row,
+  `@omadia/channel-teams` → `graphPool`, was the C7 SQL ramp. Teams 0.46.0 declares
+  `permissions.sql` with its own migrations, the channel runtime honours the operator grant
+  (#2254), and the grant is given on the instance. Without a grant, Teams runs without a
+  database instead of failing.
+
 ### Fixed — Conductor schedule zones and suppressed triggers (#1714, #1715)
 
 - Conductor evaluates each schedule in its stored IANA zone through the scheduler helper shared with routines. Republishing an unchanged expression keeps the original zone.
