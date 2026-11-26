@@ -30,6 +30,8 @@ async function seed() {
     createdBy: 'web:bob',
     involvedOmadiaUserIds: [],
     aclOwners: [OWNER],
+    // ADR-0183 — shared on purpose, so alice's recall may see it.
+    visibility: 'team',
   });
   const untouched = await kg.createMemorableKnowledge({
     kind: 'insight',
@@ -37,6 +39,8 @@ async function seed() {
     createdBy: 'web:bob',
     involvedOmadiaUserIds: [],
     aclOwners: [OWNER],
+    // ADR-0183 — shared on purpose, so alice's recall may see it.
+    visibility: 'team',
   });
   return { kg, editedId: edited.memorableKnowledgeNodeId, untouchedId: untouched.memorableKnowledgeNodeId };
 }

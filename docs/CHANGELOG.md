@@ -378,8 +378,10 @@ Contract: ADR-0230 (Proposed).
 
 ### Fixed — memorable knowledge lifecycle: deleted stays deleted, safe auto-merge (ADR-0190) (2026-11-26)
 
-- **Deleted, discarded and merged-away entries stay gone (#1819).** `deleteMemory` (both
-  graph backends) marks each source turn `promotionRetired`; live and bulk promotion skip
+- **Deleted, discarded and merged-away entries stay gone (#1819).** `deleteMemory` and the
+  operator's owner-less delete (`deleteOwnerlessMemory`, ADR-0185) share one node-delete
+  helper on both graph backends, which marks each source turn `promotionRetired` and closes
+  the entry's open pairs; live and bulk promotion skip
   such turns (`reason=retired`). Bulk promotion now creates entries like live
   auto-promotion: excerpt required when an extractor is installed (masked through the
   stored-text privacy scope), `origin_agent` from the turn's qualified scope, member

@@ -89,6 +89,43 @@ describe('ADR-0190 · delete retires the source turn (#1819)', () => {
   });
 });
 
+describe('ADR-0190 · an owner-less delete retires and closes too (ADR-0185 path)', () => {
+  it('deleteOwnerlessMemory retires the source turn and dismisses open pairs', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const { turnId } = await kg.ingestTurn({
+      scope: 'default::talk-o',
+      userId: OWNER,
+      time: '2026-11-10T09:00:00.000Z',
+      userMessage: 'Server Reiher läuft auf Port 8443.',
+      assistantAnswer: 'Notiert: Server Reiher läuft auf Port 8443.',
+      entityRefs: [],
+    });
+    const created = await kg.createMemorableKnowledge({
+      kind: 'reference',
+      summary: 'Server Reiher läuft auf Port 8443.',
+      createdBy: 'system:seed',
+      involvedOmadiaUserIds: [],
+      aclOwners: [],
+      derivedFromTurnIds: [turnId],
+    });
+    const other = await seedMk(kg, 'Server Reiher läuft auf Port 9443.', `web:${OWNER}`);
+    const inc = await kg.createInconsistency({
+      mkAExternalId: created.memorableKnowledgeNodeId,
+      mkBExternalId: other,
+      summary: 'Port differs',
+      severity: 'high',
+    });
+    assert.ok(inc);
+    await kg.deleteOwnerlessMemory(created.memorableKnowledgeNodeId, {
+      actorOmadiaUserId: OWNER,
+    });
+    const retired = turnProps(kg, turnId)[PROMOTION_RETIRED_PROP] as { reason: string };
+    assert.equal(retired.reason, 'memory_deleted');
+    assert.equal(rawNode(kg, inc.id)?.props['status'], 'dismissed');
+    assert.equal(rawNode(kg, inc.id)?.props['resolved_by'], OWNER);
+  });
+});
+
 describe('ADR-0190 · pairs close with their entry (#1862)', () => {
   it('deleting one side dismisses its open contradiction and duplicate pairs', async () => {
     const kg = new InMemoryKnowledgeGraph();
