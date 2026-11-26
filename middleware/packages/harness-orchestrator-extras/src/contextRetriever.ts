@@ -17,6 +17,7 @@ import {
   type RecalledProcess,
   type TurnSearchHit,
   isEvidencedPlanStepDone,
+  MEMORY_CORRECTED_AT_PROP,
 } from '@omadia/plugin-api';
 
 import type {
@@ -491,6 +492,13 @@ export const RECALL_HEADINGS = {
   processes: '## Aus früheren Sessions — gespeicherte Prozesse',
   insights: '## Aus früheren Sessions — verwandte Erkenntnisse',
 } as const;
+
+/**
+ * #1863 — the marker an insight a user corrected carries, followed by the
+ * day (`vom Nutzer korrigiert am 2026-11-25`). The orchestrator's precedence
+ * rule quotes it.
+ */
+export const USER_CORRECTED_MARKER = 'vom Nutzer korrigiert am';
 
 // Tiny, language-agnostic stopword list. We keep it short because the real
 // signal comes from proper nouns and IDs which survive any sensible filter.
@@ -1841,7 +1849,7 @@ function renderRecallBlocks(
       // insights stay capped. `ins.summary` is already bounded upstream by
       // toRecalledInsight (durable → 2000, fuzzy → 300).
       const rendered = ins.durable ? ins.summary : truncate(ins.summary, 300);
-      const chunk = `- ${ins.kind}: ${rendered} (score ${ins.score.toFixed(2)})`;
+      const chunk = `- ${ins.kind}: ${rendered} (${insightProvenance(ins)}score ${ins.score.toFixed(2)})`;
       if (!push(chunk)) break;
     }
   }
@@ -1859,6 +1867,8 @@ function toRecalledInsight(
   hit: MemoryRecallHit,
   durable = false,
 ): RecalledInsight {
+  const correctedAt = isoDay(hit.mk.props[MEMORY_CORRECTED_AT_PROP]);
+  const asOf = correctedAt ?? isoDay(hit.mk.props['created_at']);
   return {
     mkId: hit.mk.id,
     kind: String(hit.mk.props['kind'] ?? 'memory'),
@@ -1868,7 +1878,28 @@ function toRecalledInsight(
     ),
     score: hit.score,
     ...(durable ? { durable: true } : {}),
+    ...(asOf !== undefined ? { asOf } : {}),
+    ...(correctedAt !== undefined ? { correctedByUser: true } : {}),
   };
+}
+
+/** The `YYYY-MM-DD` day of an ISO timestamp property, if it holds one. */
+function isoDay(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const day = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return day?.[1];
+}
+
+/**
+ * #1863 — the date marker in front of an insight's score: when a user
+ * corrected it, or how old it is. The orchestrator's precedence rule refers
+ * to the "vom Nutzer korrigiert" wording ({@link USER_CORRECTED_MARKER}).
+ */
+function insightProvenance(ins: RecalledInsight): string {
+  if (ins.correctedByUser === true && ins.asOf !== undefined) {
+    return `${USER_CORRECTED_MARKER} ${ins.asOf}; `;
+  }
+  return ins.asOf !== undefined ? `Stand ${ins.asOf}; ` : '';
 }
 
 // ---------------------------------------------------------------------------

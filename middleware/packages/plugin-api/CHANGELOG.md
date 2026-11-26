@@ -27,6 +27,9 @@ Additive.
 - **`extractRecallSearchTerms` / `buildRecallTsQuery` / `RECALL_QUERY_MAX_TERMS`**
   (#1822): the content terms of a message and an OR `tsquery` over them for
   full-text recall; `null` when the message has no content term.
+- **`MEMORY_CORRECTED_AT_PROP`** (`corrected_at`) / **`isMemorableContentCorrection`**
+  and **`RecalledInsight.asOf?` / `correctedByUser?`** (#1863): a person's content edit
+  of a memorable entry is stamped and recalled with its day.
 
 ### Changed (behaviour)
 
@@ -38,6 +41,8 @@ Additive.
   on both bundled providers OR-match the message's content terms
   (`buildRecallTsQuery`) instead of requiring every word; a message without a
   content term has no lexical leg (#1822).
+- `updateMemorableKnowledge` on both bundled providers stamps `corrected_at` when the
+  patch changes kind, summary or rationale (#1863).
 
 ## 1.98.0 — 2026-11-25
 

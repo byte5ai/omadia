@@ -116,6 +116,8 @@ import {
   PROMOTION_RETIRED_PROP,
   SYSTEM_AUDIT_ACTOR_UUID,
   buildRecallTsQuery,
+  isMemorableContentCorrection,
+  MEMORY_CORRECTED_AT_PROP,
 } from '@omadia/plugin-api';
 import {
   GRAPH_EDGE_TYPES,
@@ -3393,6 +3395,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       }>(`SELECT properties FROM graph_nodes WHERE id = $1`, [uuid]);
       const current = propsRow.rows[0]!.properties;
       const merged: Record<string, unknown> = { ...current };
+      // #1863 — a person changed what the entry says: stamp the correction.
+      if (isMemorableContentCorrection(current, patch)) {
+        merged[MEMORY_CORRECTED_AT_PROP] = new Date().toISOString();
+      }
       if (patch.kind !== undefined) merged['kind'] = patch.kind;
       if (patch.summary !== undefined) merged['summary'] = patch.summary;
       if (patch.rationale === null) {

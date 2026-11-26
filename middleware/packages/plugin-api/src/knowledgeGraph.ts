@@ -1096,6 +1096,14 @@ export interface RecalledInsight {
    *  insights render at full length (not the fuzzy cap) so the agent can
    *  trust recalled schema instead of re-discovering it via tools. */
   durable?: boolean;
+  /** #1863 — the date (`YYYY-MM-DD`) of the entry's latest content: the
+   *  day a user corrected it, else the day it was created. Rendered next to
+   *  the insight so the model can order it against older turns and notes. */
+  asOf?: string;
+  /** #1863 — true when a person edited the entry's content
+   *  ({@link MEMORY_CORRECTED_AT_PROP}). Such an entry is the user's latest
+   *  word on its subject. */
+  correctedByUser?: boolean;
 }
 
 /** What the cross-session probe surfaced this turn. Empty arrays when a leg
@@ -1116,6 +1124,30 @@ export interface MemorableKnowledgeUpdate {
    *  leave it untouched; a string to set/replace. */
   rationale?: string | null;
   significance?: number;
+}
+
+/**
+ * #1863 — the MemorableKnowledge property (ISO timestamp) both bundled
+ * providers stamp when `updateMemorableKnowledge` changes the entry's kind,
+ * summary or rationale. Only people edit entries (the PATCH route), so its
+ * presence means "corrected by the user"; recall renders it, and the prompt
+ * lets a corrected entry outrank older turns and notes. A significance-only
+ * patch does not stamp it.
+ */
+export const MEMORY_CORRECTED_AT_PROP = 'corrected_at';
+
+/**
+ * #1863 — whether `patch` changes the content (kind, summary, rationale) of
+ * an entry whose current properties are `current`.
+ */
+export function isMemorableContentCorrection(
+  current: Readonly<Record<string, unknown>>,
+  patch: MemorableKnowledgeUpdate,
+): boolean {
+  if (patch.kind !== undefined && patch.kind !== current['kind']) return true;
+  if (patch.summary !== undefined && patch.summary !== current['summary']) return true;
+  if (patch.rationale === null) return current['rationale'] !== undefined;
+  return patch.rationale !== undefined && patch.rationale !== current['rationale'];
 }
 
 export interface SessionFilter {

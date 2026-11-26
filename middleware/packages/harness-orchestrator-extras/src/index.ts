@@ -42,6 +42,7 @@ export type {
 export {
   ContextRetriever,
   RECALL_HEADINGS,
+  USER_CORRECTED_MARKER,
   extractCandidateTerms,
 } from './contextRetriever.js';
 // KG-walk chat visualization — builds the per-turn `kg_graph` payload of the

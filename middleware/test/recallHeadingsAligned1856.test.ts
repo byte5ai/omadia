@@ -22,7 +22,8 @@ import {
 import {
   ContextRetriever,
   RECALL_HEADINGS,
-} from '../packages/harness-orchestrator-extras/src/contextRetriever.js';
+  USER_CORRECTED_MARKER,
+} from '@omadia/orchestrator-extras';
 import { graphScopeFor } from '../packages/harness-orchestrator/src/sessionLogger.js';
 import { scriptedModel, text } from './_helpers/replayTurnFixture.js';
 
@@ -92,6 +93,9 @@ describe('trust rules name the headings the chat path renders (#1856)', () => {
     for (const heading of named) {
       assert.ok(rendered.has(heading), `rule names a heading nothing renders: ${heading}`);
     }
+    // #1863 — the precedence rule for corrected entries quotes the marker the
+    // retriever renders.
+    assert.ok(system.includes(`„${USER_CORRECTED_MARKER} …“`), 'precedence rule for corrected entries');
     assert.equal(system.includes('Früher besprochene Entitäten'), false);
     assert.equal(system.includes('Inhaltlich ähnliche'), false);
   });

@@ -1535,6 +1535,8 @@ kind: string;
 summary: string;
 score: number;
 durable?: boolean;
+asOf?: string;
+correctedByUser?: boolean;
 }
 export interface RecalledContext {
 plans: RecalledPlan[];
@@ -1547,6 +1549,8 @@ summary?: string;
 rationale?: string | null;
 significance?: number;
 }
+export declare const MEMORY_CORRECTED_AT_PROP = "corrected_at";
+export declare function isMemorableContentCorrection(current: Readonly<Record<string, unknown>>, patch: MemorableKnowledgeUpdate): boolean;
 export interface SessionFilter {
 userId?: string;
 }

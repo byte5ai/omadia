@@ -240,6 +240,15 @@ Contract: ADR-0230 (Proposed).
   The retriever now exports `RECALL_HEADINGS` (`@omadia/orchestrator-extras`); the
   renderers and the prompt rules both use it, and the test-only `build` path renders the
   same headings.
+- **A corrected memory wins over older turns and notes (#1863).** Recalled insights
+  rendered as `- kind: summary (score …)` without a date, so the model ranked a user's
+  correction below the older turn that still held the old value. Both graph backends now
+  stamp `corrected_at` when a person changes an entry's kind, summary or rationale
+  (`updateMemorableKnowledge`; significance-only patches do not), recall renders
+  `(vom Nutzer korrigiert am <Tag>; score …)` or `(Stand <Tag>; score …)`, and the
+  orchestrator's trust rules state that a corrected entry is the user's latest word and
+  outranks older turns, notes and insights with another value. A user edit does not set
+  `manually_authored` (ADR-0190: that flag means operator-curated, durable tier).
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

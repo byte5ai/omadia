@@ -70,6 +70,7 @@ import type {
 } from '@omadia/orchestrator-extras';
 import {
   RECALL_HEADINGS,
+  USER_CORRECTED_MARKER,
   buildKgInsertPayload,
   buildKgWalkPayload,
   promoteTurnIfSignificant,
@@ -2002,6 +2003,7 @@ Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge 
 **Vertrauensregeln:**
 - \`${RECALL_HEADINGS.tail}\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über ein Fach-Werkzeug. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
 - \`${RECALL_HEADINGS.relatedTurns}\` (auch mit dem Zusatz „(compact)“) — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen über ein Fach-Werkzeug verifizieren.
+- \`${RECALL_HEADINGS.insights}\` — gespeicherte Erkenntnisse mit Datum („Stand …“). Trägt ein Eintrag „${USER_CORRECTED_MARKER} …“, hat der Nutzer ihn selbst korrigiert: das ist seine jüngste Angabe und gilt vor älteren Turns, Notizen und Erkenntnissen, die zum selben Sachverhalt einen anderen Wert nennen. Antworte mit dem korrigierten Wert; den alten nennst du höchstens als überholt.
 
 ${priorContext}`,
       cache_control: ORCHESTRATOR_CACHE_CONTROL,

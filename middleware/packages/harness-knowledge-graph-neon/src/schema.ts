@@ -340,6 +340,9 @@ const MemorableKnowledgePropsSchema = z
      *  snapshot at creation time. */
     acl_owners: z.array(z.string().uuid()).default([]),
     created_at: z.string().datetime(),
+    /** #1863 — when a person last changed the content (kind, summary,
+     *  rationale). Absent on entries nobody edited. */
+    corrected_at: z.string().datetime().optional(),
     /** ChannelIdentity external_id of the channel-bound identity that
      *  produced the MK (audit trail — not the cluster root). */
     created_by: z.string().min(1),

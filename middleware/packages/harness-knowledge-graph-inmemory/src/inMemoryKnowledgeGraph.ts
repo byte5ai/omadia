@@ -111,6 +111,8 @@ import {
   PROMOTION_RETIRED_PROP,
   SYSTEM_AUDIT_ACTOR_UUID,
   extractRecallSearchTerms,
+  isMemorableContentCorrection,
+  MEMORY_CORRECTED_AT_PROP,
 } from '@omadia/plugin-api';
 
 /**
@@ -1691,6 +1693,10 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     }
 
     const next: Record<string, unknown> = { ...node.props };
+    // #1863 — see NeonKnowledgeGraph.updateMemorableKnowledge.
+    if (isMemorableContentCorrection(node.props, patch)) {
+      next[MEMORY_CORRECTED_AT_PROP] = new Date().toISOString();
+    }
     if (patch.kind !== undefined) next['kind'] = patch.kind;
     if (patch.summary !== undefined) next['summary'] = patch.summary;
     if (patch.rationale === null) {
