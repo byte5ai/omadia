@@ -3819,6 +3819,22 @@ entsorgtes Modell-Service-Registrat (`embeddingClient`, `transcription`,
 solange `kg_recall_relevance_judge_model` leer ist. Tests:
 `test/embeddingLiveRebind1815.test.ts`.
 
+**Admin-UX und Schwellen-Provenienz (#1814/#1816/#1818/#1857).** `capabilityGap` kennt
+zusätzlich `weights-ready-reactivate` (keyloser Adapter allein installiert, Gewichte
+vollständig, nur Reaktivieren fehlt). `GET /` liefert `installableProviders` (Store-Anbieter,
+nicht installiert) und `dedupThresholdProvenance` (`default` | `recommended` | `operator`).
+Die empfohlene `process_dedup_threshold` trägt ihren Ursprung im kernel-synthetischen
+KG-Config-Key `_process_dedup_threshold_recommended_by`
+(`src/routes/embeddingDedupThreshold.ts`): `/reactivate` und `/switch` gleichen sie an den
+neuen Anbieter an (`dedupThreshold` in beiden Responses, `reason` zusätzlich `cleared` und
+`unchanged`), das Deinstallieren eines Anbieters entfernt den für ihn empfohlenen Wert
+(`onUninstalled`). Ein Operator-Wert bleibt immer. `/health` zählt einen aktiven Adapter
+ohne publizierten Client als „Embeddings aus“ (`buildKgHealth(…, embeddingClientPublished)`).
+Kollisionstext von Store und Install-Endpoint: `describeProviderCollision`
+(`capabilityResolver.ts`). Tests: `test/embeddingDedupThreshold.test.ts`,
+`test/kgHealth.test.ts`, `test/adminEmbeddingProvider{Route,Reactivate}.test.ts`,
+`test/storeProviderCollision.test.ts`, `web-ui/app/_lib/__tests__/providerAdminLink.test.ts`.
+
 ### Run-Trace- und Capture-Filter-Zähler: `GET /api/admin/run-trace` (#684 / #1082)
 
 Die Run-Trace-Outcomes (#684) und die Zahl der vom Capture-Filter als

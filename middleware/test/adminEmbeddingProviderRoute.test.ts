@@ -299,6 +299,47 @@ describe('mount-time auth', () => {
 });
 
 describe('POST /api/v1/admin/embedding-provider/switch', () => {
+  it('removes the threshold omadia recommended for another model, keeps an operator one (#1818)', async () => {
+    // A threshold recorded as the keyless adapter's recommendation is not a
+    // decision about the OpenAI vector space: a switch there removes it.
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: OPENAI, status: 'inactive' },
+      {
+        id: KG_NEON,
+        status: 'active',
+        config: {
+          process_dedup_threshold: '0.45',
+          _process_dedup_threshold_recommended_by: '@omadia/embedding-adapter-local',
+        },
+      },
+    ]);
+    const { status, body } = await harness.postSwitch({
+      pluginId: OPENAI,
+      confirmDiscardVectors: true,
+    });
+    assert.equal(status, 200);
+    const dedup = body['dedupThreshold'] as Record<string, unknown>;
+    assert.equal(dedup['reason'], 'cleared');
+    const config = harness.registry.get(KG_NEON)?.config ?? {};
+    assert.equal(config['process_dedup_threshold'], undefined);
+    assert.equal(config['_process_dedup_threshold_recommended_by'], undefined);
+  });
+
+  it('leaves an operator threshold alone on a switch (#1818)', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: OPENAI, status: 'inactive' },
+      { id: KG_NEON, status: 'active', config: { process_dedup_threshold: '0.85' } },
+    ]);
+    const { body } = await harness.postSwitch({ pluginId: OPENAI, confirmDiscardVectors: true });
+    assert.equal((body['dedupThreshold'] as Record<string, unknown>)['reason'], 'operator-set');
+    assert.equal(
+      harness.registry.get(KG_NEON)?.config?.['process_dedup_threshold'],
+      '0.85',
+    );
+  });
+
   it('deactivates the old provider, activates the target and re-gates in place', async () => {
     harness = await makeHarness([
       { id: OLLAMA, status: 'active' },

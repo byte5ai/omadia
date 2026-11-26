@@ -169,6 +169,36 @@ Contract: ADR-0230 (Proposed).
   restart as after a reactivation. The boot log reads `recallJudge=on(class:fast per call, now …)`.
 - Log lines of the extras now read `embed=live, now on|off`.
 
+### Fixed — embedding provider admin tells the truth and leads somewhere (#1814, #1816, #1818, #1857) (2026-11-26)
+
+- **#1816** `/health` no longer reports `kg.embeddings`/`semanticRecall: true` while the
+  active embedding adapter publishes no client (keyless adapter without weights, OpenAI
+  adapter without key). `buildKgHealth` takes whether `embeddingClient` is published, the
+  same evidence as the admin page's `capabilityPublished`, and warns
+  "embedding provider '<id>' is active but publishes no embedding client (…)".
+- **#1857** `capabilityGap` has a new reason `weights-ready-reactivate`: the keyless
+  adapter is the only installed provider, its weights are complete, it only needs
+  **Reactivate provider**. The box says so and carries the button; the "second adapter"
+  text (`not-published`) is left for installs that really have a second provider.
+- **#1818** The recommended `process_dedup_threshold` carries its provenance in the
+  kernel-synthetic KG config key `_process_dedup_threshold_recommended_by`
+  (`src/routes/embeddingDedupThreshold.ts`). A value is omadia's own while the marker names
+  a provider and the value still equals its recommendation; any edit makes it the
+  operator's, which is never touched. `/switch` now applies the target's recommendation as
+  `/reactivate` does, and removes omadia's value when the target has none; uninstalling a
+  provider removes the value recommended for it (install service `onUninstalled`). The page
+  shows the provenance (`dedupThresholdProvenance` in `GET /`), switch responses carry
+  `dedupThreshold`. Values written by older builds have no marker and count as the
+  operator's.
+- **#1814** The store's blocked-install box links to the admin page of the colliding
+  capability (`/admin/embedding-provider`, `/admin/transcription-provider`, otherwise
+  `/admin/providers`), and its text names both ways out. Store detail and install endpoint
+  now word the collision with one sentence (`describeProviderCollision`: "uninstall '<owner>'
+  first and then install this one"). `GET /admin/embedding-provider` lists
+  `installableProviders` (store providers not installed) and the page names them with the
+  steps to move. The keyless adapter's setup guide describes **Load model now** →
+  **Reactivate provider** instead of an `npm` command that a container cannot run.
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

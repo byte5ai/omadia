@@ -4986,6 +4986,8 @@ export interface EmbeddingProviderDrift {
  * `no-active-provider` — nothing is activated at all.
  * `missing-credentials` — a KEYED adapter is active without a key/base URL.
  * `missing-weights` — the keyless adapter is active, its model is not on disk.
+ * `weights-ready-reactivate` — #1857: the keyless adapter is the only
+ *   provider, its weights are complete, it only needs a reactivation.
  * `not-published` — weights are there, yet nothing was published: the adapter
  *   stood down because a sibling already held the service, or activation failed.
  */
@@ -4993,7 +4995,22 @@ export type EmbeddingCapabilityGap =
   | 'no-active-provider'
   | 'missing-credentials'
   | 'missing-weights'
+  | 'weights-ready-reactivate'
   | 'not-published';
+
+/** #1814 — an `embeddingClient@1` provider the store offers, not installed. */
+export interface InstallableEmbeddingProvider {
+  pluginId: string;
+  label: string;
+  keyless: boolean;
+}
+
+/** #1818 — where the knowledge graph's dedup threshold came from. */
+export interface EmbeddingDedupThresholdProvenance {
+  source: 'default' | 'recommended' | 'operator';
+  value: string | null;
+  recommendedBy: string | null;
+}
 
 export interface EmbeddingWidthCollision {
   providerDimensions: number | null;
@@ -5004,6 +5021,11 @@ export interface EmbeddingWidthCollision {
 
 export interface EmbeddingProviderState {
   providers: EmbeddingProviderOption[];
+  /** #1814 — store providers not installed yet. Optional for older builds. */
+  installableProviders?: InstallableEmbeddingProvider[];
+  /** #1818 — provenance of `process_dedup_threshold`; `null` without a KG.
+   *  Optional for older builds. */
+  dedupThresholdProvenance?: EmbeddingDedupThresholdProvenance | null;
   activeProviderId: string | null;
   activeModel: { modelId: string; dimensions: number } | null;
   /** Optional so older middleware builds still satisfy this type. */
@@ -5051,6 +5073,9 @@ export interface EmbeddingProviderState {
 export interface SwitchEmbeddingProviderResult extends EmbeddingProviderState {
   ok: true;
   switchedTo: string;
+  /** #1818 — what the switch did about the dedup threshold. Optional for
+   *  older builds. */
+  dedupThreshold?: EmbeddingDedupThresholdResult;
   /**
    * Did the knowledge-graph's model/dimension gate actually re-run against the
    * new provider? False on a deployment with no Postgres knowledge-graph
@@ -5159,7 +5184,13 @@ export interface EmbeddingDedupThresholdResult {
   applied: boolean;
   value: number | null;
   previous: string | null;
-  reason: 'applied' | 'operator-set' | 'no-recommendation' | 'no-knowledge-graph';
+  reason:
+    | 'applied'
+    | 'cleared'
+    | 'unchanged'
+    | 'operator-set'
+    | 'no-recommendation'
+    | 'no-knowledge-graph';
 }
 
 export interface ReactivateEmbeddingProviderResult extends EmbeddingProviderState {

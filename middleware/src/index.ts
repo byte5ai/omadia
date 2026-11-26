@@ -246,6 +246,7 @@ import {
   type LocalEmbeddingModelFetcher,
   type MemoryFeatureStatusView,
 } from './routes/adminEmbeddingProvider.js';
+import { releaseRecommendedDedupThreshold } from './routes/embeddingDedupThreshold.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { createAdminLastTurnRouter } from './routes/adminLastTurn.js';
@@ -2186,8 +2187,16 @@ async function main(): Promise<void> {
     },
     // #2088 — an uninstalled archetype plugin no longer delivers its archetype:
     // the kernel's own descriptor (where it has one) applies again.
-    onUninstalled: async () => {
+    onUninstalled: async (agentId) => {
       await archetypeRegistry.sync();
+      // #1818 — the dedup threshold omadia recommended FOR this embedding
+      // provider leaves with it; the next KG activation uses the default (or
+      // the next provider's recommendation). An operator value stays.
+      if (await releaseRecommendedDedupThreshold(installedRegistry, agentId)) {
+        console.log(
+          `[middleware] removed the dedup threshold recommended for uninstalled ${agentId}; the knowledge graph uses its default from its next activation`,
+        );
+      }
     },
     onUninstall: async (agentId, reason) => {
       // #2088 — FIRST, while the plugin is still installed and running: the
@@ -3938,7 +3947,14 @@ async function main(): Promise<void> {
         EMBEDDING_GATE_STATUS_SERVICE,
       );
       const probe = await probeGraphPool(serviceRegistry.get('graphPool'));
-      const kg = buildKgHealth(installedRegistry, gate, probe);
+      // #1816 — whether a client is published right now, so an active adapter
+      // that stood down (missing weights, no key) is not reported as on.
+      const kg = buildKgHealth(
+        installedRegistry,
+        gate,
+        probe,
+        serviceRegistry.get('embeddingClient') !== undefined,
+      );
       // #648 (epic #642) — the resolved AI-Act marking posture per channel.
       // Read per request for the same reason the embedding gate is: a config
       // change re-activates the orchestrator and re-publishes, and a boot-time

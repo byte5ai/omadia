@@ -437,11 +437,25 @@ describe('capability gap — one box per reason', () => {
 
     renderWithIntl(<EmbeddingProviderPage />);
 
-    // "A second adapter already holds the capability" — uninstalling it is the
-    // remedy, and no amount of credential-entering gets there.
+    // A sibling provider holds the capability — uninstalling it is the
+    // remedy, and no amount of credential-entering gets there. The server
+    // only sends this reason when a second provider is installed (#1857).
     expect((await screen.findByTestId('capability-missing')).textContent).toContain(
-      'second adapter',
+      'More than one embedding provider',
     );
+  });
+
+  it('asks for a reactivation, with the button, when the weights are ready (#1857)', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(
+      keylessState({ capabilityGap: 'weights-ready-reactivate' }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const box = await screen.findByTestId('capability-missing');
+    expect(box.textContent).toContain('Reactivate the provider');
+    expect(box.textContent).not.toContain('second adapter');
+    expect(box.querySelector('[data-testid="reactivate-provider"]')).toBeTruthy();
   });
 
   it('falls back to the historical wording when the middleware sends no reason', async () => {
@@ -666,5 +680,63 @@ describe('reactivate — result and failure', () => {
     expect((await screen.findByTestId('reactivate-error')).textContent).toContain(
       'onnxruntime',
     );
+  });
+});
+
+describe('store providers and the dedup threshold (#1814, #1818)', () => {
+  it('names the store providers that are not installed and the steps to move', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(
+      baseState({
+        providers: [baseState().providers[0]],
+        installableProviders: [
+          { pluginId: LOCAL, label: 'Embeddings (keyless)', keyless: true },
+        ],
+      }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const list = await screen.findByTestId('installable-providers');
+    expect(list.textContent).toContain(`uninstall ${OLLAMA}`);
+    expect(list.textContent).toContain('keyless');
+    const link = list.querySelector('a');
+    expect(link?.getAttribute('href')).toBe(`/store/${encodeURIComponent(LOCAL)}`);
+  });
+
+  it('says where the threshold came from', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(
+      baseState({
+        dedupThresholdProvenance: {
+          source: 'recommended',
+          value: '0.45',
+          recommendedBy: LOCAL,
+        },
+      }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const line = await screen.findByTestId('dedup-provenance');
+    expect(line.textContent).toContain('0.45');
+    expect(line.textContent).toContain(LOCAL);
+  });
+
+  it('reports a threshold the switch removed', async () => {
+    const user = userEvent.setup();
+    mockSwitchEmbeddingProvider.mockResolvedValue({
+      ...baseState(),
+      ok: true,
+      switchedTo: OPENAI,
+      dedupThreshold: { applied: false, value: null, previous: '0.45', reason: 'cleared' },
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    await user.click(await screen.findByRole('radio'));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Switch provider' }));
+
+    const line = await screen.findByTestId('switch-dedup');
+    expect(line.textContent).toContain('0.45');
   });
 });
