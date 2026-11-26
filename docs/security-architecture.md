@@ -4432,11 +4432,19 @@ explicit here so a deployment can reason about them:
   `src/auth/sessionJwt.ts`) a permission gate on that route would gate
   nothing, so the control with teeth is the audit trail: every add/remove
   lands in `admin_audit` as `conductor.role_holders_change` with actor,
-  role, and the resulting holder set.
+  role, and the resulting holder set. Role creation, label changes and deletion
+  also write `conductor.role_created`, `conductor.role_updated` and
+  `conductor.role_deleted` with the session actor and stored role details.
   <!-- TODO(roles-split): when user roles split beyond 'admin', add a
        permission gate on POST/DELETE /roles/:key/holders (four-eyes or
        admin-only) — the audit trail alone stops being sufficient the moment
        non-admin operators exist. -->
+- **Template sharing separates author and reviewer when another active operator
+  exists.** The author can submit and a second operator must approve. An
+  installation with one active operator allows self-approval and marks it in
+  the audit entry. Submit, approve and reject record the actor, status and
+  version under ADR-0100. Sharing a new version requires a new review
+  (ADR-0253).
 - **Role batons now also decide who RECEIVES targeted reports (#330 B3).**
   The `targetedSend` kernel service resolves `role:<key>` addressees through
   the SAME holder registry the executor uses for approvals (one instance,
