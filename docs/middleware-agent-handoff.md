@@ -1351,6 +1351,21 @@ emittiert** — der Transport ist vollständig.
 
 ### Conductor Workflow-Templates (Operator-API, #429)
 
+- **Zeitpläne:** `GET /:slug` liefert die gespeicherten Zonen als `schedules`.
+  Derselbe Cron-Ausdruck behält seine Zeile und Zone, neue Ausdrücke starten in UTC
+  (ADR-0250). Der Poller protokolliert verpasste oder deaktivierte Slots und startet
+  nur im aktuellen Zeitfenster. `POST /emit` liefert deaktivierte Event-Abonnenten
+  unter `suppressed` (ADR-0251).
+
+- **Rollenverwaltung:** `POST /roles` erstellt einen neuen Schlüssel (409 bei Duplikat).
+  `PATCH /roles/:key` ändert das Label, `DELETE /roles/:key` löscht unbenutzte Rollen
+  (409 bei aktiven Inhabern oder Referenzen in aktuellen Workflow-Versionen).
+  Unbekannte Rollen liefern 404. Änderungen schreiben Audit-Einträge nach ADR-0100.
+- **Abgeleitete Vorlagen und Freigaben:** `slot:person:<key>` bindet einen Nutzer beim
+  Instanziieren (ADR-0252). Die Ableitung markiert Schritte mit URLs in Aktionseingaben.
+  Autoren dürfen nur ohne weiteren aktiven Operator selbst freigeben. Jede Version
+  beginnt privat, Statuswechsel schreiben Audit-Einträge (ADR-0253).
+
 Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
 (kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
 Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`;
@@ -1396,11 +1411,12 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `description` defaulten aufs Manifest (en-aufgelöst) →
   `201 { workflow, version, warnings? }` (die `warnings` wie bei `resolve`, #1713).
 
-**Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
-**live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
-Event-Ids — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
-strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
-nur wohlgeformt.
+**Publish-Validierung:** beide Template-Routen und `POST /` teilen
+`validatePublishGraph` mit Live-Referenzen aus `templateKnownRefs` (Agent-Slugs,
+Action-IDs, Role-Keys, Event-Vorschläge). Statische `webhook.post`-URLs werden auf
+HTTP(S) geprüft. Bei registrierten Plugin- und MCP-Aktionen werden deklarierte
+Pflichteingaben auf Vorhandensein geprüft. UUIDs aus der Operator-Kontentabelle werden in Personen-Referenzen
+abgelehnt. Builder-Entwürfe dürfen fehlende Actions für die Inline-Einrichtung behalten.
 
 **Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
 `POST /conductors/emit` nimmt jede Id, und ein eingehender Webhook-Endpoint
@@ -1464,8 +1480,7 @@ conductor.template_not_found` wenn unsichtbar), **`POST /templates`** Body
 bundled/plugin/DB; `400 conductor.template_invalid` mit Issues-Array),
 **`PUT /templates/:id`** (author-only `403 conductor.template_forbidden`;
 `manifest.id` muss `:id` sein → 400; hängt Version `latestVersion+1` an —
-Status bleibt bewusst unverändert: das Gate regelt das Teilen, nicht jede
-Version), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
+Status startet wieder `private` (ADR-0253)), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
 **`GET /templates/:id/versions`**. `resolve`/`instantiate` akzeptieren
 optional `version` im Body (Default: latest); `instantiate` stempelt die
 Provenance **in derselben Transaktion** wie den Publish (via `onPublished`)
@@ -4157,6 +4172,14 @@ Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
   `before`/`after` = gewährte Menge, `routes/runtimeGrants.ts`), `plugin.install`
   (Install-Wizard endet in `active`/`errored`) und `plugin.uninstall` (mit den Grants,
   die mit dem Plugin gehen, `routes/install.ts`).
+- **Operator-Änderungen (#1752, #1764, #1951, #1740):** Routine-Zeilen
+  unterscheiden den Operator vom Routine-Owner und halten bei Löschung Name,
+  Cron und Kanal fest. Agent-, Provider-, Kanal- und MCP-Änderungen verwenden
+  Zusammenfassungen der gespeicherten Felder. Der MCP-Filter liest
+  `mcp_server.*`. Der OAuth-Callback übernimmt den Akteur aus dem gestarteten
+  Flow (ADR-0246). `plugin.package_upload` hält Version und Quelle (`upload`
+  oder `builder`) nach erfolgreichem Ingest fest. Manuelle Spec- und Slot-Edits
+  stehen im eigenen Draft-Verlauf (ADR-0245).
 - **Logzeilen:** `[auth] login failed (…)` pro Audit-Zeile,
   `[grants] <actor> changed consent for "<id>": …` pro Consent-Änderung,
   `[auth] setup: first admin created via the setup wizard (…)` beim Wizard (#1092),
@@ -7633,11 +7656,11 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
 Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 
-- **Per-User-Ownership der Chat-Sessions.** Owner beim Anlegen stempeln und in
-  `GET`/`PUT`/`DELETE /api/chat/sessions` sowie in `validateConversationRef` prüfen.
-  Heute listet `GET` jede Session jedem angemeldeten User, und User A kann eine Routine
-  anlegen, die wiederkehrend in den Chat von User B schreibt, ohne dass B sie sehen,
-  pausieren oder löschen kann.
+- ~~**Per-User-Ownership der Chat-Sessions.**~~ Erledigt mit #1762 (ADR-0180): der Server
+  stempelt `ownerUserId` (Session-`sub`) beim ersten PUT, alle Routen unter
+  `/api/chat/sessions` und Chat-Turns/Steer mit fremder `sessionId` antworten 404. Eine
+  Routine entsteht damit nur im eigenen Chat und stellt nur dorthin zu. Alt-Chats ohne Owner
+  gehören dem einzigen Konto der Instanz, sonst niemandem (versteckt, nicht gelöscht).
 - **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`
   (ein gelöschter Chat fällt erst beim ersten Fire auf — dann aber vor dem Agent-Turn,
   und die Routine wird pausiert).
@@ -9080,6 +9103,14 @@ operator-authentifizierte Listing-Route (gleiches Gate wie Purge) ist der nächs
 Die Channel-Plugins (`omadia-channel-teams`, `omadia-channel-telegram`) bauen den `TurnOrigin`
 in ihren EIGENEN Repos; die können erst nach Release des SDK mit `TurnOrigin` gebaut werden.
 
+**Web, Routinen, Public API (#1774, #1826, ADR-0182, 2026-11-26):** Der Web-Chat
+(`webTurnOrigin`, nur aus `req.session.omadia_user_id`) und Web-Routinen (`routineOrigin`)
+senden `TurnOrigin { channelType: 'http', scope: personal(<omadia-user-id>) }`, der
+Public-API-Router `apiKeyOrigin(keyId)` (`channelType: 'api'`, `personal('key:<keyId>')`).
+Jedes Konto und jeder Key ist damit unter `enforce` / `enforce-strict` / `members` ein
+Ein-Personen-Raum; `off` bleibt ein gemeinsamer Baum. Merkfähiges Wissen ist ohne
+explizite Sichtbarkeit `private` (ADR-0183, Graph-Migration `0037`).
+
 ## Teams-E2E-Smoke: Provisioning-Kette gegen eine Wegwerf-Umgebung (W2a, #860 / #874, 2026-08-27)
 
 `middleware/scripts/smoke-teams-e2e.ts` (+ `-stage2.ts`, beide gitignored, weil sie
@@ -9725,7 +9756,7 @@ durch den Web-Sender unten.
   `pause`/`resume`/`delete`/`trigger` owner-gescoped (#1025). Die `sessionId` kommt aus
   dem authentifizierten Turn des Erstellers.
 
-**Follow-up:** Chat-Sessions haben keinen Per-User-Owner — `GET /api/chat/sessions` listet
+**Follow-up (erledigt mit #1762, ADR-0180 — Chats gehören dem anlegenden Konto):** Chat-Sessions hatten keinen Per-User-Owner — `GET /api/chat/sessions` listete
 alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id, und ein Turn mit fremder
 `sessionId` spiegelt schon heute in diesen Chat. #1071 **erweitert** diese Fläche leicht:
 die `conversationRef.sessionId` stammt aus dem Request-Body des Erstellers, also kann

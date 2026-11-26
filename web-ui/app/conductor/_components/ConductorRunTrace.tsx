@@ -177,6 +177,7 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
         <StatusBadge status={run.status} />
         <span>
           {t('runTriggerLabel')}: <span className="font-mono">{run.triggerKind}</span>
+          {run.triggerKind === 'cron' && <> · {run.triggerSource?.timezone ?? 'UTC'}</>}
         </span>
         <span>
           {t('startedLabel')}: {fmtTime(run.startedAt, format)}
@@ -399,7 +400,10 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
                 <span className="flex min-w-0 items-center gap-3">
                   <StatusBadge status={r.status} />
                   <RunVersionBadge version={r.workflowVersion} />
-                  <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">{r.triggerKind}</span>
+                  <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">
+                    {r.triggerKind}
+                    {r.triggerKind === 'cron' && <> · {r.triggerSource?.timezone ?? 'UTC'}</>}
+                  </span>
                   {r.status === 'failed' ? (
                     <span
                       className="min-w-0 truncate text-[12px] text-[color:var(--fg-muted)]"

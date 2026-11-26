@@ -8,6 +8,7 @@ import type {
   KnowledgeGraph,
   MemorableKind,
 } from '@omadia/plugin-api';
+import { AGENT_SCOPE_SEP, userNodeId } from '@omadia/plugin-api';
 
 /**
  * Slice 3b — REST surface for MemorableKnowledge + ACL operations.
@@ -42,10 +43,12 @@ const CreateMemorySchema = z.object({
   significance: z.number().min(0).max(1).optional(),
   involvedOmadiaUserIds: z.array(z.string().uuid()).optional(),
   requiredEntityIds: z.array(z.string().min(1)).optional(),
-  derivedFromTurnIds: z.array(z.string().min(1)).optional(),
-  /** Optional explicit owners. When the request is authenticated, the
-   *  session user is appended automatically (so a Web-UI save always
-   *  ends up with at least the saver as owner). */
+  /** #1852 — kept only for turns the caller sent; others are dropped. */
+  derivedFromTurnIds: z.array(z.string().min(1)).max(50).optional(),
+  /** #1852 — the saver is the only owner and involved user of a new entry.
+   *  Accepted for compatibility when they name nobody but the saver;
+   *  another id is refused (`memory.foreign_owner`). Sharing goes through
+   *  `POST /:id/owners`. */
   aclOwners: z.array(z.string().uuid()).optional(),
   /** Slice 6.5 — verbatim source-snippets that underpin this MK.
    *  Persisted as PalaiaExcerpt nodes in the same transaction as the
@@ -129,9 +132,52 @@ function mapErrorToHttp(err: unknown): { status: number; code: string } {
         return { status: 400, code: 'memory.excerpt_count_exceeded' };
       case 'excerpt_text_too_long':
         return { status: 400, code: 'memory.excerpt_text_too_long' };
+      case 'user_not_found':
+        return { status: 400, code: 'memory.unknown_user' };
     }
   }
   return { status: 500, code: 'memory.internal_error' };
+}
+
+/**
+ * #1852 — the source turns a new entry may cite: only turns the caller sent
+ * (the turn's User-Cluster is the caller's). A `DERIVED_FROM` edge to another
+ * person's turn would lead the graph walk and provenance reads to it. An
+ * unknown turn, or one without a recorded user, is dropped (fail closed).
+ */
+async function readableSourceTurns(
+  graph: KnowledgeGraph,
+  turnIds: readonly string[],
+  viewer: string,
+): Promise<{ kept: string[]; dropped: number; originAgent?: string }> {
+  const kept: string[] = [];
+  const agents = new Set<string>();
+  for (const id of new Set(turnIds)) {
+    const run = await graph.getRunForTurn(id).catch((err: unknown) => {
+      console.warn(`[memory] source turn ${id} unreadable, dropped:`, err instanceof Error ? err.message : err);
+      return null;
+    });
+    if (run?.user?.id !== userNodeId(viewer)) continue;
+    kept.push(id);
+    const agent = agentOfScope(run.turn.props['scope']);
+    if (agent) agents.add(agent);
+  }
+  const dropped = new Set(turnIds).size - kept.length;
+  if (dropped > 0) {
+    console.warn(`[memory] dropped ${String(dropped)} source turn(s) the saver did not send`);
+  }
+  // #1823 — the entry belongs to the agent whose turn it came from, so the
+  // per-agent recall isolation and the agent purge cover it. Turns of several
+  // agents name none.
+  const originAgent = agents.size === 1 ? [...agents][0] : undefined;
+  return { kept, dropped, ...(originAgent ? { originAgent } : {}) };
+}
+
+/** The agent slug of a qualified graph scope (`<slug>::<conversation>`). */
+function agentOfScope(scope: unknown): string | undefined {
+  if (typeof scope !== 'string') return undefined;
+  const at = scope.indexOf(AGENT_SCOPE_SEP);
+  return at > 0 ? scope.slice(0, at) : undefined;
 }
 
 export function createMemoryRouter(deps: {
@@ -151,17 +197,24 @@ export function createMemoryRouter(deps: {
       return;
     }
     const body = parsed.data;
-    const owners = Array.from(
-      new Set([sessionUserId, ...(body.aclOwners ?? [])]),
+    // #1852 — private stays private (owner rule 2026-11-24): a new entry is
+    // the saver's alone. Naming someone else would put it into their
+    // `/memories` and recall without their consent.
+    const foreign = [...(body.aclOwners ?? []), ...(body.involvedOmadiaUserIds ?? [])].filter(
+      (id) => id !== sessionUserId,
     );
-    // Slice-3b polish: mirror the owners-auto-include for involvement.
+    if (foreign.length > 0) {
+      res.status(400).json({
+        code: 'memory.foreign_owner',
+        message: 'a new memory belongs to its saver only; add owners afterwards via POST /:id/owners',
+      });
+      return;
+    }
     // Strict-ACL gating (`listMemorableKnowledgeFor`) requires both an
-    // INVOLVED edge AND `acl_owners @> [user]`; without auto-including
-    // the saver, a Web-UI save produced an MK the saver could never
-    // see in /memories.
-    const involved = Array.from(
-      new Set([sessionUserId, ...(body.involvedOmadiaUserIds ?? [])]),
-    );
+    // INVOLVED edge AND `acl_owners @> [user]`.
+    const owners = [sessionUserId];
+    const involved = [sessionUserId];
+    const sourceTurns = await readableSourceTurns(deps.graph, body.derivedFromTurnIds ?? [], sessionUserId);
     const createdBy =
       req.session?.provider && req.session.sub
         ? `${req.session.provider === 'entra' ? 'web' : 'web'}:${sessionUserId}`
@@ -181,14 +234,18 @@ export function createMemoryRouter(deps: {
         ...(body.requiredEntityIds
           ? { requiredEntityIds: body.requiredEntityIds }
           : {}),
-        ...(body.derivedFromTurnIds
-          ? { derivedFromTurnIds: body.derivedFromTurnIds }
-          : {}),
+        ...(sourceTurns.kept.length > 0 ? { derivedFromTurnIds: sourceTurns.kept } : {}),
+        ...(sourceTurns.originAgent ? { originAgent: sourceTurns.originAgent } : {}),
+        // #1823 (ADR-0183) — a saved memory is its saver's, not the tenant's.
+        visibility: 'private',
         ...(body.palaiaExcerpts
           ? { palaiaExcerpts: body.palaiaExcerpts }
           : {}),
       });
-      res.status(201).json(result);
+      res.status(201).json({
+        ...result,
+        ...(sourceTurns.dropped > 0 ? { droppedSourceTurns: sourceTurns.dropped } : {}),
+      });
     } catch (err) {
       const { status, code } = mapErrorToHttp(err);
       res.status(status).json({ code });

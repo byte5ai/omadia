@@ -36,7 +36,6 @@ import {
   GraphServiceRefusedError,
   KgEntityNamespaceError,
   MemoryPathError,
-  agentScopePrefix,
   neighborsOfType,
   scopeBelongsToAgent,
   type EditProcessInput,
@@ -61,6 +60,7 @@ import {
   currentProcessReadFilter,
   creatorOfCurrentTurn,
   graphNodeFilter,
+  processWriteScope,
   graphScopeFor,
   graphSessionAccess,
   turnContext,
@@ -650,11 +650,12 @@ export function boundProcessMemory(service: ProcessMemoryService, pluginId: stri
   };
   return Object.freeze({
     // A process lands only in this agent's scopes: another agent's
-    // `query_processes` and plan reuse would serve it (INV-2).
+    // `query_processes` and plan reuse would serve it (INV-2). Like
+    // `write_process` (#2223): none in a context-bound turn, where processes
+    // are not readable either.
     async write(input) {
       if (!currentBoundary()) throw new GraphServiceRefusedError(pluginId, capability, 'write', 'no-boundary');
-      const prefix = agentScopePrefix(turnContext.current()?.agentSlug ?? 'default');
-      if (!scopeBelongsToAgent(input.scope, prefix)) {
+      if (processWriteScope(input.scope) !== input.scope) {
         throw new GraphServiceRefusedError(pluginId, capability, 'write', 'out-of-scope');
       }
       // #1843 — the creator is the turn's caller, never what the plugin says.

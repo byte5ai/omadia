@@ -49,6 +49,15 @@ function asRecord(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+export function webhookPostInputError(input: unknown): string | null {
+  const value = asRecord(input).url;
+  if (typeof value !== 'string' || !value.trim()) return "webhook.post: 'url' is required";
+  const url = URL.parse(value.trim());
+  return url && (url.protocol === 'http:' || url.protocol === 'https:')
+    ? null
+    : "webhook.post: 'url' must be an absolute HTTP or HTTPS URL";
+}
+
 /** Keep only string→string entries, dropping anything else — bounds count + length
  *  so a malformed/hostile graph can't build an oversized request. */
 function normalizeHeaders(v: unknown): Record<string, string> {

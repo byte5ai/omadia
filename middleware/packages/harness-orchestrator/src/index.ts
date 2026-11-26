@@ -699,10 +699,12 @@ export {
   graphSessionAccess,
   type GraphNodeViewer,
 } from './graphNodeAccess.js';
+export { WEB_ACCOUNT_CHANNEL_TYPE, isWebAccountTurn, webAccountOrigin } from './webAccountOrigin.js';
 export {
   currentProcessBoundary,
   currentProcessReadFilter,
   creatorOfCurrentTurn,
+  processWriteScope,
   type ProcessBoundary,
 } from './tools/processMemoryTool.js';
 
@@ -767,8 +769,11 @@ export type {
   RunTraceOutcomeCounts,
 } from './runTraceObservability.js';
 export {
+  ChatSessionNotOwnedError,
   ChatSessionStore,
   InvalidSessionIdError,
+  chatSessionOwnedBy,
+  chatSessionOwner,
   ServerMirroredSessionError,
   isServerMirroredSession,
   isValidSessionId,

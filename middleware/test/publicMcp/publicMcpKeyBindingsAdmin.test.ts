@@ -5,6 +5,7 @@ import type { Server } from 'node:http';
 
 import express from 'express';
 import type { Pool } from 'pg';
+import type { AuditEntryInput } from '../../src/auth/adminAuditLog.js';
 
 import {
   createInMemoryPublicMcpKeyBindingAdminStore,
@@ -60,6 +61,7 @@ async function mountRouter(opts: {
   store?: PublicMcpKeyBindingAdminStore | undefined;
   operatorAuth?: { hasValidSession(cookie: string | undefined): Promise<boolean> };
   existence?: BindingExistenceCheck;
+  audits?: AuditEntryInput[];
 }): Promise<{ server: Server; baseUrl: string }> {
   const app = express();
   app.use(express.json());
@@ -69,6 +71,7 @@ async function mountRouter(opts: {
       getStore: () => opts.store,
       ...(opts.operatorAuth ? { operatorAuth: opts.operatorAuth } : {}),
       ...(opts.existence ? { existence: opts.existence } : {}),
+      ...(opts.audits ? { audit: { record: async (entry) => { opts.audits?.push(entry); } } } : {}),
     }),
   );
   const server = await listenLoopback(app);
@@ -637,6 +640,24 @@ describe('a revoked binding survives an upsert that omits `enabled`', () => {
         bindings: { keyId: string; enabled: boolean }[];
       };
       assert.equal(listed.bindings.find((b) => b.keyId === 'key-1')?.enabled, false);
+    });
+  });
+
+  it('HTTP: a failed audit snapshot read does not prevent revoke', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await store.upsert(VALID_INPUT);
+    const audits: AuditEntryInput[] = [];
+    await withRouter({
+      store: { ...store, async get() { throw new Error('snapshot temporarily unavailable'); } },
+      operatorAuth: alwaysValidOperatorAuth(),
+      audits,
+    }, async (url) => {
+      const res = await fetch(`${url}/key-1/revoke`, { method: 'POST' });
+      assert.equal(res.status, 200);
+      assert.equal((await store.get?.('key-1'))?.enabled, false);
+      assert.equal(audits[0]?.action, 'mcp_server.public_binding_change');
+      assert.equal(audits[0]?.before, 'unknown');
+      assert.equal(audits[0]?.target, 'public-mcp-key:key-1');
     });
   });
 

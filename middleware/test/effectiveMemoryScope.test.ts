@@ -399,6 +399,13 @@ test('enforce-strict with an unresolvable origin yields the agent-private scope 
   });
 });
 
+test('#1826: the audit line names the mode the agent is set to (members stays members)', () => {
+  const { lines, log } = sink();
+  effectiveMemoryScope('public', contextFreeAxes(), { mode: 'members', log });
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0]!.fields?.mode, 'members');
+});
+
 test('enforce-strict names WHY the context was refused', () => {
   // Arrange — 'axes-missing' and 'no-usable-context-pattern' are different
   // bugs in different places; collapsing them would make the audit line

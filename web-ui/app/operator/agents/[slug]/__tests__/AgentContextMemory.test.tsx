@@ -94,7 +94,7 @@ describe('AgentContextMemory (#899)', () => {
     // All three semantics from the issue must be on screen BEFORE the switch.
     expect(screen.getByText(/shared team tier/i)).toBeInTheDocument();
     expect(screen.getByText(/read-only for context turns/i)).toBeInTheDocument();
-    expect(screen.getByText(/Turns from the API carry no chat context/i)).toBeInTheDocument();
+    expect(screen.getByText(/Web chat accounts and Public API keys count as one-person chats/i)).toBeInTheDocument();
 
     const save = screen.getByRole('button', { name: /Save/i });
     expect(save).toBeDisabled();

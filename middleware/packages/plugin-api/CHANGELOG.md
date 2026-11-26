@@ -35,6 +35,20 @@ Additive.
 
 - `MemorableKnowledgePurgeFilter.aclOwner` erases the owner (#1842): an entry with other
   owners is de-owned (ACL audit `shrink`), only entries the person owns alone are deleted.
+## 1.99.0 — 2026-11-26
+
+No type change; the documented behaviour of three methods changes (#1821, #1823).
+
+### Changed (behaviour)
+
+- **`KnowledgeGraph.addOwner`** refuses a user with no User-Cluster node
+  (`user_not_found`, nothing changes) and writes the `INVOLVED` edge with the
+  owner, so the entry appears in the new owner's `listMemorableKnowledgeFor`.
+  **`removeOwner`** drops that edge. Both bundled providers.
+- **`MemorableKnowledgeIngest.visibility`** omitted now stores `private` on
+  both providers, as this contract already said; before, both fell back to
+  `team`, which recall's team branch hands to every account and agent. Pass
+  `team` / `public` only for knowledge shared on purpose (ADR-0183).
 
 ## 1.98.0 — 2026-11-25
 

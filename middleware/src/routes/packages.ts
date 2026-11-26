@@ -11,7 +11,7 @@ import {
 import type { UploadedPackageStore } from '../plugins/uploadedPackageStore.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { isTruthyFlag } from '../http/requestFlags.js';
-import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 
 /**
  * Zip-upload endpoints for agent packages.
@@ -135,6 +135,13 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
         res.status(ingestFailureStatus(result.code)).json(ingestFailureBody(result));
         return;
       }
+
+      await recordOperatorAudit(deps.audit, req, {
+        action: 'plugin.package_upload',
+        target: 'plugin:' + result.plugin_id,
+        before: result.replaced_version ? { version: result.replaced_version } : null,
+        after: { version: result.version, source: 'upload' },
+      });
 
       // #1455 — `direction` is present only when this upload replaced another
       // version. It is here so a caller cannot mistake a downgrade for an

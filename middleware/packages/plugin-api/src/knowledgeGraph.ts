@@ -271,7 +271,10 @@ export interface KnowledgeGraph {
    * Slice 3 — add a cluster-root user to a MemorableKnowledge's
    * `acl_owners`. The actor must already be in `acl_owners`. Returns
    * the new owner list. No-op (idempotent) if the user is already an
-   * owner; still writes an audit row.
+   * owner; still writes an audit row. #1821 — also writes the INVOLVED
+   * edge, so the entry appears in the new owner's
+   * `listMemorableKnowledgeFor`; a user with no User-Cluster node throws
+   * `user_not_found` and nothing changes.
    */
   addOwner(
     memorableKnowledgeNodeId: string,
@@ -282,7 +285,7 @@ export interface KnowledgeGraph {
    * Slice 3 — remove a cluster-root user from `acl_owners`. The actor
    * must be in `acl_owners`. Removing the last owner throws
    * `cannot_remove_last_owner` — use `deleteMemory` for explicit
-   * teardown.
+   * teardown. #1821 — also drops that user's INVOLVED edge.
    */
   removeOwner(
     memorableKnowledgeNodeId: string,
@@ -1519,9 +1522,10 @@ export interface MemorableKnowledgeIngest {
    */
   aclOwners?: string[];
   /**
-   * Initial visibility for the new MK. Omitted → backend default
-   * (admin-only / private). Used by the scratch-promotion reaper to publish
-   * consolidated agent knowledge team-wide.
+   * Initial visibility for the new MK. Omitted → `private` (#1823): only
+   * the owners recall it. Pass `team` / `public` only for knowledge shared on
+   * purpose (operator durable rules); recall's team branch hands it to every
+   * account and agent of the tenant.
    */
   visibility?: Visibility;
   /**
