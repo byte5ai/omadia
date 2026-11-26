@@ -8,6 +8,17 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.99.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`SYSTEM_NOTICE_CODES`: `model_unavailable`** (#1877). The management
+  notice for a turn that cannot run: the agent's model policy pins a primary
+  whose provider has no key (or was removed) and allows no fallback. Before,
+  such a turn ran silently on the host's default provider.
+
 ## 1.98.0 — 2026-11-25
 
 Additive.

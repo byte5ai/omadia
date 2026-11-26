@@ -311,7 +311,9 @@ import type {
   SeamMessage,
 } from './llmProviderSeam.js';
 import { completeWithFallback, streamMessageEvents } from './streaming.js';
-import type { KgWalkPayload, ModelRef } from '@omadia/plugin-api';
+import type { KgWalkPayload, ModelRef, SystemNotice } from '@omadia/plugin-api';
+import { SYSTEM_SPEAKER } from '@omadia/plugin-api';
+import { buildSystemNotice } from './management/systemNotices.js';
 import type { LlmProviderPool } from '@omadia/llm-provider';
 
 /**
@@ -332,6 +334,29 @@ interface TurnExecution {
   readonly effort?: EffortLevel;
   readonly identity?: string;
   readonly fallback?: TurnFallback;
+  /**
+   * #1877 — the pinned primary's provider could not be served, so the turn
+   * starts on the policy's fallback. Callers mark the turn as a fallback
+   * (receipt `fallbackUsed`, the `provider_fallback` chip).
+   */
+  readonly startedOnFallback?: boolean;
+}
+
+/**
+ * #1877 — the policy pins a primary whose provider the pool cannot serve (no
+ * key, removed) and allows no usable fallback. The turn fails with the
+ * `model_unavailable` notice instead of running on another provider.
+ */
+export class PrimaryModelUnavailableError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly providerId: string,
+  ) {
+    super(
+      `agent '${agentId}': primary provider '${providerId}' is not available and the model policy allows no fallback`,
+    );
+    this.name = 'PrimaryModelUnavailableError';
+  }
 }
 
 /** #1033 W3 — does the wire history carry an image block? (vision gate) */
@@ -4897,7 +4922,15 @@ export class Orchestrator {
    * `runTurn()` directly.
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const turn = await this.runTurn(input);
+    let turn: ChatTurnResult;
+    try {
+      turn = await this.runTurn(input);
+    } catch (err) {
+      if (!(err instanceof PrimaryModelUnavailableError)) throw err;
+      // #1877 — see `executionOnFallback`: the turn fails as a notice.
+      const notice = this.modelUnavailableNotice(input);
+      return { text: notice.text, speaker: SYSTEM_SPEAKER, systemNotice: notice };
+    }
     // Phase 3 — the level this answer was generated under, on EVERY answer
     // this path returns (choice cards and gate returns included),
     // so a channel can always offer the neighbouring steps. Resolved here,
@@ -6362,9 +6395,7 @@ export class Orchestrator {
   ): Promise<TurnExecution> {
     const primary = await this.resolvePrimaryExecution(turnModel);
     if (primary.primaryUnavailable !== undefined) {
-      console.warn(
-        `[orchestrator] agent '${this.agentId}': primary provider '${primary.primaryUnavailable}' is not available (no key?) — running on '${this.provider.id}'`,
-      );
+      return this.executionOnFallback(primary.primaryUnavailable, hasImages);
     }
     const { provider, model, effort } = primary;
     let fallback: TurnFallback | undefined;
@@ -6392,6 +6423,60 @@ export class Orchestrator {
       }
     }
     return { provider, model, ...(effort !== undefined ? { effort } : {}), ...(fallback ? { fallback } : {}) };
+  }
+
+  /**
+   * #1877 — the pinned primary cannot be served. The policy's fallback (an
+   * explicit ref, or for `auto` the agent's own provider and model) becomes
+   * the execution and the turn is marked as a fallback. With `none`, or a
+   * fallback the pool cannot serve either, the turn fails visibly
+   * ({@link PrimaryModelUnavailableError}) — never silently elsewhere.
+   */
+  private async executionOnFallback(
+    unavailable: string,
+    hasImages: boolean,
+  ): Promise<TurnExecution> {
+    const ref = this.fallbackRef;
+    const refuse = (why: string): never => {
+      console.warn(`[orchestrator] agent '${this.agentId}': primary provider '${unavailable}' is not available — ${why}`);
+      throw new PrimaryModelUnavailableError(this.agentId, unavailable);
+    };
+    if (!ref) return refuse('the model policy allows no fallback; the turn fails');
+    if (hasImages && this.fallbackVisionSupported === false) {
+      return refuse(`fallback model '${ref.model}' cannot read images; the turn fails`);
+    }
+    const fbProvider =
+      ref.provider === this.provider.id
+        ? this.provider
+        : await this.providerPool?.get(ref.provider).catch(() => undefined);
+    if (!fbProvider) return refuse(`fallback provider '${ref.provider}' is not available either; the turn fails`);
+    console.warn(
+      `[orchestrator] agent '${this.agentId}': primary provider '${unavailable}' is not available — starting on fallback '${fbProvider.id}:${ref.model}'`,
+    );
+    const family = Orchestrator.familyOf(ref.model);
+    const primaryFamily = this.primaryRef ? Orchestrator.familyOf(this.primaryRef.model) : family;
+    return {
+      provider: fbProvider,
+      model: ref.model,
+      ...(ref.effort !== undefined ? { effort: ref.effort } : {}),
+      ...(family !== primaryFamily && this.identityByFamily?.[family]
+        ? { identity: this.identityByFamily[family] }
+        : {}),
+      startedOnFallback: true,
+    };
+  }
+
+  /** #1877 — the `model_unavailable` notice for this agent, in the turn's locale. */
+  private modelUnavailableNotice(input: ChatTurnInput): SystemNotice {
+    const locale = this.turnLocale(input);
+    return buildSystemNotice('model_unavailable', {
+      agent: {
+        slug: this.agentId,
+        displayName: this.identityName ?? this.agentId,
+        agentId: this.traceAgentId,
+      },
+      ...(locale ? { locale } : {}),
+    });
   }
 
   /**
@@ -6954,12 +7039,15 @@ export class Orchestrator {
       traceCollector?.recordWorkingMode(turnModeResolved.verdict.skillId, turnWorkingMode.name);
     }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
+    // #1877 — throws `PrimaryModelUnavailableError` when the pinned primary
+    // cannot be served and no fallback is allowed; `chat()` answers it with
+    // the `model_unavailable` notice.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     Orchestrator.publishTurnExecution(turnExec);
     // #650 — stamp the resolved model on the trace here, once, rather than at
     // each of `finish()`'s call sites. Buffered path.
     traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
-    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id, turnExec.startedOnFallback === true);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -8330,13 +8418,42 @@ export class Orchestrator {
       traceCollector?.recordWorkingMode(resolvedMode.verdict.skillId, turnWorkingMode.name);
     }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
-    let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    let turnExec: TurnExecution;
+    try {
+      turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    } catch (err) {
+      if (!(err instanceof PrimaryModelUnavailableError)) throw err;
+      // #1877 — the turn fails visibly, as a `system` notice, before any
+      // model call; it never runs silently on another provider.
+      const notice = this.modelUnavailableNotice(input);
+      yield {
+        type: 'done',
+        answer: notice.text,
+        toolCalls: 0,
+        iterations: 0,
+        speaker: SYSTEM_SPEAKER,
+        systemNotice: notice,
+      };
+      return;
+    }
     Orchestrator.publishTurnExecution(turnExec);
     // #650 — streaming mirror of the buffered stamp above. Both paths, or the
     // field is present on some traces and absent on others for no visible
     // reason, which is worse for a provenance record than not having it.
     traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
-    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id, turnExec.startedOnFallback === true);
+    // #1877 — a turn that starts on the fallback because the primary cannot
+    // be served shows the same chip as a hop after a failed call.
+    if (turnExec.startedOnFallback === true) {
+      yield {
+        type: 'turn_routing',
+        bucket: resolved.routing?.bucket ?? 'complex',
+        classifierModel: resolved.routing?.classifierModel ?? '',
+        model: turnExec.model,
+        reason: 'provider_fallback',
+        provider: turnExec.provider.id,
+      };
+    }
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.

@@ -2379,6 +2379,21 @@ Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
 Provider-Wechsel einen Klassen-Ref bei.
 
+**Modell-Policy eines Agenten (#1870, #1871, #1877).** `PUT
+/operator/agents/:slug/model-policy` speichert und baut den Agenten neu:
+`runtimeChangeReasons` (`registry/applyDiff.ts`) kennt den Grund `model_policy`,
+der nächste Turn läuft also auf Primär, Effort und Fallback der neuen Policy.
+`validateModelPolicy` lehnt einen Provider ab, der keine Tool-Turns im
+In-Process-Loop kann (das Abo-CLI, ADR-0086): `400 model_policy_tool_incompatible`.
+GET und PUT melden `deferredProvider` nur noch ohne Provider-Pool und neu
+`primaryUnavailable`, wenn der Provider des Primärmodells gerade nicht nutzbar
+ist; die Modell-Karte zeigt das an. Im Turn gilt (`resolveTurnExecution`): kann
+der Pool das Primärmodell nicht bedienen, startet der Turn auf dem Fallback der
+Policy und ist als Fallback markiert (Receipt `fallbackUsed`, Chip
+`provider_fallback`); mit Fallback „Keiner“ (oder einem ebenfalls nicht
+nutzbaren Fallback) endet er mit der `system`-Notiz `model_unavailable`
+(plugin-api 1.99.0) statt still auf einem anderen Provider zu laufen.
+
 **Sub-Agents fallen auf das Orchestrator-Modell zurück.** Weil die Sub-Agents
 ihr Modell selbst auflösen, kann es nach einem Provider-Wechsel veralten — eine
 konkrete Claude-ID in `SUB_AGENT_MODEL` oder im Manifest läuft gegen den neuen

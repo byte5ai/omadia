@@ -18,6 +18,9 @@ import {
   parseModelPolicy,
   parseModelRef,
   resolveModelPolicyRuntime,
+  describeModelPolicyRuntime,
+  ModelPolicyRefusedError,
+  MODEL_POLICY_TOOL_INCOMPATIBLE,
   validateModelPolicy,
   type ModelPolicyValidationContext,
 } from '../packages/harness-orchestrator/src/registry/modelPolicy.js';
@@ -44,12 +47,23 @@ const CATALOG: Record<string, ModelInfo> = {
     contextWindow: 1,
     vision: false,
   },
+  'claude-cli:sonnet-cli': {
+    id: 'claude-cli:sonnet-cli',
+    provider: 'claude-cli',
+    modelId: 'sonnet-cli',
+    label: 'Sonnet (CLI)',
+    class: 'balanced',
+    maxTokens: 1,
+    contextWindow: 1,
+    vision: false,
+  },
 };
 
 function ctx(keyed: readonly string[]): ModelPolicyValidationContext {
   return {
     resolveModel: (provider, model) => CATALOG[`${provider}:${model}`],
     usable: async (provider) => keyed.includes(provider),
+    runsToolTurns: (provider) => provider !== 'claude-cli',
   };
 }
 
@@ -120,6 +134,21 @@ describe('validateModelPolicy', () => {
     );
   });
 
+  it('#1871 — refuses the subscription CLI as primary or fallback with a coded error', async () => {
+    for (const policy of [
+      { primary: { provider: 'claude-cli', model: 'sonnet-cli' }, fallback: 'auto' as const },
+      { primary: 'auto' as const, fallback: { provider: 'claude-cli', model: 'sonnet-cli' } },
+    ]) {
+      await assert.rejects(
+        validateModelPolicy(policy, ctx(['anthropic', 'claude-cli'])),
+        (e: unknown) =>
+          e instanceof ModelPolicyRefusedError &&
+          e.code === MODEL_POLICY_TOOL_INCOMPATIBLE &&
+          /tool turns/.test(e.message),
+      );
+    }
+  });
+
   it('the default policy validates without touching the catalogue', async () => {
     assert.deepEqual(await validateModelPolicy(DEFAULT_MODEL_POLICY, ctx([])), {});
   });
@@ -148,5 +177,34 @@ describe('resolveModelPolicyRuntime', () => {
       ),
       { pinned: true, deferredProvider: 'openai', effort: 'medium' },
     );
+  });
+});
+
+describe('describeModelPolicyRuntime (#1871, #1877)', () => {
+  const primaryOpenai = { primary: { provider: 'openai', model: 'gpt-5.5' }, fallback: 'none' as const };
+  const readout = (keyed: readonly string[], switchesProviders: boolean) => ({
+    activeProvider: 'anthropic',
+    switchesProviders,
+    usable: async (provider: string) => keyed.includes(provider),
+  });
+
+  it('auto says nothing', async () => {
+    assert.deepEqual(await describeModelPolicyRuntime(DEFAULT_MODEL_POLICY, readout([], true)), {});
+  });
+
+  it('with a pool a primary on another provider is not deferred', async () => {
+    assert.deepEqual(await describeModelPolicyRuntime(primaryOpenai, readout(['openai'], true)), {});
+  });
+
+  it('without a pool it is deferred', async () => {
+    assert.deepEqual(await describeModelPolicyRuntime(primaryOpenai, readout(['openai'], false)), {
+      deferredProvider: 'openai',
+    });
+  });
+
+  it('a primary whose provider lost its key is reported unavailable', async () => {
+    assert.deepEqual(await describeModelPolicyRuntime(primaryOpenai, readout(['anthropic'], true)), {
+      primaryUnavailable: 'openai',
+    });
   });
 });

@@ -52,6 +52,8 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
   const [effectiveModel, setEffectiveModel] = useState<string | null>(null);
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const [deferredProvider, setDeferredProvider] = useState<string | undefined>(undefined);
+  // #1877 — the saved primary's provider cannot be used now (no key, removed).
+  const [primaryUnavailable, setPrimaryUnavailable] = useState<string | undefined>(undefined);
   const [vision, setVision] = useState<{ primary?: boolean | null; fallback?: boolean | null }>({});
   const [providers, setProviders] = useState<BuilderProviderGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +82,7 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
       setEffectiveModel(policy.effectiveModel);
       setActiveProvider(policy.activeProvider);
       setDeferredProvider(policy.deferredProvider);
+      setPrimaryUnavailable(policy.primaryUnavailable);
       setVision(policy.vision ?? {});
       // A pre-W1 middleware has no `providers` — fall back to grouping the
       // scoped `models` list so the section still renders something honest.
@@ -117,6 +120,7 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
       setDraft(res.policy);
       setVision(res.vision);
       setDeferredProvider(res.deferredProvider);
+      setPrimaryUnavailable(res.primaryUnavailable);
       setError(null);
       // The effective model may have moved with the policy; re-read it.
       const after = await getAgentModelPolicy(props.slug);
@@ -132,7 +136,13 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
     setDraft((d) => (slot === 'primary' ? { ...d, primary: value as ModelPolicy['primary'] } : { ...d, fallback: value }));
   };
 
-  const summary = useMemo(() => describe(draft, effectiveModel, providers, t), [draft, effectiveModel, providers, t]);
+  // The header describes the SAVED policy's runtime state only while the draft
+  // still equals it; an unsaved edit has not been checked yet.
+  const unavailable = dirty ? undefined : primaryUnavailable;
+  const summary = useMemo(
+    () => describe(draft, effectiveModel, providers, t, unavailable),
+    [draft, effectiveModel, providers, t, unavailable],
+  );
 
   return (
     <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
@@ -186,6 +196,11 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
             )}
             {!sameRef && sameProvider && (
               <p className="text-[color:var(--warning)]">{t('sameProvider')}</p>
+            )}
+            {unavailable && (
+              <p className="text-[color:var(--danger)]">
+                {t('primaryUnavailable', { provider: unavailable })}
+              </p>
             )}
             {deferredProvider && (
               <p className="text-[color:var(--warning)]">
@@ -381,17 +396,24 @@ function describe(
   effectiveModel: string | null,
   providers: BuilderProviderGroup[],
   t: Tr,
+  primaryUnavailable: string | undefined,
 ): string {
   const primary = isModelRef(policy.primary)
     ? labelOf(policy.primary, providers) + (policy.primary.effort ? ` (${t(`effort.${policy.primary.effort}`)})` : '')
     : effectiveModel
       ? t('summaryAuto', { model: effectiveModel })
       : t('auto');
-  if (policy.fallback === 'none') return t('summaryNoFallback', { primary });
+  // #1877 — never claim the agent runs on a primary it cannot reach.
+  const isUnavailable = primaryUnavailable !== undefined && isModelRef(policy.primary);
+  if (policy.fallback === 'none') {
+    return isUnavailable ? t('summaryUnavailableNoFallback', { primary }) : t('summaryNoFallback', { primary });
+  }
   const fallback = isModelRef(policy.fallback)
     ? labelOf(policy.fallback, providers)
     : effectiveModel
       ? t('summaryAuto', { model: effectiveModel })
       : t('auto');
-  return t('summaryWithFallback', { primary, fallback });
+  return isUnavailable
+    ? t('summaryUnavailableWithFallback', { primary, fallback })
+    : t('summaryWithFallback', { primary, fallback });
 }

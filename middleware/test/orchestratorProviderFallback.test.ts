@@ -273,3 +273,77 @@ describe('fallback scope across the tool loop (#1033 W3, advisor round)', () => 
     assert.equal(result.answer, 'from same-wire fallback');
   });
 });
+
+// ── #1877 — a pinned primary the pool cannot serve ─────────────────────────
+
+describe('pinned primary unavailable (#1877)', () => {
+  function build(fallbackRef: { provider: string; model: string } | undefined) {
+    const seen: LlmRequest[] = [];
+    const receipts: TurnReceiptRecordInput[] = [];
+    const own = answering('anthropic', 'from own provider', seen);
+    // The pool serves the agent's own provider only: `openai` lost its key.
+    const pool = {
+      get: async (id: string) => (id === 'anthropic' ? own : undefined),
+      health: createProviderHealth({ now: () => 1_000 }),
+    };
+    const orchestrator = new Orchestrator({
+      provider: own,
+      model: 'claude-sonnet-5-5',
+      maxTokens: 64,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      agentId: 'p07',
+      providerPool: pool,
+      primaryRef: { provider: 'openai', model: 'gpt-5.5' },
+      ...(fallbackRef ? { fallbackRef } : {}),
+      turnReceiptStore: () => ({
+        record: async (entry: TurnReceiptRecordInput) => {
+          receipts.push(entry);
+        },
+      }),
+    } as never);
+    return { orchestrator, seen, receipts };
+  }
+
+  it('fallback none: the streamed turn ends with the model_unavailable notice, no model call', async () => {
+    const h = build(undefined);
+    const events: Array<Record<string, unknown>> = [];
+    for await (const ev of h.orchestrator.chatStream({ userMessage: 'Hallo', sessionScope: 's-u1' })) {
+      events.push(ev as never);
+    }
+    assert.equal(h.seen.length, 0, 'no provider was called');
+    const done = events.find((e) => e['type'] === 'done');
+    assert.equal((done?.['systemNotice'] as { code?: string } | undefined)?.code, 'model_unavailable');
+    assert.deepEqual(done?.['speaker'], { kind: 'system' });
+  });
+
+  it('fallback none: chat() answers with the notice', async () => {
+    const h = build(undefined);
+    const answerOut = await h.orchestrator.chat({ userMessage: 'Hallo', sessionScope: 's-u2' });
+    assert.equal(answerOut.systemNotice?.code, 'model_unavailable');
+    assert.equal(answerOut.speaker?.kind, 'system');
+    assert.equal(h.seen.length, 0);
+  });
+
+  it('fallback auto: starts on the fallback, shows the chip and marks the attribution', async () => {
+    const h = build({ provider: 'anthropic', model: 'claude-sonnet-5-5' });
+    const events: Array<Record<string, unknown>> = [];
+    let text = '';
+    for await (const ev of h.orchestrator.chatStream({ userMessage: 'Hallo', sessionScope: 's-u3' })) {
+      events.push(ev as never);
+      if (ev.type === 'text_delta') text += ev.text;
+    }
+    assert.equal(text, 'from own provider');
+    const routing = events.find((e) => e['type'] === 'turn_routing');
+    assert.equal(routing?.['reason'], 'provider_fallback');
+    assert.equal(routing?.['provider'], 'anthropic');
+    assert.equal(h.seen.at(-1)?.model, 'claude-sonnet-5-5');
+  });
+
+  it('a fallback the pool cannot serve either fails like none', async () => {
+    const h = build({ provider: 'mistral', model: 'large' });
+    const answerOut = await h.orchestrator.chat({ userMessage: 'Hallo', sessionScope: 's-u4' });
+    assert.equal(answerOut.systemNotice?.code, 'model_unavailable');
+  });
+});

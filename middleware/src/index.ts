@@ -4557,6 +4557,13 @@ async function main(): Promise<void> {
     resolveModel: (provider: string, model: string) =>
       resolveModelRef(`${provider}:${model}`),
     usable: (provider: string) => kernelProviderPool.usable(provider),
+    // #1871 — ADR-0086: the subscription CLI runs tool turns only as its own
+    // loop, never inside an agent's in-process tool loop.
+    runsToolTurns: (provider: string) =>
+      llmProviderCatalog.get(provider)?.wireFormat !== 'claude-cli',
+    // The registry builds with the kernel pool, so a primary on another
+    // provider runs there; nothing is deferred.
+    switchesProviders: true,
     activeProvider: orchestratorActiveProviderId(),
   });
 

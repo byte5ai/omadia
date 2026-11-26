@@ -240,7 +240,10 @@ export type {
 } from './registry/agentToAgent.js';
 export {
   DEFAULT_MODEL_POLICY,
+  describeModelPolicyRuntime,
   isModelRef,
+  MODEL_POLICY_TOOL_INCOMPATIBLE,
+  ModelPolicyRefusedError,
   parseModelPolicy,
   parseModelRef,
   resolveModelPolicyRuntime,
@@ -248,6 +251,8 @@ export {
   validateModelPolicy,
 } from './registry/modelPolicy.js';
 export type {
+  ModelPolicyReadout,
+  ModelPolicyReadoutContext,
   ModelPolicyValidation,
   ModelPolicyValidationContext,
   ResolvedModelPolicy,

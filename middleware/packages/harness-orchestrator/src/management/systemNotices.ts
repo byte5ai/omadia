@@ -82,6 +82,12 @@ const TEMPLATES: Record<SystemNoticeCode, Record<NoticeLocale, Template>> = {
     en: (a) =>
       `${a} is no longer available: the plugin for ${a}'s role was removed. ${a}'s running processes were aborted; pending closing messages will not be sent. Please contact your administrator.`,
   },
+  model_unavailable: {
+    de: (a) =>
+      `${a} kann gerade nicht antworten: Das für ${a} eingestellte Modell ist nicht verfügbar, und ein Ersatzmodell ist nicht erlaubt. Bitte wende dich an deinen Administrator.`,
+    en: (a) =>
+      `${a} cannot answer right now: the model set for ${a} is unavailable, and no fallback model is allowed. Please contact your administrator.`,
+  },
   identity_guard_unavailable: {
     de: (a) => `Die Antwort von ${a} wurde zurückgehalten, weil die Identitätsprüfung nicht abgeschlossen werden konnte. Bitte versuche es erneut.`,
     en: (a) => `${a}'s answer was withheld because the identity check could not be completed. Please try again.`,
