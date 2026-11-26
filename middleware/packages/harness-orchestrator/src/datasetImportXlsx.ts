@@ -39,8 +39,10 @@ import {
   MAX_CELL_CHARS,
   MAX_DATASET_ROWS,
   type TableParse,
+  type TableParseFailure,
   type TableParseResult,
 } from './datasetImport.js';
+import { uniqueHeaders } from './datasetCsvDialect.js';
 
 /** Compressed-upload cap, enforced BEFORE the archive is inflated. */
 export const MAX_XLSX_BYTES = 25 * 1024 * 1024;
@@ -66,12 +68,15 @@ export function cellToString(value: unknown): string {
     return String(value);
   }
   if (value instanceof Date) {
-    // ISO date-only when the time component is exactly midnight UTC (Excel's
-    // representation of a pure date), full ISO otherwise. Both forms are
-    // matched by `datasetImport.ts`'s DATE_RE, so the shared inference types
-    // the column as 'date' exactly as it would for the CSV equivalent.
+    // ISO date-only when the time component is exactly midnight (Excel's
+    // representation of a pure date), `YYYY-MM-DDTHH:MM:SS` otherwise. Excel
+    // stores wall-clock time without a zone and ExcelJS hands it over as UTC,
+    // so no `Z` is claimed. Both forms are dates to `datasetDates.ts`, so the
+    // shared inference types the column `date` as it would for the CSV
+    // equivalent (#1845 — the full `….000Z` form used to fall to `string`).
     const iso = value.toISOString();
-    return iso.endsWith('T00:00:00.000Z') ? (iso.split('T')[0] ?? iso) : iso;
+    if (iso.endsWith('T00:00:00.000Z')) return iso.slice(0, 10);
+    return iso.slice(0, 19);
   }
   if (typeof value === 'object') {
     const v = value as Record<string, unknown>;
@@ -93,32 +98,6 @@ export function cellToString(value: unknown): string {
     if ('formula' in v || 'sharedFormula' in v) return '';
   }
   return String(value);
-}
-
-/** Trim + collapse internal whitespace in a header cell. */
-function normalizeHeader(raw: string): string {
-  return raw.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Make header names unique and non-empty, preserving order. An unnamed
- * column becomes `column_<n>` (1-based sheet position); a duplicate gets a
- * `_2`, `_3`, … suffix. Downstream code keys rows by header name, so a
- * collision would silently drop a column's data.
- */
-function uniqueHeaders(rawHeaders: readonly string[]): string[] {
-  const seen = new Map<string, number>();
-  return rawHeaders.map((raw, idx) => {
-    const base = normalizeHeader(raw) || `column_${String(idx + 1)}`;
-    const prior = seen.get(base);
-    if (prior === undefined) {
-      seen.set(base, 1);
-      return base;
-    }
-    const next = prior + 1;
-    seen.set(base, next);
-    return `${base}_${String(next)}`;
-  });
 }
 
 /** Cell strings for one worksheet row, indexed 0-based by column. */
@@ -173,7 +152,7 @@ export interface XlsxSheetParse extends TableParse {
 
 export type XlsxParseResult =
   | { ok: true; sheets: XlsxSheetParse[] }
-  | { ok: false; reason: string };
+  | TableParseFailure;
 
 /**
  * Parse XLSX bytes into one `TableParse` per non-empty worksheet. Never
@@ -237,7 +216,7 @@ export async function parseXlsx(bytes: Buffer): Promise<XlsxParseResult> {
  */
 function parseWorksheet(
   worksheet: ExcelJS.Worksheet,
-): { ok: true; sheet: XlsxSheetParse } | { ok: false; reason: string } | undefined {
+): { ok: true; sheet: XlsxSheetParse } | TableParseFailure | undefined {
   const columnCount = worksheet.columnCount;
   if (columnCount === 0 || worksheet.rowCount === 0) return undefined;
 
@@ -288,6 +267,7 @@ function parseWorksheet(
     return {
       ok: false,
       reason: `sheet '${worksheet.name}' exceeds the ${String(MAX_DATASET_ROWS)}-row import cap`,
+      code: 'row_cap',
     };
   }
   if (rows.length === 0) return undefined;

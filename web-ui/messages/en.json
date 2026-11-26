@@ -6540,6 +6540,13 @@
       "notCsv": "Only CSV and Excel files (.xlsx, .xlsm) are supported.",
       "noFile": "No file arrived — pick a CSV or Excel file first.",
       "importFailed": "The file could not be imported. {detail}",
+      "csvUnreadable": "The CSV file could not be read. Check that it is separated by commas, semicolons or tabs and that every quote is closed.",
+      "csvUnreadableAtLine": "The CSV file could not be read at line {line}. Check that it is separated by commas, semicolons or tabs and that every quote is closed.",
+      "csvRaggedRows": "A row of the CSV file has a different number of columns than the header.",
+      "csvRaggedRowsAtLine": "Line {line} of the CSV file has a different number of columns than the header.",
+      "csvEmpty": "The file has no header row or no data rows.",
+      "rowCap": "The file has more than {maxRows} rows.",
+      "reservedColumn": "A column name starts with the reserved prefix \"__k_\". Rename the column and import again.",
       "notFound": "This dataset no longer exists — it may have been deleted in another tab.",
       "generic": "The request failed (HTTP {status}).",
       "unexpected": "The request failed. {detail}"

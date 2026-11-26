@@ -562,4 +562,45 @@ describe('<AdminDatasetsPage />', () => {
       await screen.findByText('The file exceeds the 25 MB upload limit.'),
     ).toBeTruthy();
   });
+
+  it('#1847 — shows a coded CSV failure with its line, not the parser text', async () => {
+    const user = userEvent.setup();
+    mockUploadDataset.mockRejectedValue(
+      new MockApiError(
+        422,
+        'POST /v1/datasets failed: 422',
+        JSON.stringify({
+          code: 'dataset.csv_unreadable',
+          message: 'invalid CSV (separator ",") — Invalid Opening Quote',
+          line: 2,
+        }),
+      ),
+    );
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Q3 orders');
+
+    await user.upload(
+      screen.getByLabelText('CSV or Excel file'),
+      new File(['x'], 'semi.csv', { type: 'text/csv' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText(/could not be read at line 2/)).toBeTruthy();
+    expect(screen.queryByText(/Invalid Opening Quote/)).toBeNull();
+  });
+
+  it('#1846 — refuses a file over the limit before uploading it', async () => {
+    const user = userEvent.setup();
+    mockUploadDataset.mockClear();
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Q3 orders');
+
+    const big = new File(['x'], 'big.csv', { type: 'text/csv' });
+    Object.defineProperty(big, 'size', { value: 26 * 1024 * 1024 });
+    await user.upload(screen.getByLabelText('CSV or Excel file'), big);
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText('The file exceeds the 25 MB upload limit.')).toBeTruthy();
+    expect(mockUploadDataset).not.toHaveBeenCalled();
+  });
 });

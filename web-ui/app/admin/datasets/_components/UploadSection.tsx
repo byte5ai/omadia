@@ -46,6 +46,11 @@ export function UploadSection({
     if (!file) return;
     setError(null);
     setReceipt(null);
+    // #1846 — refuse an over-limit file before sending 25+ MB for nothing.
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setError(t('errors.tooLarge', { maxMb: MAX_UPLOAD_MB }));
+      return;
+    }
     setUploading(true);
     try {
       const result = await uploadDataset(file, name);

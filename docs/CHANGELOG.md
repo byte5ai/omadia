@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Dataset import: CSV dialects, ISO dates, linear masking, 25 MB uploads (#1845, #1846, #1847, #1867) (2026-11-26)
+
+- Date cells are stored as ISO-8601 (`d.m.yyyy`, slash dates, XLSX timestamps), so `date`
+  columns sort and filter in date order; impossible dates no longer type a column `date`.
+- `parseCsv` detects the separator (`,` `;` tab), decodes Windows-1252 when the file is not
+  UTF-8, keeps repeated header names as `a`, `a_2`, and returns coded failures
+  (`dataset.csv_unreadable`, `csv_ragged_rows`, `csv_empty`, `row_cap`, `reserved_column`)
+  that the admin UI translates.
+- The import masks the whole table with `maskTableCells` (privacy-guard) in linear time, one
+  surrogate per value per table (#1546), and yields to the event loop; per-cell `maskPrompt`
+  was quadratic and blocked `/health` and every chat (20,000 rows now ~1 s).
+- The web UI raises `proxyClientMaxBodySize` to 26 MiB (`app/_lib/proxyBodyLimit.ts`; the
+  login gate keeps covering `/bot-api`, ADR 0161), answers 413 for larger bodies and
+  refuses an over-limit file before uploading.
+
 ### Changed — Subscription CLI runs under the Privacy Shield instead of being refused (#2239, #2241; ADR-0195, ADR-0196) (2026-11-26)
 
 - Agents on the Claude subscription (`claude-cli`) now answer on instances with a privacy
