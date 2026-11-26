@@ -45,8 +45,11 @@ Chosen option: **A**.
 
 - `PROMPT_MASKED_UPLOAD_TOOLS` maps `transcribe_recording` to its `storage_key` input
   field. `isPromptMaskedUploadCall(tool, input, turnUploadKeys)` is true only when the key
-  is one of the files uploaded in this turn: the storage keys of the turn's
-  `[attachments-info]` block, kept on the turn context as `turnUploadKeys`.
+  is one of the files uploaded in this turn: the storage keys the channel adapter stated
+  as structured data (`ChatTurnInput.storedAttachments`,
+  [ADR-0178](0178-attachments-come-only-from-channel-adapters-and-bind-at-upload.md)),
+  kept on the turn context as `turnUploadKeys`. A key typed into the message text never
+  counts.
 - Such a result goes through `maskUserPrompt` with origin `context`, the path the
   inlined text of an upload takes: PII spans become the turn's surrogates while prompt
   masking is on, the rest stays readable, the answer gets the real values back. A blocked
@@ -54,8 +57,9 @@ Chosen option: **A**.
   `Error:` text is redacted like an exempt tool's.
 - A transcript of any other key is interned as before. Sub-agent and plugin dispatch
   seams keep interning it; only the orchestrator's own dispatch knows the turn's uploads.
-- The ownership check of #1960 (W00) stays the gate for which keys the tool may read at
-  all; this ADR only decides how the text of a current-turn upload reaches the model.
+- The conversation binding of #1960 (ADR-0178) stays the gate for which keys the tool
+  may read at all; this ADR only decides how the text of a current-turn upload reaches
+  the model.
 
 ### Consequences
 
@@ -66,7 +70,7 @@ Chosen option: **A**.
 - 🔴 **Bad:** with prompt masking off (the default), the transcript reaches the model as
   spoken, including third parties' names. Accepted: the user uploaded it and asked about
   it, exactly like a document they attach.
-- ⚪ **Neutral:** channels that do not write an `[attachments-info]` block give no
+- ⚪ **Neutral:** channels that do not state their uploads as `storedAttachments` give no
   current-turn keys, so their transcripts stay interned until they do.
 
 ## Pros and Cons of the Options

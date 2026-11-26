@@ -351,7 +351,7 @@ describe('PATCH /installed/:id/config — privacy keys (#1510)', () => {
     assert.equal(harness.registry.get(AGENT_ID)?.config['_privacy_mode'], undefined);
   });
 
-  it('records a privacy change in the admin audit trail, and nothing for other keys', async () => {
+  it('records privacy and other config changes separately, with no arbitrary config values', async () => {
     harness = await makeHarness({ guardInstalled: true, servicePublished: true });
     assert.equal((await patchConfig({ _privacy_mode: 'bypass' })).status, 200);
     assert.equal(harness.audits.length, 1);
@@ -366,8 +366,12 @@ describe('PATCH /installed/:id/config — privacy keys (#1510)', () => {
       _privacy_bypass_scopes: null,
     });
 
-    assert.equal((await patchConfig({ some_setting: 'x' })).status, 200);
-    assert.equal(harness.audits.length, 1);
+    assert.equal((await patchConfig({ some_setting: 'test-credential-marker' })).status, 200);
+    assert.equal(harness.audits.length, 2);
+    assert.equal(harness.audits[1]?.action, 'plugin.config_change');
+    assert.deepEqual(harness.audits[1]?.before, { fieldsPresent: 0, settings: {} });
+    assert.deepEqual(harness.audits[1]?.after, { fieldsPresent: 1, settings: {}, fieldsChanged: 1 });
+    assert.ok(!JSON.stringify(harness.audits).includes('test-credential-marker'));
   });
 
   it('records a manual non_personal_fields edit in the audit trail (#1556 follow-up)', async () => {

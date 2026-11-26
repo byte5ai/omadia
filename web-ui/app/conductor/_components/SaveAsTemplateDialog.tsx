@@ -165,14 +165,16 @@ export function SaveAsTemplateDialog({
   const [idError, setIdError] = useState<string | null>(null);
   const [manifestErrors, setManifestErrors] = useState<string[]>([]);
   const [genericError, setGenericError] = useState<string | null>(null);
+  const [urlInputStepIds, setUrlInputStepIds] = useState<string[]>([]);
 
   // Fetch the inference draft once per workflow (the dialog is re-keyed per slug).
   useEffect(() => {
     let cancelled = false;
     saveWorkflowAsTemplate(workflowSlug)
-      .then(({ draft: inferred }) => {
+      .then(({ draft: inferred, urlInputStepIds }) => {
         if (cancelled) return;
         setDraft(inferred);
+        setUrlInputStepIds(urlInputStepIds ?? []);
         setIdValue(inferred.id);
         setNameEn(textEn(inferred.name));
         setNameDe(textDe(inferred.name));
@@ -330,6 +332,7 @@ export function SaveAsTemplateDialog({
 
   const handlePublish = async (): Promise<void> => {
     if (draft === null) return;
+    if (urlInputStepIds.length > 0 && !window.confirm(t('saveTemplateConfirmUrls'))) return;
     setPending(true);
     setIdError(null);
     setManifestErrors([]);
@@ -369,6 +372,11 @@ export function SaveAsTemplateDialog({
         {t('saveTemplateHeading', { slug: workflowSlug })}
       </h3>
       <p className="mt-1 max-w-2xl text-[13px] leading-[1.55] text-[color:var(--fg-muted)]">{t('saveTemplateHint')}</p>
+      {urlInputStepIds.length > 0 && (
+        <p role="status" className="mt-2 text-[13px] text-[color:var(--warning,#f5a623)]">
+          {t('saveTemplateUrlWarning', { steps: urlInputStepIds.join(', ') })}
+        </p>
+      )}
 
       {draft !== null && (
         <>

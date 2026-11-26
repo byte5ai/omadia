@@ -340,7 +340,7 @@ export interface TurnContextValue {
   wireView?: { userMessage?: string; answer?: string };
   /**
    * ADR-0198 — storage keys of the files the user uploaded in THIS turn (the
-   * turn's `[attachments-info]` block). A tool that reads one of them returns
+   * adapter-stated `storedAttachments`, ADR-0178). A tool that reads one of them returns
    * the user's own upload, so its text may be prompt-masked instead of
    * interned (`isPromptMaskedUploadCall`). Absent ⇒ no upload counts as own.
    */

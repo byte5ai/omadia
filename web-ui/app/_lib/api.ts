@@ -2127,6 +2127,9 @@ export interface AdminUser {
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
+  /** #1840 — the knowledge-graph id the memory purge and owner lists use.
+   *  Only on the detail response; null when the account has none yet. */
+  omadiaUserId?: string | null;
 }
 
 export interface AdminUsersListResponse {
@@ -2569,6 +2572,10 @@ export async function getPreviewStatus(draftId: string): Promise<{
   agentId?: string;
   errorCount?: number;
   reason?: string;
+  /** #1792 — `false` when the last build is green but the preview is cold. */
+  warm?: boolean;
+  /** #1809 — the green build waits for a test credential for this key. */
+  missingSetupKey?: string;
 }> {
   return getJson<{
     phase: 'idle' | 'ok' | 'failed';
@@ -2576,6 +2583,8 @@ export async function getPreviewStatus(draftId: string): Promise<{
     agentId?: string;
     errorCount?: number;
     reason?: string;
+    warm?: boolean;
+    missingSetupKey?: string;
   }>(`/v1/builder/drafts/${encodeURIComponent(draftId)}/preview/status`);
 }
 
@@ -4601,6 +4610,16 @@ export interface MemoryPurgePreviewResult {
   /** Knowledge-Graph conversation history: turns, sessions, runs, tool
    *  calls, plans and derived facts (#1334). */
   conversationCount: number;
+  /** #1842 — remembered facts shared with others: they only lose the user. */
+  kgDeownedCount?: number;
+  /** #1842 — excerpts deleted with the remembered facts. */
+  kgExcerptCount?: number;
+  /** #1843 — the user's datasets, processes and identity nodes. */
+  datasetCount?: number;
+  processCount?: number;
+  identityCount?: number;
+  /** #1840 — the person a user-axis selector resolved to. */
+  resolvedUser?: { omadiaUserId: string; via: string };
   /** Top-level entries a re-seed resets and writes back (#1335). */
   reseedEntries: string[];
   warnings: MemoryPurgeWarning[];
@@ -4612,7 +4631,12 @@ export interface MemoryPurgePreviewResult {
 export interface MemoryPurgeResult {
   scratchDeleted: number;
   kgDeleted: number;
+  kgDeowned?: number;
+  kgExcerptsDeleted?: number;
   conversationDeleted: number;
+  datasetsDeleted?: number;
+  processesDeleted?: number;
+  identityDeleted?: number;
   /** Files the re-seed wrote back; present only on a re-seed purge. */
   reseededFiles?: number;
   /** `memory_purge_audit` row id; absent when the purge was not recorded. */
@@ -4670,6 +4694,49 @@ export async function purgeMemory(body: {
     );
   }
   return JSON.parse(text) as MemoryPurgeResult;
+}
+
+// -----------------------------------------------------------------------------
+// Owner-less memories (ADR-0185, #1829/#1831) — memorable knowledge with an
+// empty owner list (scratch reaper, seeded rules). No owner can delete it, so
+// the operator lists and deletes single entries at
+// /api/v1/admin/memory/ownerless (cookie session, audited server-side).
+// Owned entries are refused by the server (409 has_owners).
+// -----------------------------------------------------------------------------
+
+export interface OwnerlessMemory {
+  id: string;
+  kind: MemorableKind | null;
+  summary: string;
+  createdBy: string | null;
+  originAgent: string | null;
+  createdAt: string | null;
+  /** A rule entry derived from a file under /memories/_rules/. */
+  isRule: boolean;
+}
+
+export interface OwnerlessMemoriesResult {
+  /** False when the knowledge graph cannot list owner-less entries. */
+  supported: boolean;
+  items: OwnerlessMemory[];
+}
+
+export async function listOwnerlessMemories(): Promise<OwnerlessMemoriesResult> {
+  return getJson<OwnerlessMemoriesResult>('/v1/admin/memory/ownerless');
+}
+
+export async function deleteOwnerlessMemory(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(`/v1/admin/memory/ownerless/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE memory/ownerless failed: ${res.status}`, await res.text());
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -5547,6 +5614,7 @@ export interface ConductorRun {
   currentStepId: string | null;
   context: unknown;
   triggerKind: string;
+  triggerSource?: { timezone?: string; slotAt?: string } | null;
   startedAt: string;
   endedAt: string | null;
   /** #759 — set while an operator cancel is pending on a 'running' run. */
@@ -5600,7 +5668,7 @@ export async function listConductorWorkflows(): Promise<{ workflows: ConductorWo
 
 export async function getConductorWorkflowGraph(
   slug: string,
-): Promise<{ workflow: ConductorWorkflow; graph: unknown }> {
+): Promise<{ workflow: ConductorWorkflow; graph: unknown; schedules?: Array<{ cron: string; timezone: string }> }> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
 }
 
@@ -5630,7 +5698,7 @@ export async function getConductorAgents(): Promise<{ agents: Array<{ slug: stri
 }
 
 /** Registered deterministic-action / tool ids, for the Designer's action-step dropdown. */
-export async function getConductorActions(): Promise<{ actions: string[] }> {
+export async function getConductorActions(): Promise<{ actions: string[]; serverNames?: Record<string, string> }> {
   return getJson(`${CONDUCTOR_BASE}/actions`);
 }
 
@@ -5668,6 +5736,24 @@ export async function createConductorRole(key: string, label: string): Promise<v
   return postJson(`${CONDUCTOR_BASE}/roles`, { key, label });
 }
 
+export async function updateConductorRoleLabel(key: string, label: string): Promise<void> {
+  await getJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function deleteConductorRole(key: string): Promise<void> {
+  const path = `${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}`;
+  const response = await fetch(botApi(path), { method: 'DELETE', credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    maybeNavigateToLogin(response.status);
+    throw new ApiError(response.status, `DELETE ${path} failed: ${response.status}`, body);
+  }
+}
+
 export async function assignRoleHolder(key: string, holderId: string, action: 'add' | 'remove'): Promise<{ holders: string[] }> {
   return postJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}/holders`, { holderId, action });
 }
@@ -5676,6 +5762,7 @@ export interface ConductorEmitResult {
   eventId: string;
   matchedWorkflows: number;
   startedRuns: Array<{ workflowSlug: string; runId: string }>;
+  suppressed?: Array<{ workflowSlug: string; reason: 'workflow_disabled' | 'workflow_not_found' }>;
 }
 
 export async function emitConductorEvent(eventId: string, payload: unknown): Promise<ConductorEmitResult> {
@@ -5699,6 +5786,7 @@ export async function publishConductorWorkflow(body: {
   description?: string;
   graph: unknown;
   enable?: boolean;
+  expectNew?: boolean;
 }): Promise<{
   workflow: ConductorWorkflow;
   version: { id: string; version: number };
@@ -5825,6 +5913,7 @@ export interface ConductorTemplateSlots {
   agents?: ConductorTemplateSlot[];
   actions?: ConductorTemplateSlot[];
   roles?: ConductorTemplateSlot[];
+  people?: ConductorTemplateSlot[];
   events?: ConductorTemplateSlot[];
   channels?: ConductorTemplateSlot[];
   text?: ConductorTemplateTextSlot[];
@@ -5834,7 +5923,7 @@ export interface ConductorTemplateSlots {
  *  `text` maps declared text-slot keys to the substituted strings (#478,
  *  additive — absent for pure-ref v1 mappings). */
 export type ConductorTemplateSlotMapping = Partial<
-  Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', Record<string, string>>
+  Record<'agents' | 'actions' | 'roles' | 'people' | 'events' | 'channels', Record<string, string>>
 > & {
   text?: Record<string, string>;
 };
@@ -5888,7 +5977,7 @@ export async function fetchConductorTemplate(id: string): Promise<{ template: Co
  *  is mounted at /conductors, so the path carries no '/workflows' prefix. */
 export async function saveWorkflowAsTemplate(
   slug: string,
-): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number } }> {
+): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number }; urlInputStepIds?: string[] }> {
   return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/save-as-template`, {});
 }
 
@@ -5959,15 +6048,15 @@ export async function submitConductorTemplate(id: string): Promise<{ template: C
 /** Approve a pending template (pending → shared). Open to ANY operator — the
  *  revised visibility rule makes pending templates install-wide, so a
  *  non-author reviewer can act; `reviewed_by` is recorded server-side. */
-export async function approveConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
-  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, {});
+export async function approveConductorTemplate(id: string, reviewedVersion?: number): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, { reviewedVersion });
 }
 
 /** Reject a pending template (pending → private). Open to any operator; the
  *  template may drop out of a non-author reviewer's visibility afterwards, so
  *  the returned `template` can be null. */
-export async function rejectConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
-  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, {});
+export async function rejectConductorTemplate(id: string, reviewedVersion?: number): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, { reviewedVersion });
 }
 
 /** Immutable manifest versions of a template, ascending. Bundled/plugin sources
@@ -6029,6 +6118,7 @@ export interface ConductorValidationError {
 export interface ConductorValidationResult {
   ok: boolean;
   errors: ConductorValidationError[];
+  warnings?: ConductorValidationWarning[];
 }
 
 export interface ConductorGraphPatch {

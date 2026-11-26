@@ -12,6 +12,7 @@ import {
 } from '@omadia/orchestrator';
 
 import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
+import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { respondFacilitatorRefusal } from '../platform/facilitatorGuard.js';
 
 /**
@@ -68,6 +69,7 @@ export interface OperatorChannelsRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   readonly getDirectoryRegistry: () => ChannelDirectoryRegistry | undefined;
+  readonly getAudit?: () => Pick<AdminAuditLog, 'record'> | undefined;
 }
 
 interface OperatorChannelDto {
@@ -100,6 +102,17 @@ export function createOperatorChannelsRouter(
   options: OperatorChannelsRouterOptions,
 ): Router {
   const router = Router();
+  const auditBinding = (
+    req: Request,
+    channel: { channel_type: string; channel_key: string },
+    before: string | null,
+    after: string | null,
+  ) => recordOperatorAudit(options.getAudit?.(), req, {
+    action: 'channel.binding_change',
+    target: channel.channel_type + ':' + channel.channel_key,
+    before: { agentId: before },
+    after: { agentId: after },
+  });
 
   function svc(): {
     store: ConfigStore;
@@ -276,6 +289,7 @@ export function createOperatorChannelsRouter(
             body.channel_type,
             body.channel_key,
           );
+          await auditBinding(req, body, existing.agentId, null);
         }
         await live.registry.reload();
         res.json({ ok: true, cleared: !!existing });
@@ -349,10 +363,16 @@ export function createOperatorChannelsRouter(
           body.channel_key,
         );
       }
-      await live.store.createChannelBinding(target.id, {
-        channelType: body.channel_type,
-        channelKey: body.channel_key,
-      });
+      try {
+        await live.store.createChannelBinding(target.id, {
+          channelType: body.channel_type,
+          channelKey: body.channel_key,
+        });
+      } catch (err) {
+        if (existing) await auditBinding(req, body, existing.agentId, null);
+        throw err;
+      }
+      await auditBinding(req, body, existing?.agentId ?? null, target.id);
       await live.registry.reload();
       res.json({ ok: true, bound_to: target.slug });
     } catch (err) {
@@ -366,10 +386,14 @@ export function createOperatorChannelsRouter(
     if (!live) return unavailable(res);
     try {
       const body = DeleteBindingSchema.parse(req.body);
+      const existing = options.getAudit?.()
+        ? await live.store.resolveBinding(body.channel_type, body.channel_key)
+        : undefined;
       await live.store.removeChannelBinding(
         body.channel_type,
         body.channel_key,
       );
+      if (existing) await auditBinding(req, body, existing.agentId, null);
       await live.registry.reload();
       res.json({ ok: true });
     } catch (err) {

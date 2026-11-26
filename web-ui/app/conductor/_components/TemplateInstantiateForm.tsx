@@ -22,6 +22,7 @@ import {
 
 import { ChannelSelect, gcLbl } from './GuidedControls';
 import { TemplatePreview } from './TemplatePreview';
+import { PersonPicker } from './PersonPicker';
 
 /**
  * Workflow-template slot-mapping form (#429): ONE upfront form for the whole template
@@ -37,13 +38,14 @@ import { TemplatePreview } from './TemplatePreview';
  * the Button busy recipe, never a spinner.
  */
 
-type SlotKind = 'roles' | 'agents' | 'actions' | 'events' | 'channels';
+type SlotKind = 'roles' | 'people' | 'agents' | 'actions' | 'events' | 'channels';
 
 /** Render order — matches the gallery's "you will map" summary. */
-const SLOT_KINDS: readonly SlotKind[] = ['roles', 'agents', 'actions', 'events', 'channels'];
+const SLOT_KINDS: readonly SlotKind[] = ['roles', 'people', 'agents', 'actions', 'events', 'channels'];
 
 const GROUP_LABEL_KEY: Record<SlotKind, string> = {
   roles: 'templateSlotGroupRoles',
+  people: 'templateSlotGroupPeople',
   agents: 'templateSlotGroupAgents',
   actions: 'templateSlotGroupActions',
   events: 'templateSlotGroupEvents',
@@ -68,7 +70,7 @@ function parseErrorBody(raw: string): TemplateErrorBody {
 }
 
 type CatalogOptions = Array<{ value: string; label: string }>;
-type Catalogs = Partial<Record<Exclude<SlotKind, 'channels'>, CatalogOptions>>;
+type Catalogs = Partial<Record<Exclude<SlotKind, 'channels' | 'people'>, CatalogOptions>>;
 
 // The base input class WITHOUT a border color (unlike gcInput), so the error edge is
 // applied by swapping the color class instead of stacking two arbitrary-value border
@@ -124,7 +126,7 @@ export function TemplateInstantiateForm({
   // the mapping state never diverges from what the operator sees in the select. A
   // prefill (F4 chat proposals) seeds declared keys on top; unknown keys are dropped.
   const [mapping, setMapping] = useState<Record<SlotKind, Record<string, string>>>(() => {
-    const out: Record<SlotKind, Record<string, string>> = { roles: {}, agents: {}, actions: {}, events: {}, channels: {} };
+    const out: Record<SlotKind, Record<string, string>> = { roles: {}, people: {}, agents: {}, actions: {}, events: {}, channels: {} };
     for (const slot of template.slots.channels ?? []) out.channels[slot.key] = 'teams';
     for (const kind of SLOT_KINDS) {
       for (const slot of template.slots[kind] ?? []) {
@@ -335,6 +337,30 @@ export function TemplateInstantiateForm({
     const flagged = flaggedSlots.has(`${kind}:${slot.key}`);
     const label = resolveConductorText(slot.label, locale);
     const description = slot.description === undefined ? undefined : resolveConductorText(slot.description, locale);
+    if (kind === 'people') {
+      const channels = new Set<string>();
+      for (const raw of template.graph.steps) {
+        const step = raw as { human?: { principal?: { kind?: string; ref?: string }; channel?: string } };
+        const human = step.human;
+        if (human?.principal?.kind !== 'user' || human.principal.ref !== `slot:person:${slot.key}` || !human.channel) continue;
+        const actual = human.channel.startsWith('slot:channel:')
+          ? mapping.channels[human.channel.slice('slot:channel:'.length)]
+          : human.channel;
+        if (actual) channels.add(actual);
+      }
+      return (
+        <div key={slot.key} className="grid gap-1">
+          <PersonPicker
+            label={label}
+            channel={channels.size === 1 ? [...channels][0] : undefined}
+            value={mapping.people[slot.key] ?? ''}
+            onChange={(value) => setSlotValue('people', slot.key, value)}
+          />
+          {description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{description}</span> : null}
+          {flagged ? <span className="text-[12px] text-[color:var(--danger)]">{t('templateSlotMissing')}</span> : null}
+        </div>
+      );
+    }
     if (kind === 'channels') {
       return (
         <div key={slot.key} className="grid gap-1">

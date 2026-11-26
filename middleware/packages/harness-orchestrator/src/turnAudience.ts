@@ -3,6 +3,7 @@ import { canonicalOwners, type KnowledgeGraph } from '@omadia/plugin-api';
 
 import type { ChatParticipantsProvider } from './chatParticipants.js';
 import { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
+import { isWebAccountTurn } from './webAccountOrigin.js';
 
 /**
  * Member-scoped memory — who is present in a turn's room, as canonical omadia
@@ -22,7 +23,8 @@ import { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
  *    administrators only, so a silent member would be invisible to the rule;
  *  - any member that does not resolve to a canonical id.
  *
- * Personal scopes and API-key turns are one-person rooms: the sender alone.
+ * Personal scopes, web account turns and API-key turns are one-person rooms:
+ * the sender alone.
  */
 export type TurnAudience =
   | { readonly kind: 'known'; readonly members: readonly string[] }
@@ -36,6 +38,9 @@ export async function resolveTurnAudience(
   participants: ChatParticipantsProvider | undefined,
 ): Promise<TurnAudience> {
   if (!knowledgeGraph) return unknown('no-knowledge-graph');
+  // #1774 — a web chat or web routine turn: the signed-in account alone, by
+  // the canonical id its session carries (`webAccountOrigin`).
+  if (isWebAccountTurn(input)) return { kind: 'known', members: canonicalOwners([input.userId]) };
   const channelKind =
     input.channelIdentity?.channelKind ??
     (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined);

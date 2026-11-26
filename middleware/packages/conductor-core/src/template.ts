@@ -42,6 +42,7 @@ const SLOT_TOKEN: Record<TemplateSlotKind, string> = {
   agents: 'agent',
   actions: 'action',
   roles: 'role',
+  people: 'person',
   events: 'event',
   channels: 'channel',
 };
@@ -80,9 +81,8 @@ function slotFields(graph: WorkflowGraph): SlotField[] {
     }
     const human = s.human;
     if (human) {
-      if (human.principal.kind === 'role') {
-        fields.push({ nodeId: s.id, kind: 'roles', value: human.principal.ref, set: (next) => { human.principal.ref = next; } });
-      }
+      const kind = human.principal.kind === 'role' ? 'roles' : 'people';
+      fields.push({ nodeId: s.id, kind, value: human.principal.ref, set: (next) => { human.principal.ref = next; } });
       fields.push({ nodeId: s.id, kind: 'channels', value: human.channel, set: (next) => { human.channel = next; } });
     }
     const say = s.say;
@@ -92,7 +92,7 @@ function slotFields(graph: WorkflowGraph): SlotField[] {
   }
   for (const trigger of graph.triggers ?? []) {
     const t: Trigger = trigger;
-    if (t.kind === 'event' && typeof t.eventId === 'string') {
+    if ((t.kind === 'event' || t.kind === 'webhook') && typeof t.eventId === 'string') {
       fields.push({ nodeId: t.id, kind: 'events', value: t.eventId, set: (next) => { t.eventId = next; } });
     }
   }
@@ -449,9 +449,9 @@ export interface InferTemplateOptions {
 /**
  * "Save as template": reverse the extractSlotRefs walk over a CONCRETE graph. Walks
  * the same six ref fields, collects each distinct concrete ref per kind, replaces
- * it with a `slot:<kind-singular>:<key>` placeholder (key slugified from the ref
- * value, de-duplicated with numeric suffixes) and declares one slot per distinct ref
- * with the ref value as its proposed label (authors edit labels in the UI). Refs
+ * it with a `slot:<kind-singular>:<key>` placeholder and declares one slot per distinct ref.
+ * People slots use neutral keys and labels to avoid copying private addresses. Other kinds
+ * derive keys and proposed labels from their refs. Refs
  * already in well-formed `slot:` form pass through unchanged and are (re)declared
  * with their key as label — re-templating an instantiated-and-edited workflow works.
  * Malformed `slot:`-prefixed values pass through untouched for checkTemplateManifest
@@ -483,12 +483,16 @@ export function inferTemplateManifest(graph: WorkflowGraph, opts: InferTemplateO
     const state = perKind.get(field.kind)!;
     let key = state.refToKey.get(field.value);
     if (key === undefined) {
-      const base = slugifyKey(field.value);
+      const base = field.kind === 'people' ? 'person' : slugifyKey(field.value);
       key = base;
       for (let n = 2; state.taken.has(key); n += 1) key = `${base}-${n}`;
       state.taken.add(key);
       state.refToKey.set(field.value, key);
-      state.slots.push({ key, label: field.value });
+      const ordinal = state.slots.length + 1;
+      const label = field.kind === 'people'
+        ? { en: `Person ${ordinal}`, de: `Person ${ordinal}` }
+        : field.value;
+      state.slots.push({ key, label });
     }
     field.set(`${SLOT_PREFIX}${SLOT_TOKEN[field.kind]}:${key}`);
   }

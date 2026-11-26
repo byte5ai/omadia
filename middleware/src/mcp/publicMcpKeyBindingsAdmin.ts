@@ -118,6 +118,7 @@ export interface PublicMcpKeyBindingAdminStore {
   /** Every row, parked ones included. An operator reviewing what a key may do
    *  needs to see the disabled rows; the endpoint never does. */
   list(): Promise<readonly PublicMcpKeyBindingAdminRow[]>;
+  get?(keyId: string): Promise<PublicMcpKeyBindingAdminRow | undefined>;
   /** Creates or replaces the row for `input.keyId`. An absent `input.enabled`
    *  PRESERVES the stored flag rather than defaulting it — see the input type. */
   upsert(input: PublicMcpKeyBindingInput): Promise<PublicMcpKeyBindingUpsertResult>;
@@ -268,6 +269,12 @@ export function createPublicMcpKeyBindingAdminStore(pool: Pool): PublicMcpKeyBin
       );
       return (rows as AdminRowShape[]).map(toAdminRow);
     },
+    async get(keyId) {
+      const { rows } = await pool.query<AdminRowShape>(
+        `SELECT ${SELECT_COLUMNS} FROM public_mcp_key_bindings WHERE key_id = $1`, [keyId],
+      );
+      return rows[0] ? toAdminRow(rows[0]) : undefined;
+    },
 
     async upsert(input) {
       // `enabled` binds NULL when the operator did not mention it, and the two
@@ -348,6 +355,9 @@ export function createInMemoryPublicMcpKeyBindingAdminStore(
   return {
     async list() {
       return Array.from(byKey.values());
+    },
+    async get(keyId) {
+      return byKey.get(keyId);
     },
     async upsert(input) {
       const stamp = now().toISOString();

@@ -5,7 +5,7 @@ import type {
   TurnIdentityGuardVerdict,
   TurnIngest,
 } from '@omadia/plugin-api';
-import { scopeGraphKey } from '@omadia/channel-sdk';
+import { isNoReply, scopeGraphKey } from '@omadia/channel-sdk';
 import {
   qualifyScope,
   turnNodeId,
@@ -14,6 +14,7 @@ import {
   type TurnMaskedView,
 } from '@omadia/plugin-api';
 import { isValidSessionId, type ChatSessionStore } from './chatSessionStore.js';
+import { stripOrchestratorNotes } from './userFacingAnswer.js';
 import type { RunTracePayload } from './runTraceCollector.js';
 import {
   recordRunTraceOutcome,
@@ -205,9 +206,16 @@ export class SessionLogger {
     // paths land; the store appends only to a session the client created.
     if (this.chatSessionStore && isChatSessionScope(entry.scope)) {
       try {
+        // #1956 — the user-facing answer: no orchestrator notes, so the
+        // client's PUT of the same turn matches and a reload shows no
+        // `<!-- orchestrator:… -->` text. #1896 — a NO_REPLY turn is mirrored
+        // as silent and empty, like the stream's `done`.
+        const shown = stripOrchestratorNotes(entry.transcriptAnswer ?? entry.assistantAnswer);
+        const silent = isNoReply({ text: shown });
         await this.chatSessionStore.appendTurnFromServer(entry.scope, {
           userMessage: entry.userMessage,
-          assistantMessage: entry.transcriptAnswer ?? entry.assistantAnswer,
+          assistantMessage: silent ? '' : shown,
+          ...(silent ? { silent: true as const } : {}),
           ...(entry.toolCalls !== undefined && entry.iterations !== undefined
             ? {
                 telemetry: {

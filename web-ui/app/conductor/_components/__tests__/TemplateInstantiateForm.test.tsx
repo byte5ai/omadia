@@ -313,7 +313,7 @@ describe('<TemplateInstantiateForm />', () => {
   it('shows the schedule notice only for a cron template with enable ON', async () => {
     const user = userEvent.setup();
     const notice =
-      'This template runs on a schedule. Enabling it starts the schedule as soon as the workflow is created.';
+      'This template runs on a UTC schedule. Enabling it starts the schedule as soon as the workflow is created.';
 
     const { unmount } = renderForm(cronTemplate);
     expect(screen.queryByText(notice)).not.toBeInTheDocument();

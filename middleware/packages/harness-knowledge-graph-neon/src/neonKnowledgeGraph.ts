@@ -9,6 +9,8 @@ import {
   CONVERSATION_HISTORY_NODE_TYPES,
   type ConversationHistoryPurgeFilter,
   channelIdentityNodeId,
+  SYSTEM_ACTOR_OMADIA_USER_ID,
+  type ChannelKind,
   entityNodeId,
   excerptMergeCandidateNodeId,
   inconsistencyNodeId,
@@ -56,6 +58,9 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ListOwnerlessMemorableKnowledgeOptions,
+  type MemorableKnowledgeCount,
+  type MemorableKnowledgePurgeResult,
   type ListMergeCandidatesOptions,
   type CreateInconsistencyInput,
   type ExcerptSearchOptions,
@@ -2640,13 +2645,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         scope: null,
         userId: null,
         props,
-        // WS5 — forward an explicit initial visibility when the caller
-        // (the scratch-promotion reaper) wants the new MK shared team-wide.
-        // Omitted → undefined → upsertNode's `COALESCE($9, 'team')` keeps the
-        // exact pre-existing DB-default behaviour for every other caller.
-        ...(input.visibility !== undefined
-          ? { visibility: input.visibility }
-          : {}),
+        // #1823 (ADR-0183) — a new MK is private unless the caller shares it
+        // on purpose (durable rules pass `team`). Before, an omitted value fell
+        // to the column default `team`, and recall's team branch handed every
+        // saved, promoted or MCP-ingested entry to every account and agent.
+        visibility: input.visibility ?? 'private',
         // Durable-curation marker → top-level `manually_authored` column.
         // Set by the durable-promotion pipeline; defaults to false otherwise.
         ...(input.manuallyAuthored !== undefined
@@ -2875,7 +2878,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       `SELECT id, properties->'acl_owners' AS owners
        FROM graph_nodes
        WHERE tenant_id = $1 AND external_id = $2 AND type = 'MemorableKnowledge'
-       LIMIT 1`,
+       LIMIT 1
+       FOR UPDATE`,
       [this.tenantId, mkExternalId],
     );
     const hit = row.rows[0];
@@ -2910,6 +2914,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         memorableKnowledgeNodeId,
       );
       this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+      // #1821 — an owner is a real user, and lands in their `/memories`
+      // list, which needs the INVOLVED edge as well as `acl_owners`.
+      const userUuid = await this.findUuidByExternalId(client, userNodeId(omadiaUserIdToAdd));
+      if (!userUuid) {
+        throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+      }
+      await this.upsertEdge(client, { type: 'INVOLVED', fromUuid: uuid, toUuid: userUuid });
       const next = owners.includes(omadiaUserIdToAdd)
         ? owners
         : [...owners, omadiaUserIdToAdd];
@@ -2959,6 +2970,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           code: 'cannot_remove_last_owner',
         });
       }
+      // #1821 — symmetric to addOwner: the entry leaves the removed user's list.
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1 AND type = 'INVOLVED' AND from_node = $2
+            AND to_node = (SELECT id FROM graph_nodes
+                            WHERE tenant_id = $1 AND external_id = $3 AND type = 'User')`,
+        [this.tenantId, uuid, userNodeId(omadiaUserIdToRemove)],
+      );
       await client.query(
         `UPDATE graph_nodes
            SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)
@@ -3011,24 +3030,81 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         afterOwners: null,
         ...(actor.reason ? { reason: actor.reason } : {}),
       });
-      // Slice 6.5 — cascade-delete the PalaiaExcerpt nodes attached
-      // to this MK. The EXCERPT_OF edges are auto-cleaned by graph_edges
-      // FK CASCADE on either side, but the Excerpt nodes themselves are
-      // standalone graph_nodes rows and would orphan if not removed.
-      await client.query(
-        `DELETE FROM graph_nodes
-         WHERE tenant_id = $1
-           AND type = 'PalaiaExcerpt'
-           AND id IN (
-             SELECT from_node FROM graph_edges
-             WHERE tenant_id = $1
-               AND to_node = $2
-               AND type = 'EXCERPT_OF'
-           )`,
-        [this.tenantId, uuid],
+      await this.deleteMemoryNode(client, uuid);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** One MK node and its excerpts, inside the caller's transaction. */
+  private async deleteMemoryNode(client: PoolClient, uuid: string): Promise<void> {
+    // Slice 6.5 — cascade-delete the PalaiaExcerpt nodes attached
+    // to this MK. The EXCERPT_OF edges are auto-cleaned by graph_edges
+    // FK CASCADE on either side, but the Excerpt nodes themselves are
+    // standalone graph_nodes rows and would orphan if not removed.
+    await client.query(
+      `DELETE FROM graph_nodes
+       WHERE tenant_id = $1
+         AND type = 'PalaiaExcerpt'
+         AND id IN (
+           SELECT from_node FROM graph_edges
+           WHERE tenant_id = $1
+             AND to_node = $2
+             AND type = 'EXCERPT_OF'
+         )`,
+      [this.tenantId, uuid],
+    );
+    // CASCADE on graph_edges FK removes inbound/outbound edges.
+    await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
+  }
+
+  async listOwnerlessMemorableKnowledge(
+    opts: ListOwnerlessMemorableKnowledgeOptions = {},
+  ): Promise<GraphNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+    const rows = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS}
+       FROM graph_nodes
+       WHERE tenant_id = $1
+         AND type = 'MemorableKnowledge'
+         AND jsonb_array_length(COALESCE(properties->'acl_owners', '[]'::jsonb)) = 0
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [this.tenantId, limit],
+    );
+    return rows.rows.map(rowToNode);
+  }
+
+  async deleteOwnerlessMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { uuid, owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
       );
-      // CASCADE on graph_edges FK removes inbound/outbound edges.
-      await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
+      if (owners.length > 0) {
+        throw Object.assign(new Error('has_owners'), { code: 'has_owners' });
+      }
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'delete',
+        beforeOwners: [],
+        afterOwners: null,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+      await this.deleteMemoryNode(client, uuid);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -3068,39 +3144,76 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { where, params };
   }
 
+  /**
+   * #1842 — the two halves of a purge selection. Without `aclOwner` every
+   * selected entry is deleted. With it, an entry that has another owner is
+   * de-owned instead (`deownWhere`), and only the entries the person owns
+   * alone are deleted (`deleteWhere`).
+   */
+  private memorableKnowledgePurgeSets(filter: MemorableKnowledgePurgeFilter): {
+    deleteWhere: string;
+    deownWhere: string | null;
+    params: unknown[];
+  } {
+    const { where, params } = this.buildMemorableKnowledgePurgeWhere(filter);
+    if (filter.aclOwner === undefined) return { deleteWhere: where, deownWhere: null, params };
+    params.push(filter.aclOwner);
+    const otherOwner = `EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(COALESCE(properties->'acl_owners', '[]'::jsonb)) o
+       WHERE o <> $${String(params.length)})`;
+    return {
+      deleteWhere: `${where} AND NOT ${otherOwner}`,
+      deownWhere: `${where} AND ${otherOwner}`,
+      params,
+    };
+  }
+
   async countMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ count: number }> {
-    const { where, params } = this.buildMemorableKnowledgePurgeWhere(filter);
-    const res = await this.pool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM graph_nodes WHERE ${where}`,
+  ): Promise<MemorableKnowledgeCount> {
+    const { deleteWhere, deownWhere, params } = this.memorableKnowledgePurgeSets(filter);
+    const res = await this.pool.query<{ count: string; deowned: string; excerpts: string }>(
+      `SELECT
+         (SELECT COUNT(*) FROM graph_nodes WHERE ${deleteWhere})::text AS count,
+         (SELECT COUNT(*) FROM graph_nodes WHERE ${deownWhere ?? 'false'})::text AS deowned,
+         (SELECT COUNT(DISTINCT e.from_node) FROM graph_edges e
+           WHERE e.tenant_id = $1 AND e.type = 'EXCERPT_OF'
+             AND e.to_node IN (SELECT id FROM graph_nodes WHERE ${deleteWhere}))::text AS excerpts`,
       params,
     );
-    return { count: Number(res.rows[0]?.count ?? '0') };
+    const row = res.rows[0];
+    return {
+      count: Number(row?.count ?? '0'),
+      deowned: Number(row?.deowned ?? '0'),
+      excerpts: Number(row?.excerpts ?? '0'),
+    };
   }
 
   async purgeMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ deletedNodes: number }> {
-    const { where, params } = this.buildMemorableKnowledgePurgeWhere(filter);
+  ): Promise<MemorableKnowledgePurgeResult> {
+    const { deleteWhere, deownWhere, params } = this.memorableKnowledgePurgeSets(filter);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      const deownedNodes = deownWhere
+        ? await this.deownForPurge(client, deownWhere, params, filter)
+        : 0;
       // Resolve the internal uuids of the MK rows in scope first; both the
       // excerpt cascade and the edge sweep key off these.
       const uuidRows = await client.query<{ id: string }>(
-        `SELECT id FROM graph_nodes WHERE ${where}`,
+        `SELECT id FROM graph_nodes WHERE ${deleteWhere}`,
         params,
       );
       const uuids = uuidRows.rows.map((r) => r.id);
       if (uuids.length === 0) {
         await client.query('COMMIT');
-        return { deletedNodes: 0 };
+        return { deletedNodes: 0, deownedNodes, deletedExcerpts: 0 };
       }
       // Cascade-delete attached PalaiaExcerpt nodes (mirrors deleteMemory):
       // their EXCERPT_OF edges FK-cascade, but the Excerpt rows are
       // standalone and would orphan otherwise.
-      await client.query(
+      const excerpts = await client.query(
         `DELETE FROM graph_nodes
          WHERE tenant_id = $1
            AND type = 'PalaiaExcerpt'
@@ -3127,13 +3240,110 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         [uuids],
       );
       await client.query('COMMIT');
-      return { deletedNodes: deleted.rowCount ?? 0 };
+      return {
+        deletedNodes: deleted.rowCount ?? 0,
+        deownedNodes,
+        deletedExcerpts: excerpts.rowCount ?? 0,
+      };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
     }
+  }
+
+  /** #1842 — drop `filter.aclOwner` from every shared entry, one audit row each. */
+  private async deownForPurge(
+    client: PoolClient,
+    deownWhere: string,
+    params: unknown[],
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<number> {
+    const owner = filter.aclOwner;
+    if (owner === undefined) return 0;
+    const rows = await client.query<{ id: string; external_id: string; owners: unknown }>(
+      `SELECT id, external_id, properties->'acl_owners' AS owners FROM graph_nodes WHERE ${deownWhere}`,
+      params,
+    );
+    for (const row of rows.rows) {
+      const before = Array.isArray(row.owners) ? (row.owners as string[]) : [];
+      const after = before.filter((id) => id !== owner);
+      // ADR-0181 — like removeOwner: the entry leaves the person's list too.
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1 AND type = 'INVOLVED' AND from_node = $2
+            AND to_node = (SELECT id FROM graph_nodes
+                            WHERE tenant_id = $1 AND external_id = $3 AND type = 'User')`,
+        [this.tenantId, row.id, userNodeId(owner)],
+      );
+      await client.query(
+        `UPDATE graph_nodes
+            SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)
+          WHERE id = $1`,
+        [row.id, JSON.stringify(after)],
+      );
+      await this.writeAclAudit(client, {
+        memoryExternalId: row.external_id,
+        actorOmadiaUserId: filter.actorOmadiaUserId ?? SYSTEM_ACTOR_OMADIA_USER_ID,
+        action: 'shrink',
+        beforeOwners: before,
+        afterOwners: after,
+        reason: 'memory purge, user axis',
+      });
+    }
+    return rows.rows.length;
+  }
+
+  async findOmadiaUserIdByChannelIdentity(
+    channelKind: ChannelKind,
+    channelUserId: string,
+  ): Promise<string | null> {
+    const res = await this.pool.query<{ omadia_user_id: string | null }>(
+      `SELECT u.properties->>'omadiaUserId' AS omadia_user_id
+         FROM graph_nodes ci
+         JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+         JOIN graph_nodes u ON u.id = e.to_node AND u.type = 'User'
+        WHERE ci.tenant_id = $1
+          AND ci.type = 'ChannelIdentity'
+          AND ci.external_id = $2
+        LIMIT 1`,
+      [this.tenantId, channelIdentityNodeId(channelKind, channelUserId)],
+    );
+    return res.rows[0]?.omadia_user_id ?? null;
+  }
+
+  /** The `User` cluster root and its `ChannelIdentity` nodes (#1843). */
+  private readonly userIdentitySelection = `
+    WITH cluster AS (
+      SELECT id FROM graph_nodes
+       WHERE tenant_id = $1 AND type = 'User' AND external_id = $2
+    ),
+    selection AS (
+      SELECT id FROM cluster
+      UNION
+      SELECT ci.id FROM graph_nodes ci
+        JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+       WHERE ci.tenant_id = $1 AND ci.type = 'ChannelIdentity'
+         AND e.to_node IN (SELECT id FROM cluster)
+    )`;
+
+  async countUserIdentity(omadiaUserId: string): Promise<{ count: number }> {
+    const res = await this.pool.query<{ count: string }>(
+      `${this.userIdentitySelection} SELECT COUNT(*)::text AS count FROM selection`,
+      [this.tenantId, userNodeId(omadiaUserId)],
+    );
+    return { count: Number(res.rows[0]?.count ?? '0') };
+  }
+
+  async purgeUserIdentity(omadiaUserId: string): Promise<{ deletedNodes: number }> {
+    // graph_edges FK-cascades on node delete.
+    const res = await this.pool.query(
+      `${this.userIdentitySelection}
+       DELETE FROM graph_nodes WHERE id IN (SELECT id FROM selection)`,
+      [this.tenantId, userNodeId(omadiaUserId)],
+    );
+    return { deletedNodes: res.rowCount ?? 0 };
   }
 
   /**
@@ -3166,17 +3376,24 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
          OR left(${alias}.scope, length($2)) = $2
          OR ($2 = 'default::' AND ${alias}.scope NOT LIKE '%::%'))`;
     const cte = `
-      WITH user_ids AS (
-        SELECT $3::text AS id WHERE $3::text IS NOT NULL
-        UNION
-        SELECT ci.properties->>'aadObjectId'
+      WITH identities AS (
+        SELECT ci.external_id, ci.properties
           FROM graph_nodes ci
           JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
           JOIN graph_nodes u ON u.id = e.to_node
          WHERE $3::text IS NOT NULL
            AND ci.tenant_id = $1 AND ci.type = 'ChannelIdentity'
            AND u.type = 'User' AND u.external_id = 'user:' || $3
-           AND ci.properties->>'aadObjectId' IS NOT NULL
+      ),
+      -- #1843 — a channel turn (Telegram, Slack, …) stores the identity's
+      -- "<kind>:<id>" as user_id; a Teams turn the AAD id.
+      user_ids AS (
+        SELECT $3::text AS id WHERE $3::text IS NOT NULL
+        UNION
+        SELECT properties->>'aadObjectId' FROM identities
+         WHERE properties->>'aadObjectId' IS NOT NULL
+        UNION
+        SELECT external_id FROM identities
       ),
       roots AS (
         SELECT n.id, n.type, n.external_id FROM graph_nodes n

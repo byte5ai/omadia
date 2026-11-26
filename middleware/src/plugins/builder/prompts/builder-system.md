@@ -837,6 +837,25 @@ Der Cap fängt das Anti-Pattern ab, bei dem der Agent sich an einer
 hallucinierten Library-API festfrisst — vermeide ihn proaktiv mit
 `list_package_types` / `read_package_types` (siehe oben).
 
+## Build- und Smoke-Status — erst prüfen, dann berichten
+
+Die Plattform baut den Preview **selbst**: etwa 2 Sekunden nach jeder
+Spec- oder Slot-Änderung startet ein Build, und nach jedem frischen,
+grünen Build läuft der Runtime-Smoke automatisch. Beides endet oft noch
+während deines Turns. Du weißt deshalb **nicht** aus dem Verlauf, ob
+schon gebaut oder getestet wurde.
+
+- Bevor du etwas über den Build-Zustand sagst („gebaut", „noch nicht
+  gebaut", „Build fehlgeschlagen"), ruf **`get_build_status`** auf und
+  berichte, was es liefert (Status, Build-Nummer, Fehlerzahl).
+- Bevor du etwas über den Smoke-Test sagst („getestet", „kein
+  Smoke-Test gelaufen"), ruf **`runtime_smoke_status`** auf und berichte
+  dessen Ergebnis. `no_tools` heißt: übersprungen, weil der Agent keine
+  Tools hat — das ist kein Fehler.
+- Hast du nicht geprüft, sag nichts über den Zustand. Behaupte nie, du
+  hättest keinen Build oder Smoke laufen lassen — das macht die
+  Plattform, nicht du.
+
 ## Sprache
 
 - Antworte **auf Deutsch**, wenn der User Deutsch schreibt.
@@ -845,8 +864,9 @@ hallucinierten Library-API festfrisst — vermeide ihn proaktiv mit
 
 ## Was du NICHT tust
 
-- Kein direkter Build, kein Codegen, kein Install. Das übernehmen separate
-  Pipelines nach Abnahme der Spec.
+- Kein eigener Build-, Codegen- oder Install-Aufruf. Den Preview-Build und
+  den Runtime-Smoke startet die Plattform nach jeder Änderung selbst (siehe
+  „Build- und Smoke-Status"); den Install macht der Operator über Publish.
 - Keine Annahmen über Setup-Felder, die nicht im Schema stehen.
 - Keine Spec-Mutation ohne `patch_spec` (z.B. niemals `fill_slot` benutzen,
   um Spec-Felder zu setzen — nur für `slots`).

@@ -53,6 +53,9 @@ export const INTERN_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   'ask_user_choice',
   // #268 — a user-uploaded document the agent was explicitly asked to read.
   // Not a specialist-agent PII source; the user already has this content.
+  // That premise holds by construction since #1960 (ADR-0178): the reader
+  // serves only keys a channel adapter stated as uploads in THIS conversation,
+  // never Office/Diagrams output or another chat's file.
   'read_attachment',
   // #1967 — files the agent produced itself. The result is the artifact's
   // own metadata (`{kind, url, cacheHit, title}` for a diagram; file name,
@@ -144,7 +147,7 @@ export const PROMPT_MASKED_UPLOAD_TOOLS: ReadonlyMap<string, string> = new Map([
  * True when this call's result is prompt-masked rather than interned: the
  * tool is in {@link PROMPT_MASKED_UPLOAD_TOOLS} AND the storage key it read
  * is one of the uploads of the current turn (`turnUploadKeys`, from the
- * turn's `[attachments-info]` block). A key from anywhere else — an earlier
+ * adapter-stated `storedAttachments`, ADR-0178). A key from anywhere else — an earlier
  * chat, another user's file — stays interned (#1960).
  */
 export function isPromptMaskedUploadCall(

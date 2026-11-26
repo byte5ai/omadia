@@ -4,9 +4,10 @@ import type {
   ChatTurnInput,
   ChatTurnResult,
   SemanticAnswer,
+  TurnOrigin,
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
-import { turnContext, today } from '@omadia/orchestrator';
+import { turnContext, today, webAccountOrigin } from '@omadia/orchestrator';
 import { runInExecutionContext } from '@omadia/usage-telemetry';
 import {
   SYSTEM_SPEAKER,
@@ -25,6 +26,7 @@ import {
 import type { RoutineOutputTemplate } from './routineOutputTemplate.js';
 import { renderRoutineTemplate } from './routineTemplateRenderer.js';
 import { routineTurnContext } from './routineTurnContext.js';
+import { WEB_ROUTINE_CHANNEL } from './webChatProactiveSender.js';
 
 /**
  * Structural subset of `JobScheduler` the runner depends on. Typed as a
@@ -48,6 +50,18 @@ export interface JobSchedulerLike {
  * returns a synthetic `ChatTurnResult` (with run-trace) without spinning
  * up the real orchestrator.
  */
+/**
+ * #1774 (ADR-0182) — a web routine runs in its owner's one-person room, like
+ * the web chat it was created in: its `userId` is the session's canonical
+ * omadia id (`httpRoutineContext`). Routines of other channels keep running
+ * without an origin; their `userId` is not known to be canonical.
+ */
+export function routineOrigin(routine: Pick<Routine, 'channel' | 'userId'>): { origin?: TurnOrigin } {
+  return routine.channel === WEB_ROUTINE_CHANNEL && routine.userId.length > 0
+    ? { origin: webAccountOrigin(routine.userId) }
+    : {};
+}
+
 export interface OrchestratorLike {
   runTurn(input: ChatTurnInput): Promise<ChatTurnResult>;
   /**
@@ -866,6 +880,7 @@ export class RoutineRunner {
             userMessage: routine.prompt,
             userId: routine.userId,
             sessionScope: `routine:${routine.id}`,
+            ...routineOrigin(routine),
           }),
       );
       return { result };
@@ -902,6 +917,7 @@ export class RoutineRunner {
               userMessage: augmentedPrompt,
               userId: routine.userId,
               sessionScope: `routine:${routine.id}`,
+              ...routineOrigin(routine),
             }),
         ),
     );

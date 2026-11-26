@@ -103,7 +103,10 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
       promptDoc: SYSTEM_PROMPT_DOC,
       // Single drain for BOTH tools — see OfficeTool doc. The kernel calls
       // every tool's sink once per turn; a second sink would double-drain.
-      attachmentSink: (): NativeToolAttachment[] | undefined => tool.drain(),
+      // Only the finishing turn's files (#1961): the kernel drains inside the
+      // turn, so turnContext names the same turn the tool calls ran in.
+      attachmentSink: (): NativeToolAttachment[] | undefined =>
+        tool.drain(turnContext.current()?.turnId),
     },
   );
   const disposeDocx = ctx.tools.register(
