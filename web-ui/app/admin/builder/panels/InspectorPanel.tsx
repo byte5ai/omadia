@@ -146,13 +146,16 @@ function AgentEditor({
   }
 
   // Picker placeholder for `main`: while the catalog is loading we show
-  // "Loading models…"; afterwards prefer the platform default ("(platform
-  // default: X)") and fall back to a neutral "(default)" so a loaded catalog
-  // without a declared default never displays the stale loading copy.
+  // "Loading models…"; afterwards the model an empty field means. #1901 —
+  // that is the model the registry runs this agent on (the "Active" line),
+  // never the catalog's `default`, which is the Plugin Builder's code-
+  // generation model. It is only that model while the agent has no main
+  // model and no explicit policy primary of its own; otherwise "(default)".
+  const platformDefault = platformDefaultModelOf(agent);
   const mainPlaceholder = catalog.loading
     ? t('inspector.modelPickerLoading')
-    : catalog.defaultId
-      ? t('inspector.platformDefault', { model: catalog.defaultId })
+    : platformDefault
+      ? t('inspector.platformDefault', { model: platformDefault })
       : t('inspector.modelDefault');
 
   return (
@@ -456,9 +459,18 @@ function PersonaSkillsSection({
   );
 }
 
+/**
+ * #1901 — the model the agent runs on when "Main model" stays empty: the
+ * registry's resolved model, as long as nothing of the agent's own decides it.
+ */
+export function platformDefaultModelOf(agent: AgentNode): string | null {
+  if (agent.modelRouting?.main) return null;
+  if (agent.modelPolicy && typeof agent.modelPolicy.primary !== 'string') return null;
+  return agent.effectiveModel;
+}
+
 interface ModelCatalogState {
   models: BuilderModelInfo[];
-  defaultId: string | null;
   loading: boolean;
   error: string | null;
 }
@@ -466,7 +478,6 @@ interface ModelCatalogState {
 function useModelCatalog(): ModelCatalogState {
   const [state, setState] = useState<ModelCatalogState>({
     models: [],
-    defaultId: null,
     loading: true,
     error: null,
   });
@@ -478,7 +489,6 @@ function useModelCatalog(): ModelCatalogState {
         if (!alive) return;
         setState({
           models: res.models,
-          defaultId: res.default ?? null,
           loading: false,
           error: null,
         });
@@ -486,7 +496,6 @@ function useModelCatalog(): ModelCatalogState {
         if (!alive) return;
         setState({
           models: [],
-          defaultId: null,
           loading: false,
           error: err instanceof Error ? err.message : String(err),
         });
