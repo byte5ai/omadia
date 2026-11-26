@@ -46,7 +46,8 @@ changelog.
   does not count towards the trigger's circuit breaker. The abort signal reaches the agent
   turn (`turnContext.abortSignal`, checked at the top of every tool-loop iteration), manual
   runs get the routine's timeout too, and the timeout floor is 30 s (`manage_routine` rejects
-  less; stored rows below it are raised). One run per routine at a time: `POST
+  less; stored rows below it are raised). One run per routine at a time in a process (across
+  machines only cron is at-most-once, via the trigger lease): `POST
   /api/v1/routines/:id/trigger` answers `409 routines.run_in_progress` while one is in flight,
   a cron firing then is skipped, and the routine DTO carries `running`. Resuming an active
   routine no longer re-arms it.
@@ -84,8 +85,8 @@ changelog.
   are paused with the reason (`EndOfServiceReport.routinesPaused`, `routines_paused` in the
   agent route response and the audit).
 - **Unattended turns** (#1770, #1771, #1772, ADR 0242): `ChatTurnInput.unattended`
-  (`@omadia/channel-sdk`), set by the routine runner and the trigger turn executor. Such a turn
-  offers no `ask_user_choice`/`suggest_follow_ups`, runs no card router, gets a directive to
+  (`@omadia/channel-sdk` **0.3.16**), set by the routine runner and the trigger turn executor. Such a turn
+  offers no `ask_user_choice`/`suggest_follow_ups` (in-process and on the subscription CLI), runs no card router, gets a directive to
   state assumptions instead of asking, and gets no "recent turns" context block (earlier runs
   are not trusted facts). A routine turn runs outside any routines principal, so a smart-card
   "run now" inside a chat turn no longer offers `manage_routine` to the run, and the run is

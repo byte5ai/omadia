@@ -840,7 +840,7 @@ export class RoutineRunner {
       const turn = metered.value.turn;
       result = turn.result;
       cardBody = turn.cardBody;
-      countsKnown = turn.published === undefined;
+      countsKnown = turn.viaChatAgent !== true && turn.published === undefined;
       // #1761 — delivered, but the template could not show everything.
       if (turn.warnings && turn.warnings.length > 0) {
         errorMessage = `template: ${turn.warnings.join('; ')}`;
@@ -876,6 +876,9 @@ export class RoutineRunner {
         : await meterUsageCost(() => asAgentTurn(() => publishRoutineAnswer(orchestrator, finished)));
       costUsd += published.costUsd;
       const answer = published.value;
+      // A withheld answer is a notice: the template's card must not go out
+      // beside it (it carries the very data the notice withholds).
+      if (isWithheld(answer)) cardBody = undefined;
       await sender.send({
         conversationRef: fresh.conversationRef,
         message: answer,
@@ -933,12 +936,16 @@ export class RoutineRunner {
 
         // Backwards-compat: keep updating last_run_* on the routines row
         // so the existing operator-UI tabular row keeps working without
-        // having to join into routine_runs.
-        await this.store.recordRun({
-          id: routine.id,
-          status,
-          error: errorMessage,
-        });
+        // having to join into routine_runs. Not for a cancelled run: whoever
+        // paused the routine wrote why on the row (an agent that ended
+        // service, the owner), and the run's own note must not replace it.
+        if (status !== 'cancelled') {
+          await this.store.recordRun({
+            id: routine.id,
+            status,
+            error: errorMessage,
+          });
+        }
       }
     }
   }
@@ -1087,15 +1094,15 @@ export class RoutineRunner {
       rawToolResults,
       llmTurn.result,
     );
-    // The chat-agent path published the model's slot JSON; the rendered
-    // template is what goes out, as the system's composition of the agent's
-    // data and slots, with the agent as its speaker.
-    return llmTurn.published
-      ? {
-          ...composed,
-          published: withText(llmTurn.published, composed.result.answer),
-        }
-      : composed;
+    if (!llmTurn.published) return composed;
+    // The chat-agent path (#1763) published the model's slot JSON. Withheld
+    // there (identity guard, discretion): the notice goes out as it is, never
+    // the rendered template or its card. Otherwise the rendered template is
+    // what goes out, and it passes the emitter like on the in-process path.
+    if (isWithheld(llmTurn.published)) {
+      return { result: llmTurn.result, published: llmTurn.published, viaChatAgent: true };
+    }
+    return { ...composed, viaChatAgent: true };
   }
 
   /**
@@ -1199,6 +1206,8 @@ interface RoutineTurn {
    * only on that path, where the runner must not publish it again.
    */
   readonly published?: SemanticAnswer;
+  /** #1763 — the turn ran through the agent's chat agent (no run trace or counts). */
+  readonly viaChatAgent?: boolean;
   /** #1760 — the agent answered that nothing is worth telling: no delivery. */
   readonly silent?: boolean;
   /** #1761 — template problems recorded on the run (delivered anyway). */
@@ -1228,11 +1237,9 @@ function salvageSlots(answer: string): Record<string, string> {
   }
 }
 
-/** The published answer with another text (its data-free variant dropped). */
-function withText(answer: SemanticAnswer, text: string): SemanticAnswer {
-  const copy: SemanticAnswer = { ...answer, text };
-  delete copy.textWithoutData;
-  return copy;
+/** The emitter replaced the agent's answer with a `system` notice. */
+function isWithheld(answer: SemanticAnswer): boolean {
+  return answer.systemNotice !== undefined || answer.speaker?.kind === 'system';
 }
 
 /**

@@ -459,8 +459,10 @@ const PROACTIVE_POSTS: Readonly<Record<string, { stamp: string; proof: RegExp; p
     proof: /const speaker = deps\.speakerOf\?\.\(trigger\.agentSlug\);\s*return deps\.gate\.send\(trigger, speaker \? \{ \.\.\.message, speaker \} : message\)/,
   },
   'src/plugins/routines/routineRunner.ts': {
-    stamp: 'routine delivery: publishRoutineAnswer through the agent emitter',
-    proof: /const answer = await asAgentTurn\(\(\) => publishRoutineAnswer\(orchestrator, finished\)\);\s*await sender\.send\(\{\s*conversationRef: fresh\.conversationRef,\s*message: answer,/,
+    // #1763 — or the answer the agent's own chat agent already published
+    // (subscription CLI), which passed the same emitter inside the bundle.
+    stamp: 'routine delivery: publishRoutineAnswer through the agent emitter, or the chat agent\'s published answer',
+    proof: /const published = turn\.published\s*\? \{ value: turn\.published, costUsd: 0 \}\s*: await meterUsageCost\(\(\) => asAgentTurn\(\(\) => publishRoutineAnswer\(orchestrator, finished\)\)\);[\s\S]{0,400}?await sender\.send\(\{\s*conversationRef: fresh\.conversationRef,\s*message: answer,/,
   },
   'src/conductor/awaitWorker.ts': {
     stamp: 'workflow reminder: speaker system',

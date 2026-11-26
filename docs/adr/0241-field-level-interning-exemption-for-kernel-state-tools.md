@@ -41,7 +41,7 @@ Chosen option: **A**.
 - `INTERN_FIELD_EXEMPT_TOOLS` (`harness-orchestrator/src/privacyInternPolicy.ts`) maps a
   kernel tool to the keys its model copy withholds. `fieldExemptModelCopy` parses the JSON
   result and removes those keys at every depth; the rest goes to the model in clear, like
-  an exempt tool's result (echoed values re-masked, #1544).
+  an exempt tool's result.
 - `manage_routine` is the only entry: `prompt`, `lastRunError` and the smart-card sidecar
   `_pendingRoutineList` are withheld. The smart card still reads the raw result.
 - All three seams apply it after the whole-tool exemption and before bypass and interning:

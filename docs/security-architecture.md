@@ -3000,6 +3000,17 @@ These tool results skip the digest:
   cells the dataset import of that file scanned and encrypted (§6b) do not
   reach the model through it. `mask_user_prompt` does not reach the tool:
   that setting masks prompt text, and a tool result is not prompt text.
+- **Field-exempt tools** (#1768, ADR 0241). `INTERN_FIELD_EXEMPT_TOOLS` (same
+  file, pinned by the same test) lists `manage_routine` only. Its JSON result
+  reaches the model in clear minus the keys the list names (`prompt`,
+  `lastRunError`, the smart-card sidecar `_pendingRoutineList`), removed at
+  every depth by `fieldExemptModelCopy`. Everything else in it is the user's
+  own routine state, the user-chosen routine **name** included: that name
+  reaches the model unmasked. A result that is not a JSON object or array, and
+  an `Error:` result, are not projected and take the normal path. The
+  orchestrator and sub-agent seams re-mask echoed values (#1544);
+  `ToolDispatchService` does not, like for exempt tools. The public MCP
+  endpoint refuses the tool (`isPubliclyServableTool`, §ADR 0142).
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,

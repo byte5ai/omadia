@@ -1912,3 +1912,51 @@ describe('#1776 — what a routine run cost', () => {
     assert.equal(runsStore.inserts[2]!.costUsd, 0.25, 'a failed turn still spent');
   });
 });
+describe('review fixes — withheld answers and the pause reason', () => {
+  it('CLI path: a withheld slot answer goes out as the notice, never as the rendered template or card', async () => {
+    const notice = { text: 'Diese Antwort wurde zurückgehalten.', speaker: { kind: 'system' as const }, systemNotice: { kind: 'identity_guard', text: 'Diese Antwort wurde zurückgehalten.' } };
+    const orchestrator: OrchestratorLike = {
+      runTurn: () => Promise.reject(new Error('not on the CLI path')),
+      chat: () => Promise.resolve(notice as unknown as SemanticAnswer),
+    };
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: {
+        format: 'adaptive-card',
+        sections: [
+          { kind: 'narrative-slot', id: 'intro' },
+          { kind: 'static-markdown', text: 'SECRET TABLE' },
+        ],
+      },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 1);
+    assert.equal(sender.calls[0]!.message.text, notice.text);
+    assert.equal(sender.calls[0]!.cardBody, undefined);
+    assert.doesNotMatch(JSON.stringify(sender.calls[0]), /SECRET TABLE/);
+  });
+
+  it('a cancelled run keeps the reason the routine was paused with', async () => {
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const startedP = new Promise<void>((r) => (started = r));
+    const orchestrator: OrchestratorLike = {
+      runTurn: async () => {
+        started();
+        await new Promise<void>((r) => (release = r));
+        return { answer: 'x', toolCalls: 0, iterations: 1 };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo', agentId: 'a1' });
+    const run = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await startedP;
+    await h.runner.pauseRoutinesOfAgent({ id: 'a1', slug: 'seo' }, "paused: its agent 'SEO' was disabled");
+    release();
+    await run;
+    assert.equal(h.runsStore.inserts[0]!.status, 'cancelled');
+    assert.match(h.store.rows.get(routine.id)!.lastRunError ?? '', /its agent 'SEO' was disabled/);
+  });
+});

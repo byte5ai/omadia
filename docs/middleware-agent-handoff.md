@@ -6533,6 +6533,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
+  Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
+  pro Prozess);
+  `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
+  `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
+
 - **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
   ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
   Konstruktionszeitpunkt, damit gespeicherte Routinen, Agent-Schedules und Trigger ihren Takt
@@ -11357,6 +11363,40 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
 - **integration-odoo:** eigenes `undici` mit `ODOO_INSECURE_TLS=true` umgeht
   die Egress-Prüfung, als Residualrisiko dokumentiert,
   byte5ai/omadia-integration-odoo#10.
+
+## Routinen, Welle 5: Ausführung (W22) (2026-11-26)
+
+Entscheidungen: [ADR 0240](adr/0240-schedules-run-in-a-named-time-zone.md) (Zeitzone),
+[ADR 0241](adr/0241-field-level-interning-exemption-for-kernel-state-tools.md) (feldweise
+Intern-Ausnahme), [ADR 0242](adr/0242-unattended-turns-for-routines-and-triggers.md)
+(unbeaufsichtigte Turns), [ADR 0243](adr/0243-routine-cost-per-run-and-on-its-trigger.md)
+(Kosten). Routinen-Migrationen 0007–0011.
+
+- **Laufsteuerung** (`src/plugins/routines/routineRunControl.ts`): ein Lauf pro Routine
+  *pro Prozess* (`InFlightRuns`; über Maschinen hinweg nur Cron at-most-once durch den
+  Trigger-Lease), Pause/Löschen bricht ab (`cancelled`, der Pausengrund auf der Zeile bleibt
+  stehen), Timeout-Untergrenze 30 s auch für „Jetzt“. Das Signal reicht als
+  `turnContext.abortSignal` in beide In-Process-Tool-Loops (geprüft zwischen Iterationen, kein
+  harter Abbruch eines hängenden Tool-Calls). Auf dem Subscription-CLI-Pfad stoppt es den
+  CLI-Prozess nicht; nur die Zustellung entfällt.
+- **CLI-Pfad** (#1763): `ChatAgentBundle.externalToolLoop` → Routine läuft über
+  `bundle.agent.chat`; keine Run-Trace, Zähler `null`.
+- **Routen** `/api/v1/routines`: `POST /:id/trigger` antwortet `409 routines.run_in_progress`
+  und `409 routines.agent_unavailable`; DTO-Felder `running`, `agentSlug`, `agentProblem`;
+  Runs `costUsd`, Liste `totalCostUsd`; Vorschau `warnings`.
+- **Bindung an den Agenten per id** (`routineAgentBinding.ts`, Spalte `agent_id`): kein
+  Slug-Nachfolger, kein Default-Agent. Zeilen vor 0009 werden beim nächsten Lauf an den dann
+  aktuellen Slug-Inhaber gebunden (akzeptiertes Restrisiko, wenn der Slug vorher übernommen
+  wurde). End-of-Service pausiert die Routinen des Agenten (`routinesPaused`).
+- **`manage_routine`**: Zone pro Routine (`routines.timezone`, Ersteller-Zone aus
+  `ChatTurnInput.userTimeZone`, sonst `PROACTIVE_TIMEZONE`), `checkCronSchedule` vor dem
+  Speichern, `nextRun` mit Zone im Ergebnis, Ablehnungen als `ToolRefusalError`,
+  `targetEmail` nicht mehr beworben.
+- **`ChatTurnInput.unattended`** (channel-sdk 0.3.16): Routine- und Trigger-Turns; keine
+  interaktiven Tools (auch auf dem CLI-Pfad), kein Card-Router, `UNATTENDED_DIRECTIVE`, kein
+  „recent turns“-Block. Routine-Turns laufen außerhalb jedes Routines-Principals.
+- **Templates**: kein `html`, keine leeren `sections`, static-only ohne Turn, Status `silent`
+  bei `[[nothing]]`, Quellprobleme als Warnungen im Lauf.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 
