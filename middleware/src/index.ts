@@ -3451,6 +3451,8 @@ async function main(): Promise<void> {
                 ? {
                     getConfigHeaders: (cfg: McpServerConfig) =>
                       mcpConfigService.getConfigHeaders(cfg),
+                    getConfigEndpoint: (cfg: McpServerConfig) =>
+                      mcpConfigService.getConfigEndpoint(cfg),
                     getConfigEnv: (cfg: McpServerConfig) =>
                       mcpConfigService.getConfigEnv(cfg),
                   }
@@ -3644,8 +3646,11 @@ async function main(): Promise<void> {
     if (graphPool && Number.isFinite(rescanIntervalMs) && rescanIntervalMs > 0) {
       const rescanStore = new AgentGraphStore(graphPool);
       const rescanTimer = setInterval(() => {
-        void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
-          console.log(`[middleware] ${m}`),
+        void rescanAllMcpServers(
+          rescanStore,
+          mcpManager,
+          (m) => console.log(`[middleware] ${m}`),
+          mcpConfigService ? { secretsFor: (s) => mcpConfigService.secretValuesFor(s) } : {},
         )
           .then(() =>
             serviceRegistry
@@ -4257,6 +4262,7 @@ async function main(): Promise<void> {
   // and the per-tool write scopes are the actual authorization.
   mountPublicMcp(app, requireAuth, {
     enabled: config.PUBLIC_MCP_ENABLED,
+    appVersion: appVersion.version,
     allowWithoutPrivacyMasking: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING,
     vault: secretVault,
     graphPool,
@@ -5261,7 +5267,7 @@ async function main(): Promise<void> {
             return undefined;
           }
         },
-        async knownKeyIds() {
+        async keyStates() {
           try {
             // O(keys) per call — enumerates the channel-api vault namespace and
             // parses each record. Fine at operator scale (one read per list-page
@@ -5271,12 +5277,15 @@ async function main(): Promise<void> {
             // rather than hidden in a closure.
             const keyStore = createVerifyOnlyApiKeyStore(secretVault);
             const keys = await keyStore.list();
-            // NOT revoked or expired (#1328). Authentication skips both, so counting
-            // one as "known" reports a binding as healthy that can only ever
-            // 401. Same reasoning as the enabled-agent filter above: this set
-            // answers "would a real request resolve this id", not "is there a
-            // row somewhere".
-            return new Set(keys.filter((k) => isApiKeyActive(k)).map((k) => k.id));
+            // Revoked and expired keys (#1328) cannot authenticate, so the
+            // binding reaches nothing; their state is kept rather than dropped
+            // so the pane names the real reason instead of a typo (#1949).
+            return new Map(
+              keys.map((k) => [
+                k.id,
+                k.revokedAt !== undefined ? 'revoked' : isApiKeyActive(k) ? 'active' : 'expired',
+              ] as const),
+            );
           } catch (err) {
             console.warn(
               `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,

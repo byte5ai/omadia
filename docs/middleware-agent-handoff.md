@@ -2555,6 +2555,27 @@ Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
 `test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
 unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
 
+### MCP-Control-Center: Operator-Routen (Welle 5, 2026-11-26)
+
+**Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
+liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
+Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0116,
+geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
+`POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
+`transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`
+erlaubt) → 400 mit `code` (`name_required`, `endpoint_invalid`, …); doppelter Name → 409
+`name_taken` (auch Katalog-Import und Registries). Ein Nicht-UUID-`:id` unter `/mcp-servers/…`
+und `/mcp-registries/…` → 404 `not_found` vor jedem Handler (MCP-Präzedenz #1318/#1398; Conductor antwortet laut ADR-0038 mit 400).
+
+**Statische Header / API-Keys (#1912, ADR-0210):** `GET/PUT /api/v1/operator/mcp-servers/:id/headers`
+(und `headers` beim `POST /mcp-servers`), nur http/sse. Body `[{name, value?, secret}]`; ein geheimer
+Header wird als `{header_<name>}` in `mcp_servers.headers` gespeichert, der Wert liegt im Vault
+(`@omadia/mcp-config`, `<serverId>:header_<name>`), ohne `value` bleibt der gespeicherte. Geheime
+Config-Felder werden jetzt auch im Endpoint eingesetzt (`McpConfigService.getConfigEndpoint`); das
+Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzhaltern abgeglichen
+(`reconcileConfigSchema`), verschwundene Felder samt Vault-Secret gelöscht. UI:
+`web-ui/app/admin/mcp/ServerHeadersForm.tsx`.
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
@@ -5364,10 +5385,17 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 
 | Variable | Wirkung |
 |---|---|
-| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Ob Compose-Deployments mit `false` ausgeliefert werden, ist nicht entschieden. |
+| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Der Compose-Stack setzt `false` (`middleware/compose.defaults.env`, ADR-0211, #1914): ein stdio-Kind läuft unter dem Middleware-User und kann `/proc/1/environ` (`VAULT_KEY`, `DATABASE_URL`) und `/data` lesen. Wieder einschalten mit `MCP_STDIO_ENABLED=true` in `middleware/.env`. |
 | `REGISTRY_URLS` | JSON-Liste `[{name,url,token?}]` der Plugin-Registries (Hub-Quellen). Wird **nur beim ersten Boot** gelesen (#1483): `seedRegistriesOnFirstBoot` schreibt die Liste nach `platform_settings` → `registry.list`; danach verwaltet Admin · Registries sie, und eine geleerte Liste bleibt über Neustarts leer. Ungesetzt → `hub.omadia.ai`; `'[]'` → Instanz ohne Registry (ZIP-Upload geht weiter). DB-loser Boot seedet weiterhin bei jedem Start. |
 | `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
+
+### Öffentlicher MCP-Endpunkt (#542, #1952, ADR-0142/0143)
+
+| Variable | Wirkung |
+|---|---|
+| `PUBLIC_MCP_ENABLED` | `true`/`false`, Default `false`. Mountet `POST /api/v1/mcp` (auch mit einem abschließenden `/`). Aus: keine Route. `serverInfo.version` ist die Build-Version (`OMADIA_VERSION`, sonst `unknown`). Jede authentifizierte Anfrage landet im Usage-Log des Keys (`/admin/api-keys`, #1936). |
+| `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING` | `true`/`false`, Default `false`. Ohne Privacy-Provider lehnt `tools/call` sonst jeden Aufruf ab. Nur für Installationen, deren freigegebene Tools nachweislich keine Personendaten tragen. |
 
 Die Outbound-Regel für operator-konfigurierte MCP-Ziele (Registry-URL, `http`-/`sse`-Endpoint) hat keine Env-Variable: Link-Local- und Cloud-Metadata-Ziele werden immer abgewiesen (400 bzw. 502 mit `code: blocked_host`), private und Loopback-Adressen bleiben erlaubt.
 

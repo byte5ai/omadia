@@ -237,6 +237,87 @@ changelog.
 - **#1886** — "Delete session" in the agent-unavailable banner removes the session from the list
   and resets the picked agent instead of clearing it (the clear's PUT recreated the session).
 
+### Added — static headers and API keys for MCP servers, kept in the Vault (#1912, ADR-0210) (2026-11-26)
+
+- `GET/PUT /api/v1/operator/mcp-servers/:id/headers` and `headers` on `POST /mcp-servers`
+  (http/sse): plain headers as typed, secret ones as `{header_<name>}` with the value in the
+  Vault; a secret is never returned. Checked names (RFC 9110 token, no transport headers, no
+  duplicates) and values (no CR/LF, ≤ 8192 chars, ≤ 20 headers).
+- A config field marked secret now works in the endpoint too (`getConfigEndpoint`); Discover no
+  longer answers `422 mcp_endpoint_placeholder` for a secret with a stored value.
+- The config schema of http/sse servers follows the endpoint and header placeholders on every
+  read and save; vanished fields are dropped and their Vault secrets deleted.
+- New "Headers" editor in the expanded server row (`ServerHeadersForm.tsx`); secret header
+  fields no longer show up in the config form. Deleting a server deletes its config secrets
+  (best effort, after the connection is dropped). Re-scan failure messages are redacted against
+  the server's stored secrets before they are returned or stored.
+  ADR-0210 (Proposed).
+
+### Security — stdio MCP servers off in the Compose stack; trust model documented (#1914, ADR-0211) (2026-11-26)
+
+- A stdio MCP server runs under the middleware's OS user and can read `/proc/1/environ`
+  (`VAULT_KEY`, `DATABASE_URL`, …) and `/data` (dev vault key), so it can decrypt every stored
+  secret. Decision by recommendation (reversible): accept and document this instead of
+  isolating the child for now. ADR-0211 (Proposed) supersedes ADR-0139 in part.
+- **⚠️ Compose upgrade:** `middleware/compose.defaults.env` now sets `MCP_STDIO_ENABLED=false`.
+  An operator who uses stdio servers sets `MCP_STDIO_ENABLED=true` in `middleware/.env`;
+  until then existing stdio rows are refused at connect time. The built-in default
+  (from source, desktop, Fly) stays `true`.
+- The add-server stdio hint and the catalog card of a stdio entry say that such a server can
+  read the middleware's secrets. `docs/security-architecture.md` §10p, `.env.example`, handoff
+  §10 updated.
+
+### Fixed — MCP Control Center: input checks, re-scan results, risk and grant errors, stdio flag, i18n (#1916, #1941, #1943, #1953, #1954, #1955, #1957, #1959) (2026-11-26)
+
+- **Migration `0116_mcp_server_last_scan`** adds `mcp_servers.last_scan_at` and
+  `last_scan_error`. **#1916** "Re-scan all" and the periodic re-scan stamp every server's
+  outcome; the page shows a summary of the run and a "last re-scan failed" line per server.
+- **#1955** `POST /mcp-servers` validates name, transport, endpoint (http(s) URL, `{placeholder}`
+  allowed) with stable codes; duplicate server and registry names answer 409 `name_taken`; a
+  non-UUID id under `/mcp-servers/…` or `/mcp-registries/…` is a 404 (`routes/mcpServerInput.ts`).
+  The add button stays disabled until name and endpoint are filled.
+- **#1957** `GET /mcp-servers` returns `stdioEnabled`; with `MCP_STDIO_ENABLED=false` the stdio
+  option and catalog Connect for stdio entries are disabled and the hint says why.
+- **#1941** Enabling a server with unacknowledged risks names the tools and their severity.
+- **#1943** "Grant all" skips tools that need a review, grants the rest, lists the skipped ones
+  and always reloads.
+- **#1953** An MCP input-card answer is shown and stored as "Sent to <server>: <field names>";
+  the envelope with the values rides only in the `/api/chat` request, and
+  `PUT /api/chat/sessions/:id` replaces any envelope an older tab sends back
+  (`scrubMcpInputEnvelopes`). Not backfilled: an envelope stored before this change stays until
+  that session is saved again.
+- **#1954** The agent page's tool-grant list reloads after "Save allowlist"; its copy no longer
+  calls itself read-only.
+- **#1959** Structured-output badge reads `skills.verdict.*`, risk codes and audit failure
+  reasons are translated, audit times and the "discovered" time use the locale, `unresolved`
+  renders as "not resolved", ICU plurals for tool/step/connector counts, the add-server dialog
+  uses "du". New ratchet: `scripts/i18n-missing-keys.mjs` (part of `npm run i18n:check`, ceiling
+  0) fails on `t('key')` calls whose key is in no catalog. Not done here: the English OAuth
+  callback page (left to W09-10, which reworks its texts in #1924).
+
+### Fixed — public MCP endpoint: write limits, usage log, tool errors, binding writes (#1935–#1938, #1940, #1949, #1952) (2026-11-26)
+
+- **#1935** A changed write limit applies on the next call: `createRateLimiter` reads the
+  capacity per call instead of pinning it on first sight. The bindings form refuses an empty
+  or out-of-range write budget and warns that `0` blocks every write.
+- **#1936** Every authenticated `POST /api/v1/mcp` writes one entry to the key's usage log
+  (`publicMcpUsage.ts`; outcome `ok`, `error`, `forbidden`, `rate_limited`), so an MCP-only key
+  shows "last used" on `/admin/api-keys`.
+- **#1937** A tool that reports an error (MCP `isError`, upstream JSON-RPC error, missing OAuth
+  connection) is answered as an `isError` result with a generic text and logged as
+  "tool reported an error", not as "privacy masking did not run". ADR-0212 (Proposed)
+  supersedes that bullet of ADR-0142. `ToolDispatchService` now flags guarded control-flow
+  results `isError` (the loopback MCP server forwards the flag).
+- **#1938** A tool listed under a binding's write tools gets the idempotency replay too
+  (`ToolDispatchOptions.treatAsWrite`).
+- **#1940** `mcp:write:<tool>` accepts `[A-Za-z0-9_-]{1,64}` (upper case kept, as
+  `mcpNativeToolName` produces it); a binding refuses write tools outside that grammar
+  (`write_tool_name_invalid`).
+- **#1949** Saving over an existing binding needs `replace: true` (409 `binding_exists`
+  otherwise; the pane asks first; ADR-0213, Proposed). Revoked and expired keys get their own
+  warnings (`key_revoked`, `key_expired`) and no "Active" badge.
+- **#1952** `/api/v1/mcp/` reaches the endpoint, `serverInfo.version` is the build version,
+  README status codes corrected, `PUBLIC_MCP_*` in `.env.example` and handoff §10.
 ### Security — web, routine and API turns are one-person rooms; memories private by default (#1774, #1826, #1823, ADR-0182, ADR-0183) (2026-11-26)
 
 - Web chat turns carry `TurnOrigin { channelType: 'http', scope: personal(<omadia user id>) }`,

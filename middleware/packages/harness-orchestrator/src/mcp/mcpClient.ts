@@ -322,6 +322,12 @@ export interface McpAuthProvider {
    */
   getConfigHeaders?(cfg: McpServerConfig): Promise<Record<string, string>>;
   /**
+   * #1912 — the endpoint with secret config placeholders filled from the Vault,
+   * or `undefined` when it holds none. Resolved per call like the headers, so
+   * the secret never lives on the pooled config or the DB row.
+   */
+  getConfigEndpoint?(cfg: McpServerConfig): Promise<string | undefined>;
+  /**
    * Environment variables for a stdio server (epic #459): config values + Vault
    * secrets, passed to the spawned process. Resolved per call so secrets never
    * live on the pooled config or the DB row.
@@ -1726,15 +1732,24 @@ export class McpManager {
       if (!env || Object.keys(env).length === 0) return cfg;
       return { ...cfg, env: { ...(cfg.env ?? {}), ...env } };
     }
-    if (!auth.getConfigHeaders) return cfg;
+    let resolved = cfg;
+    if (auth.getConfigEndpoint) {
+      try {
+        const endpoint = await auth.getConfigEndpoint.call(auth, cfg);
+        if (endpoint !== undefined) resolved = { ...resolved, endpoint };
+      } catch {
+        /* secret resolution must not break the call path */
+      }
+    }
+    if (!auth.getConfigHeaders) return resolved;
     let extra: Record<string, string> = {};
     try {
       extra = await auth.getConfigHeaders.call(auth, cfg);
     } catch {
       /* secret resolution must not break the call path */
     }
-    if (!extra || Object.keys(extra).length === 0) return cfg;
-    return { ...cfg, headers: { ...(cfg.headers ?? {}), ...extra } };
+    if (!extra || Object.keys(extra).length === 0) return resolved;
+    return { ...resolved, headers: { ...(resolved.headers ?? {}), ...extra } };
   }
 
   private makeTransport(cfg: McpServerConfig, token: string | null = null): Transport {

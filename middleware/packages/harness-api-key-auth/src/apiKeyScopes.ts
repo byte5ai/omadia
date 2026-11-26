@@ -90,11 +90,26 @@ const SCOPE_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/;
  * `<a>:<b>:<c>` rule on purpose. A generic three-segment rule would quietly
  * legalize every `foo:bar:baz` string an operator mistypes, and each such
  * string would then be a scope that validates, persists, and grants nothing —
- * indistinguishable from a revoked key at debug time. `<tool>` reuses the same
- * character class the other segments use, so a tool name that cannot appear
- * here cannot be granted at all (fail closed, not fail open).
+ * indistinguishable from a revoked key at debug time. `<tool>` follows the
+ * tool-name grammar (`MCP_WRITE_TOOL_NAME_PATTERN` below), so a tool name that
+ * cannot appear here cannot be granted at all (fail closed, not fail open).
  */
-const MCP_WRITE_SCOPE_PATTERN = /^mcp:write:[a-z][a-z0-9_-]*$/;
+const MCP_WRITE_SCOPE_PATTERN = /^mcp:write:[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * #1940 — the `<tool>` segment of `mcp:write:<tool>`: the grammar every omadia
+ * tool name already follows (the model providers' tool-name rule, and what
+ * `mcpNativeToolName` produces for an external MCP tool, upper case kept).
+ * The lower-case-only class the other segments use made an MCP tool such as
+ * `mcp__crm__createLead` impossible to grant as a write.
+ */
+const MCP_WRITE_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Whether `name` can be granted as `mcp:write:<name>`. A binding write tool
+ *  that fails this could never be called, so the binding save refuses it. */
+export function isValidMcpWriteToolName(name: unknown): name is string {
+  return typeof name === 'string' && MCP_WRITE_TOOL_NAME_PATTERN.test(name);
+}
 
 /**
  * The bare two-segment `mcp:write`, rejected outright.
