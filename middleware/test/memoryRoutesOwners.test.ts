@@ -28,6 +28,7 @@ describe('#1821 / #1852 — memory owners', () => {
   let ben: string;
   let bensTurn: string;
   let annasTurn: string;
+  let bensAgentTurn: string;
 
   before(async () => {
     graph = new InMemoryKnowledgeGraph();
@@ -68,6 +69,7 @@ describe('#1821 / #1852 — memory owners', () => {
     };
     annasTurn = await turnOf(anna, 'web-anna');
     bensTurn = await turnOf(ben, 'web-ben');
+    bensAgentTurn = await turnOf(ben, 'atlas::web-ben');
 
     const app = express();
     app.use(express.json());
@@ -149,5 +151,13 @@ describe('#1821 / #1852 — memory owners', () => {
     assert.equal(removed.status, 200);
     assert.ok(!(await listIds(ben)).includes(id), 'gone from the removed owner’s list');
     assert.ok((await listIds(anna)).includes(id));
+  });
+
+  it('#1823: a saved memory is private and belongs to the agent of its source turn', async () => {
+    const res = await create(ben, { derivedFromTurnIds: [bensAgentTurn] });
+    assert.equal(res.status, 201);
+    const node = (await graph.getMemorableKnowledge(String(res.body['memorableKnowledgeNodeId'])))!;
+    assert.equal(node.visibility, 'private');
+    assert.equal(node.props['origin_agent'], 'atlas');
   });
 });

@@ -2594,13 +2594,13 @@
       "semanticsHeading": "Vor dem Einschalten lesen",
       "semanticsTeam": "Ein Turn aus einem Team-Kontext schreibt in seine eigene Ebene und in die gemeinsame Team-Ebene — dort lesen sich Teamkolleginnen und -kollegen gegenseitig.",
       "semanticsAgent": "Das eigene Memory des Agenten bleibt lesbar, wird für Kontext-Turns aber schreibgeschützt. „Merk dir das global“ kann damit kein Wissen mehr von Team A nach Team B tragen.",
-      "semanticsApi": "Turns über die API bringen keinen Chat-Kontext mit und erreichen deshalb nur das private Memory des Agenten selbst — nie einen Team- oder Kanal-Baum.",
+      "semanticsApi": "Web-Chat-Konten und Public-API-Keys zählen als Einzelchats: In jedem Modus außer „Aus“ bekommt jedes Konto und jeder API-Key ein eigenes Memory und liest nie das eines anderen. Unter „Aus“ teilen sich alle Konten und alle API-Keys dieses Agenten ein Memory.",
       "semanticsMembers": "Mit „Geteilt unter den Anwesenden“ bekommt eine Gruppe nur dann Wissen, wenn der Kanal die vollständige Mitgliederliste liefert. Sonst bekommt sie keins, damit niemand liest, was nie seins war.",
       "acknowledge": "Mir ist klar, wie das Memory für diesen Agenten aufgeteilt wird.",
       "modes": {
         "off": {
           "label": "Aus",
-          "description": "Ein gemeinsames Memory für alle Turns, wie vor dieser Funktion. Nicht möglich für einen Agenten mit Capability-Grants."
+          "description": "Ein gemeinsames Memory für alle Turns, wie vor dieser Funktion — jedes Web-Chat-Konto und jeder API-Key liest, was die anderen dem Agenten zum Merken gegeben haben. Nicht möglich für einen Agenten mit Capability-Grants."
         },
         "enforce": {
           "label": "Je Kontext getrennt",
@@ -2608,11 +2608,11 @@
         },
         "enforce-strict": {
           "label": "Getrennt und abgeschottet",
-          "description": "Jeder Chat-Kontext bekommt ein eigenes Memory und kann das eigene Memory des Agenten gar nicht lesen. Für Kontexte, die nichts teilen dürfen."
+          "description": "Jeder Chat-Kontext — auch jedes Web-Chat-Konto und jeder API-Key — bekommt ein eigenes Memory und kann das eigene Memory des Agenten gar nicht lesen. Für Kontexte, die nichts teilen dürfen."
         },
         "members": {
           "label": "Geteilt unter den Anwesenden",
-          "description": "Wissen gehört den Personen, die dabei waren, als es entstand. Jeder Chat, an dem nur diese Personen teilnehmen, kann es nutzen, auch ein Einzelchat. Sobald jemand anderes dabei ist, bleibt es draußen."
+          "description": "Wissen gehört den Personen, die dabei waren, als es entstand. Jeder Chat, an dem nur diese Personen teilnehmen, kann es nutzen, auch ein Einzelchat, ein Web-Chat oder die Turns eines API-Keys. Sobald jemand anderes dabei ist, bleibt es draußen."
         }
       }
     },

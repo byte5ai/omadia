@@ -525,6 +525,11 @@ export class ChatSessionStore {
         existing = await this.get(session.id);
       } catch (err) {
         if (!(err instanceof SyntaxError)) throw err;
+        // #1762 — an unreadable chat has no readable owner: it counts as a
+        // legacy chat, so only its resolved owner may overwrite it.
+        if (owner && owner.legacyOwner !== owner.viewer) {
+          throw new ChatSessionNotOwnedError(session.id);
+        }
         console.warn(
           `[chat-sessions] unreadable session ${session.id}, overwriting from client:`,
           err.message,
@@ -671,6 +676,11 @@ export class ChatSessionStore {
       messages: [...existing.messages, userMsg, assistantMsg],
     };
     await this.save(updated);
+  }
+
+  /** Is a document stored under `id` (readable or not)? */
+  async fileExistsFor(id: string): Promise<boolean> {
+    return this.store.fileExists(this.pathFor(id));
   }
 
   private pathFor(id: string): string {

@@ -69,8 +69,15 @@ Chosen option: **A**.
 - 🔴 **Bad:** The browser's localStorage cache is per browser, not per account: two accounts
   sharing one browser profile still see each other's cached tabs locally until the cache is
   cleared; the server refuses every write to them.
-- ⚪ **Neutral:** Deleting an account leaves its chats on disk, owned by an id no one signs in
-  with, so they are hidden.
+- ⚪ **Neutral:** Deleting an account leaves its stamped chats on disk, owned by an id no one
+  signs in with, so they are hidden. Legacy (unstamped) chats follow the sole-account rule at
+  read time: if the only account is replaced by a new one, the new one sees them. A disabled
+  sole account owns none.
+- 🔴 **Bad (residual):** A turn or steer with a debug `scope` instead of a `sessionId` (and the
+  shared `http-default` bucket of a turn with neither) is keyed by that caller-chosen label, not
+  by a chat, so this check does not apply there; the memory partition of such a turn comes from
+  the account origin ([ADR-0182](0182-web-and-api-turns-carry-an-account-or-key-origin.md)), but
+  steering and the transcript bucket stay shared by label.
 
 ## Pros and Cons of the Options
 

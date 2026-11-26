@@ -8,7 +8,7 @@ import type {
   KnowledgeGraph,
   MemorableKind,
 } from '@omadia/plugin-api';
-import { userNodeId } from '@omadia/plugin-api';
+import { AGENT_SCOPE_SEP, userNodeId } from '@omadia/plugin-api';
 
 /**
  * Slice 3b — REST surface for MemorableKnowledge + ACL operations.
@@ -149,20 +149,35 @@ async function readableSourceTurns(
   graph: KnowledgeGraph,
   turnIds: readonly string[],
   viewer: string,
-): Promise<{ kept: string[]; dropped: number }> {
+): Promise<{ kept: string[]; dropped: number; originAgent?: string }> {
   const kept: string[] = [];
+  const agents = new Set<string>();
   for (const id of new Set(turnIds)) {
     const run = await graph.getRunForTurn(id).catch((err: unknown) => {
       console.warn(`[memory] source turn ${id} unreadable, dropped:`, err instanceof Error ? err.message : err);
       return null;
     });
-    if (run?.user?.id === userNodeId(viewer)) kept.push(id);
+    if (run?.user?.id !== userNodeId(viewer)) continue;
+    kept.push(id);
+    const agent = agentOfScope(run.turn.props['scope']);
+    if (agent) agents.add(agent);
   }
   const dropped = new Set(turnIds).size - kept.length;
   if (dropped > 0) {
     console.warn(`[memory] dropped ${String(dropped)} source turn(s) the saver did not send`);
   }
-  return { kept, dropped };
+  // #1823 — the entry belongs to the agent whose turn it came from, so the
+  // per-agent recall isolation and the agent purge cover it. Turns of several
+  // agents name none.
+  const originAgent = agents.size === 1 ? [...agents][0] : undefined;
+  return { kept, dropped, ...(originAgent ? { originAgent } : {}) };
+}
+
+/** The agent slug of a qualified graph scope (`<slug>::<conversation>`). */
+function agentOfScope(scope: unknown): string | undefined {
+  if (typeof scope !== 'string') return undefined;
+  const at = scope.indexOf(AGENT_SCOPE_SEP);
+  return at > 0 ? scope.slice(0, at) : undefined;
 }
 
 export function createMemoryRouter(deps: {
@@ -220,6 +235,9 @@ export function createMemoryRouter(deps: {
           ? { requiredEntityIds: body.requiredEntityIds }
           : {}),
         ...(sourceTurns.kept.length > 0 ? { derivedFromTurnIds: sourceTurns.kept } : {}),
+        ...(sourceTurns.originAgent ? { originAgent: sourceTurns.originAgent } : {}),
+        // #1823 (ADR-0183) — a saved memory is its saver's, not the tenant's.
+        visibility: 'private',
         ...(body.palaiaExcerpts
           ? { palaiaExcerpts: body.palaiaExcerpts }
           : {}),

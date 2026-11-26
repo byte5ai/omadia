@@ -164,6 +164,14 @@ describe('#1762 — web chats are owned by the account that created them', () =>
     const own = await call(ANNA, 'POST', '', { message: 'hi', sessionId: 'tab-a' });
     assert.equal(own.status, 200);
   });
+  it('an unreadable chat file counts as a legacy chat: only its resolved owner may delete or overwrite it', async () => {
+    const memory = (store as unknown as { store: InMemoryMemoryStore }).store;
+    await memory.writeFile('/memories/chat-sessions/broken.json', '{not json');
+    assert.equal((await call(BEN, 'DELETE', '/sessions/broken')).status, 404);
+    assert.equal((await call(BEN, 'PUT', '/sessions/broken', chat('broken'))).status, 404);
+    legacy = ANNA;
+    assert.equal((await call(ANNA, 'DELETE', '/sessions/broken')).status, 200);
+  });
 });
 
 describe('#1762 — soleAccountLegacyOwner', () => {
@@ -180,6 +188,8 @@ describe('#1762 — soleAccountLegacyOwner', () => {
     clock += 60_000;
     assert.equal(await owner(), undefined);
     const failing = soleAccountLegacyOwner(() => Promise.reject(new Error('db down')));
+    const disabled = soleAccountLegacyOwner(() => Promise.resolve([{ id: 'a', status: 'disabled' }]));
+    assert.equal(await disabled(), undefined, 'a disabled sole account owns nothing');
     assert.equal(await failing(), undefined);
   });
 });

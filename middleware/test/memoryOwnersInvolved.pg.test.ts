@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
 import { after, before, describe, it } from 'node:test';
 
 import {
@@ -85,5 +86,36 @@ describe('#1821 · Neon addOwner / removeOwner keep INVOLVED in step', () => {
     await kg().removeOwner(id, ben, actor);
     assert.equal(await lists(ben), false, 'gone after remove');
     assert.equal(await lists(anna), true);
+  });
+
+  it('#1823: migration 0037 makes defaulted team memories private, keeps durable rules and public', async (t) => {
+    if (!reachable) return t.skip('no pg');
+    const make = async (createdBy: string, visibility?: 'team' | 'public') =>
+      (
+        await kg().createMemorableKnowledge({
+          kind: 'reference',
+          summary: `Migration probe ${createdBy} ${visibility ?? 'none'}`,
+          createdBy,
+          actorOmadiaUserId: anna,
+          aclOwners: [anna],
+          involvedOmadiaUserIds: [anna],
+          ...(visibility ? { visibility } : {}),
+        })
+      ).memorableKnowledgeNodeId;
+    const saved = await make(`web:${anna}`, 'team'); // stands in for a pre-#1823 default
+    const rule = await make('system:rules-hook', 'team');
+    const pub = await make(`web:${anna}`, 'public');
+    const fresh = await make(`auto:${anna}`);
+
+    const sql = await readFile(
+      new URL('../packages/harness-knowledge-graph-neon/src/migrations/0037_memorable_knowledge_private_by_default.sql', import.meta.url),
+      'utf8',
+    );
+    await pool!.query(sql);
+    const vis = async (id: string) => (await kg().getMemorableKnowledge(id))!.visibility;
+    assert.equal(await vis(saved), 'private');
+    assert.equal(await vis(rule), 'team');
+    assert.equal(await vis(pub), 'public');
+    assert.equal(await vis(fresh), 'private', 'new rows are private without the migration');
   });
 });

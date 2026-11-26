@@ -39,6 +39,8 @@ async function seedDurableMk(
   // Exercise the real B2 ingest path: `manuallyAuthored: true` flows through
   // createMemorableKnowledge → the top-level marker — no test-only setter.
   const created = await kg.createMemorableKnowledge({
+    // #1823 — shared on purpose: defaults are private now.
+    visibility: 'team',
     kind,
     summary,
     createdBy: 'web:bob',
@@ -58,6 +60,8 @@ async function seedFuzzyMk(
   summary: string,
 ): Promise<string> {
   const created = await kg.createMemorableKnowledge({
+    // #1823 — shared on purpose: defaults are private now.
+    visibility: 'team',
     kind: 'reference',
     summary,
     createdBy: 'web:bob',

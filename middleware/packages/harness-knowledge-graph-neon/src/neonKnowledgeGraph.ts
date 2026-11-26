@@ -2599,13 +2599,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         scope: null,
         userId: null,
         props,
-        // WS5 — forward an explicit initial visibility when the caller
-        // (the scratch-promotion reaper) wants the new MK shared team-wide.
-        // Omitted → undefined → upsertNode's `COALESCE($9, 'team')` keeps the
-        // exact pre-existing DB-default behaviour for every other caller.
-        ...(input.visibility !== undefined
-          ? { visibility: input.visibility }
-          : {}),
+        // #1823 (ADR-0183) — a new MK is private unless the caller shares it
+        // on purpose (durable rules pass `team`). Before, an omitted value fell
+        // to the column default `team`, and recall's team branch handed every
+        // saved, promoted or MCP-ingested entry to every account and agent.
+        visibility: input.visibility ?? 'private',
         // Durable-curation marker → top-level `manually_authored` column.
         // Set by the durable-promotion pipeline; defaults to false otherwise.
         ...(input.manuallyAuthored !== undefined

@@ -1128,11 +1128,21 @@ and keeps only source turns the saver sent. Sharing goes only through
 `POST /api/v1/memory/:id/owners`, which takes real users only and writes the
 `INVOLVED` edge with the owner.
 
+Web, routine and API turns (#1774, #1826, ADR-0182): a web chat or web routine
+turn carries a personal origin from the signed-in account (session only), a
+Public API turn one from its key. Under `enforce` / `enforce-strict` /
+`members` each account and each key is its own one-person room; under `off`
+they share the agent tree. Memorable knowledge is `private` unless shared on
+purpose (#1823, ADR-0183; migration `0037`), so recall's team branch admits
+only durable rules and `public` rows.
+
 Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it;
   both return nothing for an empty audience (in-memory since #2224).
-- Only turns that carry a `TurnOrigin` are context-bound.
+- Only turns that carry a `TurnOrigin` are context-bound; since #1774 that
+  includes web chat, web routines and Public API turns, but not routines of
+  other channels.
 
 All of these are pinned as known failures (`todo`, naming the issue) in the
 canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,

@@ -1482,9 +1482,10 @@ export interface MemorableKnowledgeIngest {
    */
   aclOwners?: string[];
   /**
-   * Initial visibility for the new MK. Omitted → backend default
-   * (admin-only / private). Used by the scratch-promotion reaper to publish
-   * consolidated agent knowledge team-wide.
+   * Initial visibility for the new MK. Omitted → `private` (#1823): only
+   * the owners recall it. Pass `team` / `public` only for knowledge shared on
+   * purpose (operator durable rules); recall's team branch hands it to every
+   * account and agent of the tenant.
    */
   visibility?: Visibility;
   /**

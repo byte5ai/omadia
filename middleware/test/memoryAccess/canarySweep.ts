@@ -16,6 +16,7 @@ import {
   NativeToolRegistry,
   buildOrchestratorForAgent,
   turnContext,
+  webAccountOrigin,
   type ChatParticipantsProvider,
 } from '@omadia/orchestrator';
 import {
@@ -324,6 +325,7 @@ function readOnly(store: MemoryStore): MemoryStore {
 function originOf(ctx: ContextKey): TurnOrigin | undefined {
   switch (ctx) {
     case 'web':
+      // Built per viewer from the seeded omadia id (`sweepTurn`).
       return undefined;
     case 'dm':
       return { channelType: 'teams', scope: { kind: 'personal', userId: USERS.alice } };
@@ -714,15 +716,19 @@ export async function sweepTurn(
       // Names every conversation (turn legs) and every entity (entity leg).
       userMessage: `Was wissen wir zu CANARY-ENTITY ${ALL_KEYWORDS.join(' ')}?`,
       sessionScope: conversationOf(viewer.context, viewer.user),
-      // Like production: the session's omadia id on the web; the raw channel
-      // id plus the channel identity on Teams (orchestratorDispatcher).
+      // Like production: on the web the session's omadia id and the account
+      // origin built from it (#1774, `webTurnOrigin`); on Teams the raw
+      // channel id plus the channel identity (orchestratorDispatcher).
       ...(origin
         ? {
             origin,
             userId: USERS[viewer.user],
             channelIdentity: { channelKind: 'teams' as const, channelUserId: USERS[viewer.user] },
           }
-        : { userId: seeded.users[viewer.tenant][viewer.user] }),
+        : {
+            userId: seeded.users[viewer.tenant][viewer.user],
+            origin: webAccountOrigin(seeded.users[viewer.tenant][viewer.user]),
+          }),
     })) {
       if (!/^(tool_|sub_)/.test(event.type)) toClient.push(event);
     }

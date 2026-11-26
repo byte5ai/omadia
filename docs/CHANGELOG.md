@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Security — web, routine and API turns are one-person rooms; memories private by default (#1774, #1826, #1823, ADR-0182, ADR-0183) (2026-11-26)
+
+- Web chat turns carry `TurnOrigin { channelType: 'http', scope: personal(<omadia user id>) }`,
+  built only from the session (`webTurnOrigin`, `routes/chat.ts`); web routines carry the same
+  origin from `routine.userId`; Public API turns carry `{ channelType: 'api', scope:
+  personal('key:<keyId>') }` (`apiKeyOrigin`). In `enforce` / `enforce-strict` each account and
+  each key gets its own `user` tier, in `members` a one-person audience (`isWebAccountTurn`).
+  `off` keeps one shared tree (ADR-0116). A channel plugin can no longer state `http`, and only
+  `@omadia/channel-api` may state `api` (`readTurnOrigin`; such a turn runs context-free).
+- The `[security-audit] effectiveMemoryScope` line names the mode that is set (`members` was
+  logged as `enforce-strict`). The memory tab texts (en/de) say what each mode does for web
+  accounts and API keys.
+- `createMemorableKnowledge` stores `private` when no visibility is given (both backends,
+  matching the plugin-api doc). "Save as memory" writes `private` and stamps `originAgent` from
+  its source turn. **Graph migration `0037_memorable_knowledge_private_by_default`** moves every
+  defaulted `team` MemorableKnowledge row that has owners to `private`; durable rules
+  (`system:rules-hook`), owner-less rows and `public` rows stay shared. plugin-api **1.99.0**
+  records the behaviour change (and `addOwner`/`removeOwner` from #1821). Recall's `teamVisibility` stays on and now only admits knowledge
+  shared on purpose.
+- **Upgrade note:** on `enforce-strict` / `members` agents, web and API turns no longer read
+  notes written to the agent tree before this change. A hand-set `team` row becomes private and
+  must be re-shared.
+
 ### Security — memory owners are real users, chosen only by the saver (#1821, #1852, ADR-0181) (2026-11-26)
 
 - `POST /api/v1/memory` makes the saver the only owner and involved user. `aclOwners` or

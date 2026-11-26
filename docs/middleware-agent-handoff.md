@@ -9061,6 +9061,14 @@ operator-authentifizierte Listing-Route (gleiches Gate wie Purge) ist der nächs
 Die Channel-Plugins (`omadia-channel-teams`, `omadia-channel-telegram`) bauen den `TurnOrigin`
 in ihren EIGENEN Repos; die können erst nach Release des SDK mit `TurnOrigin` gebaut werden.
 
+**Web, Routinen, Public API (#1774, #1826, ADR-0182, 2026-11-26):** Der Web-Chat
+(`webTurnOrigin`, nur aus `req.session.omadia_user_id`) und Web-Routinen (`routineOrigin`)
+senden `TurnOrigin { channelType: 'http', scope: personal(<omadia-user-id>) }`, der
+Public-API-Router `apiKeyOrigin(keyId)` (`channelType: 'api'`, `personal('key:<keyId>')`).
+Jedes Konto und jeder Key ist damit unter `enforce` / `enforce-strict` / `members` ein
+Ein-Personen-Raum; `off` bleibt ein gemeinsamer Baum. Merkfähiges Wissen ist ohne
+explizite Sichtbarkeit `private` (ADR-0183, Graph-Migration `0037`).
+
 ## Teams-E2E-Smoke: Provisioning-Kette gegen eine Wegwerf-Umgebung (W2a, #860 / #874, 2026-08-27)
 
 `middleware/scripts/smoke-teams-e2e.ts` (+ `-stage2.ts`, beide gitignored, weil sie

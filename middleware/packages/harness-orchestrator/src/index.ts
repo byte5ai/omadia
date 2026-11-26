@@ -699,6 +699,7 @@ export {
   graphSessionAccess,
   type GraphNodeViewer,
 } from './graphNodeAccess.js';
+export { WEB_ACCOUNT_CHANNEL_TYPE, isWebAccountTurn, webAccountOrigin } from './webAccountOrigin.js';
 export {
   currentProcessBoundary,
   currentProcessReadFilter,

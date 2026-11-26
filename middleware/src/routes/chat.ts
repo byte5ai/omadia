@@ -11,7 +11,7 @@ import {
   type AgentCommand,
 } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
-import { MAX_STEER_LENGTH, steeringBus, today, turnContext } from '@omadia/orchestrator';
+import { MAX_STEER_LENGTH, steeringBus, today, turnContext, webAccountOrigin } from '@omadia/orchestrator';
 import type {
   AskObserver,
   ChatAgent,
@@ -78,10 +78,9 @@ const ChatRequestSchema = z.object({
 /**
  * The orchestrator `sessionScope` for an HTTP turn.
  *
- * W5 memory-ACL (#860), coordinator decision 1 — note what this route does NOT
- * do: it never builds a `TurnOrigin`, so every HTTP turn resolves context-free
- * and gets the agent-private memory stack, byte-identical to today. That is a
- * decision, not an omission.
+ * W5 memory-ACL (#860), coordinator decision 1 — the scope is never a memory
+ * partition. Since #1774 (ADR-0182) the turn's origin comes from the signed-in
+ * account instead (`webTurnOrigin`), never from what this function returns.
  *
  * The scopes this function returns (`http-<scope>`, a client-chosen
  * `sessionId`, or the shared literal `'http-default'`) are transcript-bucketing
@@ -138,6 +137,18 @@ function resolveUserId(req: Request): string | undefined {
   const raw = req.header('x-user-id');
   if (!raw) return undefined;
   return USER_ID_RE.test(raw) ? raw : undefined;
+}
+
+/**
+ * #1774 (ADR-0182) — the turn's origin: the signed-in account's one-person
+ * room, from the session's canonical omadia user id only (never the
+ * `x-user-id` header, the scope or the `sessionId`, which the caller picks).
+ * Absent without such a session: the turn stays context-free.
+ */
+function webTurnOrigin(req: Request): { origin?: ReturnType<typeof webAccountOrigin> } {
+  const id = req.session?.omadia_user_id;
+  if (!id || !USER_ID_RE.test(id)) return {};
+  return { origin: webAccountOrigin(id) };
 }
 
 /**
@@ -518,6 +529,7 @@ export function createChatRouter(
               userMessage: parsed.data.message,
               sessionScope,
               ...(userId ? { userId } : {}),
+              ...webTurnOrigin(req),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),
@@ -774,6 +786,7 @@ export function createChatRouter(
               userMessage: parsed.data.message,
               sessionScope: resolveScope(parsed.data),
               ...(userId ? { userId } : {}),
+              ...webTurnOrigin(req),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),

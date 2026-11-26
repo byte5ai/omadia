@@ -33,15 +33,17 @@ const SOLE_ACCOUNT_CACHE_MS = 30_000;
  * table holds exactly one. A failed lookup resolves to nobody (fail closed).
  */
 export function soleAccountLegacyOwner(
-  listAccounts: (limit: number) => Promise<readonly { id: string }[]>,
+  listAccounts: (limit: number) => Promise<readonly { id: string; status?: string }[]>,
   now: () => number = Date.now,
 ): LegacyChatOwner {
   let cached: { at: number; owner: string | undefined } | undefined;
   return async () => {
     if (cached && now() - cached.at < SOLE_ACCOUNT_CACHE_MS) return cached.owner;
     try {
+      // Every account counts, disabled ones too: a chat must not move to
+      // whoever is left active. A page of 2 tells "one" from "more".
       const accounts = await listAccounts(2);
-      const owner = accounts.length === 1 ? accounts[0]?.id : undefined;
+      const owner = accounts.length === 1 && accounts[0]?.status !== 'disabled' ? accounts[0]?.id : undefined;
       cached = { at: now(), owner };
       return owner;
     } catch (err) {

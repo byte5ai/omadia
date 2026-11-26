@@ -1139,12 +1139,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.upsertNode({
       id: mkExtId,
       type: 'MemorableKnowledge',
-      // WS5 — reflect an explicit initial visibility on the node so
-      // `GraphNode.visibility` carries the value the reaper requested
-      // (team-wide). Omitted → undefined, the historical default.
-      ...(input.visibility !== undefined
-        ? { visibility: input.visibility }
-        : {}),
+      // #1823 (ADR-0183) — private unless the caller shares it on purpose
+      // (durable rules: `team`). Like Neon.
+      visibility: input.visibility ?? 'private',
       // Durable-curation marker — mirrors the Neon `manually_authored` column.
       // Top-level GraphNode field (not props); keys the durable recall tier.
       ...(input.manuallyAuthored !== undefined

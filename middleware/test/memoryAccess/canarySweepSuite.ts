@@ -168,7 +168,11 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
           'plugin-neighbors',
           'plugin-service',
         ];
-        if (backend === 'neon') expectedEntries.push('process-tool');
+        // Processes carry no owners: a context-bound strict / members turn reads
+        // none, and since #1774 every turn of those modes is context-bound
+        // (web turns carry the account origin).
+        const processesReadable = mode === 'off' || mode === 'enforce';
+        if (backend === 'neon' && processesReadable) expectedEntries.push('process-tool');
         assert.deepEqual([...seen].sort(), expectedEntries.sort());
         const silent = inMode().filter(
           (sweep) => !sweep.sightings.some((s) => s.entry === 'context' && s.verdict.allowed),
@@ -181,8 +185,13 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
           if (!seeded) return t.skip('no test database');
           const out = processWriteViolations(seeded, inMode());
           assert.deepEqual(out.violations, [], out.violations.slice(0, 40).join('\n'));
-          assert.ok(out.allowedEdits > 0, 'CONTROL: a turn edits its own agent\'s process');
-          assert.ok(out.allowedWrites > 0, 'CONTROL: a turn writes into its own agent\'s scope');
+          // Every strict / members turn is context-bound (#1774): none may write.
+          if (mode === 'off' || mode === 'enforce') {
+            assert.ok(out.allowedEdits > 0, 'CONTROL: a turn edits its own agent\'s process');
+            assert.ok(out.allowedWrites > 0, 'CONTROL: a turn writes into its own agent\'s scope');
+          } else {
+            assert.equal(out.allowedEdits + out.allowedWrites, 0);
+          }
         });
       }
 

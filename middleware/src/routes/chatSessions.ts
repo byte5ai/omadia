@@ -221,7 +221,16 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     req: Request,
     id: string,
   ): Promise<ChatSession | null> => {
-    const session = await store.get(id);
+    let session: ChatSession | null;
+    try {
+      session = await store.get(id);
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err;
+      // An unreadable chat has no readable owner: it is a legacy chat, and
+      // only its resolved owner may delete or reset it.
+      const owned = chatSessionOwnedBy({}, chatViewer(req), await legacyOwner());
+      return owned ? ({ id, title: id, createdAt: 0, updatedAt: 0, messages: [] } satisfies ChatSession) : null;
+    }
     if (!session) return null;
     return chatSessionOwnedBy(session, chatViewer(req), await legacyOwner()) ? session : null;
   };
@@ -334,7 +343,7 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     if (!store) return;
     try {
       // Idempotent for a missing chat; another account's answers 404.
-      if ((await store.get(id)) && !(await ownSession(store, req, id))) {
+      if ((await store.fileExistsFor(id)) && !(await ownSession(store, req, id))) {
         res.status(404).json({ error: 'not_found' });
         return;
       }
