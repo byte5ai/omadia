@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — plugin channel turns carry their channel kind; replayed answers drop the disclosure line (2026-11-26)
+
+- **#1994** — receipts (`turn_receipts.channel`) and the per-channel AI-disclosure override now read
+  the turn's channel kind through one derivation, `turnChannelKind` (`@omadia/orchestrator`): the
+  minted channel identity's kind, else the kind `TurnOrigin.channelType` names. Telegram and Teams
+  turns no longer record `channel = NULL`, a `telegram=`/`teams=` override applies, and the
+  `/health` posture claim for those kinds is true. No plugin release needed.
+- **#2003** — replayed prior turns lose every known AI-disclosure line (all locales and levels,
+  `stripKnownAiDisclosureLines` in `@omadia/channel-sdk`) before they reach the model, on the
+  in-process path (`maskPriorTurnsForWire`) and the subscription-CLI path (`maskHistory`). The model
+  no longer sees the boundary's marking as its own words and stops repeating it. Covers Telegram,
+  Teams and every other channel.
+
 ### Fixed — web chat shows no internal sentinels or notes; Delete session removes it (2026-11-26)
 
 - **#1896** — a bare `NO_REPLY` no longer reaches streamed turns as text. `suppressNoReplyStream`

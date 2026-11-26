@@ -875,7 +875,7 @@ export {
   MEMBER_BASELINE_CAPABILITIES,
   MemberBaselineGrantStore,
 } from './memberBaselineGrantStore.js';
-export { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
+export { CHANNEL_KIND_BY_ORIGIN, turnChannelKind } from './resolveTurnOwnerIdentity.js';
 export {
   audienceRoomFor,
   chatParticipantsFromRoster,

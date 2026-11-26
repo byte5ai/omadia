@@ -224,6 +224,7 @@ export {
   composeDisclosureText,
   applyAiDisclosure,
   withoutFoldedAiDisclosure,
+  stripKnownAiDisclosureLines,
   resolveAiDisclosure,
 } from './aiDisclosure.js';
 export type {

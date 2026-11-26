@@ -45,6 +45,7 @@ import {
   UNSCREENED_MARKER,
   DEFAULT_SECURITY_POSTURE_POLICY,
   withDataText,
+  stripKnownAiDisclosureLines,
 } from '@omadia/channel-sdk';
 import {
   TurnDataCollector,
@@ -365,7 +366,7 @@ import {
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
 import {
-  CHANNEL_KIND_BY_ORIGIN,
+  turnChannelKind,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -1649,7 +1650,8 @@ async function maskReplayedAnswerForWire(
  *  (answer-side restore covers these spans as well): a user message under
  *  `mask_user_prompt`, an answer whatever that flag says
  *  ({@link maskReplayedAnswerForWire}). Empty pairs are filtered so a failed
- *  prior turn can't poison context. */
+ *  prior turn can't poison context. Known AI-disclosure lines are stripped
+ *  from replayed answers first (#2003). */
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
@@ -1662,10 +1664,13 @@ async function maskPriorTurnsForWire(
         content: await maskPromptForWire(privacy, t.userMessage, 'context'),
       });
     }
-    if (t.assistantAnswer.trim().length > 0) {
+    // #2003 — the AI-disclosure line is the delivery boundary's marking, not
+    // the agent's words; replayed, the model starts writing it itself.
+    const answer = stripKnownAiDisclosureLines(t.assistantAnswer);
+    if (answer.trim().length > 0) {
       pairs.push({
         role: 'assistant',
-        content: await maskReplayedAnswerForWire(privacy, t.assistantAnswer),
+        content: await maskReplayedAnswerForWire(privacy, answer),
       });
     }
   }
@@ -4957,7 +4962,8 @@ export class Orchestrator {
    * `deriveAgentsConsulted` was extracted.
    *
    * The channel picks the level: a per-channel override (keyed on the turn's
-   * `channelIdentity.channelKind`) wins over the operator's global default,
+   * channel kind, `turnChannelKind`: the channel identity's kind or, #1994,
+   * the kind its `origin` names) wins over the operator's global default,
    * which wins over the shipping default. A turn whose channel does not resolve
    * to a `ChannelKind` uses the global level — the safe direction (marking
    * stays active). Returns `undefined` only for an operator `'off'` (AC2).
@@ -4967,7 +4973,7 @@ export class Orchestrator {
    * branded or human-sounding persona cannot suppress it (AC2 regression).
    */
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
-    return this.disclosureForChannel(input.channelIdentity?.channelKind);
+    return this.disclosureForChannel(turnChannelKind(input));
   }
 
   /**
@@ -5579,8 +5585,7 @@ export class Orchestrator {
         participants: parent?.chatParticipants,
         resolvePrincipal: knowledgeGraphPrincipalResolver(
           this.identityGraph,
-          input.channelIdentity?.channelKind ??
-            (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined),
+          turnChannelKind(input),
         ),
         roles: this.audienceRoleSources,
         grants: this.audienceGrants,
@@ -6483,7 +6488,7 @@ export class Orchestrator {
       await store.record({
         turnId,
         sessionScope: input.sessionScope,
-        channel: input.channelIdentity?.channelKind,
+        channel: turnChannelKind(input),
         // #1033 W0 — the model the turn ran on. `this.model` is the
         // configured default and was the wrong value for every triage-routed
         // turn; without a recorded attribution it stays the honest fallback
