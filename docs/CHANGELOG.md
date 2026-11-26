@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — fast lane refuses wrong maps and unfitting tools, hands its fetched result to the agent (ADR-0221) (2026-11-26)
+
+`@omadia/fast-path` 0.7.0.
+
+- **#1898** — a planned column that no returned record fills counts as a wrong map
+  (`mapRefreshRecords`): the turn misses as `unmappable`, the plan is booked as a failure and the
+  answer cache is not written, instead of rendering a table with empty columns as an answer.
+- **#1931** — the router can decide `agent_no_tool` ("none of the offered tools returns this"),
+  which goes to the agent as a complex turn; with only one offered tool a deterministic decision
+  needs confidence 0.8 (`ROUTER_MIN_CONFIDENCE_SINGLE_TOOL`) instead of 0.6.
+- **#1930** — a miss after the fast lane's query ran (`tool-error`, `truncated`, `unmappable`,
+  `empty-result`, `summary-unresolvable`) carries the executed call (`ChatTriageOutcome.executed`);
+  the fast-lane wrapper hands it to the agent as a per-turn hint (`fastLaneHandoffHint`), masked
+  like any `extraSystemHint`. Without a Privacy Shield it includes the output (max 12 000 chars);
+  under a shield only the call and row count. Amends ADR-0074's "miss runs byte-for-byte" rule —
+  ADR-0221 (Proposed).
+
 ### Changed — the answer language follows the user (ADR-0220) (2026-11-26)
 
 - **#1992** — the system prompt no longer hard-codes German. The agent answers in the language of
