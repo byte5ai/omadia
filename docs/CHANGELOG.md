@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Privacy Shield v4: nested siblings, true totals, every render (#1728, #1848, #1769) (2026-11-26)
+
+- A tool result with one record list next to a nested object (weather: `location`/`current`
+  plus `other_matches`) no longer drops the nested objects in Guarded mode; it stays one
+  nested row, so the main content reaches the model. Empty siblings (`warnings: []`) still
+  let the list become the rows (`v4/datasetStore.ts`).
+- `totalMatched` is envelope metadata instead of a column on every row. The render footer
+  counts the envelope total (`totalMatched`/`total`) instead of the queried page; when the
+  turn dataset holds only a page, the Excel offer names the queried rows instead of
+  promising the full list (`v4/materializer.ts`).
+- A turn that calls `v4_render_answer` more than once shows every render in call order on
+  the buffered and the streaming path (before, the last render overwrote the others). Prose
+  is joined, masked values merged, `isError` only when every render failed
+  (`v4/renderedAnswers.ts`).
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

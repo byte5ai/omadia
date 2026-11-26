@@ -10,8 +10,9 @@
  * `finalizeTurn` (Constitution I — no module-scope mutable state):
  *   - `Map<turnId, DatasetStore>` — the interned tool results. Real rows
  *     live here, server-side, never on the LLM wire.
- *   - `Map<turnId, string>` — the server-materialized final answer a
- *     `v4_render_answer` call produced, drained by `takeRenderedAnswerV4`.
+ *   - `Map<turnId, PrivacyRenderedAnswer[]>` — the server-materialized
+ *     answers the turn's `v4_render_answer` calls produced, in call order,
+ *     drained (joined) by `takeRenderedAnswerV4` (#1769).
  *   - `Map<turnId, V4ReceiptAccum>` — per-turn counters for the receipt.
  *
  * One exception outlives a turn, still in the service closure: the C1
@@ -78,6 +79,7 @@ import {
 } from './v4/toolDefs.js';
 import { FILE_EXPORT_EXCEPTION, RENDER_CONTRACT } from './v4/promptText.js';
 import { materialize } from './v4/materializer.js';
+import { joinRenderedAnswers } from './v4/renderedAnswers.js';
 import { describeRenderProvenance } from './v4/renderProvenance.js';
 import {
   createPiiSchemaClassifier,
@@ -479,10 +481,11 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
   const stores = new Map<string, DatasetStore>();
-  // Per-turn stash for the server-materialized final answer produced by a
-  // `v4_render_answer` call — the rendered text plus the masked values it
-  // resolved behind the boundary.
-  const renderedAnswers = new Map<string, PrivacyRenderedAnswer>();
+  // Per-turn stash for the server-materialized answers produced by the
+  // turn's `v4_render_answer` calls, in call order — the rendered text plus
+  // the masked values each resolved behind the boundary. Every call tells
+  // the model its render was shown, so none may be overwritten (#1769).
+  const renderedAnswers = new Map<string, readonly PrivacyRenderedAnswer[]>();
   // Per-turn receipt counters.
   const receipts = new Map<string, V4ReceiptAccum>();
   // Per-turn bag of REAL values from Haiku-classified PII fields. Stays
@@ -1214,7 +1217,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
           const renderIsError = isControlFlowDataset(
             store.get(directive.datasetId),
           );
-          renderedAnswers.set(request.turnId, {
+          const renderedAnswer: PrivacyRenderedAnswer = {
             text: rendered.text,
             maskedValues: rendered.maskedValues,
             // Always set — '' when the model wrote none — so the kernel can
@@ -1222,7 +1225,11 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
             // the field (fails closed).
             prose: directive.prose?.trim() ? directive.prose : '',
             ...(renderIsError ? { isError: true } : {}),
-          });
+          };
+          renderedAnswers.set(request.turnId, [
+            ...(renderedAnswers.get(request.turnId) ?? []),
+            renderedAnswer,
+          ]);
           console.log(
             `[privacy-guard v4] render turn=${request.turnId} ` +
               `datasetId=${directive.datasetId} rows=${String(rendered.rowCount)} ` +
@@ -1323,9 +1330,9 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     async takeRenderedAnswerV4(
       turnId: string,
     ): Promise<PrivacyRenderedAnswer | undefined> {
-      const answer = renderedAnswers.get(turnId);
+      const answers = renderedAnswers.get(turnId) ?? [];
       renderedAnswers.delete(turnId);
-      return answer;
+      return joinRenderedAnswers(answers);
     },
 
     // #361 — free-text prompt masking. Failure-closed: there is no
