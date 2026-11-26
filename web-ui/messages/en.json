@@ -1025,7 +1025,7 @@
     "loadError": "Failed to load channels",
     "awaitingOrchestrator": "Channel routing becomes available once an agent is running.",
     "emptyHeading": "No channels known yet.",
-    "emptyExplain": "Channel plugins (Teams, Telegram, …) report their keys during activation. As soon as a channel plugin is installed and active, its keys appear here.",
+    "emptyExplain": "Channel plugins that keep a key directory report their keys during activation; they appear here once such a plugin is installed and active. A channel plugin without one (check its version) routes through the default agent and does not show up in this list.",
     "emptyDirectoriesKnown": "Registered channel types: {types}",
     "defaultAgentHint": "Channels without an explicit binding go to the default agent ({agent}).",
     "defaultAgentHintOff": "off",

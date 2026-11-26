@@ -1025,7 +1025,7 @@
     "loadError": "Konnte Channels nicht laden",
     "awaitingOrchestrator": "Das Channel-Routing steht zur Verfügung, sobald ein Agent läuft.",
     "emptyHeading": "Noch keine Channels bekannt.",
-    "emptyExplain": "Channel-Plugins (Teams, Telegram, …) melden ihre Keys während der Plugin-Aktivierung. Sobald ein Channel-Plugin installiert + aktiv ist, erscheinen seine Keys hier.",
+    "emptyExplain": "Channel-Plugins mit Key-Verzeichnis melden ihre Keys während der Aktivierung; sie erscheinen hier, sobald ein solches Plugin installiert und aktiv ist. Ein Channel-Plugin ohne Verzeichnis (Version prüfen) läuft über den Standard-Agenten und taucht in dieser Liste nicht auf.",
     "emptyDirectoriesKnown": "Registrierte Channel-Typen: {types}",
     "defaultAgentHint": "Channels ohne explizite Zuordnung landen beim Standard-Ansprechpartner ({agent}).",
     "defaultAgentHintOff": "aus",

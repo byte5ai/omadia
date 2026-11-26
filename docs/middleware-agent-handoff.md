@@ -5754,6 +5754,18 @@ Auslieferungszustand ohne jedes gesetzte Feld: `standard`, aktiv,
 Die aufgelöste Haltung ist ablesbar: `GET /health` → `disclosure`, plus
 Boot-Warnung und Dashboard-Hinweis **nur** bei Abweichung vom Auslieferungszustand.
 
+### 10.x Antwortsprache (`answer_language`, #1992, ADR-0220)
+
+Plugin-Setup-Feld des Orchestrators (enum `de`/`en`/`fr`/`es`/`it`/`nl`/`pl`,
+Default `de`), gelesen in `plugin.ts` über `parseAnswerLanguage`
+(`packages/harness-orchestrator/src/answerLanguage.ts`) und wie
+`answer_verbosity` über `OrchestratorDeps.answerLanguage` an jeden Agenten
+gereicht. Die Regel im System-Prompt (`buildAnswerLanguageRule`): Antwort in der
+Sprache der letzten Nutzernachricht; lässt sie keine erkennen, die Sprache des
+bisherigen Gesprächs; ohne Gespräch die Rückfallsprache dieses Felds.
+`ChatTurnInput.locale` bleibt nur Hinweis für Kernel-Notices. Ein fester Text pro
+Rückfallsprache, also ein Prompt-Cache-Key pro Installation.
+
 ### 10.x Antwortumfang (`answer_verbosity`)
 
 Plugin-Setup-Feld des Orchestrators, gelesen in `plugin.ts` über
@@ -6041,6 +6053,14 @@ ohne bestätigten Claim und nicht, wenn nur `not_checked` (auch eine
 Abdeckungslücke) offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
 (`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
 `docs/security-architecture.md` §7c.
+
+**Stiller Turn (#1896).** Antwortet der Agent mit `NO_REPLY`, endet der Stream
+mit `done { answer: '', silent: true }` (`suppressNoReplyStream`,
+`@omadia/channel-sdk` 0.3.16, auf `/api/chat/stream` und der Public-API-Route).
+Deltas werden zurückgehalten, solange der Text noch das Sentinel werden kann;
+schon gezeigter Text (Form „Erklärung\nNO_REPLY“) wird per `text_retract`
+zurückgenommen. Die Web-UI zeigt für einen stillen Turn keine Blase; der
+Session-Mirror speichert ihn leer mit `silent: true`.
 
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
@@ -6532,6 +6552,14 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Fast-Lane-Übergabe als Verifier-Evidenz (ADR-0221, W15-17).** Der Answer-Verifier zählt den
+  `fastLaneHandoffHint` nicht als Beleg; Aussagen nur daraus können im `enforce`-Modus als
+  unbelegt gelten und einen Retry mit erneuter Abfrage auslösen. Den ausgeführten Aufruf in die
+  Evidenz des Verifiers geben.
+- **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
+  `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
+  `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
 
 - **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
   ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
@@ -11393,3 +11421,32 @@ Ersetzt den Platzhalter aus #2007.
   `StepEffects`-Implementierung muss `meta.preview` selbst beachten. Der
   stabile System-Prompt beschreibt die Tools weiter, nur der per-Turn-Hint
   widerspricht ihm.
+
+## Welle 5 · W15-17: Kanal-Seams, Antwortsprache, Fast-Lane-Übergabe (2026-11-26)
+
+- **`CoreApi.readAttachment(url)`** (channel-sdk 0.3.16, ADR-0222): optional,
+  feature-detected. Liest die Bytes eines ausgehenden Anhangs in-process
+  (`src/channels/attachmentByteReader.ts`: Loopback-GET nur unter einem vom
+  Operator freigegebenen Public-Path, ohne Credentials und Redirects, 15 s,
+  25 MiB). Ergebnis `AttachmentReadResult`; `not_kernel_attachment` heißt: die
+  URL nehmen. Telegram lädt damit Dateien hoch statt eine `localhost`-URL zu
+  übergeben (Plugin-Release in omadia-channel-telegram).
+- **`suppressNoReplyStream`** (channel-sdk 0.3.16): siehe §11 „Stiller Turn“.
+- **`stripKnownAiDisclosureLines`** (channel-sdk 0.3.16, #2003): entfernt jede
+  bekannte KI-Kennzeichnungszeile aus wiederholten Antworten, bevor sie an das
+  Modell gehen (`maskPriorTurnsForWire`, `cliChatAgent.maskHistory`).
+- **`turnChannelKind`** (`@omadia/orchestrator`, #1994): Kanalart eines Turns =
+  Kanal-Identität, sonst `TurnOrigin.channelType`. Quelle für Receipts,
+  Kennzeichnungs-Override und Audience.
+- **Fast-Lane-Übergabe** (`@omadia/fast-path` 0.7.0, ADR-0221 ergänzt ADR-0074):
+  ein Miss nach gelaufener Abfrage trägt `ChatTriageOutcome.executed`;
+  `fastLaneHandoffHint` gibt Aufruf und (ohne Privacy Shield) Ausgabe als
+  `extraSystemHint` an den Agenten, als Daten markiert. Router kennt
+  `agent_no_tool`, bei nur einem Tool gilt Konfidenz 0,8. Eine geplante Spalte,
+  die kein Datensatz füllt, ist eine falsche Map (`unmappable`).
+- **Setup-PATCH validiert `enum`** (#1998): wie der Install-Pfad; leerer Wert
+  löscht ein optionales Enum, ein Pflicht-Enum kann nicht geleert werden.
+- **Web-Chat:** keine Nudge-Karte mehr (#1900, ADR-0021); der Session-Mirror
+  speichert Antworten ohne `<!-- orchestrator:… -->`-Notizen (#1956).
+- **Offen (§13):** der Answer-Verifier zählt den Fast-Lane-Hint nicht als
+  Evidenz (ADR-0221, Folge-Punkt).

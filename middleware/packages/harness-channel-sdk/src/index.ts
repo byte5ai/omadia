@@ -303,6 +303,7 @@ export type {
   SemanticAnswer,
   AnswerSource,
   OutgoingAttachment,
+  AttachmentReadResult,
   VerifierBadge,
   FollowUpOption,
   OutgoingInteractive,

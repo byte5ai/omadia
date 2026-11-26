@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Added — core seams for channel plugins: enum PATCH validation, channels empty state, attachment byte read (ADR-0222) (2026-11-26)
+
+- **#1998 (core part)** — the post-install setup PATCH (`/api/v1/admin/runtime/installed/:id/secrets`)
+  validates `enum` fields with the install path's `coerceSetupFieldValue`: a value the manifest does
+  not list is refused with `400 runtime.setup_field_invalid` (`reason: enum_mismatch`) and nothing is
+  written (ADR-0054: one validation for both paths). An empty value removes an optional enum (the
+  plugin's default applies); a required enum (the manifest default) cannot be cleared. The
+  Telegram `dm_policy` enum and its fail-closed parsing are the plugin's part.
+- **#2001 (core part)** — the `/operator/channels` empty state no longer claims Telegram reports
+  its keys; it explains that only channel plugins with a key directory appear (en + de).
+- **#1993 (core part)** — new optional `CoreApi.readAttachment(url)` (`@omadia/channel-sdk` 0.3.16,
+  `AttachmentReadResult`): a channel reads an outgoing attachment's bytes in-process
+  (`src/channels/attachmentByteReader.ts`: loopback GET, only under an operator-granted public
+  path, no credentials, no redirects, 15 s, 25 MiB) and uploads them instead of handing its platform
+  an unreachable `localhost` URL. ADR-0222 (Proposed). The Telegram multipart upload and visible
+  failure note follow in omadia-channel-telegram.
+
 ### Fixed — fast lane refuses wrong maps and unfitting tools, hands its fetched result to the agent (ADR-0221) (2026-11-26)
 
 `@omadia/fast-path` 0.7.0.
@@ -81,7 +98,8 @@ changelog.
   (`@omadia/channel-sdk` 0.3.16) holds `text_delta` while the text can still become the sentinel and turns
   a no-reply `done` into `answer: ''` + `silent: true`. Wired into `/api/chat/stream` and the public
   API channel (`harness-channel-api` `chatRouter`). The web chat renders no bubble for a silent
-  turn; the session schema keeps `silent`.
+  turn; the session schema keeps `silent`. Text already released ("explanation\nNO_REPLY") is taken
+  back with one `text_retract`; a retract back to zero re-arms the hold for a later iteration.
 - **#1956** — the session logger mirrors the user-facing answer into the web-chat document: the
   `<!-- orchestrator:rendered_table … -->` and `rendered_attachments` notes are stripped
   (`stripOrchestratorNotes`), so a reload shows no note text and the client's PUT matches the
