@@ -2258,7 +2258,7 @@
     "createSubmit": "Anlegen",
     "agentsHeading": "Standard-Agenten",
     "agentsEmpty": "Noch keine Agenten. Leg oben einen an.",
-    "agentMeta": "id: {id} · privacy: {privacy} (nicht wirksam) · status: {status} · runtime: {runtime}",
+    "agentMeta": "ID: {id} · Datenschutzprofil: {privacy} (nicht wirksam) · Status: {status} · Laufzeit: {runtime}",
     "detailMetaTitle": "Agent: {slug} · omadia",
     "detailNotFoundMetaTitle": "Agent nicht gefunden · omadia",
     "detailOpenLink": "Details",
@@ -2300,7 +2300,7 @@
     "memoryScopeHeading": "Memory-Scope",
     "memoryScopeEmpty": "Kein Scope (Runtime-Registry nicht aktiv)",
     "pluginsHeading": "Plugins",
-    "bindingsHeading": "Channel-Bindings",
+    "bindingsHeading": "Kanal-Bindungen",
     "save": "Speichern",
     "catalogError": "Plugin-Katalog konnte nicht geladen werden ({message}). Multi-Select fällt auf manuellen Modus zurück.",
     "catalogLoading": "Plugin-Katalog lädt …",
@@ -2311,7 +2311,7 @@
     "memoryReadTooltip": "Memory-Read-Scope dieses Plugins",
     "memoryWriteTooltip": "Memory-Write-Scope dieses Plugins",
     "networkLabel": "Netzwerk:",
-    "configShow": "Config",
+    "configShow": "Konfiguration",
     "configOverrideBadgeTooltip": "Für diesen Agenten überschriebene Felder",
     "pluginConfig": {
       "title": "Konfiguration — {plugin}",
@@ -2323,10 +2323,10 @@
       "resetAll": "Alle Overrides entfernen",
       "filterPlaceholder": "Felder filtern …",
       "filterEmpty": "Kein Feld passt zu diesem Filter.",
-      "badgeSecret": "Secret · Vault",
-      "badgeConfig": "Config",
+      "badgeSecret": "Geheimnis · Tresor",
+      "badgeConfig": "Konfiguration",
       "badgeSecretTitle": "Secret — verschlüsselt im per-Agent-Vault",
-      "badgeConfigTitle": "Config — nicht-sensitiver Wert in der Instanz-Konfiguration",
+      "badgeConfigTitle": "Konfiguration — nicht-sensibler Wert in der Instanz-Konfiguration",
       "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
       "statusOverridden": "überschreibt die Store-Konfiguration",
       "statusFromStore": "aus der Store-Konfiguration",
@@ -2336,18 +2336,18 @@
       "unsavedHint": "Änderungen greifen erst mit „Speichern“ oben."
     },
     "orphanPluginBadge": "nicht mehr installiert",
-    "bindingsAdd": "Binding hinzufügen",
+    "bindingsAdd": "Kanal-Bindung hinzufügen",
     "bindingsRemove": "Entfernen",
-    "bindingsEmpty": "Keine Bindings — nicht adressierte Nachrichten landen beim Standard-Ansprechpartner.",
+    "bindingsEmpty": "Keine Kanal-Bindungen — nicht adressierte Nachrichten landen beim Standard-Ansprechpartner.",
     "routingTesterHeading": "Routing-Tester",
-    "routingTesterHelp": "Frag den Server, welcher Agent einen eingehenden Webhook beantworten würde. Zuerst zählen explizite Bindings, dann der Standard-Agent.",
-    "fieldChannelType": "Channel-Type",
-    "fieldChannelKey": "Channel-Key",
+    "routingTesterHelp": "Frag den Server, welcher Agent einen eingehenden Webhook beantworten würde. Zuerst zählen ausdrückliche Kanal-Bindungen, dann der Standard-Agent.",
+    "fieldChannelType": "Kanaltyp",
+    "fieldChannelKey": "Kanal-Schlüssel",
     "routingTesterSubmit": "Routing prüfen",
     "routingTesterRunning": "Prüfe …",
-    "routingTesterMatched": "→ Agent „{slug}\" (via {via})",
-    "routingTesterNoMatch": "Kein Match — kein Standard-Ansprechpartner greift; der Absender bekäme einen Systemhinweis.",
-    "agentCardSummary": "privacy: {privacy} (nicht wirksam) · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
+    "routingTesterMatched": "→ Agent „{slug}“ (über: {via})",
+    "routingTesterNoMatch": "Kein Treffer — kein Standard-Ansprechpartner greift; der Absender bekäme einen Systemhinweis.",
+    "agentCardSummary": "Datenschutzprofil: {privacy} (nicht wirksam) · Status: {status} · Laufzeit: {runtime} · {plugins} Plugins angehängt · {bindings} Kanal-Bindungen",
     "agentCardModel": "Modell: {primary}{fallback, select, none {} other { · Fallback: {fallback}}}",
     "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sitzungen:",
@@ -2356,14 +2356,14 @@
     "pluginsAttachedHere": "An diesen Agenten angehängt",
     "pluginsAvailableEmpty": "Alle installierten Plugins sind bereits angehängt.",
     "pluginsEnabled": "Angehängt",
-    "pluginsEnabledEmpty": "Drag-and-drop oder „Attach\" benutzen, um Plugins anzuhängen.",
+    "pluginsEnabledEmpty": "Plugins per Drag-and-drop oder mit „Anhängen“ hinzufügen.",
     "orphanPluginsHeading": "Veraltet",
-    "attach": "Attach",
+    "attach": "Anhängen",
     "detach": "Lösen",
     "enabledShort": "aktiv",
     "dragHandle": "Ziehen, um zwischen den Spalten zu bewegen",
-    "dependencyMissingBadge": "Parent fehlt",
-    "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt.",
+    "dependencyMissingBadge": "Basis-Plugin fehlt",
+    "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}“ ab — das Basis-Plugin ist nicht in derselben Spalte angehängt.",
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
@@ -3437,6 +3437,25 @@
       "onHint": "An: schneller und günstiger bei einfachen Abfragen.",
       "offHint": "Aus: Jede Frage läuft durch die volle Agentenschleife.",
       "unavailable": "Diese Art von Agent hat keine Schnellspur."
+    },
+    "pluginKinds": {
+      "agent": "Agent",
+      "integration": "Integration",
+      "channel": "Kanal",
+      "tool": "Werkzeug",
+      "extension": "Erweiterung"
+    },
+    "routingTesterVia": {
+      "identity": "eigener Bot des Agenten",
+      "explicit": "ausdrücklich genannter Agent",
+      "selection": "Auswahl des Nutzers",
+      "binding": "Kanal-Bindung",
+      "default": "Standard-Agent",
+      "none": "kein Treffer"
+    },
+    "privacyProfiles": {
+      "default": "Standard",
+      "strict": "strikt"
     }
   },
   "builder": {
@@ -4036,40 +4055,76 @@
       },
       "axes": {
         "formality": {
-          "description": "Du-Form & Umgangssprache vs. Sie-Form & Fachsprache."
+          "description": "Du-Form & Umgangssprache vs. Sie-Form & Fachsprache.",
+          "name": "Förmlichkeit",
+          "left": "Locker",
+          "right": "Förmlich"
         },
         "directness": {
-          "description": "Höflichkeitspuffer vs. Kernaussage zuerst."
+          "description": "Höflichkeitspuffer vs. Kernaussage zuerst.",
+          "name": "Direktheit",
+          "left": "Diplomatisch",
+          "right": "Direkt"
         },
         "warmth": {
-          "description": "Sachlich-distanziert vs. empathisch & anerkennend."
+          "description": "Sachlich-distanziert vs. empathisch & anerkennend.",
+          "name": "Wärme",
+          "left": "Kühl",
+          "right": "Warm"
         },
         "humor": {
-          "description": "Ohne Witz vs. spielerisch (sparsam einsetzen)."
+          "description": "Ohne Witz vs. spielerisch (sparsam einsetzen).",
+          "name": "Humor",
+          "left": "Ernst",
+          "right": "Verspielt"
         },
         "sarcasm": {
-          "description": "Ehrlich-direkt vs. ironisch (selten passend)."
+          "description": "Ehrlich-direkt vs. ironisch (selten passend).",
+          "name": "Sarkasmus",
+          "left": "Aufrichtig",
+          "right": "Sarkastisch"
         },
         "conciseness": {
-          "description": "Ausführlich vs. minimaler Wort-Output."
+          "description": "Ausführlich vs. minimaler Wort-Output.",
+          "name": "Knappheit",
+          "left": "Ausführlich",
+          "right": "Knapp"
         },
         "proactivity": {
-          "description": "Antwortet auf Anfragen vs. schlägt von sich aus vor."
+          "description": "Antwortet auf Anfragen vs. schlägt von sich aus vor.",
+          "name": "Eigeninitiative",
+          "left": "Reaktiv",
+          "right": "Proaktiv"
         },
         "autonomy": {
-          "description": "Fragt zurück vs. handelt eigenständig."
+          "description": "Fragt zurück vs. handelt eigenständig.",
+          "name": "Selbstständigkeit",
+          "left": "Rückfragend",
+          "right": "Selbstständig"
         },
         "risk_tolerance": {
-          "description": "Sicherheits-zuerst vs. Risiko-tolerant."
+          "description": "Sicherheits-zuerst vs. Risiko-tolerant.",
+          "name": "Risikobereitschaft",
+          "left": "Vorsichtig",
+          "right": "Mutig"
         },
         "creativity": {
-          "description": "Bewährte Lösungen vs. unkonventionelle Ideen."
+          "description": "Bewährte Lösungen vs. unkonventionelle Ideen.",
+          "name": "Kreativität",
+          "left": "Konventionell",
+          "right": "Einfallsreich"
         },
         "drama": {
-          "description": "Sachlich vs. emotional aufgeladen."
+          "description": "Sachlich vs. emotional aufgeladen.",
+          "name": "Dramatik",
+          "left": "Zurückhaltend",
+          "right": "Dramatisch"
         },
         "philosophy": {
-          "description": "Lösung-orientiert vs. abstrakt-grundsätzlich."
+          "description": "Lösung-orientiert vs. abstrakt-grundsätzlich.",
+          "name": "Philosophie",
+          "left": "Pragmatisch",
+          "right": "Philosophisch"
         }
       }
     },

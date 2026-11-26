@@ -2258,7 +2258,7 @@
     "createSubmit": "Create",
     "agentsHeading": "Standard agents",
     "agentsEmpty": "No agents yet. Create one above.",
-    "agentMeta": "id: {id} · privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime}",
+    "agentMeta": "ID: {id} · Privacy profile: {privacy} (not enforced) · Status: {status} · Runtime: {runtime}",
     "detailMetaTitle": "Agent: {slug} · omadia",
     "detailNotFoundMetaTitle": "Agent not found · omadia",
     "detailOpenLink": "Details",
@@ -2347,7 +2347,7 @@
     "routingTesterRunning": "Testing…",
     "routingTesterMatched": "→ Agent \"{slug}\" (via {via})",
     "routingTesterNoMatch": "No match — no default agent applies; the sender would get a system notice.",
-    "agentCardSummary": "privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
+    "agentCardSummary": "Privacy profile: {privacy} (not enforced) · Status: {status} · Runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
     "agentCardModel": "model: {primary}{fallback, select, none {} other { · fallback: {fallback}}}",
     "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sessions:",
@@ -3437,6 +3437,25 @@
       "onHint": "On: quicker and cheaper for simple lookups.",
       "offHint": "Off: every question goes through the full agent loop.",
       "unavailable": "This kind of agent has no fast lane."
+    },
+    "pluginKinds": {
+      "agent": "Agent",
+      "integration": "Integration",
+      "channel": "Channel",
+      "tool": "Tool",
+      "extension": "Extension"
+    },
+    "routingTesterVia": {
+      "identity": "the agent's own bot",
+      "explicit": "explicit agent",
+      "selection": "user selection",
+      "binding": "channel binding",
+      "default": "default agent",
+      "none": "no match"
+    },
+    "privacyProfiles": {
+      "default": "default",
+      "strict": "strict"
     }
   },
   "builder": {
@@ -4036,40 +4055,76 @@
       },
       "axes": {
         "formality": {
-          "description": "Casual address & colloquial language vs. formal address & technical language."
+          "description": "Casual address & colloquial language vs. formal address & technical language.",
+          "name": "Formality",
+          "left": "Casual",
+          "right": "Formal"
         },
         "directness": {
-          "description": "Politeness buffer vs. key point first."
+          "description": "Politeness buffer vs. key point first.",
+          "name": "Directness",
+          "left": "Diplomatic",
+          "right": "Direct"
         },
         "warmth": {
-          "description": "Matter-of-fact and distanced vs. empathetic & appreciative."
+          "description": "Matter-of-fact and distanced vs. empathetic & appreciative.",
+          "name": "Warmth",
+          "left": "Cool",
+          "right": "Warm"
         },
         "humor": {
-          "description": "No jokes vs. playful (use sparingly)."
+          "description": "No jokes vs. playful (use sparingly).",
+          "name": "Humor",
+          "left": "Serious",
+          "right": "Playful"
         },
         "sarcasm": {
-          "description": "Honest and direct vs. ironic (rarely appropriate)."
+          "description": "Honest and direct vs. ironic (rarely appropriate).",
+          "name": "Sarcasm",
+          "left": "Sincere",
+          "right": "Sarcastic"
         },
         "conciseness": {
-          "description": "Detailed vs. minimal word output."
+          "description": "Detailed vs. minimal word output.",
+          "name": "Conciseness",
+          "left": "Expansive",
+          "right": "Terse"
         },
         "proactivity": {
-          "description": "Responds to requests vs. makes suggestions on its own."
+          "description": "Responds to requests vs. makes suggestions on its own.",
+          "name": "Proactivity",
+          "left": "Reactive",
+          "right": "Proactive"
         },
         "autonomy": {
-          "description": "Asks back vs. acts independently."
+          "description": "Asks back vs. acts independently.",
+          "name": "Autonomy",
+          "left": "Consulting",
+          "right": "Autonomous"
         },
         "risk_tolerance": {
-          "description": "Safety first vs. risk-tolerant."
+          "description": "Safety first vs. risk-tolerant.",
+          "name": "Risk tolerance",
+          "left": "Cautious",
+          "right": "Bold"
         },
         "creativity": {
-          "description": "Proven solutions vs. unconventional ideas."
+          "description": "Proven solutions vs. unconventional ideas.",
+          "name": "Creativity",
+          "left": "Conventional",
+          "right": "Inventive"
         },
         "drama": {
-          "description": "Matter-of-fact vs. emotionally charged."
+          "description": "Matter-of-fact vs. emotionally charged.",
+          "name": "Drama",
+          "left": "Understated",
+          "right": "Dramatic"
         },
         "philosophy": {
-          "description": "Solution-oriented vs. abstract and fundamental."
+          "description": "Solution-oriented vs. abstract and fundamental.",
+          "name": "Philosophy",
+          "left": "Pragmatic",
+          "right": "Philosophical"
         }
       }
     },

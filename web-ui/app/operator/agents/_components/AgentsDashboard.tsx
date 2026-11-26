@@ -486,7 +486,9 @@ function RoutingTester(props: {
             <p>
               {t('routingTesterMatched', {
                 slug: result.matched.slug,
-                via: result.via,
+                via: t.has(`routingTesterVia.${result.via}`)
+                  ? t(`routingTesterVia.${result.via}`)
+                  : result.via,
               })}
             </p>
           ) : (
@@ -634,7 +636,7 @@ function AgentCard(props: {
             </span>
             <span className="block text-xs text-[color:var(--fg-muted)]">
               {t('agentCardSummary', {
-                privacy: agent.privacy_profile,
+                privacy: t(`privacyProfiles.${agent.privacy_profile}`),
                 status:
                   agent.status === 'enabled'
                     ? t('statusEnabled')

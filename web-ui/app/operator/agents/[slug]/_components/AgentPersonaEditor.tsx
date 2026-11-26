@@ -8,12 +8,12 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/app/_components/ui/Button';
 import { DimensionSlider } from '@/app/_components/persona/DimensionSlider';
 import { PersonaRadar } from '@/app/_components/persona/PersonaRadar';
+import { usePersonaAxisCopy } from '@/app/_components/persona/usePersonaAxisCopy';
 import { CulturePresetDropdown } from '@/app/_components/persona/CulturePresetDropdown';
 import { PersonaTemplateGallery } from '@/app/_components/persona/PersonaTemplateGallery';
 import {
   CORE_PERSONA_AXES,
   EXTENDED_PERSONA_AXES,
-  PERSONA_AXIS_LABELS,
   PERSONA_AXIS_NEUTRAL,
   PERSONA_CUSTOM_NOTES_MAX_LENGTH,
   personaMessageId,
@@ -84,6 +84,7 @@ export function AgentPersonaEditor(
 ): React.ReactElement {
   const t = useTranslations('operatorAgents.identity.persona');
   const tAxes = useTranslations('builder.persona.axes');
+  const axisCopy = usePersonaAxisCopy();
   // Archetype names live in the builder catalogue (`template.<id>`), which is
   // where they were written; naming them a second time under this section
   // would be two catalogues for one list of archetypes.
@@ -241,8 +242,9 @@ export function AgentPersonaEditor(
             <DimensionSlider
               key={axis}
               axis={axis}
-              labelLeft={PERSONA_AXIS_LABELS[axis].left}
-              labelRight={PERSONA_AXIS_LABELS[axis].right}
+              labelLeft={axisCopy(axis).left}
+              labelRight={axisCopy(axis).right}
+              axisLabel={axisCopy(axis).name}
               description={tAxes(`${axis}.description`)}
               value={axisValue(props.value, axis, bounded)}
               onChange={(next) => setAxis(axis, next)}
@@ -274,8 +276,9 @@ export function AgentPersonaEditor(
               <DimensionSlider
                 key={axis}
                 axis={axis}
-                labelLeft={PERSONA_AXIS_LABELS[axis].left}
-                labelRight={PERSONA_AXIS_LABELS[axis].right}
+                labelLeft={axisCopy(axis).left}
+                labelRight={axisCopy(axis).right}
+              axisLabel={axisCopy(axis).name}
                 description={tAxes(`${axis}.description`)}
                 value={axisValue(props.value, axis, bounded)}
                 onChange={(next) => setAxis(axis, next)}
