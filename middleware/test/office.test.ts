@@ -205,6 +205,27 @@ describe('office xlsx renderer', () => {
     }
   });
 
+  it('cuts a long sheet name without splitting an emoji into a lone surrogate', async () => {
+    // 30 letters + an emoji (two UTF-16 units) crosses the 31-unit cap mid-pair.
+    const long = `${'a'.repeat(30)}\u{1F600}x`;
+    const result = await renderXlsx({
+      sheets: [
+        { name: long, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 1 }] },
+        { name: long, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 2 }] },
+      ],
+    });
+    const wb = await loadWorkbook(result.buffer);
+    const names = wb.worksheets.map((ws) => ws.name);
+    assert.deepEqual(names, ['a'.repeat(30), `${'a'.repeat(27)} (2)`]);
+    for (const name of names) assert.ok(!/[\uD800-\uDFFF]/.test(name), `"${name}" has no lone surrogate`);
+
+    const emojiEnd = await renderXlsx({
+      sheets: [{ name: `${'b'.repeat(29)}\u{1F600}z`, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 1 }] }],
+    });
+    const kept = (await loadWorkbook(emojiEnd.buffer)).worksheets.map((ws) => ws.name);
+    assert.deepEqual(kept, [`${'b'.repeat(29)}\u{1F600}`], 'a whole emoji within the cap stays');
+  });
+
   /** A one-cell sheet; `formula` puts a formula cell in column A. */
   const sheetNamed = (name: string, formula?: string): XlsxDescriptor['sheets'][number] => ({
     name,
