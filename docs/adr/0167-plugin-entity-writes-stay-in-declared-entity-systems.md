@@ -8,7 +8,7 @@ Accepted
 - **Deciders:** Review follow-up of #2233 (owner task "Follow-ups aus dem Review von #2233"),
   refines [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md); landed in
   #2242. The owner (Marcel) decided on 2026-11-26 to lift the reservation of `odoo` and
-  `confluence` (#2246).
+  `confluence` (#2247).
 - **Number:** 0165 and 0166 are reserved by PR C of the ADR-deviation session (#2238).
 
 ## Context and Problem Statement
