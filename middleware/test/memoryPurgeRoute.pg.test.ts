@@ -72,7 +72,12 @@ describe('memory-purge router · audit on real Postgres', () => {
       assert.deepEqual((ledger.rows[0]!['after'] as Record<string, unknown>)['planned'], {
         scratch: 2,
         kg: 1,
+        kgDeowned: 0,
+        kgExcerpts: 0,
         conversation: 17,
+        datasets: 0,
+        processes: 0,
+        identity: 0,
         reseedEntries: [],
       });
     } finally {

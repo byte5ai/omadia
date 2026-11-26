@@ -1327,10 +1327,15 @@ listMemorableKnowledgeFor(omadiaUserId: string, opts?: ListMemorableKnowledgeOpt
 addOwner(memorableKnowledgeNodeId: string, omadiaUserIdToAdd: string, actor: AclMutationOptions): Promise<string[]>;
 removeOwner(memorableKnowledgeNodeId: string, omadiaUserIdToRemove: string, actor: AclMutationOptions): Promise<string[]>;
 deleteMemory(memorableKnowledgeNodeId: string, actor: AclMutationOptions): Promise<void>;
-countMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
+listOwnerlessMemorableKnowledge?(opts?: ListOwnerlessMemorableKnowledgeOptions): Promise<GraphNode[]>;
+deleteOwnerlessMemory?(memorableKnowledgeNodeId: string, actor: AclMutationOptions): Promise<void>;
+countMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<MemorableKnowledgeCount>;
+purgeMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<MemorableKnowledgePurgeResult>;
+findOmadiaUserIdByChannelIdentity?(channelKind: ChannelKind, channelUserId: string): Promise<string | null>;
+countUserIdentity?(omadiaUserId: string): Promise<{
 count: number;
 }>;
-purgeMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
+purgeUserIdentity?(omadiaUserId: string): Promise<{
 deletedNodes: number;
 }>;
 countConversationHistory?(filter: ConversationHistoryPurgeFilter): Promise<{
@@ -1696,6 +1701,10 @@ afterOwners: string[] | null;
 reason?: string;
 createdAt: string;
 }
+export declare const SYSTEM_ACTOR_OMADIA_USER_ID = "00000000-0000-0000-0000-000000000000";
+export interface ListOwnerlessMemorableKnowledgeOptions {
+limit?: number;
+}
 export interface AclMutationOptions {
 actorOmadiaUserId: string;
 actorChannelIdentityId?: string;
@@ -1705,6 +1714,17 @@ export interface MemorableKnowledgePurgeFilter {
 tenantId: string;
 originAgent?: string;
 aclOwner?: string;
+actorOmadiaUserId?: string;
+}
+export interface MemorableKnowledgeCount {
+count: number;
+deowned?: number;
+excerpts?: number;
+}
+export interface MemorableKnowledgePurgeResult {
+deletedNodes: number;
+deownedNodes?: number;
+deletedExcerpts?: number;
 }
 export interface ConversationHistoryPurgeFilter {
 tenantId: string;
@@ -3312,6 +3332,7 @@ readonly steps: readonly string[];
 readonly scope: string;
 readonly visibility?: string;
 readonly unprotected?: boolean;
+readonly createdByOmadiaUserId?: string;
 }
 export type WriteProcessResult = {
 ok: true;
@@ -3371,6 +3392,12 @@ edit(input: EditProcessInput): Promise<EditProcessResult>;
 query(input: QueryProcessesInput): Promise<readonly ProcessQueryHit[]>;
 get(id: string): Promise<ProcessRecord | null>;
 history(id: string): Promise<readonly ProcessRecord[]>;
+countByCreator?(omadiaUserId: string): Promise<{
+count: number;
+}>;
+purgeByCreator?(omadiaUserId: string): Promise<{
+deleted: number;
+}>;
 }
 export declare class NoopProcessMemoryService implements ProcessMemoryService {
 write(_input: WriteProcessInput): Promise<WriteProcessResult>;

@@ -273,6 +273,18 @@ describe('channelApi/chatRouter — cross-key conversationId isolation (finding 
       capturedTurns[1]?.conversationId,
       internalConversationId(keyB.record.id, 'shared-thread'),
     );
+    // #1826 — each key's turns run in that key's own one-person room, named
+    // by the key, never by the caller-supplied conversationId.
+    assert.deepEqual(capturedTurns[0]?.metadata?.['origin'], {
+      channelType: 'api',
+      scope: { kind: 'personal', userId: channelKeyOf(keyA.record.id) },
+      conversationType: 'direct',
+    });
+    assert.deepEqual(capturedTurns[1]?.metadata?.['origin'], {
+      channelType: 'api',
+      scope: { kind: 'personal', userId: channelKeyOf(keyB.record.id) },
+      conversationType: 'direct',
+    });
   });
 });
 

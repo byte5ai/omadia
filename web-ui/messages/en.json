@@ -692,6 +692,7 @@
     "chatAssistant": "Builder",
     "chatValidationOk": "Draft is valid.",
     "chatValidationFailed": "Validation issues:",
+    "chatValidationWarnings": "Draft warnings",
     "chatDraftHeading": "Draft",
     "chatDraftSummary": "{steps} step(s) · trigger: {trigger}",
     "chatPublish": "Publish draft",
@@ -717,6 +718,26 @@
     "actionMcpBadge": "MCP",
     "chatProposalCoverage": "{filled} of {total} slots prefilled",
     "triggerLabel": "Trigger",
+    "triggerKinds": {
+      "manual": "Manual",
+      "event": "Event",
+      "cron": "Schedule",
+      "webhook": "Webhook",
+      "channel": "Channel",
+      "agent": "Agent",
+      "workflow": "Workflow"
+    },
+    "stepKinds": { "agent": "Agent", "action": "Action", "human": "Human", "timer": "Timer" },
+    "principalKinds": { "role": "Role", "user": "Person" },
+    "defaultAgentPrompt": "Do your task.",
+    "addTimer": "Timer step",
+    "timerDuration": "Wait duration",
+    "undoDeletion": "Undo deletion",
+    "discardCanvasChanges": "Discard the unsaved changes in the visual designer?",
+    "confirmPublishVersion": "Publish a new version of the existing workflow \"{slug}\"?",
+    "reservedWorkflowSlug": "The slug \"{slug}\" is reserved. Choose a different slug.",
+    "invalidGraphJson": "Check the JSON in the step or transition fields.",
+    "publishWorkflowFailed": "The workflow could not be published.",
     "eventIdLabel": "Event id",
     "eventCatalogHint": "{count} known event id(s) available — pick one or type a custom id.",
     "eventCatalogEmpty": "No event ids known yet — type the id senders will post.",
@@ -752,6 +773,10 @@
     "payloadLabel": "Payload (JSON)",
     "emitButton": "Emit",
     "emitResult": "Matched {matched} workflow(s), started {started} run(s).",
+    "emitSuppressed": {
+      "workflow_disabled": "{slug} was skipped because it is disabled.",
+      "workflow_not_found": "{slug} was skipped because it is no longer available."
+    },
     "dryRunButton": "Dry-run",
     "previewing": "Simulating…",
     "dryRunHeading": "Dry-run preview",
@@ -823,6 +848,8 @@
     "agentSlugHint": "The agent slug to run for this step.",
     "actionIdHint": "The tool / connector action id to invoke.",
     "scheduleLabel": "Schedule",
+    "scheduleWithZone": "Schedule ({zone})",
+    "scheduleMissedSlots": "Missed slots expire and are recorded in the server log.",
     "durationRawHint": "Custom ISO-8601 duration (e.g. PT1H30M)",
     "agentPick": "Select an agent…",
     "actionPick": "Select an action…",
@@ -833,18 +860,19 @@
     "templatesHeading": "Workflow templates",
     "templatesHint": "Start from a curated template: pick a use case, map its slots to your agents, roles and channels, then publish it as an ordinary, fully editable workflow.",
     "templateUseButton": "Use template",
-    "templateScheduleBadge": "Runs on a schedule",
+    "templateScheduleBadge": "Runs on a schedule (UTC)",
     "templateMappingSummary": "You will map: {summary}",
     "templateSlotRoles": "{count, plural, one {# role} other {# roles}}",
     "templateSlotAgents": "{count, plural, one {# agent} other {# agents}}",
     "templateSlotActions": "{count, plural, one {# action} other {# actions}}",
     "templateSlotEvents": "{count, plural, one {# event} other {# events}}",
     "templateSlotChannels": "{count, plural, one {# channel} other {# channels}}",
+    "templateSlotPeople": "{count, plural, one {# person} other {# people}}",
     "templateFormHeading": "Use template: {name}",
     "templateSlugLabel": "Workflow slug",
     "templateNameLabel": "Name",
     "templateEnableLabel": "Enable the workflow right away",
-    "templateScheduleNotice": "This template runs on a schedule. Enabling it starts the schedule as soon as the workflow is created.",
+    "templateScheduleNotice": "This template runs on a UTC schedule. Enabling it starts the schedule as soon as the workflow is created.",
     "templateCreateButton": "Create workflow",
     "templateCreating": "Creating",
     "templateOpenDesignerButton": "Open in designer",
@@ -862,6 +890,16 @@
     "templateEventSlotHint": "{count} known event id(s) suggested — pick one or type the id senders will post.",
     "templateEventSlotHintEmpty": "No event ids known yet — type the id senders will post (e.g. my.incident).",
     "templateSlotGroupChannels": "Channels",
+    "templateSlotGroupPeople": "People",
+    "roleKeyTaken": "This role key already exists.",
+    "roleSaveFailed": "The role change could not be saved.",
+    "roleNewLabel": "New role label",
+    "roleRename": "Rename role",
+    "roleDelete": "Delete role",
+    "roleDeleteConfirm": "Delete the role \"{key}\"?",
+    "roleInUse": "Remove the role’s holders and published workflow references before deleting it.",
+    "templateSelfApprovalForbidden": "Another operator must approve this template.",
+    "templateReviewChanged": "The template changed. Review its current version before taking action.",
     "templateSlotGroupText": "Text slots",
     "templateTextSlotMissing": "Enter a value for this text slot.",
     "templatePreviewShow": "Preview graph",
@@ -907,7 +945,9 @@
     "saveTemplatePublishButton": "Publish template",
     "saveTemplatePublishVersionButton": "Publish as v{version}",
     "saveTemplatePublishing": "Publishing",
-    "saveTemplateVersionNote": "Publishing a new version leaves existing workflows created from this template unchanged — they keep their copy and will show an update hint.",
+    "saveTemplateVersionNote": "The new version starts as private and needs review before sharing. Existing workflows keep their copy.",
+    "saveTemplateUrlWarning": "Action inputs in these steps contain URLs: {steps}. Check the workflow for private addresses before sharing the template.",
+    "saveTemplateConfirmUrls": "Keep the URLs flagged in this template draft?",
     "saveTemplateInvalidHeading": "The template manifest failed validation:",
     "saveTemplatePublished": "Template {id} published as v{version}.",
     "templateFacetAria": "Filter templates by source",
@@ -1025,7 +1065,7 @@
     "loadError": "Failed to load channels",
     "awaitingOrchestrator": "Channel routing becomes available once an agent is running.",
     "emptyHeading": "No channels known yet.",
-    "emptyExplain": "Channel plugins (Teams, Telegram, …) report their keys during activation. As soon as a channel plugin is installed and active, its keys appear here.",
+    "emptyExplain": "Channel plugins that keep a key directory report their keys during activation; they appear here once such a plugin is installed and active. A channel plugin without one (check its version) routes through the default agent and does not show up in this list.",
     "emptyDirectoriesKnown": "Registered channel types: {types}",
     "defaultAgentHint": "Channels without an explicit binding go to the default agent ({agent}).",
     "defaultAgentHintOff": "off",
@@ -1692,11 +1732,6 @@
   },
   "markdownTable": {
     "scrollRegionLabel": "Scrollable table"
-  },
-  "nudgeCard": {
-    "kicker": "Suggestion",
-    "ackTriggered": "✓ triggered",
-    "suppress": "Don't show again"
   },
   "agentUsagePills": {
     "ariaLabel": "Agents used in this session",
@@ -2594,13 +2629,13 @@
       "semanticsHeading": "Read this before switching it on",
       "semanticsTeam": "A turn from a team context writes into its own tier and into the shared team tier — that is the tier teammates read each other in.",
       "semanticsAgent": "The agent's own memory stays readable but becomes read-only for context turns, so “remember this globally” can no longer carry knowledge from one team to another.",
-      "semanticsApi": "Turns from the API carry no chat context, so they only ever reach the private memory of the agent itself — never a team or channel tree.",
+      "semanticsApi": "Web chat accounts and Public API keys count as one-person chats: with any mode except Off, each account and each API key gets its own memory and never reads another one's. Under Off, every account and every API key of this agent shares one memory tree.",
       "semanticsMembers": "With “Shared by the people present”, a group only gets knowledge when the channel reports its complete member list; otherwise it gets none, so nobody can read what was never theirs.",
       "acknowledge": "I understand how memory will be split for this agent.",
       "modes": {
         "off": {
           "label": "Off",
-          "description": "One shared memory tree for every turn, as before this feature. Not available for an agent that holds capability grants."
+          "description": "One shared memory tree for every turn, as before this feature — every web chat account and every API key reads what the others asked the agent to remember. Not available for an agent that holds capability grants."
         },
         "enforce": {
           "label": "Separate per context",
@@ -2608,11 +2643,11 @@
         },
         "enforce-strict": {
           "label": "Separate and sealed",
-          "description": "Each chat context gets its own memory tree and cannot read the agent's own memory at all. Choose this when contexts must not share anything."
+          "description": "Each chat context — also each web chat account and each API key — gets its own memory tree and cannot read the agent's own memory at all. Choose this when contexts must not share anything."
         },
         "members": {
           "label": "Shared by the people present",
-          "description": "Knowledge belongs to the people present when it came up. Any chat where only those people take part can use it, a direct message included; once someone else is present, it stays out."
+          "description": "Knowledge belongs to the people present when it came up. Any chat where only those people take part can use it, a direct message, a web chat or an API key's turns included; once someone else is present, it stays out."
         }
       }
     },
@@ -4186,6 +4221,8 @@
       "actionPersonaUpdated": "Persona changed",
       "actionQualityUpdated": "Quality / boundaries changed",
       "actionSpecPatched": "Spec patched",
+      "actionSpecEdited": "Spec edited by user",
+      "actionSlotEdited": "Slot edited by user",
       "actionSlotFilled": "Slot filled",
       "relSecondsAgo": "a few seconds ago",
       "relMinutesAgo": "{count} min ago",
@@ -5964,10 +6001,12 @@
       "reset": "Reset",
       "resetting": "Resetting …",
       "dangerHeading": "Danger zone",
-      "dangerHelp": "Deleting removes the user permanently. The audit log keeps the entry.",
-      "confirmDelete": "Really delete this user? This action cannot be undone.",
+      "dangerHelp": "Deleting removes the account permanently. The audit log keeps the entry. The account’s memory and data (remembered facts, conversations, datasets, processes) are NOT deleted with it: purge them first in the Danger Zone, axis User, with the omadia user id above.",
+      "confirmDelete": "Really delete this account? This cannot be undone. Its memory and data stay unless you purged them in the Danger Zone first.",
       "delete": "Delete user",
-      "deleting": "Deleting …"
+      "deleting": "Deleting …",
+      "omadiaUserId": "omadia user id: {id} — use it for the memory purge (axis User).",
+      "omadiaUserIdNone": "No omadia user id yet: the account has not signed in."
     }
   },
   "adminAudit": {
@@ -5987,6 +6026,8 @@
         "memory": "Memory purges",
         "conductor": "Conductor changes",
         "profileSnapshot": "Profile snapshots",
+        "mcp": "MCP",
+        "routine": "Routines",
         "registry": "Plugin registries",
         "channel": "Channels",
         "agent": "Agents: end of service, delete, remove",
@@ -6234,7 +6275,7 @@
     "forbiddenError": "Not authorized (403) — memory purge requires admin rights.",
     "selectorHint": {
       "agent": "Agent slug. Deletes the agent’s scratch tree, its context trees under /memories/contexts, its remembered facts and its conversation history.",
-      "user": "Always <code>channelType~id</code> (raw user id or the key from the memory browser), e.g. <code>teams~AAD-OBJECT-ID</code> — deletes the user tier across all agents. Or an omadia user id: deletes that person’s member notes, remembered facts and conversation turns.",
+      "user": "Always <code>channelType~id</code> (raw user id or the key from the memory browser), e.g. <code>teams~AAD-OBJECT-ID</code> — deletes the user tier across all agents and, when the channel identity is known, everything below. Or the person’s omadia user id or account id (both on the user page): deletes their member notes, the remembered facts they own alone (shared facts only lose them as owner), their conversation turns, datasets, stored processes and identity nodes. Conversation transcripts under /memories/sessions and chat tabs are kept.",
       "team": "Always <code>channelType~id</code> (raw team id or the key from the memory browser), e.g. <code>teams~19:abc@thread.tacv2</code>. Deletes the team tier across all agents.",
       "channel": "Always <code>channelType~id</code> (raw conversation id or the key from the memory browser), e.g. <code>telegram~-1001234567890</code>. Deletes the channel tier across all agents."
     },
@@ -6247,10 +6288,13 @@
       "kg_not_modelled": "The knowledge graph has no {axis, select, team {team} channel {channel} other {such}} scoping yet: remembered facts and conversation history stay untouched. Only the context trees under /memories/contexts are deleted.",
       "kg_history_unsupported": "This knowledge-graph provider cannot delete conversation history: turns, sessions and runs stay. Only remembered facts and scratch memory are deleted.",
       "user_axis_kg_only": "The selector matched knowledge-graph data but no context tree under /memories/contexts — the user’s scratch memory is not deleted.",
-      "user_axis_scratch_only": "The selector matched context trees but no knowledge-graph data — remembered facts and conversation turns are matched by omadia user id, not by a channelType~id key.",
+      "user_axis_scratch_only": "The selector matched context trees but no knowledge-graph data or other stored data of a person (remembered facts, turns, datasets, processes) — check whether the selector names a person: an omadia user id, an account id or a known channelType~id.",
       "audit_unavailable": "No audit store is configured (no Postgres) — this purge is not recorded.",
       "audit_update_failed": "The purge ran, but its audit record {auditId} could not be completed and still shows as started.",
-      "reseed_failed": "The defaults could not be written back; they return at the next restart unless MEMORY_SEED_MODE is skip."
+      "reseed_failed": "The defaults could not be written back; they return at the next restart unless MEMORY_SEED_MODE is skip.",
+      "user_selector_resolved": "The selector is {via, select, account_id {an account id} channel_identity {a channel identity} other {not an omadia user id}}; the purge works on that person’s omadia user id {omadiaUserId}.",
+      "user_unknown": "No person has this id: no knowledge-graph user and no account. Check whether you copied the omadia user id or the account id from the user page.",
+      "user_layers_unsupported": "This installation cannot delete the person’s {layers}; they stay."
     },
     "errors": {
       "invalid_selector": "The selector must be spelled channelType~id, e.g. teams~19:abc@thread.tacv2 (raw native id) or the key shown in the memory browser.",
@@ -6258,6 +6302,30 @@
       "preview_required": "The preview expired or belongs to another selection — run the preview again.",
       "confirmation_mismatch": "The confirmation does not match the required phrase.",
       "audit_write_failed": "The purge could not be recorded in the audit log, so nothing was deleted."
+    },
+    "ownerless": {
+      "title": "Memories without an owner",
+      "intro": "Entries the system created: notes the scratch reaper consolidated and rules from /memories/_rules/. Nobody owns them, so only an operator can delete them here, one at a time. A rule whose file still exists comes back on the next sync.",
+      "loading": "Loading…",
+      "empty": "No memories without an owner.",
+      "unsupported": "This knowledge graph cannot list memories without an owner.",
+      "sourceRule": "Rule",
+      "sourceSystem": "Created by {createdBy}, agent {agent}",
+      "delete": "Delete",
+      "deleting": "Deleting…",
+      "deleteAria": "Delete the memory \"{summary}\"",
+      "errorHasOwners": "This memory has an owner now. Its owners delete it in Memories.",
+      "errorNotFound": "This memory no longer exists.",
+      "errorForbidden": "You are not allowed to delete this memory.",
+      "errorGeneric": "The memories without an owner could not be loaded or deleted."
+    },
+    "resolvedUser": "Selected person: omadia user id {omadiaUserId}.",
+    "extraCounts": {
+      "excerpts": "Excerpts of those facts",
+      "datasets": "Datasets",
+      "processes": "Stored processes",
+      "identity": "Identity nodes (name, e-mail)",
+      "deowned": "Shared facts: only this person is removed as owner"
     }
   },
   "adminDuplicates": {

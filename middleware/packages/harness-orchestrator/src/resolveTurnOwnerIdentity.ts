@@ -15,6 +15,21 @@ export const CHANNEL_KIND_BY_ORIGIN: Readonly<Record<string, ChannelKind>> = {
 };
 
 /**
+ * #1994 — the channel kind of a turn: the minted channel identity's kind, or,
+ * for a plugin channel turn that carries none (Telegram, Teams, Slack, …), the
+ * kind its `origin` names. Every consumer (receipts, AI disclosure, audience)
+ * reads this one derivation.
+ */
+export function turnChannelKind(
+  input: Pick<ChatTurnInput, 'channelIdentity' | 'origin'>,
+): ChannelKind | undefined {
+  return (
+    input.channelIdentity?.channelKind ??
+    (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined)
+  );
+}
+
+/**
  * The channel identity a plugin channel turn carries implicitly: no
  * `channelIdentity` (that is minted only by `createOrchestratorDispatcher`),
  * but an `origin` naming a channel and `userId` holding the sender's

@@ -42,6 +42,13 @@ interface AdminUsersDeps {
    * `loginLimiter`; production passes the process-wide one.
    */
   loginDevices?: Pick<LoginDevices, 'forget'>;
+  /**
+   * #1840 — resolves the account's omadia user id (the knowledge-graph
+   * cluster id the memory purge and the owner lists use) from its web
+   * channel identity, for the detail page. Optional: without a graph the
+   * page shows none.
+   */
+  findOmadiaUserId?: (usersId: string) => Promise<string | null>;
 }
 
 /**
@@ -92,7 +99,11 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
-    res.json({ user: toPublicUser(user) });
+    const omadiaUserId = await deps.findOmadiaUserId?.(user.id).catch((err: unknown) => {
+      console.warn('[admin-users] omadia user id lookup failed:', err instanceof Error ? err.message : err);
+      return null;
+    });
+    res.json({ user: { ...toPublicUser(user), omadiaUserId: omadiaUserId ?? null } });
   });
 
   // ── POST /admin/users ─────────────────────────────────────────────────────

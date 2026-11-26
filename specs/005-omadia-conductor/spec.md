@@ -502,6 +502,10 @@ all present and ordered.
   an Agent-invoked `start_workflow` tool, an external webhook, and workflow→workflow.
 - **FR-009**: A trigger that fires for a disabled or non-existent workflow MUST start no
   run and MUST be logged — never silently dropped.
+  Conductor evaluates cron in the schedule's stored IANA zone (UTC for a new expression).
+  A missed start slot expires at the end of its minute. The next successful poll logs
+  the missed interval, with matching occurrences counted within the most recent 24 hours.
+  The emit response reports matching disabled workflows in `suppressed`.
 
 **Event triggers / Conductor Surface**
 

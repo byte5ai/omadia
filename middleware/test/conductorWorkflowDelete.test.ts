@@ -56,7 +56,7 @@ describe('ConductorWorkflowStore deletion shapes', () => {
     assert.ok(s.includes('UPDATE conductor_workflows'), s);
     assert.ok(s.includes("SET status = 'disabled', reaped_at = now()"), s);
     assert.ok(s.includes("origin = 'manual' AND reaped_at IS NULL"), s);
-    assert.ok(s.includes('UPDATE conductor_schedules'), s);
+    assert.ok(s.includes('DELETE FROM conductor_schedules'), s);
     assert.deepEqual(issued[0]!.params, ['wf-1']);
   });
 

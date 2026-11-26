@@ -36,6 +36,8 @@ import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMou
 import { adminTokenThrottleWarnings, createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
 import { parseClientAddressPolicy } from './auth/clientAddress.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
+import { createMemoryOwnerlessRouter } from './routes/memoryOwnerless.js';
+import { runDurableRulesSync } from './services/durableRulesSync.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
 import { createUpdateAuditStore } from './update/auditStore.js';
@@ -199,6 +201,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
   DEV_GRAPH_PATH,
   DEV_PATH_PREFIX,
@@ -372,7 +375,7 @@ import {
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { parseMcpActionId } from './conductor/mcpActionId.js';
 import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
-import { createMcpActionInvoker, mcpActionIds } from './conductor/mcpActionInvoker.js';
+import { createMcpActionInvoker, listMcpActions } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -658,6 +661,7 @@ import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
+import { createAttachmentByteReader, loopbackOriginFor } from './channels/attachmentByteReader.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
@@ -4213,6 +4217,12 @@ async function main(): Promise<void> {
     }),
   );
 
+  // #1762 (ADR-0180) — the owner of web chats written before owners existed:
+  // the instance's only account. Bound once the users table is wired below;
+  // until then (and without Postgres) such chats belong to nobody.
+  let resolveLegacyChatOwner: LegacyChatOwner = () => Promise.resolve(undefined);
+  const legacyChatOwner: LegacyChatOwner = () => resolveLegacyChatOwner();
+
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
   // callers could trigger LLM inference (cost) and reach the tool surface
@@ -4223,6 +4233,7 @@ async function main(): Promise<void> {
     requireAuth,
     createChatRouter({
       agentResolver,
+      legacyChatOwner,
       routeTurn: routeWebTurn,
       // #2055 — `/agent …` in the web chat, the same management-layer
       // handling every other channel gets from its resolver.
@@ -4282,7 +4293,11 @@ async function main(): Promise<void> {
   // here is defence-in-depth: if a future refactor splits mounts or moves
   // the sessions router to a different base path, the auth guarantee
   // travels with it.
-  app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
+  app.use(
+    '/api/chat',
+    requireAuth,
+    createChatSessionsRouter({ getStore: getChatSessionStore, legacyOwner: legacyChatOwner }),
+  );
 
   // Plugin-contributed navigation. The web-ui shell renders a static nav for
   // its own compiled surfaces and merges this for everything a plugin adds,
@@ -4444,6 +4459,22 @@ async function main(): Promise<void> {
   // surface, consistent with the other /api/v1/admin/* routers the admin
   // UI calls (NOT the machine ADMIN_TOKEN surface). `requireAuth` gates
   // the router; type-to-confirm is enforced per-route.
+  // #1831 (ADR-0185) — the rule entries follow the seeded `_rules/` files.
+  // Runs once at boot (the memory plugin seeded during activation) and after
+  // a purge that removed memorable knowledge. Needs the Postgres graph: the
+  // rule entries are matched by SQL.
+  const syncDurableRules = graphPool
+    ? () =>
+        runDurableRulesSync({
+          store: memoryStore,
+          kg: knowledgeGraph,
+          pool: graphPool,
+          tenantId: graphTenantId,
+          embeddingClient: () => serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+        })
+    : undefined;
+  if (syncDurableRules) void syncDurableRules();
+
   app.use(
     '/api/v1/admin/memory/purge',
     requireAuth,
@@ -4453,6 +4484,19 @@ async function main(): Promise<void> {
       ...(graphPool ? { graphPool } : {}),
       seedDir: config.MEMORY_SEED_DIR,
       tenantId: graphTenantId,
+      ...(syncDurableRules ? { syncDurableRules } : {}),
+      processMemory: () => serviceRegistry.get<ProcessMemoryService>('processMemory'),
+    }),
+  );
+
+  // ADR-0185 (#1829, #1831) — list and delete memorable knowledge without an
+  // owner. Same gate as the purge: a signed-in operator, audited.
+  app.use(
+    '/api/v1/admin/memory/ownerless',
+    requireAuth,
+    createMemoryOwnerlessRouter({
+      knowledgeGraph,
+      ...(graphPool ? { adminAudit: new AdminAuditLog(graphPool) } : {}),
     }),
   );
   console.log(
@@ -4951,6 +4995,7 @@ async function main(): Promise<void> {
     '/api/v1/operator/channels',
     requireAuth,
     createOperatorChannelsRouter({
+      getAudit: () => adminAudit,
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       getRegistry: () =>
@@ -5823,8 +5868,11 @@ async function main(): Promise<void> {
               : Promise.resolve(undefined),
       listActions: async () => [
         WEBHOOK_POST_ACTION_ID,
-        ...deterministicActionRegistry.list(),
-        ...mcpActionIds(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
+        ...deterministicActionRegistry.list().map((id) => {
+          const requiredInputs = nativeToolRegistry.get(id)?.spec?.input_schema.required;
+          return requiredInputs?.length ? { id, requiredInputs } : id;
+        }),
+        ...listMcpActions(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
       ],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
@@ -5845,6 +5893,7 @@ async function main(): Promise<void> {
         // column and every audit write failed.
         await adminAudit?.record(roleChangeAuditEntry(entry));
       },
+      auditGovernanceChange: async (entry) => { await adminAudit?.record(entry); },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
       // #1707 — webhook administration lands in the admin trail. Closure, not the
       // instance, for the same reason as auditRoleChange: `adminAudit` is constructed
@@ -6082,6 +6131,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
     // this users table; every user write reloads the snapshot.
     humanNameDirectory.attach(userStore);
@@ -6268,6 +6318,7 @@ async function main(): Promise<void> {
     );
     console.log('[middleware] admin auth endpoints ready at /api/v1/auth');
 
+    const findWebIdentity = knowledgeGraph.findOmadiaUserIdByChannelIdentity?.bind(knowledgeGraph);
     app.use(
       '/api/v1/admin/users',
       requireAuth,
@@ -6277,6 +6328,9 @@ async function main(): Promise<void> {
         sessions: sessionRevocation,
         loginLimiter: loginGuard.limiter,
         loginDevices: loginGuard.devices,
+        ...(findWebIdentity
+          ? { findOmadiaUserId: (usersId: string) => findWebIdentity('web', usersId) }
+          : {}),
       }),
     );
     // #1315 — the read side of the audit trail (admin UI: /admin/audit).
@@ -6466,6 +6520,7 @@ async function main(): Promise<void> {
         store: routinesHandle.store,
         runsStore: routinesHandle.runsStore,
         runner: routinesHandle.runner,
+        ...(adminAudit ? { audit: adminAudit } : {}),
         log: (msg) => console.log(msg),
       }),
     );
@@ -6819,6 +6874,7 @@ async function main(): Promise<void> {
     '/api/v1/admin/providers',
     requireAuth,
     createAdminProvidersRouter({
+      ...(adminAudit ? { audit: adminAudit } : {}),
       installedRegistry,
       vault: secretVault,
       reactivate: reactivateAgent,
@@ -7637,6 +7693,7 @@ async function main(): Promise<void> {
               draftStore,
               buildPipeline: builderBuildPipeline,
               packageUploadService,
+              ...(adminAudit ? { adminAudit } : {}),
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
             },
@@ -7946,6 +8003,12 @@ async function main(): Promise<void> {
     ...(routinesIntegration
       ? { routineTurn: createCoreRoutineTurnScope(routinesIntegration, graphTenantId) }
       : {}),
+    // #1993 / ADR-0222 — channels read attachment bytes in-process (loopback
+    // GET, granted public paths only) instead of relying on a reachable URL.
+    readAttachment: createAttachmentByteReader({
+      resolveGrantedPath: (path) => publicPathGrants.resolve(path),
+      loopbackOrigin: loopbackOriginFor(config.HOST, config.PORT),
+    }),
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The

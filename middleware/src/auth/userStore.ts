@@ -237,6 +237,18 @@ export class UserStore {
     return row ? rowToRecord(row) : null;
   }
 
+  async hasOtherActiveOperator(id: string | undefined, identity: string): Promise<boolean> {
+    const { rows } = await this.pool.query<{ found: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM users WHERE status = 'active' AND role = 'admin'
+           AND CASE WHEN $1::uuid IS NOT NULL THEN id <> $1::uuid
+                    ELSE lower(email) <> lower($2) AND provider_user_id <> $2 END
+       ) AS found`,
+      [id ?? null, identity],
+    );
+    return rows[0]?.found === true;
+  }
+
   /** Look up by case-insensitive email within a single provider. */
   async findByEmail(
     provider: string,

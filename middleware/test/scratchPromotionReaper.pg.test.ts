@@ -323,6 +323,40 @@ if (pgUp) {
     });
   });
 
+  describe('#1829 · plugin storage is not scratch (real PG)', () => {
+    it('never counts, promotes or drops a plugin ctx.memory file', async () => {
+      await pool.query('DROP TABLE IF EXISTS memory_files');
+      await pool.query(MEMORY_FILES_DDL);
+      const pluginPath = '/memories/orchestrators/a/plugins/crm/cache.md';
+      for (const path of [pluginPath, '/memories/orchestrators/a/note.md']) {
+        await pool.query(
+          `INSERT INTO memory_files (virtual_path, content, size_bytes, created_at, updated_at)
+           VALUES ($1, $2, $3, now() - interval '2 days', now() - interval '2 days')`,
+          [path, SIGNIFICANT_BODY, SIGNIFICANT_BODY.length],
+        );
+      }
+      const { kg, createCalls } = makeFakeKg();
+      const reaper = createScratchPromotionReaper({
+        pool,
+        tenantId: 'default',
+        kg,
+        scorer: makeFakeScorer(),
+        threshold: 0.6,
+        ageMs: 24 * 3_600_000,
+        intervalMs: 60 * 60_000,
+        defaultVisibility: 'team',
+        dropUnpromoted: true,
+        log: () => {},
+      });
+      assert.equal(await reaper.due('a'), 1, 'only the note is due');
+      const res = await reaper.runOnce();
+      assert.equal(res.scanned, 1);
+      assert.equal(createCalls.length, 1);
+      const left = await pool.query<{ virtual_path: string }>('SELECT virtual_path FROM memory_files');
+      assert.deepEqual(left.rows.map((r) => r.virtual_path), [pluginPath]);
+    });
+  });
+
   // Part A — visibility flows through the REAL Neon createMemorableKnowledge.
   describe('WS5 · Neon createMemorableKnowledge visibility flow (real PG)', () => {
     const NEON_TENANT = 'ws5b-vis-tenant';
@@ -336,7 +370,7 @@ if (pgUp) {
       }
     });
 
-    it('persists visibility=team when provided; keeps default when omitted', async (t) => {
+    it('persists visibility=team when provided; stores private when omitted (#1823)', async (t) => {
       try {
         await runGraphMigrations(pool);
         migrated = true;
@@ -367,7 +401,7 @@ if (pgUp) {
       );
       assert.equal(teamNode?.visibility, 'team');
 
-      // Omitted → exact pre-existing default behaviour (DB COALESCE → 'team').
+      // Omitted → `private` (#1823, ADR-0183), no longer the column default `team`.
       const plainRes = await kg.createMemorableKnowledge({
         kind: 'insight',
         summary: 'A memory created without an explicit visibility.',
@@ -378,9 +412,7 @@ if (pgUp) {
           WHERE tenant_id = $1 AND external_id = $2`,
         [NEON_TENANT, plainRes.memorableKnowledgeNodeId],
       );
-      // The historical default is the column default 'team' (via COALESCE);
-      // omitting the field must not change that.
-      assert.equal(plainRow.rows[0]!.visibility, 'team');
+      assert.equal(plainRow.rows[0]!.visibility, 'private');
     });
   });
 }

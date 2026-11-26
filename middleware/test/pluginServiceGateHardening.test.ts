@@ -484,19 +484,16 @@ describe('#789 — the dated legacy allowlist is keyed by more than an id', () =
     }
   });
 
-  it('keeps granting a genuinely-installed Hub plugin its standalone row', () => {
-    // The narrowness proof, and the reason this is not a blanket
-    // "bundled-only" rule. `@omadia/channel-teams` ships from the Hub and is
-    // ALWAYS `origin: 'installed'`; a blanket rule would strip thirteen
-    // capabilities from a shipped plugin at the first turn after upgrade.
+  it('the standalone ramp is retired: a Hub plugin gets nothing from it (omadia#838)', () => {
+    // `@omadia/channel-teams` was the last standalone row (`graphPool`, the C7
+    // SQL ramp). It declares `permissions.sql` since 0.46.0 and is granted by
+    // the operator, so the table is empty and the Hub plugin gets no ramp.
+    assert.deepEqual(Object.keys(STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20), []);
     const catalog = catalogOf([pluginOf({ id: STANDALONE_ID })], {
       origin: 'installed',
       bundledIds: [],
     });
-    assert.ok(
-      legacyServiceGrantsFor(STANDALONE_ID, catalog).includes('graphPool'),
-      'a Hub plugin that this repo does not bundle must keep its ramp until its own manifest declares the capability',
-    );
+    assert.deepEqual(legacyServiceGrantsFor(STANDALONE_ID, catalog), []);
   });
 
   it('grants nothing to a bundled package sitting on a standalone-only id', () => {
@@ -892,11 +889,13 @@ describe('#788 follow-up — `replace` may not take a name the plugin cannot rea
     // A grandfathered plugin resolves these names today; refusing it the
     // `replace` half while granting the `get` half would be an inconsistency
     // the ramp cannot explain. It retires the same way: one manifest line.
-    const teamsId = '@omadia/channel-teams';
-    const catalog = catalogOf([pluginOf({ id: teamsId })], {
-      origin: 'installed',
+    // The standalone table is empty since omadia#838; a bundled row (the
+    // orchestrator's) still exercises the ramp.
+    const rampId = '@omadia/orchestrator';
+    const catalog = catalogOf([pluginOf({ id: rampId })], {
+      origin: 'bundled',
     });
-    const { ctx, registry, logs } = makeCtx(teamsId, catalog);
+    const { ctx, registry, logs } = makeCtx(rampId, catalog);
     registry.provide('graphPool', { real: true }, VICTIM);
     const wrapped = { wrapped: true };
     ctx.services.replace('graphPool', wrapped);
