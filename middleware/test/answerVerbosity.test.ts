@@ -232,7 +232,7 @@ describe('buildOrchestratorForAgent — answerVerbosity reaches the system promp
 
   it('tldr splices its block right after the language rule', async () => {
     const prompt = await systemPromptFor('tldr');
-    const langIdx = prompt.indexOf('Sprache: Antworte immer auf Deutsch');
+    const langIdx = prompt.indexOf('Sprache: Antworte in der Sprache, in der der Nutzer');
     const blockIdx = prompt.indexOf('Antwortumfang (vom Betreiber auf «TL;DR» gestellt)');
     assert.ok(langIdx >= 0, 'language rule missing');
     assert.ok(blockIdx > langIdx, 'verbosity block must follow the language rule');

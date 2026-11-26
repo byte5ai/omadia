@@ -747,6 +747,13 @@ export {
   parseAnswerVerbosity,
 } from './answerVerbosity.js';
 export type { AnswerVerbosity } from './answerVerbosity.js';
+export {
+  ANSWER_LANGUAGES,
+  DEFAULT_ANSWER_LANGUAGE,
+  buildAnswerLanguageRule,
+  parseAnswerLanguage,
+  type AnswerLanguage,
+} from './answerLanguage.js';
 
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';

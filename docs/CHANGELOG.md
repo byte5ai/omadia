@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — the answer language follows the user (ADR-0220) (2026-11-26)
+
+- **#1992** — the system prompt no longer hard-codes German. The agent answers in the language of
+  the user's latest message; a message without a recognizable language keeps the conversation's
+  language, and only without a conversation does the new `@omadia/orchestrator` setup field
+  `answer_language` apply (enum `de`/`en`/`fr`/`es`/`it`/`nl`/`pl`, default `de`). Wired like
+  `answer_verbosity` through `OrchestratorDeps`. `ChatTurnInput.locale` stays a hint for kernel
+  notices. Decision after the recheck's recommendation, reversible — ADR-0220 (Proposed).
+
 ### Fixed — plugin channel turns carry their channel kind; replayed answers drop the disclosure line (2026-11-26)
 
 - **#1994** — receipts (`turn_receipts.channel`) and the per-channel AI-disclosure override now read
