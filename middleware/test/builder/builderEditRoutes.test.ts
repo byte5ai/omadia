@@ -197,6 +197,29 @@ describe('PATCH /api/v1/builder/drafts/:id/spec', () => {
     assert.equal(app.events.length, 0);
   });
 
+  // #1795 — the Spec tab gets the patch_spec manifest-linter gate.
+  it('rejects with 422 and the linter violations when a host fails the manifest linter', async () => {
+    app = await createTestApp();
+    const before = await app.draftStore.load(app.userEmail, app.draftId);
+    const result = await patchJson(
+      app.baseUrl,
+      `/api/v1/builder/drafts/${app.draftId}/spec`,
+      { patches: [{ op: 'replace', path: '/network', value: { outbound: ['169.254.169.254'] } }] },
+    );
+    assert.equal(result.status, 422);
+    assert.equal(result.json?.['code'], 'builder.manifest_lint_failed');
+    assert.match(String(result.json?.['message']), /network\.outbound\[0\] '169\.254\.169\.254'/);
+    const violations = result.json?.['violations'] as Array<{ kind: string; path: string }>;
+    assert.deepEqual(
+      violations.map((v) => [v.kind, v.path]),
+      [['network_outbound_invalid', '/network/outbound/0']],
+    );
+    const after = await app.draftStore.load(app.userEmail, app.draftId);
+    assert.deepEqual(after?.spec, before?.spec);
+    assert.equal(app.events.length, 0);
+    assert.equal(app.rebuilds.length, 0);
+  });
+
   it('returns 404 for unknown draft id', async () => {
     app = await createTestApp();
     const result = await patchJson(

@@ -1,6 +1,10 @@
 import type { Router, Request, Response } from 'express';
 
 import type { DraftStore } from '../plugins/builder/draftStore.js';
+import {
+  formatViolations as formatLintViolations,
+  validateSpec,
+} from '../plugins/builder/manifestLinter.js';
 import { BuilderModelRegistry } from '../plugins/builder/modelRegistry.js';
 import {
   IllegalSpecState,
@@ -39,6 +43,10 @@ export interface BuilderEditDeps {
   draftStore: DraftStore;
   bus: SpecEventBus;
   rebuildScheduler: RebuildScheduler;
+  /** #1795 — known plugin ids for the manifest linter's depends_on check,
+   *  the same provider the builder's `patch_spec` tool uses. Omitted: the
+   *  linter still runs, without the resolvability check. */
+  knownPluginIds?: () => readonly string[];
 }
 
 export function registerBuilderEditRoutes(
@@ -84,6 +92,18 @@ export function registerBuilderEditRoutes(
     } catch (err) {
       const message = err instanceof IllegalSpecState ? err.message : String(err);
       return sendJson(res, 400, { code: 'builder.illegal_patch', message });
+    }
+
+    // #1795 — the same manifest-linter gate as the builder's `patch_spec`
+    // tool, so the Spec tab cannot store what the model is refused (e.g. an
+    // IP literal in network.outbound). Nothing is persisted on failure.
+    const lint = validateSpec(nextSpec, { knownPluginIds: deps.knownPluginIds });
+    if (!lint.ok) {
+      return sendJson(res, 422, {
+        code: 'builder.manifest_lint_failed',
+        message: formatLintViolations(lint.violations),
+        violations: lint.violations,
+      });
     }
 
     const updated = await deps.draftStore.update(email, draftId, { spec: nextSpec });

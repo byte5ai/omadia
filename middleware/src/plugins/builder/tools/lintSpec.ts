@@ -6,6 +6,7 @@ import {
   type AgentSpec,
   type SpecValidationIssue,
 } from '../agentSpec.js';
+import { validateSpec } from '../manifestLinter.js';
 import type { BuilderTool } from './types.js';
 
 const InputSchema = z.object({}).strict();
@@ -50,7 +51,9 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
       };
     }
 
-    const issues: LintIssue[] = [];
+    // #1795 — the manifest linter (the `patch_spec` gate) over the stored
+    // spec, so a violation that reached the draft another way is reported.
+    const issues: LintIssue[] = lintManifest(draft.spec, ctx.knownPluginIds);
 
     // 1. Zod validation
     const parsed = safeParseAgentSpec(draft.spec);
@@ -115,6 +118,18 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
     return { ok: issues.every((i) => i.severity !== 'error'), issues };
   },
 };
+
+function lintManifest(
+  spec: unknown,
+  knownPluginIds: () => readonly string[],
+): LintIssue[] {
+  return validateSpec(spec, { knownPluginIds }).violations.map((v) => ({
+    severity: 'error',
+    code: `manifest.${v.kind}`,
+    message: v.message,
+    path: v.path,
+  }));
+}
 
 /**
  * #1022 — `identity.description` is a locale map, and the `en:` side must

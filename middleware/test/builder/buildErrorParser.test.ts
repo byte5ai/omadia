@@ -87,4 +87,42 @@ describe('parseTscErrors', () => {
     assert.equal(errs[0]?.col, 5);
     assert.equal(errs[0]?.code, 'TS2322');
   });
+
+  it('#1739 — keeps the build script stack trace out of the last tsc error', () => {
+    const stdout = [
+      `toolkit.ts(80,7): error TS2322: Type 'string' is not assignable to type 'number'.`,
+      `toolkit.ts(80,7): error TS6133: 'p06Fehler' is declared but its value is never read.`,
+    ].join('\n');
+    const stderr = [
+      'file:///data/builder/staging/abc123/scripts/build-zip.mjs:36',
+      "    throw new Error(`${cmd} ${args.join(' ')} failed with code ${res.status}`);",
+      '          ^',
+      '',
+      'Error: npx tsc --project ./tsconfig.json failed with code 2',
+      '    at run (file:///data/builder/staging/abc123/scripts/build-zip.mjs:36:11)',
+      '    at file:///data/builder/staging/abc123/scripts/build-zip.mjs:41:1',
+      '    at ModuleJob.run (node:internal/modules/esm/module_job:271:25)',
+      '    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:547:26)',
+      '',
+      'Node.js v22.23.5',
+    ].join('\n');
+    const errs = parseTscErrors(`${stdout}\n${stderr}`);
+    assert.equal(errs.length, 2);
+    assert.equal(errs[1]?.message, `'p06Fehler' is declared but its value is never read.`);
+    for (const e of errs) {
+      assert.doesNotMatch(e.message, /staging|node:internal|throw new Error|\bat run\b/);
+    }
+  });
+
+  it('#1739 — drops indented trace frames even directly after a tsc error', () => {
+    const errs = parseTscErrors(
+      [
+        `a.ts(1,1): error TS2322: bad`,
+        `  Type 'A' is not assignable to type 'B'.`,
+        `    at run (file:///data/builder/staging/x/scripts/build-zip.mjs:36:11)`,
+        `    at ModuleJob.run (node:internal/modules/esm/module_job:271:25)`,
+      ].join('\n'),
+    );
+    assert.equal(errs[0]?.message, `bad\nType 'A' is not assignable to type 'B'.`);
+  });
 });

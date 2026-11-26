@@ -148,9 +148,9 @@ placeholders:
   # placeholder residue error. See `reproduceManifestCapabilities` in
   # codegen.ts for the AST-level depends_on overwrite.
   WHEN_TO_USE_DE: playbook.when_to_use
-  NOT_FOR_CASE_1: playbook.not_for[0]
-  EXAMPLE_PROMPT_1: playbook.example_prompts[0]
-  EXAMPLE_PROMPT_2: playbook.example_prompts[1]
+  # #1729 — playbook.not_for and playbook.example_prompts are no placeholders:
+  # codegen writes both lists whole into manifest.yaml via the YAML AST, so
+  # any length (zero included) builds. See `reproduceManifestCapabilities`.
   # Removed OUTBOUND_HOST (network.outbound[0]). Codegen now writes
   # spec.network.outbound directly into permissions.network.outbound via the
   # YAML AST (same pattern as depends_on above), so an integration-backed
