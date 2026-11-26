@@ -5416,7 +5416,11 @@
           "valueRequired": "Ein nicht geheimer Header braucht einen Wert.",
           "secretRequired": "Ein neuer geheimer Header braucht einen Wert.",
           "tooMany": "Ein Server hat höchstens 20 Header.",
-          "secretsUnavailable": "Es ist kein Vault konfiguriert, daher lassen sich keine geheimen Header speichern."
+          "secretsUnavailable": "Es ist kein Vault konfiguriert, daher lassen sich keine geheimen Header speichern.",
+          "invalid": "Die Header-Liste ließ sich nicht lesen. Lade die Seite neu und versuche es noch einmal.",
+          "notSupported": "Ein stdio-Server bekommt seine Zugangsdaten als Config-Felder, nicht als Header.",
+          "loadFailed": "Die Header ließen sich nicht laden ({detail}).",
+          "saveFailed": "Die Header ließen sich nicht speichern ({detail})."
         }
       }
     },

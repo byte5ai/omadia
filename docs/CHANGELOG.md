@@ -47,7 +47,9 @@ changelog.
 - The config schema of http/sse servers follows the endpoint and header placeholders on every
   read and save; vanished fields are dropped and their Vault secrets deleted.
 - New "Headers" editor in the expanded server row (`ServerHeadersForm.tsx`); secret header
-  fields no longer show up in the config form. Deleting a server deletes its config secrets.
+  fields no longer show up in the config form. Deleting a server deletes its config secrets
+  (best effort, after the connection is dropped). Re-scan failure messages are redacted against
+  the server's stored secrets before they are returned or stored.
   ADR-0210 (Proposed).
 
 ### Security — stdio MCP servers off in the Compose stack; trust model documented (#1914, ADR-0211) (2026-11-26)
@@ -81,7 +83,8 @@ changelog.
 - **#1953** An MCP input-card answer is shown and stored as "Sent to <server>: <field names>";
   the envelope with the values rides only in the `/api/chat` request, and
   `PUT /api/chat/sessions/:id` replaces any envelope an older tab sends back
-  (`scrubMcpInputEnvelopes`).
+  (`scrubMcpInputEnvelopes`). Not backfilled: an envelope stored before this change stays until
+  that session is saved again.
 - **#1954** The agent page's tool-grant list reloads after "Save allowlist"; its copy no longer
   calls itself read-only.
 - **#1959** Structured-output badge reads `skills.verdict.*`, risk codes and audit failure
@@ -110,8 +113,8 @@ changelog.
   `mcpNativeToolName` produces it); a binding refuses write tools outside that grammar
   (`write_tool_name_invalid`).
 - **#1949** Saving over an existing binding needs `replace: true` (409 `binding_exists`
-  otherwise; the pane asks first). Revoked and expired keys get their own warnings
-  (`key_revoked`, `key_expired`) and no "Active" badge.
+  otherwise; the pane asks first; ADR-0213, Proposed). Revoked and expired keys get their own
+  warnings (`key_revoked`, `key_expired`) and no "Active" badge.
 - **#1952** `/api/v1/mcp/` reaches the endpoint, `serverInfo.version` is the build version,
   README status codes corrected, `PUBLIC_MCP_*` in `.env.example` and handoff §10.
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)

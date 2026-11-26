@@ -116,4 +116,26 @@ describe('rescanAllMcpServers (#463)', () => {
     assert.equal(result.scannedServers, 1);
     assert.equal(result.failures.length, 0);
   });
+
+  it('redacts the server\'s stored secrets out of a failure message (#1912)', async () => {
+    const scans: Array<string | null> = [];
+    const graph = {
+      listMcpServers: async () => [server(DEAD, 'dead', 'enabled')],
+      listMcpToolVerdicts: async () => [],
+      listMcpToolVerdictAcks: async () => [],
+      recordMcpServerScan: async (_id: string, error: string | null) => {
+        scans.push(error);
+      },
+    } as unknown as AgentGraphStore;
+    const manager = {
+      listTools: async () => {
+        throw new Error('fetch failed for https://x/mcp?key=sk-live-1234567890');
+      },
+    } as unknown as Pick<McpManager, 'listTools'>;
+    const result = await rescanAllMcpServers(graph, manager, () => {}, {
+      secretsFor: async () => ['sk-live-1234567890'],
+    });
+    assert.doesNotMatch(result.failures[0]?.error ?? '', /sk-live-1234567890/);
+    assert.doesNotMatch(scans[0] ?? '', /sk-live-1234567890/);
+  });
 });

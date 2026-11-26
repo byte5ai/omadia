@@ -22,8 +22,15 @@ const HEADER_ERROR_KEYS: Readonly<Record<string, string>> = {
   header_value_required: 'valueRequired',
   header_secret_required: 'secretRequired',
   headers_too_many: 'tooMany',
+  headers_invalid: 'invalid',
+  headers_not_supported: 'notSupported',
   secrets_unavailable: 'secretsUnavailable',
 };
+
+/** The technical detail behind a localized line (server message or status). */
+function errorDetail(err: unknown): string {
+  return apiErrorBodyMessage(err) ?? (err instanceof Error ? err.message : String(err));
+}
 
 interface Row {
   readonly id: number;
@@ -72,9 +79,9 @@ export function ServerHeadersForm({
       );
       setNextId(headers.length);
     } catch (err) {
-      setError(apiErrorBodyMessage(err) ?? (err instanceof Error ? err.message : String(err)));
+      setError(t('errors.loadFailed', { detail: errorDetail(err) }));
     }
-  }, [server.id]);
+  }, [server.id, t]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -103,11 +110,7 @@ export function ServerHeadersForm({
     } catch (err) {
       const code = err instanceof ApiError ? err.code : null;
       const key = code ? HEADER_ERROR_KEYS[code] : undefined;
-      setError(
-        key
-          ? t(`errors.${key}`)
-          : (apiErrorBodyMessage(err) ?? (err instanceof Error ? err.message : String(err))),
-      );
+      setError(key ? t(`errors.${key}`) : t('errors.saveFailed', { detail: errorDetail(err) }));
     } finally {
       setBusy(false);
     }

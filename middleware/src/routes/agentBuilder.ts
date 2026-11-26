@@ -244,6 +244,7 @@ export interface AgentBuilderRouterOptions {
     setSecret(serverId: string, key: string, value: string): Promise<void>;
     deleteSecret(serverId: string, key: string): Promise<void>;
     secretsSet(server: McpServerRow): Promise<Record<string, boolean>>;
+    secretValuesFor(server: McpServerRow): Promise<readonly string[]>;
     getConfigHeaders(cfg: McpServerConfig): Promise<Record<string, string>>;
     getConfigEnv(cfg: McpServerConfig): Promise<Record<string, string>>;
   };
@@ -562,15 +563,6 @@ export function createAgentBuilderRouter(
   }
 
   /**
-   * Epic #459 — the config fields a server declares, self-healed on demand, plus
-   * which REQUIRED fields still have no value. A marketplace server imported
-   * before env-var capture has an empty `config_schema` (and a stdio command has
-   * no endpoint placeholders to derive from), so re-resolve its registry entry
-   * once and persist the declared fields. `missing` lists required fields with
-   * no value yet (non-secret from the row, secret from the Vault) — the caller
-   * turns that into a config prompt instead of letting the process crash.
-   */
-  /**
    * #1912 — validate and store a server's static headers. Returns a refusal
    * (nothing written) or `undefined` once headers, schema and Vault agree.
    * http/sse only: a stdio server takes its credentials as environment
@@ -609,6 +601,15 @@ export function createAgentBuilderRouter(
     return undefined;
   }
 
+  /**
+   * Epic #459 — the config fields a server declares, self-healed on demand, plus
+   * which REQUIRED fields still have no value. A marketplace server imported
+   * before env-var capture has an empty `config_schema` (and a stdio command has
+   * no endpoint placeholders to derive from), so re-resolve its registry entry
+   * once and persist the declared fields. `missing` lists required fields with
+   * no value yet (non-secret from the row, secret from the Vault) — the caller
+   * turns that into a config prompt instead of letting the process crash.
+   */
   async function resolveServerConfigSchema(
     graph: AgentGraphStore,
     row: McpServerRow,
@@ -622,7 +623,14 @@ export function createAgentBuilderRouter(
         : row.configSchema.length > 0
           ? row.configSchema
           : deriveMcpConfigSchema(row.endpoint, row.headers);
-    if (schema.length === 0 && row.source === 'marketplace' && row.registryId) {
+    // Registry fallback only for stdio: an http/sse schema IS its placeholders,
+    // and re-reading env fields from the registry would churn on every read.
+    if (
+      schema.length === 0 &&
+      row.transport === 'stdio' &&
+      row.source === 'marketplace' &&
+      row.registryId
+    ) {
       try {
         const registry = (await graph.listMcpRegistries()).find((r) => r.id === row.registryId);
         if (registry) {
@@ -1711,8 +1719,12 @@ export function createAgentBuilderRouter(
         }
       }
       await l.graph.deleteMcpServer(id);
+      await invalidateMcpServer(id);
+      await reload(l);
       // #1912 — the server's config secrets (secret fields, secret headers)
-      // would otherwise outlive it in the Vault.
+      // would otherwise outlive it in the Vault. Best effort, AFTER the
+      // connection is gone: a Vault hiccup must not leave a deleted server's
+      // tools registered or turn a done delete into a 500.
       if (server && options.mcpConfig) {
         const secretKeys = new Set(
           [
@@ -1723,10 +1735,12 @@ export function createAgentBuilderRouter(
             .filter((field) => field.secret)
             .map((field) => field.key),
         );
-        for (const key of secretKeys) await options.mcpConfig.deleteSecret(id, key);
+        for (const key of secretKeys) {
+          await options.mcpConfig.deleteSecret(id, key).catch((err: unknown) => {
+            console.warn(`[mcp] could not delete secret ${key} of deleted server ${id}: ${String(err)}`);
+          });
+        }
       }
-      await invalidateMcpServer(id);
-      await reload(l);
       res.status(204).end();
     } catch (err) {
       fail(res, err);
@@ -1966,13 +1980,15 @@ export function createAgentBuilderRouter(
         if (row.transport === 'stdio') {
           await l.graph.setMcpServerConfigSchema(id, posted as never);
         } else {
-          const { schema, removedSecretKeys } = reconcileConfigSchema(
-            row.endpoint,
-            row.headers,
-            posted,
-          );
+          const { schema } = reconcileConfigSchema(row.endpoint, row.headers, posted);
           await l.graph.setMcpServerConfigSchema(id, schema as never);
-          for (const key of removedSecretKeys) await options.mcpConfig?.deleteSecret(id, key);
+          // Against the STORED schema too: a secret field the form left out
+          // must not be orphaned in the Vault.
+          const kept = new Set(schema.map((f) => f.key));
+          const gone = [...row.configSchema, ...posted]
+            .filter((f) => f.secret && !kept.has(f.key))
+            .map((f) => f.key);
+          for (const key of new Set(gone)) await options.mcpConfig?.deleteSecret(id, key);
         }
       }
       if (body.config && typeof body.config === 'object') {
@@ -3036,7 +3052,13 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const result = await rescanAllMcpServers(l.graph, mcp, (m) => console.log(m));
+      const config = options.mcpConfig;
+      const result = await rescanAllMcpServers(
+        l.graph,
+        mcp,
+        (m) => console.log(m),
+        config ? { secretsFor: (s) => config.secretValuesFor(s) } : {},
+      );
       await reload(l);
       res.json(result);
     } catch (err) {

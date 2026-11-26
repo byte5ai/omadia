@@ -3623,8 +3623,11 @@ async function main(): Promise<void> {
     if (graphPool && Number.isFinite(rescanIntervalMs) && rescanIntervalMs > 0) {
       const rescanStore = new AgentGraphStore(graphPool);
       const rescanTimer = setInterval(() => {
-        void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
-          console.log(`[middleware] ${m}`),
+        void rescanAllMcpServers(
+          rescanStore,
+          mcpManager,
+          (m) => console.log(`[middleware] ${m}`),
+          mcpConfigService ? { secretsFor: (s) => mcpConfigService.secretValuesFor(s) } : {},
         )
           .then(() =>
             serviceRegistry

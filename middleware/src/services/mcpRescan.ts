@@ -12,10 +12,18 @@
  * sweep); the policy refresh + epoch bumps run once at the end.
  */
 import { mcpRowToConfig } from '../agents/subAgentToolHydration.js';
+import { redactSecrets } from './secretRedaction.js';
 import { refreshMcpGrantPolicy } from './mcpGrantPolicy.js';
 import { scanDiscoveredTools } from './mcpToolGuard.js';
 
-import type { AgentGraphStore, McpManager } from '@omadia/orchestrator';
+import type { AgentGraphStore, McpManager, McpServerRow } from '@omadia/orchestrator';
+
+export interface McpRescanOptions {
+  /** #1912 — the server's stored secret values, redacted out of a failure
+   *  message before it is returned, logged or stored: a secret filled into
+   *  the endpoint can be quoted by a transport error. */
+  readonly secretsFor?: (server: McpServerRow) => Promise<readonly string[]>;
+}
 
 export interface McpRescanResult {
   readonly scannedServers: number;
@@ -27,6 +35,7 @@ export async function rescanAllMcpServers(
   graph: AgentGraphStore,
   manager: Pick<McpManager, 'listTools'>,
   log?: (msg: string) => void,
+  options: McpRescanOptions = {},
 ): Promise<McpRescanResult> {
   const servers = await graph.listMcpServers();
   const failures: { serverId: string; serverName: string; error: string }[] = [];
@@ -57,9 +66,11 @@ export async function rescanAllMcpServers(
       scannedTools += verdicts.length;
       await recordScan(graph, server.id, null, log);
     } catch (err) {
-      failures.push({ serverId: server.id, serverName: server.name, error: String(err) });
-      log?.(`[mcpRescan] server "${server.name}" failed: ${String(err)}`);
-      await recordScan(graph, server.id, String(err), log);
+      const secrets = await options.secretsFor?.(server).catch(() => []);
+      const error = redactSecrets(String(err), secrets ?? []);
+      failures.push({ serverId: server.id, serverName: server.name, error });
+      log?.(`[mcpRescan] server "${server.name}" failed: ${error}`);
+      await recordScan(graph, server.id, error, log);
     }
   }
   await refreshMcpGrantPolicy(graph);

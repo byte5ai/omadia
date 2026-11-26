@@ -2525,6 +2525,27 @@ Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
 `test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
 unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
 
+### MCP-Control-Center: Operator-Routen (Welle 5, 2026-11-26)
+
+**Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
+liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
+Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0114,
+geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
+`POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
+`transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`
+erlaubt) → 400 mit `code` (`name_required`, `endpoint_invalid`, …); doppelter Name → 409
+`name_taken` (auch Katalog-Import und Registries). Ein Nicht-UUID-`:id` unter `/mcp-servers/…`
+und `/mcp-registries/…` → 404 `not_found` vor jedem Handler (MCP-Präzedenz #1318/#1398; Conductor antwortet laut ADR-0038 mit 400).
+
+**Statische Header / API-Keys (#1912, ADR-0210):** `GET/PUT /api/v1/operator/mcp-servers/:id/headers`
+(und `headers` beim `POST /mcp-servers`), nur http/sse. Body `[{name, value?, secret}]`; ein geheimer
+Header wird als `{header_<name>}` in `mcp_servers.headers` gespeichert, der Wert liegt im Vault
+(`@omadia/mcp-config`, `<serverId>:header_<name>`), ohne `value` bleibt der gespeicherte. Geheime
+Config-Felder werden jetzt auch im Endpoint eingesetzt (`McpConfigService.getConfigEndpoint`); das
+Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzhaltern abgeglichen
+(`reconcileConfigSchema`), verschwundene Felder samt Vault-Secret gelöscht. UI:
+`web-ui/app/admin/mcp/ServerHeadersForm.tsx`.
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
@@ -5304,25 +5325,6 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 | `REGISTRY_URLS` | JSON-Liste `[{name,url,token?}]` der Plugin-Registries (Hub-Quellen). Wird **nur beim ersten Boot** gelesen (#1483): `seedRegistriesOnFirstBoot` schreibt die Liste nach `platform_settings` → `registry.list`; danach verwaltet Admin · Registries sie, und eine geleerte Liste bleibt über Neustarts leer. Ungesetzt → `hub.omadia.ai`; `'[]'` → Instanz ohne Registry (ZIP-Upload geht weiter). DB-loser Boot seedet weiterhin bei jedem Start. |
 | `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
-
-**Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
-liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
-Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0114,
-geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
-`POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
-`transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`
-erlaubt) → 400 mit `code` (`name_required`, `endpoint_invalid`, …); doppelter Name → 409
-`name_taken` (auch Katalog-Import und Registries). Ein Nicht-UUID-`:id` unter `/mcp-servers/…`
-und `/mcp-registries/…` → 404 `not_found` vor jedem Handler (ADR-0038).
-
-**Statische Header / API-Keys (#1912, ADR-0210):** `GET/PUT /api/v1/operator/mcp-servers/:id/headers`
-(und `headers` beim `POST /mcp-servers`), nur http/sse. Body `[{name, value?, secret}]`; ein geheimer
-Header wird als `{header_<name>}` in `mcp_servers.headers` gespeichert, der Wert liegt im Vault
-(`@omadia/mcp-config`, `<serverId>:header_<name>`), ohne `value` bleibt der gespeicherte. Geheime
-Config-Felder werden jetzt auch im Endpoint eingesetzt (`McpConfigService.getConfigEndpoint`); das
-Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzhaltern abgeglichen
-(`reconcileConfigSchema`), verschwundene Felder samt Vault-Secret gelöscht. UI:
-`web-ui/app/admin/mcp/ServerHeadersForm.tsx`.
 
 ### Öffentlicher MCP-Endpunkt (#542, #1952, ADR-0142/0143)
 

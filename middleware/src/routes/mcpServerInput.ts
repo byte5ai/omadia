@@ -8,11 +8,14 @@
  * Postgres message. Every check here answers 400/404/409 with a stable `code`
  * the web UI translates.
  *
- * Shape checks only (ADR-0038: a well-formed id is checked before any lookup).
+ * Shape checks only. A malformed id is a 404 before any lookup, the MCP
+ * routes' precedent (#1318/#1398); Conductor answers 400 instead (ADR-0038).
  * The outbound host rule stays in `mcpOutboundHostGuard.ts` (ADR-0139).
  */
 
 import type { NextFunction, Request, Response } from 'express';
+
+import { isUuid } from '../http/uuidParam.js';
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
 
@@ -116,8 +119,6 @@ export function validateMcpServerInput(body: unknown): ValidMcpServerInput | Mcp
   return { name, transport: transport as McpTransport, endpoint, status };
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
  * Express middleware for `/mcp-servers/:id…` and `/mcp-registries/:id…`: a
  * non-UUID id is a 404 before any handler runs, instead of a Postgres
@@ -127,7 +128,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function requireUuidMcpId(literalSegments: ReadonlySet<string>) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const segment = req.path.split('/').filter((s) => s !== '')[0] ?? '';
-    if (segment === '' || literalSegments.has(segment) || UUID_RE.test(segment)) {
+    if (segment === '' || literalSegments.has(segment) || isUuid(segment)) {
       next();
       return;
     }

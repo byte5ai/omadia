@@ -1916,8 +1916,6 @@ export class AgentGraphStore {
     );
   }
 
-  /** Epic #459 — set the NON-SECRET config values for a server (secrets go to
-   *  the Vault, never here). */
   /**
    * #1912 — the server's header TEMPLATES. A secret header is stored as its
    * `{header_<name>}` placeholder; the value lives in the Vault
@@ -1930,6 +1928,8 @@ export class AgentGraphStore {
     );
   }
 
+  /** Epic #459 — set the NON-SECRET config values for a server (secrets go to
+   *  the Vault, never here). */
   async setMcpServerConfig(id: string, config: Record<string, unknown>): Promise<void> {
     await this.pool.query(
       `UPDATE mcp_servers SET config = $2::jsonb, updated_at = now() WHERE id = $1`,

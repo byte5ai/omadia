@@ -101,6 +101,12 @@ export class McpConfigService {
     return sub !== plain ? sub : undefined;
   }
 
+  /** #1912 — every stored secret value of a server, for redacting error text
+   *  that may quote a filled endpoint or header. */
+  async secretValuesFor(server: McpServerRow): Promise<readonly string[]> {
+    return Object.values(await this.secretValues(server));
+  }
+
   private async secretValues(server: McpServerRow): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
     for (const f of server.configSchema) {

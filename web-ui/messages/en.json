@@ -5416,7 +5416,11 @@
           "valueRequired": "A header that is not secret needs a value.",
           "secretRequired": "A new secret header needs a value.",
           "tooMany": "A server has at most 20 headers.",
-          "secretsUnavailable": "No Vault is configured, so secret headers cannot be stored."
+          "secretsUnavailable": "No Vault is configured, so secret headers cannot be stored.",
+          "invalid": "The header list could not be read. Reload the page and try again.",
+          "notSupported": "A stdio server takes its credentials as config fields, not headers.",
+          "loadFailed": "The headers could not be loaded ({detail}).",
+          "saveFailed": "The headers could not be saved ({detail})."
         }
       }
     },

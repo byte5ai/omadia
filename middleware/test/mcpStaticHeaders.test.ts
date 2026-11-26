@@ -45,6 +45,14 @@ describe('validateHeaderInput (#1912)', () => {
     );
     assert.equal(code([{ name: 'X-A', value: 'a\r\nInjected: 1', secret: false }]), 'header_value_invalid');
     assert.equal(code([{ name: 'X-A', secret: false }]), 'header_value_required');
+    // Same Vault field key `header_x_api_key` → one secret would be shared.
+    assert.equal(
+      code([
+        { name: 'X-Api-Key', value: 'a', secret: true },
+        { name: 'x.api.key', value: 'b', secret: true },
+      ]),
+      'header_name_duplicate',
+    );
   });
 
   it('a secret header without a value keeps the stored secret', () => {

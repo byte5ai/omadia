@@ -103,10 +103,13 @@ export function validateHeaderInput(raw: unknown): McpHeaderInput[] | McpHeaderR
     if (RESERVED_HEADER_NAMES.has(lower)) {
       return { code: 'header_name_reserved', message: `the MCP transport sets "${name}" itself` };
     }
-    if (seen.has(lower)) {
+    // Compared by Vault field key, not just case-insensitively: `X-Api-Key` and
+    // `x.api.key` map to the same `header_x_api_key` and would share a secret.
+    const fieldKey = secretHeaderFieldKey(name);
+    if (seen.has(fieldKey)) {
       return { code: 'header_name_duplicate', message: `header "${name}" is listed twice` };
     }
-    seen.add(lower);
+    seen.add(fieldKey);
     if (e['secret'] !== undefined && typeof e['secret'] !== 'boolean') {
       return { code: 'headers_invalid', message: 'secret must be a boolean' };
     }

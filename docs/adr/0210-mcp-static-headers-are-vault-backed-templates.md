@@ -62,7 +62,8 @@ fields work wherever their placeholder appears.
 - 🟢 **Good:** The config form and the header editor can no longer drift from the
   placeholders that are actually there.
 - 🔴 **Bad:** A secret in the endpoint URL can be quoted by a transport or upstream error
-  message (and so reach the log or the last re-scan error); the UI recommends a header.
+  message; the re-scan redacts the server's stored secrets out of its failure text
+  (`redactSecrets`), other error paths only pattern-redact, and the UI recommends a header.
 - 🟢 **Good:** Deleting a server deletes its config secrets from the Vault too.
 - ⚪ **Neutral:** A changed header or secret drops the pooled connection (ADR-0008) through
   the same invalidation the config route uses.
