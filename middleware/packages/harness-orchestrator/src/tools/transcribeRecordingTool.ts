@@ -10,6 +10,7 @@ import { isRecordingAttachment } from '../attachmentExtract.js';
 import type { SessionLogger } from '../sessionLogger.js';
 import { attachmentNotFound, type AttachmentReader } from './readAttachmentTool.js';
 import { turnContext } from '../turnContext.js';
+import { chunkTranscriptText, markRecordingText } from '../recordingTranscript.js';
 
 export const TRANSCRIBE_RECORDING_TOOL_NAME = 'transcribe_recording';
 
@@ -222,25 +223,31 @@ export class TranscribeRecordingTool {
     let written = 0;
     for (const segment of segments) {
       if (segment.text.trim() === '') continue;
-      const candidateMs = baseMs + (segment.startMs ?? 0);
-      const entryMs = Math.max(candidateMs, lastMs + 1);
-      lastMs = entryMs;
-      const time = new Date(entryMs).toISOString();
-      await logger.log({
-        scope,
-        time,
-        userMessage: segment.text,
-        assistantAnswer: `_(Transkript-Ingest via ${transcript.provider}, Quelle: ${storageKey})_`,
-        ...(segment.speaker !== undefined ? { speaker: segment.speaker } : {}),
-        ...(userId !== undefined ? { userId } : {}),
-        // #1536 — raw speech of everyone in the recording, which no shield
-        // ever masked (the model saw it only as an interned tool result).
-        // Recall masks only detector-visible spans, so under a shield these
-        // utterances stay out of cross-session recall like any unprotected
-        // turn. The session's own tail keeps them.
-        unprotected: true,
-      });
-      written += 1;
+      // #1987 — below the session log's entry cap, so it keeps every word.
+      for (const chunk of chunkTranscriptText(segment.text)) {
+        const candidateMs = baseMs + (segment.startMs ?? 0);
+        const entryMs = Math.max(candidateMs, lastMs + 1);
+        lastMs = entryMs;
+        const time = new Date(entryMs).toISOString();
+        await logger.log({
+          scope,
+          time,
+          // #1983 — recording content, not a message of the uploader: the
+          // marker makes later turns render it as quoted recording text.
+          userMessage: markRecordingText(chunk, segment.speaker),
+          assistantAnswer: `_(Transkript-Ingest via ${transcript.provider}, Quelle: ${storageKey})_`,
+          source: 'recording',
+          ...(segment.speaker !== undefined ? { speaker: segment.speaker } : {}),
+          ...(userId !== undefined ? { userId } : {}),
+          // #1536 — raw speech of everyone in the recording, which no shield
+          // ever masked (the model saw it only as an interned tool result).
+          // Recall masks only detector-visible spans, so under a shield these
+          // utterances stay out of cross-session recall like any unprotected
+          // turn. The session's own tail keeps them.
+          unprotected: true,
+        });
+        written += 1;
+      }
     }
     return written;
   }
@@ -273,10 +280,15 @@ function renderResult(
         ? `Session-Protokoll: ${String(loggedEntries)} Einträge abgelegt`
         : 'Session-Protokoll: nicht abgelegt (kein Logger verfügbar)',
   ].join(' · ');
+  // #1987 — "complete in the session log" only when it was written there.
+  const whereComplete =
+    ingestFailure === undefined && loggedEntries > 0
+      ? ' — vollständig im Session-Protokoll'
+      : ' — nicht im Session-Protokoll abgelegt, der Rest ist nicht verfügbar';
   const text =
     transcript.text.length <= RESULT_TEXT_MAX
       ? transcript.text
-      : `${transcript.text.slice(0, RESULT_TEXT_MAX)}\n\n…[gekürzt, Original ${String(transcript.text.length)} Zeichen — vollständig im Session-Protokoll]`;
+      : `${transcript.text.slice(0, RESULT_TEXT_MAX)}\n\n…[gekürzt, Original ${String(transcript.text.length)} Zeichen${whereComplete}]`;
   return `Transkript von \`${key}\`\n${meta}\n\n${text}`;
 }
 

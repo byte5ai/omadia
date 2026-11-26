@@ -109,6 +109,14 @@ changelog.
   a custom endpoint (Azure, Ollama's OpenAI endpoint, a local server) must list its host in
   the new setup field "Additional allowed hosts", or the adapter stops publishing after the
   update.
+- **Transcripts are recording content, kept whole (#1983, #1987).** `transcribe_recording`
+  stores every chunk with the marker line `[recording-transcript speaker="…"]`
+  (`recordingTranscript.ts`) and `SessionLogEntry.source: 'recording'`; the session log
+  labels it `**Recording:**`, and the context builder (`contextRetriever.ts`,
+  `parseRecordingTranscript`) renders it as quoted recording content instead of `Nutzer:`.
+  Transcript text is cut into chunks of at most 1,300 characters, below the session log's
+  1,500-character entry cap, so the log holds the full transcript; the tool result says
+  "vollständig im Session-Protokoll" only when the entries were written.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

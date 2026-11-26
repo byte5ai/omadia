@@ -130,8 +130,10 @@ describe('transcribe_recording', () => {
     );
     assert.equal(files.length, 1);
     const md = await store.readFile(files[0]!.virtualPath);
-    assert.match(md, /\*\*Anna:\*\*/);
-    assert.match(md, /\*\*Ben:\*\*/);
+    // #1983 — labelled as recording content, never as the user.
+    assert.match(md, /\*\*Recording — Anna:\*\*/);
+    assert.match(md, /\*\*Recording — Ben:\*\*/);
+    assert.doesNotMatch(md, /\*\*User:\*\*/);
     assert.match(md, /Guten Morgen\./);
   });
 
@@ -308,5 +310,41 @@ describe('transcribe_recording', () => {
     const view = await graph.getSession('transcript-uploads-2026-standup-wav');
     assert.ok(view);
     assert.equal(view.turns.length, 2);
+  });
+});
+
+describe('#1983 / #1987 — transcript entries are recording content, stored whole', () => {
+  const WORDS = Array.from({ length: 2_200 }, (_, i) => `wort${String(i)}`).join(' ');
+
+  it('a 15k-character single-segment transcript is in the session log completely', async () => {
+    const long: Transcript = {
+      text: WORDS,
+      segments: [{ text: WORDS }],
+      provider: 'openai:gpt-transcribe',
+    };
+    const { tool, store, graph } = makeTool({ service: fakeTranscription(long) });
+    const result = await turnContext.run(
+      { turnId: 't2', turnDate: '2026-11-26', sessionScope: 'rec-1', agentSlug: 'a', userId: 'u1' },
+      () => tool.handle({ storage_key: AUDIO_KEY }),
+    );
+    assert.ok(WORDS.length > 12_000);
+    assert.match(result, /vollständig im Session-Protokoll/);
+
+    const files = (await store.list('/memories/sessions/rec-1')).filter((e) => !e.isDirectory);
+    const md = await store.readFile(files[0]!.virtualPath);
+    assert.ok(!md.includes('[gekürzt'), 'no session-log entry was cut');
+    for (const probe of ['wort0 ', 'wort1100 ', 'wort2199']) {
+      assert.ok(md.includes(probe), `session log misses ${probe}`);
+    }
+    assert.match(md, /\*\*Recording:\*\*/);
+
+    // Every graph turn opens with the recording marker.
+    const view = await graph.getSession('a::rec-1');
+    assert.ok(view && view.turns.length > 1);
+    for (const t of view.turns) {
+      assert.ok(
+        String((t.turn.props as { userMessage?: string }).userMessage).startsWith('[recording-transcript]\n'),
+      );
+    }
   });
 });
