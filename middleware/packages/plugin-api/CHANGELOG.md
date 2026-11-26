@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.99.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`KnowledgeGraph.listOwnerlessMemorableKnowledge?(opts)`** and
+  **`KnowledgeGraph.deleteOwnerlessMemory?(id, actor)`** (optional, ADR-0185):
+  the operator view of memorable knowledge with an empty `acl_owners` (scratch
+  reaper, seeded rules), which no owner gate lets anyone delete. The delete
+  writes an ACL audit row and refuses an entry that has an owner
+  (`has_owners`). Both bundled providers implement them; the bounded
+  `knowledgeGraph@1` classifies them `kernel-only`.
+- **`ListOwnerlessMemorableKnowledgeOptions`**.
+
 ## 1.98.0 — 2026-11-25
 
 Additive.

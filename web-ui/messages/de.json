@@ -6257,6 +6257,22 @@
       "preview_required": "Die Vorschau ist abgelaufen oder gehört zu einer anderen Auswahl — bitte die Vorschau erneut ausführen.",
       "confirmation_mismatch": "Die Bestätigung stimmt nicht mit der geforderten Phrase überein.",
       "audit_write_failed": "Der Purge konnte nicht im Audit-Log protokolliert werden, deshalb wurde nichts gelöscht."
+    },
+    "ownerless": {
+      "title": "Erinnerungen ohne Eigentümer",
+      "intro": "Einträge, die das System angelegt hat: Notizen, die der Scratch-Reaper übernommen hat, und Regeln aus /memories/_rules/. Niemand besitzt sie, deshalb kann nur ein Operator sie hier löschen, einzeln. Eine Regel, deren Datei noch existiert, kommt beim nächsten Abgleich zurück.",
+      "loading": "Wird geladen…",
+      "empty": "Keine Erinnerungen ohne Eigentümer.",
+      "unsupported": "Dieser Knowledge Graph kann Erinnerungen ohne Eigentümer nicht auflisten.",
+      "sourceRule": "Regel",
+      "sourceSystem": "Angelegt von {createdBy}, Agent {agent}",
+      "delete": "Löschen",
+      "deleting": "Wird gelöscht…",
+      "deleteAria": "Erinnerung „{summary}“ löschen",
+      "errorHasOwners": "Diese Erinnerung hat inzwischen einen Eigentümer. Ihre Eigentümer löschen sie unter Erinnerungen.",
+      "errorNotFound": "Diese Erinnerung existiert nicht mehr.",
+      "errorForbidden": "Du darfst diese Erinnerung nicht löschen.",
+      "errorGeneric": "Die Erinnerungen ohne Eigentümer konnten nicht geladen oder gelöscht werden."
     }
   },
   "adminDuplicates": {

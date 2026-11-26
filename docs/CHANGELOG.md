@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — memory tool hygiene: reaper, rules, error paths (#1829, #1831, #1832, ADR-0185) (2026-11-26)
+
+- The scratch promotion reaper no longer reads plugin storage
+  (`/memories/orchestrators/<slug>/plugins/<id>/`): plugin files are never scored, promoted or
+  dropped (#1829).
+- Rule entries follow their `/memories/_rules/` files (#1831): exact path match instead of an
+  unescaped `LIKE` prefix, a changed file updates the entry and its embedding, a removed file
+  removes the entry. `runDurableRulesSync` runs at boot and after a purge of axis `all`.
+- Owner-less memorable knowledge can be deleted one by one: `GET|DELETE
+  /api/v1/admin/memory/ownerless[/:id]` (audited first, owned entries → 409) and the Danger
+  Zone section "Memories without an owner". plugin-api **1.99.0** adds the optional
+  `listOwnerlessMemorableKnowledge` / `deleteOwnerlessMemory`; `admin_audit` action
+  `memory.ownerless_delete`.
+- Memory tool (#1832): error texts carry only model-facing `/memories/…` paths (the namespacer
+  maps physical roots back; a scope violation no longer names the agent), the per-call log line
+  carries command, path and outcome but no note content, `MemoryPathDenied` /
+  `MemoryScopeViolation` log one line without a stack trace, and `effectiveMemoryScope` audit
+  lines carry `[security-audit]` once.
 ### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
 
 - `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the

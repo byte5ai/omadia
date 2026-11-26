@@ -53,6 +53,7 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ListOwnerlessMemorableKnowledgeOptions,
   type ListMergeCandidatesOptions,
   type CreateInconsistencyInput,
   type ExcerptSearchOptions,
@@ -2970,24 +2971,81 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         afterOwners: null,
         ...(actor.reason ? { reason: actor.reason } : {}),
       });
-      // Slice 6.5 — cascade-delete the PalaiaExcerpt nodes attached
-      // to this MK. The EXCERPT_OF edges are auto-cleaned by graph_edges
-      // FK CASCADE on either side, but the Excerpt nodes themselves are
-      // standalone graph_nodes rows and would orphan if not removed.
-      await client.query(
-        `DELETE FROM graph_nodes
-         WHERE tenant_id = $1
-           AND type = 'PalaiaExcerpt'
-           AND id IN (
-             SELECT from_node FROM graph_edges
-             WHERE tenant_id = $1
-               AND to_node = $2
-               AND type = 'EXCERPT_OF'
-           )`,
-        [this.tenantId, uuid],
+      await this.deleteMemoryNode(client, uuid);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** One MK node and its excerpts, inside the caller's transaction. */
+  private async deleteMemoryNode(client: PoolClient, uuid: string): Promise<void> {
+    // Slice 6.5 — cascade-delete the PalaiaExcerpt nodes attached
+    // to this MK. The EXCERPT_OF edges are auto-cleaned by graph_edges
+    // FK CASCADE on either side, but the Excerpt nodes themselves are
+    // standalone graph_nodes rows and would orphan if not removed.
+    await client.query(
+      `DELETE FROM graph_nodes
+       WHERE tenant_id = $1
+         AND type = 'PalaiaExcerpt'
+         AND id IN (
+           SELECT from_node FROM graph_edges
+           WHERE tenant_id = $1
+             AND to_node = $2
+             AND type = 'EXCERPT_OF'
+         )`,
+      [this.tenantId, uuid],
+    );
+    // CASCADE on graph_edges FK removes inbound/outbound edges.
+    await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
+  }
+
+  async listOwnerlessMemorableKnowledge(
+    opts: ListOwnerlessMemorableKnowledgeOptions = {},
+  ): Promise<GraphNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+    const rows = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS}
+       FROM graph_nodes
+       WHERE tenant_id = $1
+         AND type = 'MemorableKnowledge'
+         AND jsonb_array_length(COALESCE(properties->'acl_owners', '[]'::jsonb)) = 0
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [this.tenantId, limit],
+    );
+    return rows.rows.map(rowToNode);
+  }
+
+  async deleteOwnerlessMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { uuid, owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
       );
-      // CASCADE on graph_edges FK removes inbound/outbound edges.
-      await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
+      if (owners.length > 0) {
+        throw Object.assign(new Error('has_owners'), { code: 'has_owners' });
+      }
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'delete',
+        beforeOwners: [],
+        afterOwners: null,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+      await this.deleteMemoryNode(client, uuid);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');

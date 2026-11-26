@@ -177,6 +177,9 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
   readonly purgeConversationHistory?: (
     filter: ConversationHistoryPurgeFilter,
   ) => Promise<{ deletedNodes: number }>;
+  // ADR-0185 — the operator view of owner-less memory, forwarded the same way.
+  readonly listOwnerlessMemorableKnowledge?: KnowledgeGraph['listOwnerlessMemorableKnowledge'];
+  readonly deleteOwnerlessMemory?: KnowledgeGraph['deleteOwnerlessMemory'];
 
   constructor(opts: CaptureFilteringKnowledgeGraphOptions) {
     this.inner = opts.inner;
@@ -188,6 +191,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     if (innerCountHistory) this.countConversationHistory = innerCountHistory;
     const innerPurgeHistory = opts.inner.purgeConversationHistory?.bind(opts.inner);
     if (innerPurgeHistory) this.purgeConversationHistory = innerPurgeHistory;
+    const innerListOwnerless = opts.inner.listOwnerlessMemorableKnowledge?.bind(opts.inner);
+    if (innerListOwnerless) this.listOwnerlessMemorableKnowledge = innerListOwnerless;
+    const innerDeleteOwnerless = opts.inner.deleteOwnerlessMemory?.bind(opts.inner);
+    if (innerDeleteOwnerless) this.deleteOwnerlessMemory = innerDeleteOwnerless;
   }
 
   /** Spec 2042 — no classification, no trigger: a patch of a written turn. */

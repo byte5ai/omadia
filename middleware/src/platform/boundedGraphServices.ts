@@ -448,6 +448,8 @@ export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]:
     addOwner: 'kernel-only',
     removeOwner: 'kernel-only',
     deleteMemory: 'kernel-only',
+    listOwnerlessMemorableKnowledge: 'kernel-only',
+    deleteOwnerlessMemory: 'kernel-only',
     countMemorableKnowledge: 'kernel-only',
     purgeMemorableKnowledge: 'kernel-only',
     countConversationHistory: 'kernel-only',

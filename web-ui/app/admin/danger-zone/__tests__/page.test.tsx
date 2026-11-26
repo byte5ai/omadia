@@ -20,7 +20,12 @@ const { mockPreview, mockPurge } = vi.hoisted(() => ({
 // Keep the real ApiError (its `code` / `serverMessage` come from the body).
 vi.mock('../../../_lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../_lib/api')>();
-  return { ...actual, previewMemoryPurge: mockPreview, purgeMemory: mockPurge };
+  return {
+    ...actual,
+    previewMemoryPurge: mockPreview,
+    purgeMemory: mockPurge,
+    listOwnerlessMemories: () => Promise.resolve({ supported: true, items: [] }),
+  };
 });
 
 afterEach(() => {

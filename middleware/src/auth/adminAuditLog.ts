@@ -187,6 +187,10 @@ export type AuditAction =
   // in the same transaction as its `memory_purge_audit` row (which then gets
   // the outcome); `target` is `memory-purge:<that row's id>`.
   | 'memory.purge'
+  // ADR-0185 (#1829, #1831) — an operator deleted ONE memorable knowledge
+  // entry without an owner. Written before the delete; `target` is
+  // `memory:<mk id>`, `before` the optional reason.
+  | 'memory.ownerless_delete'
   | 'api_key.create'
   | 'api_key.revoke'
   | 'api_key.delete'

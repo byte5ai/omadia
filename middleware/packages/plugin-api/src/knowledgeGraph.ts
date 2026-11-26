@@ -299,6 +299,27 @@ export interface KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<void>;
   /**
+   * ADR-0185 (#1829, #1831) — MemorableKnowledge with an empty `acl_owners`:
+   * entries the system created (scratch reaper, seeded rules). Nobody passes
+   * the owner gate of {@link deleteMemory}, so an operator lists them here,
+   * newest first. Optional (1.99.0): a provider without it has no operator
+   * view of them.
+   */
+  listOwnerlessMemorableKnowledge?(
+    opts?: ListOwnerlessMemorableKnowledgeOptions,
+  ): Promise<GraphNode[]>;
+  /**
+   * ADR-0185 — operator delete of ONE owner-less MemorableKnowledge (and its
+   * excerpts), with an ACL audit row naming the operator. Authorisation is
+   * the caller's (an operator route). Throws `memory_not_found`, and
+   * `has_owners` when the entry has an owner: owned memory stays with its
+   * owners and goes through {@link deleteMemory}.
+   */
+  deleteOwnerlessMemory?(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void>;
+  /**
    * Danger-Zone purge — count the MemorableKnowledge nodes that
    * {@link purgeMemorableKnowledge} WOULD delete for the same filter.
    * Read-only; used by the admin dry-run preview. Never throws on an
@@ -1626,6 +1647,12 @@ export interface AclAuditEntry {
 
 /** Args every owner-mutating call shares. Actor must already be in
  *  `acl_owners` of the target MK. */
+/** Options of {@link KnowledgeGraph.listOwnerlessMemorableKnowledge}. */
+export interface ListOwnerlessMemorableKnowledgeOptions {
+  /** Default 100, at most 500. */
+  limit?: number;
+}
+
 export interface AclMutationOptions {
   actorOmadiaUserId: string;
   /** Optional ChannelIdentity external_id, e.g. `web:<users.uuid>` —

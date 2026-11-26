@@ -52,6 +52,7 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ListOwnerlessMemorableKnowledgeOptions,
   type ListMergeCandidatesOptions,
   type CreateInconsistencyInput,
   type ExcerptSearchOptions,
@@ -146,6 +147,12 @@ function visibleToAudience(
  * not one T3 durable auto-promotion marked `manuallyAuthored` — that one came
  * out of a conversation (`created_by` = `auto:…`) and belongs to its owners.
  */
+/** An MK's `acl_owners` (empty when unset). */
+function ownersOf(node: GraphNode): string[] {
+  const owners = node.props['acl_owners'];
+  return Array.isArray(owners) ? (owners as string[]) : [];
+}
+
 function isOperatorAuthored(node: GraphNode): boolean {
   return node.manuallyAuthored === true && !String(node.props['created_by'] ?? '').startsWith('auto:');
 }
@@ -1400,6 +1407,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       afterOwners: null,
       ...(actor.reason ? { reason: actor.reason } : {}),
     });
+    this.deleteMemoryNode(node);
+  }
+
+  /** One MK node, its excerpts, their edges and embeddings. */
+  private deleteMemoryNode(node: GraphNode): void {
     // Slice 6.5 — cascade-delete attached PalaiaExcerpt nodes BEFORE
     // dropping the parent + its edges; otherwise the edge-purge loop
     // below would orphan the excerpt nodes themselves.
@@ -1423,6 +1435,41 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // deleted excerpts so cosine-search can never resurrect a tombstoned
     // memory by keeping its vector around.
     for (const id of droppedIds) this.embeddings.delete(id);
+  }
+
+  async listOwnerlessMemorableKnowledge(
+    opts: ListOwnerlessMemorableKnowledgeOptions = {},
+  ): Promise<GraphNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+    const hits = [...this.nodes.values()].filter(
+      (n) => n.type === 'MemorableKnowledge' && ownersOf(n).length === 0,
+    );
+    hits.sort((a, b) =>
+      String(b.props['created_at'] ?? '').localeCompare(String(a.props['created_at'] ?? '')),
+    );
+    return hits.slice(0, limit);
+  }
+
+  async deleteOwnerlessMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    const node = this.requireMkOrThrow(memorableKnowledgeNodeId);
+    if (ownersOf(node).length > 0) {
+      throw Object.assign(new Error('has_owners'), { code: 'has_owners' });
+    }
+    this.appendAclAudit({
+      memoryExternalId: memorableKnowledgeNodeId,
+      actorOmadiaUserId: actor.actorOmadiaUserId,
+      ...(actor.actorChannelIdentityId
+        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+        : {}),
+      action: 'delete',
+      beforeOwners: [],
+      afterOwners: null,
+      ...(actor.reason ? { reason: actor.reason } : {}),
+    });
+    this.deleteMemoryNode(node);
   }
 
   /**

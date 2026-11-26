@@ -17,6 +17,8 @@ import {
   type MemoryPurgeWarning,
 } from '../../_lib/api';
 
+import { OwnerlessMemoriesPanel } from './OwnerlessMemoriesPanel';
+
 /**
  * Admin → Danger Zone (memory purge).
  *
@@ -468,6 +470,8 @@ export default function DangerZonePage(): React.ReactElement {
           )}
         </section>
       )}
+
+      <OwnerlessMemoriesPanel />
     </main>
   );
 }

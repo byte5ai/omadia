@@ -1327,6 +1327,8 @@ listMemorableKnowledgeFor(omadiaUserId: string, opts?: ListMemorableKnowledgeOpt
 addOwner(memorableKnowledgeNodeId: string, omadiaUserIdToAdd: string, actor: AclMutationOptions): Promise<string[]>;
 removeOwner(memorableKnowledgeNodeId: string, omadiaUserIdToRemove: string, actor: AclMutationOptions): Promise<string[]>;
 deleteMemory(memorableKnowledgeNodeId: string, actor: AclMutationOptions): Promise<void>;
+listOwnerlessMemorableKnowledge?(opts?: ListOwnerlessMemorableKnowledgeOptions): Promise<GraphNode[]>;
+deleteOwnerlessMemory?(memorableKnowledgeNodeId: string, actor: AclMutationOptions): Promise<void>;
 countMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
 count: number;
 }>;
@@ -1695,6 +1697,9 @@ beforeOwners: string[];
 afterOwners: string[] | null;
 reason?: string;
 createdAt: string;
+}
+export interface ListOwnerlessMemorableKnowledgeOptions {
+limit?: number;
 }
 export interface AclMutationOptions {
 actorOmadiaUserId: string;

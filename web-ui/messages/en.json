@@ -6257,6 +6257,22 @@
       "preview_required": "The preview expired or belongs to another selection — run the preview again.",
       "confirmation_mismatch": "The confirmation does not match the required phrase.",
       "audit_write_failed": "The purge could not be recorded in the audit log, so nothing was deleted."
+    },
+    "ownerless": {
+      "title": "Memories without an owner",
+      "intro": "Entries the system created: notes the scratch reaper consolidated and rules from /memories/_rules/. Nobody owns them, so only an operator can delete them here, one at a time. A rule whose file still exists comes back on the next sync.",
+      "loading": "Loading…",
+      "empty": "No memories without an owner.",
+      "unsupported": "This knowledge graph cannot list memories without an owner.",
+      "sourceRule": "Rule",
+      "sourceSystem": "Created by {createdBy}, agent {agent}",
+      "delete": "Delete",
+      "deleting": "Deleting…",
+      "deleteAria": "Delete the memory \"{summary}\"",
+      "errorHasOwners": "This memory has an owner now. Its owners delete it in Memories.",
+      "errorNotFound": "This memory no longer exists.",
+      "errorForbidden": "You are not allowed to delete this memory.",
+      "errorGeneric": "The memories without an owner could not be loaded or deleted."
     }
   },
   "adminDuplicates": {

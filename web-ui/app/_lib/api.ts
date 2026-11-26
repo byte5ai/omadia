@@ -4659,6 +4659,49 @@ export async function purgeMemory(body: {
 }
 
 // -----------------------------------------------------------------------------
+// Owner-less memories (ADR-0185, #1829/#1831) — memorable knowledge with an
+// empty owner list (scratch reaper, seeded rules). No owner can delete it, so
+// the operator lists and deletes single entries at
+// /api/v1/admin/memory/ownerless (cookie session, audited server-side).
+// Owned entries are refused by the server (409 has_owners).
+// -----------------------------------------------------------------------------
+
+export interface OwnerlessMemory {
+  id: string;
+  kind: MemorableKind | null;
+  summary: string;
+  createdBy: string | null;
+  originAgent: string | null;
+  createdAt: string | null;
+  /** A rule entry derived from a file under /memories/_rules/. */
+  isRule: boolean;
+}
+
+export interface OwnerlessMemoriesResult {
+  /** False when the knowledge graph cannot list owner-less entries. */
+  supported: boolean;
+  items: OwnerlessMemory[];
+}
+
+export async function listOwnerlessMemories(): Promise<OwnerlessMemoriesResult> {
+  return getJson<OwnerlessMemoriesResult>('/v1/admin/memory/ownerless');
+}
+
+export async function deleteOwnerlessMemory(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(`/v1/admin/memory/ownerless/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE memory/ownerless failed: ${res.status}`, await res.text());
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Memory promote — the explicit, audited operator act that moves knowledge
 // across context tiers of ONE agent (design #870 §6). Never agent-crossing.
 //

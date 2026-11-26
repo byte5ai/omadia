@@ -96,6 +96,10 @@ export interface MemoryPurgeDeps {
   tenantId?: string;
   /** Clock for the preview-token TTL; tests pin it. */
   now?: () => number;
+  /** #1831 (ADR-0185) — re-derive the rule entries from the `_rules/` files
+   *  after a purge removed memorable knowledge (axis `all` deletes the rule
+   *  entries with everything else; the files stay or are re-seeded). */
+  syncDurableRules?: () => Promise<unknown>;
 }
 
 /** A warning the UI translates: `adminDangerZone.warnings.<code>`. */
@@ -433,6 +437,12 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
         console.error('[memory-purge] re-seed failed:', errorMessage(err));
         warnings.push({ code: 'reseed_failed' });
       }
+    }
+
+    if (axis === 'all' && deps.syncDurableRules) {
+      await deps.syncDurableRules().catch((err: unknown) => {
+        console.error('[memory-purge] rule sync failed:', errorMessage(err));
+      });
     }
 
     if (auditStore && auditId) {
