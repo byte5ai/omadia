@@ -925,6 +925,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   // Spec 2042 §5.11 — `PUT …/context-memory` refuses `off` for an agent that
   // holds capability grants.
   'context_memory_required',
+  // #1889 / ADR-0216 — `PUT …/identity` with an `expected_revision` the
+  // stored identity has moved past (another tab or operator saved first).
+  'identity_revision_conflict',
 ] as const;
 
 export type OperatorAgentErrorCode = (typeof OPERATOR_AGENT_ERROR_CODES)[number];

@@ -132,6 +132,7 @@ import {
   MAX_AVATAR_BYTES,
 } from '../services/agentAvatarIcons.js';
 import {
+  AgentIdentityRevisionConflictError,
   resolveAgentIdentity,
   type AgentIdentityAvatarBytes,
   type AgentIdentityAvatarInput,
@@ -1627,6 +1628,9 @@ const AgentIdentitySchema = z.object({
   // route calls are written against those schemas.
   persona: PersonaConfigSchema.nullish(),
   quality: QualityConfigSchema.nullish(),
+  // #1889 / ADR-0216 — the `identity.revision` the client's form was read
+  // at. A stale one is a 409; absent skips the check (older API clients).
+  expected_revision: z.number().int().positive().optional(),
 });
 
 /** What a write did to the agent's published Teams package. */
@@ -2176,6 +2180,18 @@ export function createOperatorAgentsRouter(
   function badRequest(res: Response, err: unknown): void {
     // #2060 — one mapping for every facilitator refusal on this router.
     if (respondFacilitatorRefusal(res, err)) return;
+    // #1889 / ADR-0216 — a write over a revision that moved on since.
+    // `error` for this router's clients, `code`/`message` per ADR-0104.
+    if (err instanceof AgentIdentityRevisionConflictError) {
+      res.status(409).json({
+        error: 'identity_revision_conflict',
+        code: 'operator_agents.identity_revision_conflict',
+        message: err.message,
+        expected_revision: err.expectedRevision,
+        current_revision: err.currentRevision,
+      });
+      return;
+    }
     if (err instanceof ConfigValidationError) {
       res.status(409).json({ error: 'config_validation', message: err.message });
       return;
@@ -3258,6 +3274,9 @@ export function createOperatorAgentsRouter(
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
+        ...(body.expected_revision !== undefined
+          ? { expectedRevision: body.expected_revision }
+          : {}),
       });
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a

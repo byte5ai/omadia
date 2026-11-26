@@ -41,6 +41,7 @@ import {
 } from '../../_components/useFacilitatorCopy';
 import { AgentBoundariesEditor } from './AgentBoundariesEditor';
 import { AgentPersonaEditor } from './AgentPersonaEditor';
+import { useReportUnsaved } from './unsavedChangesGuard';
 
 /**
  * The agent's own identity (#914): who it is, how it sounds, what it must not
@@ -176,6 +177,15 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'save' | 'avatar' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * #1889 / ADR-0216 — the revision the form's saved baseline was read at;
+   * every save sends it as `expected_revision`. Separate from
+   * `dto.identity.revision`, which follows avatar writes too: an avatar
+   * write by THIS page moves it along, one by someone else must not.
+   */
+  const [baseRevision, setBaseRevision] = useState<number | null>(null);
+  /** The last save was refused because the identity changed elsewhere. */
+  const [conflict, setConflict] = useState(false);
   /** Last write's Teams outcome. Cleared on the next edit — a stale "queued"
    *  next to an unsaved change would claim something that did not happen. */
   const [republish, setRepublish] =
@@ -227,6 +237,8 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
 
   const apply = useCallback((next: AgentIdentityDto): void => {
     setDto(next);
+    setBaseRevision(next.identity.revision);
+    setConflict(false);
     const asForm = toForm(next);
     setForm(asForm);
     setSavedForm(asForm);
@@ -262,6 +274,17 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
     [form, savedForm, persona, savedPersona, quality, savedQuality],
   );
 
+  // #1889 — leaving the agent tab, or the page, with unsaved input asks first.
+  useReportUnsaved(dirty);
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const onBeforeUnload = (e: BeforeUnloadEvent): void => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
+
   /** Conflicts between the character and its limits — the same detector the
    *  Builder uses, so both surfaces warn about the same combinations. */
   const warnings = useMemo(
@@ -296,8 +319,9 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
         : {}),
       persona: compact(persona),
       quality: compact(quality),
+      ...(baseRevision !== null ? { expected_revision: baseRevision } : {}),
     }),
-    [form, savedForm, persona, quality, isFacilitator],
+    [form, savedForm, persona, quality, isFacilitator, baseRevision],
   );
 
   const save = useCallback(async (): Promise<void> => {
@@ -314,18 +338,40 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
       // here would erase the change the failed write was for.
       const refusal = parseFacilitatorRefusal(err);
       setIssues(refusal?.kind === 'contract' ? refusal.issues : []);
+      setConflict(parseOperatorAgentErrorCode(err) === 'identity_revision_conflict');
       setError(localizeError(err));
     } finally {
       setBusy(null);
     }
   }, [props.slug, payload, apply, localizeError]);
 
+  /**
+   * #1889 — an avatar write answers with the whole stored identity. Without
+   * unsaved input that is simply the new state. With it, only the avatar
+   * side is taken over and the operator's field edits stay; the save
+   * baseline follows only when this write was the only change since it was
+   * read, so an edit from elsewhere still surfaces as a conflict on save.
+   */
+  const applyAvatarWrite = useCallback(
+    (res: AgentIdentityDto): void => {
+      if (!dirty) {
+        apply(res);
+        return;
+      }
+      setDto(res);
+      setBaseRevision((prev) =>
+        prev !== null && res.identity.revision === prev + 1 ? res.identity.revision : prev,
+      );
+    },
+    [dirty, apply],
+  );
+
   const upload = useCallback(
     async (file: File): Promise<void> => {
       setBusy('avatar');
       try {
         const res = await uploadAgentAvatar(props.slug, file);
-        apply(res);
+        applyAvatarWrite(res);
         setRepublish(res.republish);
         setError(null);
       } catch (err: unknown) {
@@ -336,14 +382,15 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
         if (fileInput.current) fileInput.current.value = '';
       }
     },
-    [props.slug, apply, localizeError],
+    [props.slug, applyAvatarWrite, localizeError],
   );
 
   const removeAvatar = useCallback(async (): Promise<void> => {
+    if (!window.confirm(t('avatarRemoveConfirm'))) return;
     setBusy('avatar');
     try {
       const res = await deleteAgentAvatar(props.slug);
-      apply(res);
+      applyAvatarWrite(res);
       setRepublish(res.republish);
       setError(null);
     } catch (err: unknown) {
@@ -351,7 +398,7 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
     } finally {
       setBusy(null);
     }
-  }, [props.slug, apply, localizeError]);
+  }, [props.slug, applyAvatarWrite, localizeError, t]);
 
   const previewUrl = dto ? avatarPreviewUrl(dto.identity) : null;
   const disabled = busy !== null;
@@ -374,6 +421,18 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
           className="mb-3 rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]"
         >
           <p>{error}</p>
+          {conflict && (
+            <Button
+              type="button"
+              variant="secondary"
+              className="mt-2"
+              data-testid="agent-identity-reload"
+              disabled={disabled}
+              onClick={() => void refresh()}
+            >
+              {t('conflictReload')}
+            </Button>
+          )}
           {issues.length > 0 && (
             <ul
               data-testid="agent-identity-contract-issues"

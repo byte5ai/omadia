@@ -30,6 +30,7 @@ import { Pool } from 'pg';
 import { probePgTest } from './_helpers/pgTestDb.js';
 
 import {
+  AgentIdentityRevisionConflictError,
   AgentIdentityStore,
   DEFAULT_AGENT_ACCENT_COLOR,
   resolveAgentIdentity,
@@ -201,6 +202,26 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
       displayName: 'Vertrieb DACH',
     });
     assert.equal(changed.revision, first.revision + 1);
+  });
+
+  it('refuses a save over a revision that moved on, and takes one at the current revision (#1889)', async () => {
+    const first = await store.save(agentId, { ...EMPTY, displayName: 'A', expectedRevision: 1 });
+    const second = await store.save(agentId, {
+      ...EMPTY,
+      displayName: 'B',
+      expectedRevision: first.revision,
+    });
+    assert.equal(second.revision, first.revision + 1);
+    await assert.rejects(
+      store.save(agentId, { ...EMPTY, displayName: 'C', expectedRevision: first.revision }),
+      (err: unknown) =>
+        err instanceof AgentIdentityRevisionConflictError &&
+        err.currentRevision === second.revision,
+    );
+    assert.equal((await store.getByAgentId(agentId))?.displayName, 'B');
+    // Same content as stored loses nothing, whatever revision it read.
+    const same = await store.save(agentId, { ...EMPTY, displayName: 'B', expectedRevision: 1 });
+    assert.equal(same.revision, second.revision);
   });
 
   it('treats a blank string as "inherit", not as an empty name', async () => {

@@ -135,6 +135,29 @@ export interface AgentIdentitySaveInput extends AgentIdentityText {
   readonly persona: PersonaConfig | null;
   readonly quality: QualityConfig | null;
   readonly composed: AgentIdentityComposedPrompt;
+  /**
+   * #1889 / ADR-0216 — the revision the writer's form was read at. Given, a
+   * write over a row that moved on since is refused with
+   * {@link AgentIdentityRevisionConflictError} instead of replacing the other
+   * writer's change. Absent = no check (API clients that predate it).
+   */
+  readonly expectedRevision?: number;
+}
+
+/**
+ * #1889 / ADR-0216 — a save carried an `expectedRevision` the stored row has
+ * moved past. The route answers it with 409 `identity_revision_conflict`.
+ */
+export class AgentIdentityRevisionConflictError extends Error {
+  constructor(
+    readonly expectedRevision: number,
+    readonly currentRevision: number,
+  ) {
+    super(
+      `the agent identity is at revision ${String(currentRevision)}, not the expected ${String(expectedRevision)}`,
+    );
+    this.name = 'AgentIdentityRevisionConflictError';
+  }
 }
 
 /** The three PNGs of one avatar upload, already derived by the route. */
@@ -424,7 +447,12 @@ export class AgentIdentityStore {
     input: AgentIdentitySaveInput,
   ): Promise<AgentIdentityRecord> {
     const existing = await this.getByAgentId(agentId);
+    // A save that changes nothing loses nothing, whatever revision it read.
     if (sameContent(existing, input)) return existing as AgentIdentityRecord;
+    const expected = input.expectedRevision ?? null;
+    if (existing && expected !== null && existing.revision !== expected) {
+      throw new AgentIdentityRevisionConflictError(expected, existing.revision);
+    }
     const values = [
       agentId,
       nonEmpty(input.displayName),
@@ -439,7 +467,10 @@ export class AgentIdentityStore {
       input.composed.family,
       input.composed.byFamily ? JSON.stringify(input.composed.byFamily) : null,
       nonEmpty(input.language ?? null),
+      expected,
     ];
+    // The check above fails fast; the `WHERE` makes it atomic against a
+    // write that lands between that read and this statement.
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `INSERT INTO agent_identities (
          agent_id, display_name, short_description, long_description,
@@ -461,10 +492,16 @@ export class AgentIdentityStore {
          composed_prompts  = EXCLUDED.composed_prompts,
          revision          = agent_identities.revision + 1,
          updated_at        = now()
+       WHERE $14::int IS NULL OR agent_identities.revision = $14::int
        RETURNING ${META_COLUMNS}`,
       values,
     );
-    return mapRow(res.rows[0] as AgentIdentityMetaRow);
+    const row = res.rows[0];
+    if (!row) {
+      const current = await this.getByAgentId(agentId);
+      throw new AgentIdentityRevisionConflictError(expected ?? 0, current?.revision ?? 0);
+    }
+    return mapRow(row);
   }
 
   /**

@@ -39,6 +39,7 @@ import type {
   AgentIdentityRecord,
   AgentIdentitySaveInput,
 } from '../src/platform/agentIdentityStore.js';
+import { AgentIdentityRevisionConflictError } from '../src/platform/agentIdentityStore.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,16 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       JSON.stringify(existing.quality ?? null) ===
         JSON.stringify(next.quality ?? null);
     if (unchanged) return Promise.resolve(existing);
+    // Mirrors the real store's ADR-0216 check.
+    if (
+      existing !== undefined &&
+      input.expectedRevision !== undefined &&
+      existing.revision !== input.expectedRevision
+    ) {
+      return Promise.reject(
+        new AgentIdentityRevisionConflictError(input.expectedRevision, existing.revision),
+      );
+    }
     const bumped = { ...next, revision: (existing?.revision ?? 0) + 1 };
     this.rows.set(agentId, bumped);
     return Promise.resolve(bumped);
@@ -748,6 +759,55 @@ describe('operator agent identity routes (#914)', () => {
     // change that never reaches the registry is the same silent no-op the
     // name and the compiled prompt guard against.
     assert.equal(reloads, 1);
+  });
+
+  describe('optimistic concurrency (#1889, ADR-0216)', () => {
+    const put = (body: Record<string, unknown>): Promise<Response> =>
+      fetch(`${baseUrl}/sales/identity`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    it('refuses a write based on a stale revision with 409 and keeps the other write', async () => {
+      const first = await put({ short_description: 'From tab A', expected_revision: 1 });
+      assert.equal(first.status, 200);
+      const firstBody = (await first.json()) as { identity: { revision: number } };
+      assert.equal(firstBody.identity.revision, 1);
+      const second = await put({ short_description: 'Tab A again', expected_revision: 1 });
+      assert.equal(second.status, 200);
+      reloads = 0;
+      const stale = await put({ accent_color: '#123456', expected_revision: 1 });
+      assert.equal(stale.status, 409);
+      assert.equal(stale.headers.get('content-type')?.includes('application/json'), true);
+      const body = (await stale.json()) as Record<string, unknown>;
+      assert.equal(body['error'], 'identity_revision_conflict');
+      assert.equal(body['code'], 'operator_agents.identity_revision_conflict');
+      assert.equal(body['expected_revision'], 1);
+      assert.equal(body['current_revision'], 2);
+      assert.equal(typeof body['message'], 'string');
+      assert.equal(identityStore.rows.get('agent-1')?.shortDescription, 'Tab A again');
+      assert.equal(reloads, 0, 'a refused write rebuilds nothing');
+    });
+
+    it('accepts a write at the current revision', async () => {
+      await put({ short_description: 'One' });
+      const res = await put({ short_description: 'Two', expected_revision: 1 });
+      assert.equal(res.status, 200);
+      assert.equal(identityStore.rows.get('agent-1')?.revision, 2);
+    });
+
+    it('accepts a write without expected_revision (older API clients)', async () => {
+      await put({ short_description: 'One' });
+      await put({ short_description: 'Two' });
+      const res = await put({ short_description: 'Three' });
+      assert.equal(res.status, 200);
+    });
+
+    it('rejects a malformed expected_revision', async () => {
+      const res = await put({ short_description: 'x', expected_revision: 'abc' });
+      assert.equal(res.status, 400);
+    });
   });
 
   it('reloads the registry when only the anti-flattery level moved from unset to off (#1894)', async () => {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import {
@@ -9,6 +9,7 @@ import {
   parseAgentDetailTab,
   type AgentDetailTab,
 } from './agentDetailTab';
+import { UnsavedChangesContext, type ReportUnsaved } from './unsavedChangesGuard';
 
 /**
  * The agent detail page as tabs.
@@ -84,10 +85,21 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  const select = useCallback((next: AgentDetailTab): void => {
+  // #1889 — the active panel reports unsaved input here; leaving it asks
+  // first, because the panel unmounts and its local state goes with it.
+  const unsaved = useRef(false);
+  const reportUnsaved = useCallback<ReportUnsaved>((dirty) => {
+    unsaved.current = dirty;
+  }, []);
+  const leaveMessage = t('unsavedLeaveConfirm');
+
+  const select = (next: AgentDetailTab): boolean => {
+    if (next === tab) return true;
+    if (unsaved.current && !window.confirm(leaveMessage)) return false;
     setTab(next);
     writeTabToLocation(next);
-  }, []);
+    return true;
+  };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     const idx = tabs.indexOf(tab);
@@ -96,7 +108,7 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
     e.preventDefault();
     const next = tabs[(idx + delta + tabs.length) % tabs.length];
     if (next === undefined) return;
-    select(next);
+    if (!select(next)) return;
     document.getElementById(`agent-detail-tab-${next}`)?.focus();
   };
 
@@ -136,7 +148,9 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
         aria-labelledby={`agent-detail-tab-${tab}`}
         className="space-y-8"
       >
-        {props.panels[tab]?.()}
+        <UnsavedChangesContext.Provider value={reportUnsaved}>
+          {props.panels[tab]?.()}
+        </UnsavedChangesContext.Provider>
       </div>
     </div>
   );

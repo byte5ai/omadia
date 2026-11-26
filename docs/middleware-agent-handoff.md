@@ -5811,7 +5811,9 @@ getrennt: sie steuert den Ton relativ zur Modell-Baseline, nicht den Umfang.
 **Pro Agent (Phase 2, Migration `0063_agent_identity_verbosity.sql`):**
 `agent_identities.verbosity` (gleiche fünf Werte, CHECK-Constraint, `NULL` =
 installationsweite Einstellung übernehmen). Gepflegt im Identity-Tab der
-Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` mit
+Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` (seit #1889 /
+ADR-0216 mit optionalem `expected_revision`: veraltete Revision → `409
+identity_revision_conflict`, nichts geschrieben; die Web-UI sendet es immer) mit
 zod-Enum, Store `agentIdentityStore.ts`. Der Registry-Join
 (`AGENT_SELECT` → `identity_verbosity` → `AgentRow.answerVerbosity`) reicht ihn
 als `AgentRuntimeConfig.answerVerbosity` an `buildOrchestratorForAgent`, wo er
@@ -9808,6 +9810,16 @@ Zwei Grenzen, die bewusst offen bleiben:
   Routinen gehören dort dem Key.
 
 ## Quality Guard: Grenzen stapeln sich, sie überschreiben nicht (#1104, 2026-09-21)
+
+> **Überholt seit #1569/#1610, UI-Text korrigiert mit #1894 (2026-11-26):** Ein Feld, das der
+> Agent selbst setzt (eigene Grenzen bzw. eigene Stufe der Schmeichel-Bremse), **ersetzt** den
+> Quality-Guard-Wert für dieses Feld — `responseGuardProfileFor`
+> (`harness-orchestrator/src/agentQuality.ts`) sagt dem Guard „nichts von dir“ für jedes
+> eigene Feld. Nur offen gelassene Felder kommen vom Guard. Der Limits-Tab bietet dafür
+> „Nicht gesetzt (Vorgabe des Quality Guard gilt)“ getrennt von „Aus“; ein Wechsel des
+> `quality`-Blocks lädt die Registry neu (`PUT /:slug/identity`, `qualityChanged`), weil
+> „nicht gesetzt“ → „aus“ denselben Prompt kompiliert, aber den Guard-Default abschaltet.
+> Der folgende Abschnitt beschreibt den Stand vor #1569.
 
 Boundaries sind an **zwei** unabhängigen Stellen konfigurierbar, und beide landen
 zusammen im System-Prompt — das ist kein Bug, aber es war nirgends dokumentiert.

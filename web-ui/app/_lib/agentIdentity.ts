@@ -184,6 +184,10 @@ export interface AgentIdentityInput {
   language?: string | null;
   persona: PersonaConfig | null;
   quality: QualityConfig | null;
+  /** #1889 / ADR-0216 — the `identity.revision` the form was read at; the
+   *  server refuses a stale one with 409 `identity_revision_conflict`. The
+   *  web UI always sends it. */
+  expected_revision?: number;
 }
 
 // ---------------------------------------------------------------------------

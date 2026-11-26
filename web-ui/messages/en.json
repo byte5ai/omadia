@@ -2282,7 +2282,8 @@
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
       "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
-      "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation."
+      "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation.",
+      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again."
     },
     "statusEnabled": "enabled",
     "statusDisabled": "disabled",
@@ -2829,7 +2830,9 @@
         "issueOnTab": "{tab}: {issue}",
         "instructionsHint": "Opening section of the facilitator's prompt. Checked against the neutrality contract when saved: text that asks for partiality, an opinion, a vote or a hidden channel is refused.",
         "promptNote": "The neutrality contract is compiled in after these sections and cannot be removed or overridden from here."
-      }
+      },
+      "avatarRemoveConfirm": "Remove the agent's picture? Teams then shows the default icon.",
+      "conflictReload": "Reload the stored identity (discards your changes)"
     },
     "teamsIdentity": {
       "heading": "Teams identity",
@@ -3173,7 +3176,8 @@
       "tools": "Tools",
       "memory": "Memory",
       "engine": "Facilitation",
-      "moderation": "Methods"
+      "moderation": "Methods",
+      "unsavedLeaveConfirm": "This tab has unsaved changes. Leave it and discard them?"
     },
     "endOfService": {
       "disabled": "“{name}” is disabled.",
