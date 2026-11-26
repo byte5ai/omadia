@@ -197,6 +197,7 @@ const AS: AuthServerMetadata = {
   authorizationEndpoint: 'https://as.example/authorize',
   tokenEndpoint: 'https://as.example/token',
   registrationEndpoint: null,
+  revocationEndpoint: null,
   codeChallengeMethods: ['S256'],
   grantTypes: ['authorization_code'],
   scopesSupported: ['read'],
@@ -840,11 +841,15 @@ describe('W0-1 D3 — concurrent refresh is single-flight (MUTATION-CHECKED)', (
         deletes.push({ serverId, userKey });
       },
     } as never;
+    const vaultDeletes: string[] = [];
     const svc = new McpOAuthService({
       graph,
       vault: {
         get: async (_ns: string, k: string) => (k === 'r' ? 'RT' : 'STALE-AT'),
         set: async () => {},
+        deleteKey: async (_ns: string, k: string) => {
+          vaultDeletes.push(k);
+        },
       } as never,
       redirectUri: 'https://host/cb',
       // Discovery now reports a DIFFERENT issuer.
@@ -868,6 +873,11 @@ describe('W0-1 D3 — concurrent refresh is single-flight (MUTATION-CHECKED)', (
     assert.equal(token, null, 'a token from a rotated issuer must not be usable');
     assert.equal(tokenPosts, 0, 'the old refresh token must not be sent to the new issuer');
     assert.deepEqual(deletes, [{ serverId: 'srv-1', userKey: 'user-a' }]);
+    // The values go with the row, or they outlive it in the vault (#1925).
+    assert.deepEqual(vaultDeletes, [
+      'token/srv-1/user-a/access',
+      'token/srv-1/user-a/refresh',
+    ]);
   });
 });
 
