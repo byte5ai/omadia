@@ -88,6 +88,13 @@ export function ConductorEmitSection({
             {t('emitResult', { matched: emitResult.matchedWorkflows, started: emitResult.startedRuns.length })}
           </p>
         )}
+        {!!emitResult?.suppressed?.length && (
+          <ul className="list-inside list-disc text-[13px] text-[color:var(--fg-muted)]">
+            {emitResult.suppressed.map(({ workflowSlug, reason }) => (
+              <li key={workflowSlug}>{t(`emitSuppressed.${reason}`, { slug: workflowSlug })}</li>
+            ))}
+          </ul>
+        )}
       </div>
     </section>
   );

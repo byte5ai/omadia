@@ -5770,7 +5770,10 @@ async function main(): Promise<void> {
               : Promise.resolve(undefined),
       listActions: async () => [
         WEBHOOK_POST_ACTION_ID,
-        ...deterministicActionRegistry.list(),
+        ...deterministicActionRegistry.list().map((id) => {
+          const requiredInputs = nativeToolRegistry.get(id)?.spec?.input_schema.required;
+          return requiredInputs?.length ? { id, requiredInputs } : id;
+        }),
         ...listMcpActions(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
       ],
       eventCatalog: eventCatalogRegistry,

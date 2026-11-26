@@ -69,7 +69,7 @@ export function renderKnownIdsBlock(
   const shown = safe.slice(0, MAX_PROMPT_IDS);
   const more = safe.length > shown.length ? ` (+${String(safe.length - shown.length)} more not shown)` : '';
   const labels = shown.map((id) => {
-    const server = serverNames?.get(id)?.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, MAX_ID_CHARS);
+    const server = serverNames?.get(id)?.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim().slice(0, MAX_ID_CHARS);
     return server ? `${id} (server ${JSON.stringify(server)})` : id;
   });
   return `${title}: ${labels.join(', ')}${more}`;

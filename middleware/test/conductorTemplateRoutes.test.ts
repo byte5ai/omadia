@@ -889,7 +889,8 @@ describe('review gate: POST /templates/:id/{submit,approve,reject}', () => {
     const denied = await post(`${h.baseUrl}/templates/team/approve`, {}, 'operator-a');
     assert.equal(denied.status, 403);
     assert.equal(((await denied.json()) as { code: string }).code, 'conductor.template_self_approval_forbidden');
-    assert.equal((await post(`${h.baseUrl}/templates/team/approve`, {}, 'operator-b')).status, 200);
+    assert.equal((await post(`${h.baseUrl}/templates/team/approve`, { reviewedVersion: 2 }, 'operator-b')).status, 409);
+    assert.equal((await post(`${h.baseUrl}/templates/team/approve`, { reviewedVersion: 1 }, 'operator-b')).status, 200);
     assert.deepEqual(audit.map((entry) => entry.action), ['conductor.template_submitted', 'conductor.template_approved']);
     assert.deepEqual(audit[1]?.after, { status: 'shared', version: 1, selfReview: false });
   });

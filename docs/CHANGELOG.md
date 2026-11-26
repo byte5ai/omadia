@@ -36,6 +36,11 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor schedule zones and suppressed triggers (#1714, #1715)
+
+- Conductor evaluates each schedule in its stored IANA zone through the scheduler helper shared with routines. Republishing an unchanged expression keeps the original zone.
+- Migration `0016_schedule_poll_cursor.sql` records evaluated minutes across restarts. Missed slots expire and produce a bounded suppression summary. Disabled live slots and disabled event subscribers are logged. The emit response includes a `suppressed` list. See ADR-0250 and ADR-0251.
+
 ### Fixed — Conductor role and template governance (#1708, #1718, #1719, #1725)
 
 - Role creation rejects duplicate keys, label updates are separate, and unknown role assignments return 404. Role deletion refuses roles with active holders or references in active workflow versions. Create, edit and delete write admin audit rows. Soft-deleting a workflow removes its schedules.
@@ -49,7 +54,7 @@ changelog.
 
 ### Fixed — Conductor publish validation and builder diagnostics (#1722, #1723, #1724, #1928)
 
-- Workflow publish and template resolution check live agent, action and role references, reject internal operator account UUIDs in human steps and check static `webhook.post` URLs. The builder can still draft unconnected actions for inline setup.
+- Workflow publish and template resolution check live agent, action and role references, reject internal operator account UUIDs in human steps, check required plugin and MCP action inputs and validate static `webhook.post` URLs. The builder can still draft unconnected actions for inline setup.
 - Human deadlines and reminder intervals must be positive ISO-8601 durations. The builder describes strict approvals and shows validation warnings in chat and after publishing.
 - The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
 

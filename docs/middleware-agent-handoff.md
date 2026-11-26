@@ -1351,6 +1351,12 @@ emittiert** — der Transport ist vollständig.
 
 ### Conductor Workflow-Templates (Operator-API, #429)
 
+- **Zeitpläne:** `GET /:slug` liefert die gespeicherten Zonen als `schedules`.
+  Derselbe Cron-Ausdruck behält seine Zeile und Zone, neue Ausdrücke starten in UTC
+  (ADR-0250). Der Poller protokolliert verpasste oder deaktivierte Slots und startet
+  nur im aktuellen Zeitfenster. `POST /emit` liefert deaktivierte Event-Abonnenten
+  unter `suppressed` (ADR-0251).
+
 - **Rollenverwaltung:** `POST /roles` erstellt einen neuen Schlüssel (409 bei Duplikat).
   `PATCH /roles/:key` ändert das Label, `DELETE /roles/:key` löscht unbenutzte Rollen
   (409 bei aktiven Inhabern oder Referenzen in aktuellen Workflow-Versionen).
@@ -1408,7 +1414,8 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
 **Publish-Validierung:** beide Template-Routen und `POST /` teilen
 `validatePublishGraph` mit Live-Referenzen aus `templateKnownRefs` (Agent-Slugs,
 Action-IDs, Role-Keys, Event-Vorschläge). Statische `webhook.post`-URLs werden auf
-HTTP(S) geprüft. UUIDs aus der Operator-Kontentabelle werden in Personen-Referenzen
+HTTP(S) geprüft. Bei registrierten Plugin- und MCP-Aktionen werden deklarierte
+Pflichteingaben auf Vorhandensein geprüft. UUIDs aus der Operator-Kontentabelle werden in Personen-Referenzen
 abgelehnt. Builder-Entwürfe dürfen fehlende Actions für die Inline-Einrichtung behalten.
 
 **Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
@@ -1473,8 +1480,7 @@ conductor.template_not_found` wenn unsichtbar), **`POST /templates`** Body
 bundled/plugin/DB; `400 conductor.template_invalid` mit Issues-Array),
 **`PUT /templates/:id`** (author-only `403 conductor.template_forbidden`;
 `manifest.id` muss `:id` sein → 400; hängt Version `latestVersion+1` an —
-Status bleibt bewusst unverändert: das Gate regelt das Teilen, nicht jede
-Version), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
+Status startet wieder `private` (ADR-0253)), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
 **`GET /templates/:id/versions`**. `resolve`/`instantiate` akzeptieren
 optional `version` im Body (Default: latest); `instantiate` stempelt die
 Provenance **in derselben Transaktion** wie den Publish (via `onPublished`)

@@ -8,7 +8,6 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   conductorBuilderTurn,
-  publishConductorWorkflow,
   resolveConductorText,
   type ConductorBuilderMessage,
   type ConductorGraphPatch,
@@ -26,6 +25,7 @@ import { isSendKey } from '../../_lib/composerKeys';
 import { MissingCapabilityCards, PersonSuggestionCards } from './ConductorChatCards';
 import { clearChatDraft, loadChatDraft, saveChatDraft } from './chatDraftStore';
 import { resetStepPrincipal, setStepActionId, setStepPrincipal, stepChannel } from './graphLocalEdits';
+import { publishConductorDraft } from './draftPublish';
 
 // Conversational builder (US7). The user co-designs a Conductor workflow by chatting; each turn the
 // builder agent returns a patched draft graph + a reply. The draft lives here (client-side), so the
@@ -94,14 +94,14 @@ function ValidationWarnings({ warnings, heading }: {
 }): React.JSX.Element | null {
   if (!warnings?.length) return null;
   return (
-    <div role="status" className="mt-2 text-[12px] text-[color:var(--warning,#f5a623)]">
-      <p className="font-semibold">{heading}</p>
+    <details className="mt-2 text-[12px] text-[color:var(--warning,#f5a623)]" open>
+      <summary className="font-semibold">{heading}</summary>
       <ul className="list-inside list-disc">
         {warnings.map((warning, i) => (
           <li key={i}><code>{warning.code}</code>{' · '}{warning.message}</li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }
 
@@ -308,7 +308,11 @@ export function ConductorChatPane({
     setPublishErrors([]);
     setPublishWarnings([]);
     try {
-      const result = await publishConductorWorkflow({ slug: slug.trim(), name: name.trim(), graph, enable: true });
+      const result = await publishConductorDraft(
+        { slug: slug.trim(), name: name.trim(), graph, enable: true },
+        () => window.confirm(t('confirmPublishVersion', { slug: slug.trim() })),
+      );
+      if (!result) return;
       setPublishWarnings(result.warnings ?? []);
       setPublishMsg(t('chatPublished', { slug: slug.trim() }));
     } catch (err) {
@@ -319,8 +323,12 @@ export function ConductorChatPane({
         } catch {
           /* not json */
         }
-        setPublishMsg(err.message);
-      } else setPublishMsg(String(err));
+        if (err.code === 'conductor.reserved_slug' || err.code === 'conductor.reserved_slug_prefix') {
+          setPublishMsg(t('reservedWorkflowSlug', { slug: slug.trim() }));
+        } else if (err.code !== 'conductor.invalid_graph') {
+          setPublishMsg(t('publishWorkflowFailed'));
+        }
+      } else setPublishMsg(t('publishWorkflowFailed'));
     } finally {
       setPublishing(false);
     }
@@ -476,7 +484,12 @@ export function ConductorChatPane({
         <div className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           {t('chatDraftHeading')}
         </div>
-        <p className="text-[13px] text-[color:var(--fg-muted)]">{t('chatDraftSummary', { steps: summary.steps, trigger: summary.trigger })}</p>
+        <p className="text-[13px] text-[color:var(--fg-muted)]">
+          {t('chatDraftSummary', {
+            steps: summary.steps,
+            trigger: summary.trigger === 'cron' ? t('scheduleWithZone', { zone: 'UTC' }) : summary.trigger,
+          })}
+        </p>
         {lastValidation && (
           <p className={`text-[12px] ${lastValidation.ok ? 'text-[color:var(--fg-muted)]' : 'text-[color:var(--danger,#e5484d)]'}`}>
             {lastValidation.ok ? t('chatValidationOk') : t('chatDraftInvalid')}

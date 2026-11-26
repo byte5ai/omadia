@@ -26,6 +26,8 @@ Every operator can review a pending workflow template, including its author. Sin
 
 Chosen option **A**. Author approval returns 403 when another active operator exists. A single operator may self-approve, and the audit row records that fact. Submit, approve and reject compare the observed status and version atomically and write audit rows under [ADR-0100](0100-admin-audit-trail-one-actor-rule.md). Publishing a new template version returns it to private so it receives its own review.
 
+The gallery supplies the version shown on its card when approving or rejecting. A stale version returns 409. An API client that omits the optional reviewed version reviews the pending version observed by the server during that request.
+
 ### Consequences
 
 - A second person reviews new versions where multiple operators are active.

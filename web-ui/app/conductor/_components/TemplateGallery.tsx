@@ -208,9 +208,14 @@ export function TemplateGallery({
       setConfirmDeleteId(null);
       onCatalogChanged?.();
     } catch (err) {
-      setActionError(err instanceof ApiError && err.code === 'conductor.template_self_approval_forbidden'
-        ? t('templateSelfApprovalForbidden')
-        : t('templateRequestFailed', { message: serverErrorMessage(err) }));
+      if (err instanceof ApiError && err.code === 'conductor.template_self_approval_forbidden') {
+        setActionError(t('templateSelfApprovalForbidden'));
+      } else if (err instanceof ApiError && err.code === 'conductor.template_status_conflict') {
+        setActionError(t('templateReviewChanged'));
+        onCatalogChanged?.();
+      } else {
+        setActionError(t('templateRequestFailed', { message: serverErrorMessage(err) }));
+      }
     } finally {
       setPendingAction(null);
     }
@@ -363,7 +368,7 @@ export function TemplateGallery({
                           busy={isBusy(tpl.id, 'approve')}
                           busyLabel={t('templateApproving')}
                           disabled={pendingAction !== null}
-                          onClick={() => void runAction({ id: tpl.id, kind: 'approve' }, () => approveConductorTemplate(tpl.id))}
+                          onClick={() => void runAction({ id: tpl.id, kind: 'approve' }, () => approveConductorTemplate(tpl.id, version))}
                         >
                           {t('approve')}
                         </Button>
@@ -373,7 +378,7 @@ export function TemplateGallery({
                           busy={isBusy(tpl.id, 'reject')}
                           busyLabel={t('templateRejecting')}
                           disabled={pendingAction !== null}
-                          onClick={() => void runAction({ id: tpl.id, kind: 'reject' }, () => rejectConductorTemplate(tpl.id))}
+                          onClick={() => void runAction({ id: tpl.id, kind: 'reject' }, () => rejectConductorTemplate(tpl.id, version))}
                         >
                           {t('reject')}
                         </Button>

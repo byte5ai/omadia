@@ -12,12 +12,16 @@ import type { McpServerConfig, McpServerRow } from '@omadia/orchestrator';
 
 import { mcpActionId, parseMcpActionId } from './mcpActionId.js';
 
-export interface McpActionEntry {
+interface ActionMetadata {
   id: string;
+  requiredInputs?: readonly string[];
+}
+
+export interface McpActionEntry extends ActionMetadata {
   serverName: string;
 }
 
-export type ActionCatalogEntry = string | McpActionEntry;
+export type ActionCatalogEntry = string | (ActionMetadata & { serverName?: string });
 
 export function actionCatalogId(entry: ActionCatalogEntry): string {
   return typeof entry === 'string' ? entry : entry.id;
@@ -100,11 +104,17 @@ export function listMcpActions(
     if (server.status !== 'enabled' || server.delegation !== 'service') continue;
     for (const tool of server.discoveredTools) {
       const name = isRecord(tool) && typeof tool.name === 'string' ? tool.name.trim() : '';
-      if (name.length === 0) continue;
+      if (!isRecord(tool) || name.length === 0) continue;
       // Catalog == what the invoker would run: a verdict-blocked or unscanned tool is reported
       // missing by the builder instead of failing at run time.
       if (dispatchDenial(server.id, name) !== null) continue;
-      out.push({ id: mcpActionId(server.id, name), serverName: server.name });
+      const required = isRecord(tool.inputSchema) ? tool.inputSchema.required : undefined;
+      const requiredInputs = Array.isArray(required) ? required.filter((key): key is string => typeof key === 'string') : [];
+      out.push({
+        id: mcpActionId(server.id, name),
+        serverName: server.name,
+        ...(requiredInputs.length > 0 ? { requiredInputs } : {}),
+      });
     }
   }
   return out.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

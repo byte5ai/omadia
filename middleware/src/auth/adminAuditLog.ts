@@ -517,7 +517,7 @@ export function roleChangeAuditEntry(entry: {
   holdersAfter: readonly string[];
 }): AuditEntryInput {
   return {
-    actor: { id: entry.actorUserId, email: entry.actor },
+    actor: { id: entry.actorUserId, email: entry.actor || undefined },
     action: 'conductor.role_holders_change',
     target: `conductor-role:${entry.roleKey}`,
     before: { action: entry.action, holderId: entry.holderId },

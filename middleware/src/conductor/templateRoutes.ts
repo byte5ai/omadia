@@ -208,8 +208,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
   });
 
   // Publish the next manifest version onto an owned template (author-only) — #478.
-  // Status is deliberately unchanged: the review gate governs SHARING, not each
-  // version (publisher-maintenance path; an accepted, documented v1 tradeoff).
+  // A new version starts private and needs review before sharing (ADR-0253).
   router.put('/templates/:id', async (req: Request, res: Response): Promise<void> => {
     if (!deps.templateStore || !deps.templateCatalog) {
       res.status(503).json({ code: 'conductor.templates_unavailable', message: 'template store is not wired' });
@@ -348,6 +347,15 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
           code: 'conductor.template_status_conflict',
           message: `template '${id}' is '${summary.status ?? 'unknown'}' — only a pending template can be ${action}d`,
         });
+        return;
+      }
+      const reviewedVersion = asObject(req.body).reviewedVersion;
+      if (reviewedVersion !== undefined && (!Number.isInteger(reviewedVersion) || Number(reviewedVersion) < 1)) {
+        res.status(400).json({ code: 'conductor.invalid_input', message: 'reviewedVersion must be a positive integer' });
+        return;
+      }
+      if (reviewedVersion !== undefined && reviewedVersion !== summary.version) {
+        res.status(409).json({ code: 'conductor.template_status_conflict', message: 'template version changed before review' });
         return;
       }
       const selfReview = summary.createdBy === viewer;

@@ -5527,6 +5527,7 @@ export interface ConductorRun {
   currentStepId: string | null;
   context: unknown;
   triggerKind: string;
+  triggerSource?: { timezone?: string; slotAt?: string } | null;
   startedAt: string;
   endedAt: string | null;
   /** #759 — set while an operator cancel is pending on a 'running' run. */
@@ -5580,7 +5581,7 @@ export async function listConductorWorkflows(): Promise<{ workflows: ConductorWo
 
 export async function getConductorWorkflowGraph(
   slug: string,
-): Promise<{ workflow: ConductorWorkflow; graph: unknown }> {
+): Promise<{ workflow: ConductorWorkflow; graph: unknown; schedules?: Array<{ cron: string; timezone: string }> }> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
 }
 
@@ -5674,6 +5675,7 @@ export interface ConductorEmitResult {
   eventId: string;
   matchedWorkflows: number;
   startedRuns: Array<{ workflowSlug: string; runId: string }>;
+  suppressed?: Array<{ workflowSlug: string; reason: 'workflow_disabled' | 'workflow_not_found' }>;
 }
 
 export async function emitConductorEvent(eventId: string, payload: unknown): Promise<ConductorEmitResult> {
@@ -5959,15 +5961,15 @@ export async function submitConductorTemplate(id: string): Promise<{ template: C
 /** Approve a pending template (pending → shared). Open to ANY operator — the
  *  revised visibility rule makes pending templates install-wide, so a
  *  non-author reviewer can act; `reviewed_by` is recorded server-side. */
-export async function approveConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
-  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, {});
+export async function approveConductorTemplate(id: string, reviewedVersion?: number): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, { reviewedVersion });
 }
 
 /** Reject a pending template (pending → private). Open to any operator; the
  *  template may drop out of a non-author reviewer's visibility afterwards, so
  *  the returned `template` can be null. */
-export async function rejectConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
-  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, {});
+export async function rejectConductorTemplate(id: string, reviewedVersion?: number): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, { reviewedVersion });
 }
 
 /** Immutable manifest versions of a template, ascending. Bundled/plugin sources

@@ -273,7 +273,7 @@ export class ConductorBuilderAgent {
       if (entries) {
         out.actionIds = entries.map(actionCatalogId);
         out.actionServerNames = new Map(entries.flatMap((entry) =>
-          typeof entry === 'string' ? [] : [[entry.id, entry.serverName] as const],
+          typeof entry === 'string' || !entry.serverName ? [] : [[entry.id, entry.serverName] as const],
         ));
       }
     } catch (err) {

@@ -34,7 +34,6 @@ import {
   getConductorRun,
   getConductorWorkflowGraph,
   previewConductorWorkflow,
-  publishConductorWorkflow,
   type ConductorValidationWarning,
   startConductorRun,
   type ConductorPreviewResult,
@@ -44,6 +43,7 @@ import {
 import { KIND_BADGE_FG, KIND_COLOR } from './stepKindColors';
 import { describeActionId } from './actionIdLabel';
 import { PersonPicker } from './PersonPicker';
+import { publishConductorDraft } from './draftPublish';
 
 // ── Node data model ────────────────────────────────────────────────────────
 // node.id is a stable internal id; data.stepId is the user-facing (renameable)
@@ -212,6 +212,7 @@ function CanvasInner({
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
   const [description, setDescription] = useState<string | null>(null);
+  const [scheduleZones, setScheduleZones] = useState<{ slug: string; byCron: Record<string, string> } | null>(null);
   // Auto-derive the slug from the name until the user edits the slug directly (or a workflow loads).
   const slugEdited = useRef(false);
   const [triggers, setTriggers] = useState<Trigger[] | undefined>([NEW_TRIGGER]);
@@ -252,6 +253,16 @@ function CanvasInner({
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
+    const editorUrl = window.location.href;
+    const editorState: unknown = window.history.state;
+    const navigation = (window as Window & {
+      navigation?: {
+        currentEntry: { key: string } | null;
+        traverseTo: (key: string) => { finished: Promise<unknown> };
+      };
+    }).navigation;
+    const editorEntry = navigation?.currentEntry?.key;
+    let restoringEntry = false;
     let confirmedLink = false;
     const onUnload = (event: BeforeUnloadEvent) => {
       if (confirmedLink) return;
@@ -274,10 +285,30 @@ function CanvasInner({
         window.setTimeout(() => { confirmedLink = false; }, 0);
       }
     };
+    const onHistory = (event: PopStateEvent) => {
+      if (restoringEntry) {
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (window.location.pathname === new URL(editorUrl).pathname || allowDiscard()) return;
+      // Back/Forward already moved the history cursor. Stop Next from applying the
+      // route, then restore the editor entry without reloading its component state.
+      event.stopImmediatePropagation();
+      if (navigation && editorEntry) {
+        restoringEntry = true;
+        void navigation.traverseTo(editorEntry).finished
+          .catch(() => window.history.pushState(editorState, '', editorUrl))
+          .finally(() => { restoringEntry = false; });
+      } else {
+        window.history.pushState(editorState, '', editorUrl);
+      }
+    };
     window.addEventListener('beforeunload', onUnload);
+    window.addEventListener('popstate', onHistory, true);
     document.addEventListener('click', onLink, true);
     return () => {
       window.removeEventListener('beforeunload', onUnload);
+      window.removeEventListener('popstate', onHistory, true);
       document.removeEventListener('click', onLink, true);
     };
   }, [allowDiscard, hasUnsavedChanges]);
@@ -526,14 +557,8 @@ function CanvasInner({
     }
     try {
       const body = { slug, name, graph, enable: publishEnable.current, ...(description !== null ? { description } : {}) };
-      let out;
-      try {
-        out = await publishConductorWorkflow({ ...body, expectNew: true });
-      } catch (err) {
-        if (!(err instanceof ApiError) || err.code !== 'conductor.slug_exists') throw err;
-        if (!window.confirm(t('confirmPublishVersion', { slug }))) return;
-        out = await publishConductorWorkflow(body);
-      }
+      const out = await publishConductorDraft(body, () => window.confirm(t('confirmPublishVersion', { slug })));
+      if (!out) return;
       // #759 — surface non-blocking validator warnings on a successful publish.
       setValidationWarnings(out.warnings ?? []);
       if (savedRevision === revision.current) {
@@ -633,7 +658,7 @@ function CanvasInner({
       const token = ++loadToken.current;
       const atRevision = revision.current;
       try {
-        const { workflow, graph } = await getConductorWorkflowGraph(wfSlug);
+        const { workflow, graph, schedules } = await getConductorWorkflowGraph(wfSlug);
         if (token !== loadToken.current || atRevision !== revision.current) return;
         revision.current += 1;
         slugEdited.current = true; // a loaded workflow keeps its slug; don't auto-rewrite from the name
@@ -641,6 +666,10 @@ function CanvasInner({
         setSlug(workflow.slug);
         setName(workflow.name);
         setDescription(workflow.description);
+        setScheduleZones({
+          slug: workflow.slug,
+          byCron: Object.fromEntries((schedules ?? []).map((schedule) => [schedule.cron.trim(), schedule.timezone])),
+        });
         hydrateFromGraph(graph);
         setDirty(false);
       } catch (err) {
@@ -673,6 +702,7 @@ function CanvasInner({
     setSlug(loadGraphRequest.slug ?? '');
     setName(loadGraphRequest.name ?? '');
     setDescription(null);
+    setScheduleZones(null);
     hydrateFromGraph(loadGraphRequest.graph);
     setDirty(true);
   }, [loadGraphRequest, hydrateFromGraph, allowDiscard, setDirty]);
@@ -794,7 +824,14 @@ function CanvasInner({
           </label>
         )}
         {triggerKind === 'cron' && (
-          <ScheduleBuilder label={t('scheduleLabel')} value={triggerCron} onChange={(cron) => patchTrigger({ cron })} />
+          <div className="grid gap-1">
+            <ScheduleBuilder
+              label={t('scheduleWithZone', { zone: (scheduleZones?.slug === slug ? scheduleZones.byCron[triggerCron.trim()] : undefined) ?? 'UTC' })}
+              value={triggerCron}
+              onChange={(cron) => patchTrigger({ cron })}
+            />
+            <span className="text-[11px] text-[color:var(--fg-muted)]">{t('scheduleMissedSlots')}</span>
+          </div>
         )}
         <label className={lbl}>
           {t('loadLabel')}

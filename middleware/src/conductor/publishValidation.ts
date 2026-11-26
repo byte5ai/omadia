@@ -1,16 +1,21 @@
 import { isTemplateExpression, validate } from '@omadia/conductor-core';
-import type { ValidationError, ValidationResult, WorkflowGraph } from '@omadia/conductor-core';
+import type { KnownRefs, ValidationError, ValidationResult, WorkflowGraph } from '@omadia/conductor-core';
 import type { PoolClient } from 'pg';
 
 import { isUuid } from '../http/uuidParam.js';
 import type { ConductorRouterDeps } from './routes.js';
 import { WEBHOOK_POST_ACTION_ID, webhookPostInputError } from './webhookPostAction.js';
 
+export interface PublishKnownRefs extends KnownRefs {
+  requiredActionInputs?: ReadonlyMap<string, readonly string[]>;
+}
+
 export async function validatePublishGraph(
   graph: WorkflowGraph,
   deps: Pick<ConductorRouterDeps, 'templateKnownRefs' | 'isOperatorAccountId'>,
 ): Promise<ValidationResult> {
-  const result = validate(graph, await deps.templateKnownRefs?.());
+  const knownRefs = await deps.templateKnownRefs?.();
+  const result = validate(graph, knownRefs);
   if (!result.ok) return result;
 
   const accountIds = new Map<string, Promise<boolean>>();
@@ -21,6 +26,17 @@ export async function validatePublishGraph(
       const error = typeof url === 'string' && isTemplateExpression(url) ? null : webhookPostInputError(step.input);
       if (error) {
         result.errors.push({ code: 'invalid_action_input', message: `step '${step.id}': ${error}`, nodeIds: [step.id] });
+      }
+    }
+    if (step.kind === 'action' && step.actionId) {
+      const required = knownRefs?.requiredActionInputs?.get(step.actionId) ?? [];
+      const missing = required.filter((key) => !Object.hasOwn(step.input ?? {}, key));
+      if (missing.length > 0) {
+        result.errors.push({
+          code: 'invalid_action_input',
+          message: `step '${step.id}' is missing required action inputs: ${missing.join(', ')}`,
+          nodeIds: [step.id],
+        });
       }
     }
     const principal = step.kind === 'human' ? step.human?.principal : undefined;

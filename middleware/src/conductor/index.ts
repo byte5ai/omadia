@@ -8,7 +8,7 @@ import {
   speakingIdentityFor,
   type DefaultChannelBotKey,
 } from './channelBotOwnership.js';
-import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
+import type { JsonObject } from '@omadia/conductor-core';
 
 import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
 
@@ -48,6 +48,7 @@ import { createConductorRouter } from './routes.js';
 import type { ConductorRouterDeps } from './routes.js';
 import { UserStore } from '../auth/userStore.js';
 import { actionCatalogId, type ActionCatalogEntry } from './mcpActionInvoker.js';
+import type { PublishKnownRefs } from './publishValidation.js';
 import { ConductorDiscussionAdmin } from './discussionAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
@@ -673,12 +674,19 @@ export async function wireConductor(deps: {
   };
 
   // One live catalog for publish, template resolution and builder proposal prefills.
-  const templateKnownRefs = async (): Promise<KnownRefs> => ({
-    agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
-    actionIds: (await deps.listActions?.())?.map(actionCatalogId) ?? [],
-    roleKeys: await roleStore.listRoleKeys(),
-    eventIds: await knownEventIds(),
-  });
+  const templateKnownRefs = async (): Promise<PublishKnownRefs> => {
+    const actions = (await deps.listActions?.()) ?? [];
+    const requiredActionInputs = new Map(actions.flatMap((entry) =>
+      typeof entry === 'string' || !entry.requiredInputs?.length ? [] : [[entry.id, entry.requiredInputs] as const],
+    ));
+    return {
+      agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
+      actionIds: actions.map(actionCatalogId),
+      requiredActionInputs,
+      roleKeys: await roleStore.listRoleKeys(),
+      eventIds: await knownEventIds(),
+    };
+  };
   const users = new UserStore(deps.pool);
 
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
@@ -719,6 +727,7 @@ export async function wireConductor(deps: {
       discussionService,
       roleStore,
       scheduleStore,
+      listWorkflowSchedules: (id) => scheduleStore.listForWorkflow(id),
       executor,
       eventRouter,
       eventCatalog: deps.eventCatalog,

@@ -11,6 +11,7 @@ import { runConductorMigrations } from '../src/conductor/migrator.js';
 import { ConductorWorkflowStore } from '../src/conductor/workflowStore.js';
 import { ConductorRoleExistsError, ConductorRoleInUseError, ConductorRoleNotFoundError, ConductorRoleStore } from '../src/conductor/roleStore.js';
 import { lockPublishedRoles, PublishRoleUnavailableError } from '../src/conductor/publishValidation.js';
+import { ConductorScheduleStore } from '../src/conductor/scheduleStore.js';
 
 // `activeVersionNumber` is a correlated subselect shared by every read and by the
 // publish's RETURNING. A scripted pool cannot prove either: this runs the real SQL,
@@ -94,5 +95,28 @@ describe('ConductorWorkflowStore.activeVersionNumber (real Postgres)', { skip: !
     await roles.deleteRole(key);
     await assert.rejects(roles.addHolder(key, 'reviewer@example.test'), ConductorRoleNotFoundError);
     await assert.rejects(publish(), PublishRoleUnavailableError);
+  });
+
+  it('keeps the zone and uses one database claim per schedule minute', async () => {
+    const schedules = new ConductorScheduleStore(pool);
+    const cron = '*/2 * * * *';
+    const graph: WorkflowGraph = { ...GRAPH, triggers: [{ id: 'poll', kind: 'cron', cron }] };
+    const publish = () => store.createOrPublish({
+      slug, name: 'Scheduled', graph,
+      onPublished: (client, workflowId) => schedules.reconcileOnClient(client, workflowId, graph),
+    });
+    const { workflow } = await publish();
+    await pool.query("UPDATE conductor_schedules SET timezone = 'Europe/Berlin' WHERE workflow_id = $1", [workflow.id]);
+    await publish();
+    assert.deepEqual(await schedules.listForWorkflow(workflow.id), [{ cron, timezone: 'Europe/Berlin' }]);
+    const snapshot = (await schedules.listForPoll()).find((schedule) => schedule.workflowId === workflow.id);
+    assert.ok(snapshot);
+    const winners = await Promise.all([
+      schedules.claimPoll(snapshot, randomUUID(), true),
+      schedules.claimPoll(snapshot, randomUUID(), true),
+    ]);
+    assert.equal(winners.filter(Boolean).length, 1);
+    await store.removeLogical(workflow.id);
+    assert.deepEqual(await schedules.listForWorkflow(workflow.id), []);
   });
 });
