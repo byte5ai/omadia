@@ -3581,10 +3581,16 @@ Provider-Änderung (vorher `?? 'anthropic'` gegen nachher; unset → explizit
 Plugin selbst. #1891: Ein Config- oder Secret-Write an ein **Provider-Plugin**
 (Manifest mit `llm_provider`-Block, z. B. `anthropic_base_url` von
 `@omadia/plugin-llm-anthropic`) zählt als Provider-Änderung für alle
-LLM-Plugins: erst das Provider-Plugin (es registriert den Deskriptor neu), dann
-jedes installierte Plugin aus `LLM_PLUGINS` in `rebuildOrder` (Orchestrator
-zuletzt); ein Plugin, das nicht wieder hochkommt, kommt als
-`runtime.dependent_rebuild_failed` zurück. Die Reihenfolge ist tragend: der Orchestrator greift
+LLM-Plugins, die auf seiner Provider-Id laufen können
+(`llmPluginsUsingProvider`): erst das Provider-Plugin (es registriert den
+Deskriptor neu), dann in `rebuildOrder` die Agentenlaufzeit (immer, eine
+Modell-Policy kann den Provider pinnen), der Verifier nur bei passendem
+`llm_provider` (Default `anthropic`), extras bei passendem eigenem oder
+geerbtem Provider oder `anthropic`. Bleibt das Provider-Plugin selbst `errored`,
+wird nichts darauf neu gebaut und die Antwort ist
+`runtime.dependent_rebuild_failed` mit `dependentId` = Provider-Plugin,
+`primaryApplied: false`; ein Plugin, das nicht wieder hochkommt, kommt ebenso
+zurück. Die Reihenfolge ist tragend: der Orchestrator greift
 `factExtractor`, `contextRetriever` und `sessionBriefing` von extras eager in
 seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 (`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach
@@ -3717,7 +3723,9 @@ LLM-Zugang und der Provider-Purge beim Uninstall löschen auch die
 `superseded:`-Kopien. Ein Provider-API-Key an die
 Scopes von Verifier/extras über den Plugin-Editor wird mit
 `400 runtime.provider_key_in_kernel_scope` abgelehnt; beide Manifeste haben kein
-`anthropic_api_key`-Feld mehr. Der Verifier lehnt `claude-cli` vor dem Pool ab.
+`anthropic_api_key`-Feld mehr (Versionen verifier 0.2.0, extras 0.3.0). Ein
+Provider-Key über den Secret-Editor des Orchestrators (Kernel-Scope) baut wie der
+LLM-Zugang alle installierten LLM-Plugins neu (`kernelCredentialWritten`). Der Verifier lehnt `claude-cli` vor dem Pool ab.
 
 Der Kernel-`llmProviderPool` memoisiert pro Provider-Id, auch ein negatives
 „kein Key". Deshalb hängt er an einem kernel-internen Write-Observer der

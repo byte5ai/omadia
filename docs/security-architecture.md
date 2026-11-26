@@ -4532,9 +4532,10 @@ live in ONE vault scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
 `@omadia/orchestrator`). The agent runtime, the answer verifier and
 `orchestrator-extras` build their providers from the kernel provider pool, which
 reads only that scope; their own scopes are read only on a host that publishes no
-pool. LLM access writes the key there once and rebuilds every installed LLM plugin,
-and the vault write listener invalidates the pool entry first, so one rotation
-reaches all three modules.
+pool. LLM access (and the orchestrator's own secret editor, which writes the same
+scope) writes the key there once and rebuilds every installed LLM plugin, and the
+vault write listener invalidates the pool entry first, so one rotation reaches all
+three modules.
 
 Before, the key was written into three scopes. At every boot, after the legacy
 bootstrap and before any plugin activates, `consolidateProviderCredentials` clears

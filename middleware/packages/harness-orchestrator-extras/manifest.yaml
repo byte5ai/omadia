@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/orchestrator-extras"
   name: "Agent Runtime Extras"
-  version: "0.2.0"
+  version: "0.3.0"
   kind: "system-module"
   domain: "core.orchestrator-extras"
   description:
@@ -184,7 +184,6 @@ integrations:
   - id: "anthropic_api"
     kind: "http"
     target: "Anthropic Claude API (Haiku-Klassifikator für FactExtractor + TopicDetector)"
-    # ADR-0215: the key lives in the kernel scope (LLM access), read through
-    # the kernel provider pool; this plugin has no key field of its own.
-    auth_from: "anthropic_api_key"
+    # ADR-0215: no `auth_from` — this plugin has no key field of its own; the
+    # key lives in the kernel scope (LLM access), read through the kernel pool.
     docs: "https://docs.anthropic.com/en/api/messages"

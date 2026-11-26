@@ -13,6 +13,7 @@ import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
 import { isAuditMode } from '../platform/httpAccessor.js';
 import {
   ProviderDependentRebuildError,
+  ProviderPluginRebuildError,
   isEffectiveProviderChange,
   reactivateAfterProviderWrite,
 } from '../platform/providerDependents.js';
@@ -25,6 +26,7 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import { pluginLlmProviderId } from '../platform/llmProviderManifest.js';
 import {
   isProviderApiKeyVaultKey,
+  KERNEL_PROVIDER_CREDENTIAL_SCOPE,
   LEGACY_PROVIDER_CREDENTIAL_SCOPES,
 } from '../platform/kernelProviderCredentials.js';
 import {
@@ -404,7 +406,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
           activation: activationWithRestart(deps, updated),
         });
       } catch (err) {
-        if (err instanceof ProviderDependentRebuildError) {
+        if (err instanceof ProviderDependentRebuildError || err instanceof ProviderPluginRebuildError) {
           res.status(500).json(dependentRebuildFailure(err));
           return;
         }
@@ -1080,12 +1082,11 @@ function refuseProviderKeyOutsideKernelScope(
  * plugin's own write (e.g. its base URL) rebuilds every LLM plugin too.
  */
 function providerWriteDeps(deps: RuntimeDeps): RuntimeDeps & {
-  readonly isProviderPlugin: (pluginId: string) => boolean;
+  readonly providerIdOf: (pluginId: string) => string | undefined;
 } {
   return {
     ...deps,
-    isProviderPlugin: (pluginId) =>
-      pluginLlmProviderId(deps.catalog?.get(pluginId)?.manifest) !== undefined,
+    providerIdOf: (pluginId) => pluginLlmProviderId(deps.catalog?.get(pluginId)?.manifest),
   };
 }
 
@@ -1200,7 +1201,16 @@ async function applySetupValues(
       providerChanged = isEffectiveProviderChange(installed.config, nextConfig);
     }
     // #1076 — same dependent rebuild as PATCH /installed/:id/config.
-    await reactivateAfterProviderWrite(providerWriteDeps(deps), id, { providerChanged, providerWritten });
+    // #2240 / ADR-0215 — a provider key written to the kernel scope (the
+    // orchestrator's editor) is read by every LLM plugin: rebuild them all.
+    const kernelCredentialWritten =
+      id === KERNEL_PROVIDER_CREDENTIAL_SCOPE &&
+      [...Object.keys(vaultSet), ...vaultDelete].some(isProviderApiKeyVaultKey);
+    await reactivateAfterProviderWrite(providerWriteDeps(deps), id, {
+      providerChanged,
+      providerWritten,
+      kernelCredentialWritten,
+    });
     const keys = await vault.listKeys(id);
     const updated = deps.installedRegistry.get(id);
     const configValues = stringifyConfigValues(updated?.config);
@@ -1217,7 +1227,7 @@ async function applySetupValues(
       activation: activationWithRestart(deps, updated),
     });
   } catch (err) {
-    if (err instanceof ProviderDependentRebuildError) {
+    if (err instanceof ProviderDependentRebuildError || err instanceof ProviderPluginRebuildError) {
       res.status(500).json(dependentRebuildFailure(err));
       return;
     }
@@ -1232,12 +1242,22 @@ async function applySetupValues(
  * `update_failed` nor `vault_write_failed` ("could not be written") would be
  * true. `primaryApplied` says whether the plugin itself came back up on it.
  */
-function dependentRebuildFailure(err: ProviderDependentRebuildError): {
+function dependentRebuildFailure(err: ProviderDependentRebuildError | ProviderPluginRebuildError): {
   readonly code: 'runtime.dependent_rebuild_failed';
   readonly message: string;
   readonly dependentId: string;
   readonly primaryApplied: boolean;
 } {
+  // #1891 — a provider plugin that itself stayed down: it is the plugin that
+  // failed, and nothing was rebuilt onto it.
+  if (err instanceof ProviderPluginRebuildError) {
+    return {
+      code: 'runtime.dependent_rebuild_failed',
+      message: err.message,
+      dependentId: err.pluginId,
+      primaryApplied: false,
+    };
+  }
   return {
     code: 'runtime.dependent_rebuild_failed',
     message: err.message,

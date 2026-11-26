@@ -54,7 +54,8 @@ Chosen option: **A**.
   providers from the kernel pool (`llmProviderPool@1`, declared in `optional_requires`).
   Their own vault scope is used only on a host that publishes no pool (legacy hosts, unit
   tests). The verifier refuses `claude-cli` before asking the pool (#1583).
-- **Rotation reaches all modules.** A key change through LLM access rebuilds every
+- **Rotation reaches all modules.** A key change through LLM access, or through the
+  orchestrator's own secret editor (it writes the same kernel scope), rebuilds every
   installed LLM plugin in `rebuildOrder` (the capturing orchestrator last); the vault write
   listener invalidates the pool entry before that.
 - **OM-102 precedence kept.** "This plugin holds an Anthropic key" now reads "the kernel
