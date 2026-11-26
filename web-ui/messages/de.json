@@ -2780,7 +2780,7 @@
       "persona": {
         "template": {
           "heading": "Persona-Vorlage",
-          "none": "Keine Persona-Vorlage gewählt — alle Achsen stehen auf neutral.",
+          "none": "Keine Persona-Vorlage gewählt — jede Achse steht auf dem Standard des Modells.",
           "active": "Persona-Vorlage: {name}",
           "choose": "Persona-Vorlage wählen",
           "clear": "Lösen"
@@ -2800,6 +2800,9 @@
         "bounds": {
           "note": "Der Charakter eines Facilitators bleibt innerhalb der Grenzen des Neutralitätsvertrags. Regler, Persona-Vorlagen und Branchen-Presets enden an diesen Grenzen.",
           "axisRange": "Für einen Facilitator erlaubt: {min} bis {max}"
+        },
+        "baseline": {
+          "hint": "Jeder Regler ist die Stufe, die du willst. Der Punkt auf der Spur zeigt, wo das Modell {family} von sich aus steht; in den Prompt kommt nur der Abstand zu diesem Punkt. Eine Achse auf ihrem Punkt oder eine, die du nie bewegt hast, fügt also nichts hinzu."
         }
       },
       "boundaries": {
@@ -4064,7 +4067,8 @@
       "radar": {
         "title": "Persona Radar",
         "comparisonPrefix": "Persona vs.",
-        "comparisonNeutral": "Neutral (50)"
+        "comparisonNeutral": "Skalenmitte (50)",
+        "comparisonModelDefault": "Modell-Standard"
       },
       "conflicts": {
         "sycophancyHighDirectnessLow": "Sycophancy=high erzwingt Devil's-Advocate-Rules; directness ≤ 30 sagt „diplomatisch\". Modell wird eines der beiden ignorieren. Empfehlung: directness ≥ 50 oder sycophancy=medium.",

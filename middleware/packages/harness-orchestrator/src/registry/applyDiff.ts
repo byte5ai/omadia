@@ -52,6 +52,51 @@ import type {
   ConfigSnapshot,
 } from './configStore.js';
 
+/** #1451 — a class ref never reaches the wire: it reads as unresolved. */
+function concrete(id: string | undefined): string | undefined {
+  return id !== undefined && isClassRef(id) ? undefined : id;
+}
+
+/** The per-Agent overlay (`model_routing.*`) resolved to the active provider. */
+function resolveOverlayModel(
+  ref: string | undefined,
+  activeProvider: string | undefined,
+): string | undefined {
+  return concrete((resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined);
+}
+
+/** A platform default (usually a class ref) resolved to the active provider. */
+function resolveConfiguredRunModel(
+  ref: string | undefined,
+  activeProvider: string | undefined,
+): string | undefined {
+  return concrete((resolveConfiguredModel(ref, activeProvider) ?? ref?.trim()) || undefined);
+}
+
+/**
+ * The concrete model an Agent's turns run on: an explicit policy primary on
+ * the active provider, else `model_routing.main`, else the platform default
+ * `platformModel`, else {@link DEFAULT_ORCHESTRATOR_MODEL} — each resolved to
+ * the active provider, never a class ref. `undefined` when nothing resolves
+ * ({@link buildForAgent} then refuses to build). Exported so the persona
+ * compile (#1893) measures the character against the model the agent really
+ * runs on, with the very resolution the build uses.
+ */
+export function resolveAgentRunModel(
+  agent: Pick<AgentRow, 'modelRouting' | 'modelPolicy'>,
+  activeProvider: string | undefined,
+  platformModel: string | undefined,
+): string | undefined {
+  const routing = resolveAgentModelRouting(agent.modelRouting);
+  const policy = resolveModelPolicyRuntime(agent.modelPolicy ?? DEFAULT_MODEL_POLICY, activeProvider);
+  return (
+    concrete(policy.model) ||
+    resolveOverlayModel(routing.model, activeProvider) ||
+    resolveConfiguredRunModel(platformModel, activeProvider) ||
+    resolveConfiguredRunModel(DEFAULT_ORCHESTRATOR_MODEL, activeProvider)
+  );
+}
+
 /**
  * `applyDiff` (US5 / T020).
  *
@@ -255,13 +300,9 @@ export function buildForAgent(
   // bare CLI alias); `class:frontier` reaching an adapter is an opaque 404 on
   // every turn. With a provider that serves no model at all every resolver
   // returns undefined, so a tier reports "unresolved" instead of the ref.
-  const concrete = (id: string | undefined): string | undefined =>
-    id !== undefined && isClassRef(id) ? undefined : id;
   const activeProvider = deps.provider?.id;
   const resolveOverlay = (ref: string | undefined): string | undefined =>
-    concrete((resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined);
-  const resolveConfigured = (ref: string | undefined): string | undefined =>
-    concrete((resolveConfiguredModel(ref, activeProvider) ?? ref?.trim()) || undefined);
+    resolveOverlayModel(ref, activeProvider);
 
   // Per-instance model resolution (issue #296 AC#2), three tiers:
   //   1. the Agent's `model_routing.main` (operator's per-Agent choice)
@@ -293,11 +334,7 @@ export function buildForAgent(
   // `policy.model` goes through `concrete` too. A pinned primary is a concrete
   // id by construction (write-time validation), so this changes nothing today
   // — it is what keeps the guard TOTAL rather than true-by-luck for one tier.
-  const model =
-    concrete(policy.model) ||
-    resolveOverlay(routing.model) ||
-    resolveConfigured(runtime.model) ||
-    resolveConfigured(DEFAULT_ORCHESTRATOR_MODEL);
+  const model = resolveAgentRunModel(agent, activeProvider, runtime.model);
   if (model === undefined) {
     // Name the SETTING the operator edits, not a sentence: the error text
     // reads `… — set <configKey> to a concrete model id of '<provider>'`.

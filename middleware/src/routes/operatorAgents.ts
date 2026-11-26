@@ -32,6 +32,7 @@ import {
   resolveModelPolicyRuntime,
   validateModelPolicy,
   ANSWER_VERBOSITY_LEVELS,
+  UNKNOWN_PERSONA_FAMILY,
   type AgentToAgentMode,
   type ModelPolicyValidationContext,
   type ChatSessionStore,
@@ -153,7 +154,9 @@ import {
 import {
   agentPersonaFamilies,
   composeForFamilies,
+  type AgentPersonaFamilySource,
 } from '../services/agentIdentityPrompt.js';
+import { personaBaseline } from '../plugins/personaDelta.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -1666,18 +1669,28 @@ interface AgentIdentityProjectionAgent {
  * fallback to render a preview, and that is exactly the duplication
  * `resolveAgentIdentity` exists to prevent.
  */
-/** What the RUNNING agent says about its identity (absent = not built). */
+/** What the runtime says about an agent's identity, beside the stored rows. */
 export interface AgentIdentityRuntimeView {
   /** #1890 — the identity head of the system prompt, from the built agent. */
   readonly identityPrompt: string | null;
+  /** #1893 — the persona family of the model the agent runs on, and that
+   *  family's natural level per axis (what an unset slider means). */
+  readonly personaBaseline: {
+    readonly family: string;
+    readonly axes: Readonly<Record<string, number>>;
+  };
 }
 
-/** The running agent's view for {@link projectAgentIdentity}. */
+/** The runtime's view of `agent` for {@link projectAgentIdentity}. */
 function identityRuntimeView(
   registry: OrchestratorRegistry,
-  slug: string,
+  agent: AgentPersonaFamilySource & { readonly slug: string },
 ): AgentIdentityRuntimeView {
-  return { identityPrompt: registry.get(slug)?.built?.identityPrompt ?? null };
+  const family = agentPersonaFamilies(agent, registry.runModelFor(agent))[0] ?? UNKNOWN_PERSONA_FAMILY;
+  return {
+    identityPrompt: registry.get(agent.slug)?.built?.identityPrompt ?? null,
+    personaBaseline: { family, axes: personaBaseline(family) },
+  };
 }
 
 export function projectAgentIdentity(
@@ -1723,6 +1736,10 @@ export function projectAgentIdentity(
     // identity rules, language and answer-size lines). `null` while the agent
     // is not built (disabled, or the orchestrator is inactive).
     identity_prompt: runtime?.identityPrompt ?? null,
+    // #1893 / ADR-0217 — sliders are target levels measured against this
+    // baseline; the editor draws it as the "model default" and an unset axis
+    // sits on it.
+    persona_baseline: runtime?.personaBaseline ?? null,
     resolved: {
       display_name: resolved.displayName,
       short_description: resolved.shortDescription,
@@ -3118,7 +3135,7 @@ export function createOperatorAgentsRouter(
               quality: identity.quality,
               archetype: archetypeOf(updated),
             },
-            agentPersonaFamilies(updated),
+            agentPersonaFamilies(updated, live.registry.runModelFor(updated)),
           );
           await identityDeps.store.recompose(agent.id, {
             text: compiled.primary.text,
@@ -3290,7 +3307,7 @@ export function createOperatorAgentsRouter(
         return;
       }
       const identity = await deps.store.getByAgentId(agent.id);
-      res.json(projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent.slug)));
+      res.json(projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent)));
     } catch (err) {
       badRequest(res, err);
     }
@@ -3403,7 +3420,7 @@ export function createOperatorAgentsRouter(
           quality,
           archetype: archetypeOf(agent),
         },
-        agentPersonaFamilies(agent),
+        agentPersonaFamilies(agent, live.registry.runModelFor(agent)),
       );
       const family = compiled.family;
       const composed = compiled.primary;
@@ -3494,7 +3511,7 @@ export function createOperatorAgentsRouter(
         current.revision,
       );
       res.json({
-        ...projectAgentIdentity(agent, current, identityRuntimeView(live.registry, agent.slug)),
+        ...projectAgentIdentity(agent, current, identityRuntimeView(live.registry, agent)),
         republish,
         // Boundary presets this build could not resolve. A rule that silently
         // stopped applying is worse than one that never existed, so the
@@ -3550,7 +3567,7 @@ export function createOperatorAgentsRouter(
           identity.revision,
         );
         res.json({
-          ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent.slug)),
+          ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent)),
           republish,
           // Honest about the one case where the upload is only half used.
           outline_derived: derived.outline !== null,
@@ -3586,7 +3603,7 @@ export function createOperatorAgentsRouter(
         before?.revision,
         identity?.revision,
       );
-      res.json({ ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent.slug)), republish });
+      res.json({ ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent)), republish });
     } catch (err) {
       badRequest(res, err);
     }

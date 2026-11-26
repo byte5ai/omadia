@@ -300,6 +300,18 @@ Agenten, kein zweites Rendering. Davor steht im Turn nur der
 Quality-Guard-Block; ein Arbeitsmodus folgt direkt auf die Identität,
 Werkzeuge, Datum und Gesprächskontext danach (ADR-0077).
 
+**Charakter-Regler gegen die Modell-Grundhaltung (#1893, ADR-0217):** Ein
+Reglerwert ist eine Zielstufe; `personaDelta.ts` schreibt nur den Abstand zur
+Grundhaltung der Modellfamilie, auf der der Agent läuft. Die Familie liefert
+`inferPersonaFamily` (`harness-orchestrator/src/personaFamily.ts`, auch
+`Orchestrator.familyOf`): `haiku`/`sonnet`/`opus`/`fable`, die Anbieter-Familien
+aus `basePersonas.ts`, sonst `unknown` — nicht mehr pauschal Sonnet. Bei
+„Auto" löst `OrchestratorRegistry.runModelFor` (= `resolveAgentRunModel`, die
+Auflösung des Builds) das Modell auf. Fable hat eine eigene, von Opus
+abgeleitete Grundhaltung. Die Identity-Routen liefern
+`persona_baseline: { family, axes }`; der Editor zeigt sie als
+„Modell-Standard"-Punkt und Radar-Referenz, eine ungesetzte Achse steht darauf.
+
 ### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
 
 `workingModes.ts` (vorher `personaRouter.ts`) wählt pro Turn höchstens einen

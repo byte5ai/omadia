@@ -2780,7 +2780,7 @@
       "persona": {
         "template": {
           "heading": "Persona template",
-          "none": "No persona template picked — every axis sits at neutral.",
+          "none": "No persona template picked — every axis sits at the model's own default.",
           "active": "Persona template: {name}",
           "choose": "Pick a persona template",
           "clear": "Detach"
@@ -2800,6 +2800,9 @@
         "bounds": {
           "note": "A facilitator's character stays inside the bounds of the neutrality contract. Sliders, persona templates and industry presets stop at those bounds.",
           "axisRange": "Allowed for a facilitator: {min} to {max}"
+        },
+        "baseline": {
+          "hint": "Each slider is the level you want. The dot on the track is where the {family} model sits by itself; only a distance from that dot is written into the prompt, so an axis on its dot, or one you never moved, adds nothing."
         }
       },
       "boundaries": {
@@ -4064,7 +4067,8 @@
       "radar": {
         "title": "Persona Radar",
         "comparisonPrefix": "Persona vs.",
-        "comparisonNeutral": "Neutral (50)"
+        "comparisonNeutral": "Middle of the scale (50)",
+        "comparisonModelDefault": "Model default"
       },
       "conflicts": {
         "sycophancyHighDirectnessLow": "Sycophancy=high enforces devil's-advocate rules; directness ≤ 30 says \"diplomatic\". The model will ignore one of the two. Recommendation: directness ≥ 50 or sycophancy=medium.",

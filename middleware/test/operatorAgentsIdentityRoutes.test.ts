@@ -307,6 +307,9 @@ describe('operator agent identity routes (#914)', () => {
       reloads += 1;
       return Promise.resolve();
     },
+    // #1893 — no live resolution in this harness: the agent's
+    // `model_routing.main` names the family, else it is `unknown`.
+    runModelFor: () => undefined,
     get: (slug: string) =>
       builtPrompts.has(slug)
         ? { built: { identityPrompt: builtPrompts.get(slug), effectiveModel: 'claude-opus-5' } }
@@ -366,6 +369,7 @@ describe('operator agent identity routes (#914)', () => {
     composed_prompt: string | null;
     composed_family: string | null;
     identity_prompt: string | null;
+    persona_baseline: { family: string; axes: Record<string, number> } | null;
     republish?: string;
     outline_derived?: boolean;
     dropped_boundary_presets?: string[];
@@ -390,6 +394,17 @@ describe('operator agent identity routes (#914)', () => {
     const res = await fetch(`${baseUrl}/sales/identity`);
     const body = (await res.json()) as IdentityBody;
     assert.equal(body.identity_prompt, 'Du bist Omi.\n\nSprache: Antworte immer auf Deutsch.');
+  });
+
+  it('#1893 — GET reports the persona baseline of the model the agent runs on', async () => {
+    const opus = (await (await fetch(`${baseUrl}/sales/identity`)).json()) as IdentityBody;
+    assert.equal(opus.persona_baseline?.family, 'opus');
+    assert.equal(opus.persona_baseline?.axes['sarcasm'], 15);
+    assert.equal(opus.persona_baseline?.axes['autonomy'], 60);
+    // No model named and none resolvable: the neutral `unknown` profile, not Sonnet.
+    const plain = (await (await fetch(`${baseUrl}/plain/identity`)).json()) as IdentityBody;
+    assert.equal(plain.persona_baseline?.family, 'unknown');
+    assert.equal(plain.persona_baseline?.axes['sarcasm'], 0);
   });
 
   it('#1890 — an agent that is not built reports no identity head', async () => {

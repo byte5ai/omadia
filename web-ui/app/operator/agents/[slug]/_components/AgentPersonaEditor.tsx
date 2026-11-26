@@ -22,6 +22,7 @@ import {
 } from '../../../../_lib/personaTypes';
 import { getPersonaTemplate } from '../../../../_lib/personaTemplates';
 import type { PersonaConflictWarning } from '../../../../_lib/personaConflicts';
+import type { PersonaBaselineDto } from '../../../../_lib/agentIdentity';
 import {
   clampFacilitatorAxes,
   clampFacilitatorAxis,
@@ -66,17 +67,28 @@ export interface AgentPersonaEditorProps {
   readonly axisErrors?: Readonly<Partial<Record<PersonaAxisKey, string>>>;
   /** Server finding for the free-text notes, already localized. */
   readonly notesError?: string;
+  /**
+   * #1893 / ADR-0217 — the natural level per axis of the model the agent runs
+   * on. Drawn as the "model default" tick and the radar's reference; an unset
+   * axis sits on it, because that is what the compiler measures against.
+   * Absent (older server): the scale's middle.
+   */
+  readonly baseline?: PersonaBaselineDto;
+}
+
+/** Where an UNSET axis sits: the model's own level, else the scale middle. */
+function unsetValue(axis: PersonaAxisKey, baseline: PersonaBaselineDto | undefined): number {
+  return baseline?.axes[axis] ?? PERSONA_AXIS_NEUTRAL;
 }
 
 function axisValue(
   persona: PersonaConfig,
   axis: PersonaAxisKey,
   bounded: boolean,
+  baseline: PersonaBaselineDto | undefined,
 ): number {
-  const value = persona.axes?.[axis];
-  return bounded
-    ? facilitatorAxisDisplayValue(axis, value)
-    : (value ?? PERSONA_AXIS_NEUTRAL);
+  const value = persona.axes?.[axis] ?? unsetValue(axis, baseline);
+  return bounded ? facilitatorAxisDisplayValue(axis, value) : value;
 }
 
 export function AgentPersonaEditor(
@@ -120,6 +132,12 @@ export function AgentPersonaEditor(
         [axis]: bounded ? clampFacilitatorAxis(axis, next) : next,
       },
     });
+  };
+
+  /** The "model default" tick of a slider, when the baseline is known. */
+  const baseValueOf = (axis: PersonaAxisKey): { baseValue?: number } => {
+    const base = props.baseline?.axes[axis];
+    return base === undefined ? {} : { baseValue: base };
   };
 
   const sliderExtras = (
@@ -232,10 +250,23 @@ export function AgentPersonaEditor(
         </div>
       </div>
 
+      {props.baseline && (
+        <p
+          data-testid="agent-persona-baseline-hint"
+          className="text-[11px] text-[color:var(--fg-muted)]"
+        >
+          {t('baseline.hint', { family: props.baseline.family })}
+        </p>
+      )}
+
       {/* ── radar + sliders ───────────────────────────────────────── */}
       <div className="flex flex-col gap-5 xl:flex-row">
         <div className="shrink-0 xl:w-[280px]">
-          <PersonaRadar axes={props.value.axes} size={260} />
+          <PersonaRadar
+            axes={props.value.axes}
+            size={260}
+            {...(props.baseline ? { baseline: props.baseline.axes } : {})}
+          />
         </div>
         <div className="flex-1 space-y-3">
           {CORE_PERSONA_AXES.map((axis) => (
@@ -246,8 +277,9 @@ export function AgentPersonaEditor(
               labelRight={axisCopy(axis).right}
               axisLabel={axisCopy(axis).name}
               description={tAxes(`${axis}.description`)}
-              value={axisValue(props.value, axis, bounded)}
+              value={axisValue(props.value, axis, bounded, props.baseline)}
               onChange={(next) => setAxis(axis, next)}
+              {...baseValueOf(axis)}
               {...sliderExtras(axis)}
               {...(warningByAxis.get(axis)
                 ? { warning: warningByAxis.get(axis)?.severity }
@@ -280,8 +312,9 @@ export function AgentPersonaEditor(
                 labelRight={axisCopy(axis).right}
               axisLabel={axisCopy(axis).name}
                 description={tAxes(`${axis}.description`)}
-                value={axisValue(props.value, axis, bounded)}
+                value={axisValue(props.value, axis, bounded, props.baseline)}
                 onChange={(next) => setAxis(axis, next)}
+                {...baseValueOf(axis)}
                 {...sliderExtras(axis)}
                 {...(warningByAxis.get(axis)
                   ? { warning: warningByAxis.get(axis)?.severity }

@@ -99,10 +99,10 @@ function harness(opts: { primaryFails: boolean }) {
     providerPool: pool,
     fallbackRef: { provider: 'openai', model: 'gpt-5.5', effort: 'medium' },
     // The primary family (opus) is the default composed prompt; the fallback
-    // model is unknown to the family inference → 'sonnet' — the map carries
-    // a prompt for exactly that family.
+    // model maps to its vendor family (#1893: 'openai-gpt', no longer a
+    // guessed 'sonnet') — the map carries a prompt for exactly that family.
     assistantIdentity: 'OPUS-PROMPT',
-    identityByFamily: { opus: 'OPUS-PROMPT', sonnet: 'SONNET-PROMPT' },
+    identityByFamily: { opus: 'OPUS-PROMPT', 'openai-gpt': 'GPT-PROMPT' },
     turnReceiptStore: () => ({
       record: async (entry: TurnReceiptRecordInput) => {
         receipts.push(entry);
@@ -120,7 +120,7 @@ describe('provider fallback through the orchestrator (#1033 W3)', () => {
     const req = h.seen.at(-1)!;
     assert.equal(req.model, 'gpt-5.5');
     assert.equal(req.effort, 'medium');
-    assert.match(systemText(req), /SONNET-PROMPT/);
+    assert.match(systemText(req), /GPT-PROMPT/);
     assert.doesNotMatch(systemText(req), /OPUS-PROMPT/);
     assert.equal(h.health.inCooldown('anthropic'), true);
   });

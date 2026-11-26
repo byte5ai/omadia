@@ -20,7 +20,7 @@
 
 import { ApiError, rscTimeoutSignal } from './api';
 import type { QualityConfig } from './builderTypes';
-import type { PersonaConfig } from './personaTypes';
+import type { PersonaAxisKey, PersonaConfig } from './personaTypes';
 
 function botApi(path: string): string {
   if (typeof window !== 'undefined') {
@@ -141,6 +141,19 @@ export interface AgentIdentityDto {
    * {@link composed_prompt}.
    */
   identity_prompt?: string | null;
+  /**
+   * #1893 / ADR-0217 — the persona family of the model the agent runs on and
+   * that family's natural level per axis. A slider is a target level measured
+   * against it: an unset axis sits on it and a value on it adds nothing to the
+   * prompt. Absent from an older server.
+   */
+  persona_baseline?: PersonaBaselineDto | null;
+}
+
+/** #1893 — see {@link AgentIdentityDto.persona_baseline}. */
+export interface PersonaBaselineDto {
+  family: string;
+  axes: Partial<Record<PersonaAxisKey, number>>;
 }
 
 /** What a write did to the agent's published Teams package. */

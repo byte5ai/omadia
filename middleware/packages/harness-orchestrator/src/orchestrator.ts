@@ -7,6 +7,7 @@ import {
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import { identityPreamble } from './agentIdentityLayers.js';
+import { inferPersonaFamily } from './personaFamily.js';
 import {
   buildAnswerVerbosityTurnBlock,
   DEFAULT_ANSWER_VERBOSITY,
@@ -6332,13 +6333,10 @@ export class Orchestrator {
     this.turnAttribution.set(turnId, { model, provider: providerId, fallbackUsed });
   }
 
-  /** #1033 W3 — the persona family a model id belongs to (mirrors the
-   *  middleware's `inferFamilyFromModel`: unknown ids read as sonnet). */
+  /** #1033 W3 / #1893 — the persona family a model id belongs to: the one
+   *  mapper the middleware compiles the per-family prompts with. */
   private static familyOf(model: string): string {
-    const m = model.toLowerCase();
-    if (m.includes('opus')) return 'opus';
-    if (m.includes('haiku')) return 'haiku';
-    return 'sonnet';
+    return inferPersonaFamily(model);
   }
 
   /**

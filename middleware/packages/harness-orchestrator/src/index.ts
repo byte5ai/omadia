@@ -451,6 +451,17 @@ export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 // callers (CLI, tests) can build Orchestrators without going through the
 // plugin's activate path.
 export { buildOrchestratorForAgent, rosterAgentNames } from './buildOrchestrator.js';
+export {
+  CLAUDE_PERSONA_TIERS,
+  VENDOR_PERSONA_FAMILIES,
+  UNKNOWN_PERSONA_FAMILY,
+  inferPersonaFamily,
+} from './personaFamily.js';
+export type {
+  ClaudePersonaTier,
+  PersonaModelFamily,
+  VendorPersonaFamily,
+} from './personaFamily.js';
 export type {
   AgentRuntimeConfig,
   BuiltOrchestrator,

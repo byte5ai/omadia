@@ -17,6 +17,7 @@ import {
   buildForAgent,
   diffSnapshots,
   personaSkillsFor,
+  resolveAgentRunModel,
   type DiffAction,
   type DiffPlan,
 } from './applyDiff.js';
@@ -647,6 +648,16 @@ export class OrchestratorRegistry {
   /** Look up an Agent by its slug. */
   get(slug: string): ActiveAgent | undefined {
     return this.active.get(slug);
+  }
+
+  /**
+   * #1893 — the concrete model `agent` would run on if built now, with the
+   * build's own resolution (policy primary, `model_routing.main`, platform
+   * default; active provider). The persona compile measures the character
+   * against this model's family. `undefined` when nothing resolves.
+   */
+  runModelFor(agent: Pick<AgentRow, 'modelRouting' | 'modelPolicy'>): string | undefined {
+    return resolveAgentRunModel(agent, this.deps.provider?.id, this.options.defaultRuntimeConfig.model);
   }
 
   /**

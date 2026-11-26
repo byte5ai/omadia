@@ -230,6 +230,33 @@ describe('AgentIdentity — character (#914)', () => {
     expect(screen.getByText(/Unsaved changes are not in here yet/)).toBeTruthy();
   });
 
+  it('#1893 — draws unset axes on the model baseline and names it model default', async () => {
+    mockGet.mockResolvedValue(
+      dto(
+        { persona: { axes: { directness: 80 } } },
+        { persona_baseline: { family: 'opus', axes: { sarcasm: 15, directness: 50 } } },
+      ),
+    );
+    renderWithIntl(<AgentIdentity slug="sales" />);
+    await openTab('character');
+
+    const sarcasm = screen
+      .getByTestId('dimension-slider-sarcasm')
+      .querySelector('input[type="range"]') as HTMLInputElement;
+    // Unset → the model's own level, not 50: it adds nothing to the prompt.
+    expect(sarcasm.value).toBe('15');
+    expect(screen.getByTestId('dimension-slider-sarcasm-base-tick')).toBeTruthy();
+    // A set axis keeps its own target level; the tick still marks the model.
+    const directness = screen
+      .getByTestId('dimension-slider-directness')
+      .querySelector('input[type="range"]') as HTMLInputElement;
+    expect(directness.value).toBe('80');
+    expect(screen.getByTestId('agent-persona-baseline-hint').textContent).toContain('opus');
+    expect(screen.getByText('Model default')).toBeTruthy();
+    expect(screen.queryByText(/Neutral \(50\)/)).toBeNull();
+    expect(screen.getByText(/sits at the model's own default/)).toBeTruthy();
+  });
+
   it('#1890 — shows the running agent\'s identity head and the real block order', async () => {
     mockGet.mockResolvedValue(
       dto(

@@ -743,6 +743,7 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
                     ? { notesError: issueFor(ISSUE_PATH_NOTES) }
                     : {})}
                   {...(disabled ? { disabled: true } : {})}
+                  {...(dto.persona_baseline ? { baseline: dto.persona_baseline } : {})}
                 />
               </div>
             )}
