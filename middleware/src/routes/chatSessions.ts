@@ -1,17 +1,19 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type {
-  ChatSessionStore} from '@omadia/orchestrator';
+import type { ChatSession, ChatSessionStore } from '@omadia/orchestrator';
 import {
+  ChatSessionNotOwnedError,
   InvalidSessionIdError,
   ServerMirroredSessionError,
+  chatSessionOwnedBy,
   isValidSessionId,
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from '@omadia/orchestrator';
 
 import { LLM_SETUP_HINT } from '../llmSetupHint.js';
+import { chatViewer, type LegacyChatOwner } from './chatSessionAccess.js';
 
 /**
  * CRUD for persisted chat-tab sessions. Mounted at `/api/chat`, so the full
@@ -33,6 +35,10 @@ import { LLM_SETUP_HINT } from '../llmSetupHint.js';
  *
  * Gated by `requireAuth` at mount time (see middleware/src/index.ts) —
  * Sessions können PII / Tool-Outputs / Code-Snippets enthalten.
+ *
+ * #1762 (ADR-0180): a chat belongs to the account that created it. Every
+ * route lists or touches only the caller's own chats; another account's chat
+ * answers 404 like a missing one. The owner is stamped by the server.
  */
 
 const IdParam = z.string().regex(/^[A-Za-z0-9_-]{1,80}$/);
@@ -223,11 +229,34 @@ interface ChatSessionDeps {
    *  key save on the LLM access page reactivates the plugin and makes this
    *  resolve non-null. */
   getStore: () => ChatSessionStore | undefined;
+  /** #1762 — owner of chats written before owners existed; see `chatSessionAccess.ts`. */
+  legacyOwner?: LegacyChatOwner;
 }
 
 export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
   const router = Router();
   const { getStore } = deps;
+  const legacyOwner = async (): Promise<string | undefined> => deps.legacyOwner?.();
+
+  /** The caller's own chat `id`, or `null` when it is missing or another account's. */
+  const ownSession = async (
+    store: ChatSessionStore,
+    req: Request,
+    id: string,
+  ): Promise<ChatSession | null> => {
+    let session: ChatSession | null;
+    try {
+      session = await store.get(id);
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err;
+      // An unreadable chat has no readable owner: it is a legacy chat, and
+      // only its resolved owner may delete or reset it.
+      const owned = chatSessionOwnedBy({}, chatViewer(req), await legacyOwner());
+      return owned ? ({ id, title: id, createdAt: 0, updatedAt: 0, messages: [] } satisfies ChatSession) : null;
+    }
+    if (!session) return null;
+    return chatSessionOwnedBy(session, chatViewer(req), await legacyOwner()) ? session : null;
+  };
 
   /** Resolve the store or emit a 503; handlers `return` when it's undefined. */
   const resolveStore = (res: Response): ChatSessionStore | undefined => {
@@ -243,11 +272,11 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     return store;
   };
 
-  router.get('/sessions', async (_req: Request, res: Response) => {
+  router.get('/sessions', async (req: Request, res: Response) => {
     const store = resolveStore(res);
     if (!store) return;
     try {
-      const sessions = await store.list();
+      const sessions = await store.list({ viewer: chatViewer(req), legacyOwner: await legacyOwner() });
       res.json({ sessions });
     } catch (err) {
       failure(res, err, '[chat-sessions] list');
@@ -263,12 +292,14 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     const store = resolveStore(res);
     if (!store) return;
     try {
-      const session = await store.get(id);
+      const session = await ownSession(store, req, id);
       if (!session) {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      res.json(session);
+      // The owner id is not the caller's business beyond "it is yours".
+      const { ownerUserId: _owner, ...body } = session;
+      res.json(body);
     } catch (err) {
       failure(res, err, '[chat-sessions] get');
     }
@@ -291,15 +322,28 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     }
     const store = resolveStore(res);
     if (!store) return;
+    const viewer = chatViewer(req);
+    if (!viewer) {
+      res.status(401).json({ error: 'no_account', message: 'a chat is saved under the signed-in account' });
+      return;
+    }
     try {
       // #1071 — merge, not overwrite: the client PUTs the whole document from
       // a copy hydrated at page load, which would otherwise delete a routine
       // delivery the server appended since.
-      const session = await store.saveFromClient(scrubMcpInputEnvelopes(parsed.data));
+      const stored = await store.saveFromClient(scrubMcpInputEnvelopes(parsed.data), {
+        viewer,
+        legacyOwner: await legacyOwner(),
+      });
+      const { ownerUserId: _owner, ...session } = stored;
       res.json({ ok: true, session });
     } catch (err) {
       if (err instanceof InvalidSessionIdError) {
         res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      if (err instanceof ChatSessionNotOwnedError) {
+        res.status(404).json({ error: 'not_found' });
         return;
       }
       // A browser pushing back a purged server-mirrored transcript (canvas /
@@ -321,6 +365,11 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     const store = resolveStore(res);
     if (!store) return;
     try {
+      // Idempotent for a missing chat; another account's answers 404.
+      if ((await store.fileExistsFor(id)) && !(await ownSession(store, req, id))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       await store.delete(id);
       res.json({ ok: true });
     } catch (err) {
@@ -343,6 +392,10 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     const store = resolveStore(res);
     if (!store) return;
     try {
+      if (!(await ownSession(store, req, id))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       const updated = await store.resetMessages(id);
       if (!updated) {
         res.status(404).json({ error: 'not_found' });
@@ -378,7 +431,7 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       const store = resolveStore(res);
       if (!store) return;
       try {
-        const existing = await store.get(id);
+        const existing = await ownSession(store, req, id);
         if (!existing) {
           res.status(404).json({ error: 'not_found' });
           return;

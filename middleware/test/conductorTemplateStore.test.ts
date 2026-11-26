@@ -83,17 +83,22 @@ function fakeDb(): Db {
       const row = db.templates.get(params[0] as string);
       if (row) {
         row.latest_version = params[1] as number;
+        row.status = 'private';
+        row.reviewed_by = null;
         row.updated_at = '2026-07-10T01:00:00.000Z';
       }
       return { rows: [], rowCount: row ? 1 : 0 };
     }
 
-    if (s.startsWith('UPDATE conductor_templates SET status')) {
-      const row = db.templates.get(params[0] as string);
-      if (!row) return { rows: [], rowCount: 0 };
+    if (s.startsWith('WITH changed AS ( UPDATE conductor_templates SET status')) {
+      const id = params[0] as string;
+      const row = db.templates.get(id);
+      if (!row || (params[3] != null && (row.status !== params[3] || row.latest_version !== params[4]))) {
+        return { rows: [], rowCount: 0 };
+      }
       row.status = params[1] as string;
-      row.reviewed_by = (params[2] as string | null) ?? row.reviewed_by;
-      return { rows: [{ id: params[0] }], rowCount: 1 };
+      row.reviewed_by = params[2] as string | null;
+      return { rows: [{ id, ...row, manifest: db.versions.get(`${id}:${row.latest_version}`)?.manifest }], rowCount: 1 };
     }
 
     if (s.includes('FROM conductor_templates t') && s.includes('JOIN conductor_template_versions v')) {
@@ -242,6 +247,10 @@ describe('templateStore review status', () => {
     const shared = await store.setStatus('tpl-approval', 'shared', 'operator-b');
     assert.equal(shared!.status, 'shared');
     assert.equal(shared!.reviewedBy, 'operator-b');
+    const revision = await store.addVersion('tpl-approval', fixtureManifest());
+    assert.equal(revision?.status, 'private');
+    assert.equal(revision?.reviewedBy, null);
+    assert.equal(await store.setStatus('tpl-approval', 'shared', 'operator-b', { status: 'pending', version: 1 }), undefined);
     assert.equal(await store.setStatus('nope', 'shared'), undefined);
   });
 });

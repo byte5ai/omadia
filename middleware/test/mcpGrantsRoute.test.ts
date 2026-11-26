@@ -417,15 +417,18 @@ describe('#2054 — PUT /mcp-grants: broad reach needs a confirmation (spec 2042
     });
     assert.equal(confirmed.status, 200);
     assert.equal(h.calls.applyAllowlist.length, 1);
-    assert.equal(h.audits.length, 1);
-    assert.equal(h.audits[0]!['action'], 'agent.broad_reach_grant');
-    assert.equal(h.audits[0]!['target'], `agent:${AGENT_ID}`);
+    assert.equal(h.audits.length, 2);
+    assert.equal(h.audits[0]!['action'], 'mcp_server.agent_grant_change');
+    assert.deepEqual(h.audits[0]!['before'], { agentId: AGENT_ID, tools: [] });
+    assert.deepEqual(h.audits[0]!['after'], { agentId: AGENT_ID, tools: ['read_ticket'] });
+    assert.equal(h.audits[1]!['action'], 'agent.broad_reach_grant');
+    assert.equal(h.audits[1]!['target'], `agent:${AGENT_ID}`);
   });
 
   it('a grant short of every connected system needs no confirmation', async () => {
     h = await makeHarness({ verdicts: { read_ticket: 'no_signals' } });
     const res = await putGrants(h, { agentSlug: 'sales', mcpServerId: SERVER_ID, toolName: 'read_ticket' });
     assert.equal(res.status, 200);
-    assert.equal(h.audits.length, 0);
+    assert.deepEqual(h.audits.map((row) => row['action']), ['mcp_server.agent_grant_change']);
   });
 });

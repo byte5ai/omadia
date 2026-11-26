@@ -147,7 +147,6 @@ import {
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
 import { sortByToolName } from './toolOrdering.js';
-import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
   detectTabularFormat,
@@ -3704,12 +3703,9 @@ export class Orchestrator {
   }
 
   /**
-   * Collect diagram renders produced during the current turn and reset the
-   * tool's buffer. Idempotent: returns undefined if the tool wasn't invoked.
-   *
-   * Today the orchestrator allows at most one diagram per turn (the LLM rarely
-   * needs more), but the return type is an array so multi-diagram turns just
-   * work once the tool starts returning multiple RenderOutputs.
+   * Collect the files and diagrams the current turn produced. Runs inside the
+   * turn's context: each sink returns only what this turn's tool calls filed
+   * under its turn id (#1961, ADR-0177), never a concurrent turn's output.
    */
   private drainAttachments(): {
     diagrams: DiagramAttachment[];
@@ -10663,9 +10659,25 @@ export class Orchestrator {
           .map((a) => a.name.trim().toLowerCase()),
       );
 
-      // 1. Teams `[attachments-info]` manifest (storage_key-bearing) — files
-      //    and images alike (#504).
-      for (const info of parseAttachmentsInfo(input.userMessage)) {
+      // 1. Uploads the channel adapter stated as structured data
+      //    (storage_key-bearing) — files and images alike (#504). Never parsed
+      //    from the message text: a typed `[attachments-info]` block reads
+      //    nothing (#1962, ADR-0178). Each key is bound to this turn's
+      //    conversation first; that binding is what makes it readable here and
+      //    by `read_attachment` later (#1960).
+      const stated = input.storedAttachments ?? [];
+      for (const info of stated) {
+        try {
+          await this.attachmentReader.bindToCurrentConversation?.(info.storageKey);
+        } catch (err) {
+          // One unbindable key must not drop the turn's other attachments;
+          // it stays unbound and therefore unreadable (fail closed).
+          console.warn(
+            `[harness-orchestrator] attachment binding failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      for (const info of stated) {
         const isImage = info.contentType.toLowerCase().startsWith('image/');
         if (isImage && inlineImageFileNames.has(info.fileName.trim().toLowerCase())) {
           // Already embedded inline via `bytesBase64` — skip to avoid

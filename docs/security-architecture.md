@@ -534,6 +534,10 @@ working across it:
   `validateConversationRef`; have `validateConversationRef` check that the
   chat exists. (A routine whose chat was deleted is paused on its next fire,
   before the agent turn runs — `ProactiveTargetGoneError`.)
+  **Closed by #1762 (ADR-0180):** a chat belongs to the account that created
+  it, and a turn with another account's `sessionId` answers 404 before any
+  agent runs, so a routine can only be created in, and deliver into, the
+  creator's own chat.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but
@@ -1083,7 +1087,13 @@ The surfaces that boundary must cover, and how each one does:
   only this agent's processes, and none in a context-bound `enforce-strict` /
   `members` turn, where recall skips processes too. A process the turn may not
   read answers like a missing one. With no boundary set (the public MCP
-  endpoint, jobs) they return no process (ADR-0044).
+  endpoint, jobs) they return no process (ADR-0044). The write tools follow
+  the same rule (#2223): `edit_process` changes only a process the turn may
+  read (anything else answers like a missing id), and `write_process` stores
+  only in this agent's scopes (an unqualified scope is qualified with the
+  agent; another agent's scope is refused) and nothing in a context-bound
+  turn or without a boundary, since processes carry no owners. The bounded
+  `processMemory@1` write applies the same rule (`processWriteScope`).
 - **Topics (#1851, ADR 0045):** a topic's name and description are written
   from its members' summaries, so a topic is content of every member.
   Re-cluster (`topicClustering.ts`) groups only memories with the same owner
@@ -1107,12 +1117,32 @@ reading may see. A private or `shared:<x>` memory never reaches a turn read
 by someone who does not own it, and never reaches a context-bound
 `enforce-strict` turn.
 
+Web chat tabs (#1762, ADR-0180): `/api/chat/sessions` and chat turns use
+only the caller's own tabs (`ChatSession.ownerUserId`, the session's `sub`);
+another account's tab answers 404. Tabs written before owners existed belong
+to the instance's only account, else to nobody (hidden, kept on disk).
+
+Memory owners (#1821, #1852, ADR-0181): `POST /api/v1/memory` makes the saver
+the only owner and involved user (foreign ids → `400 memory.foreign_owner`)
+and keeps only source turns the saver sent. Sharing goes only through
+`POST /api/v1/memory/:id/owners`, which takes real users only and writes the
+`INVOLVED` edge with the owner.
+
+Web, routine and API turns (#1774, #1826, ADR-0182): a web chat or web routine
+turn carries a personal origin from the signed-in account (session only), a
+Public API turn one from its key. Under `enforce` / `enforce-strict` /
+`members` each account and each key is its own one-person room; under `off`
+they share the agent tree. Memorable knowledge is `private` unless shared on
+purpose (#1823, ADR-0183; migration `0037`), so recall's team branch admits
+only durable rules and `public` rows.
+
 Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
-  `audienceOwners` and returns everything. The in-tree providers honour it.
-- Only turns that carry a `TurnOrigin` are context-bound.
-- #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
-  lists and reads every tab.
+  `audienceOwners` and returns everything. The in-tree providers honour it;
+  both return nothing for an empty audience (in-memory since #2224).
+- Only turns that carry a `TurnOrigin` are context-bound; since #1774 that
+  includes web chat, web routines and Public API turns, but not routines of
+  other channels.
 
 All of these are pinned as known failures (`todo`, naming the issue) in the
 canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,
@@ -1380,6 +1410,27 @@ ambiently, so the request ends in the middleware's terminal JSON
 meets `requireAuth`'s 401 first. What the link buys is
 what it always bought: whoever holds it can fetch that one object until it
 expires; there is no per-tenant or per-session authorisation on top.
+
+**A link works only on the route that issued it (#1979, ADR-0176).** Office and
+Diagrams may share one secret and one bucket (the env bootstrap does exactly
+that). Both signers put the route prefix into the HMAC payload
+(`/documents/dl/<key>.<exp>`, `/diagrams/dl/<key>.<exp>`), and each router serves
+only its own key layout (`documents/<tenant>/<sha256>/<file>` vs
+`<tenant>/<sha256>.png`). Revoking one route's public-path grant therefore ends
+session-less access to that plugin's objects; the other route does not serve them.
+
+## 5-1. Stored attachments: stated by the adapter, bound at upload (#1960, #1962, ADR-0178)
+
+A storage key is a string; anyone who saw a download link knows one. So the kernel reads a key
+only when a **channel adapter** stated it as an upload in the turn it arrived
+(`ChatTurnInput.storedAttachments`, never text parsed from the message) and only in that
+conversation: the ingest binds each stated key to the turn's room first (first binding wins), and
+`readByStorageKey` refuses every key not bound to the current room with the ordinary "not found".
+Office reports and diagrams are never bound, so they are reachable only through their signed
+links, never through `read_attachment`; that keeps the tool's intern exemption ("the user's own
+upload") true. The binding store is always published (Postgres, else in-memory), independent of
+the audience floor. Migration `0114` removed bindings that the old bind-on-first-read had created
+for generated outputs.
 
 ## 5a. Office exports: formula cells carry no caller-supplied value
 
@@ -4400,11 +4451,19 @@ explicit here so a deployment can reason about them:
   `src/auth/sessionJwt.ts`) a permission gate on that route would gate
   nothing, so the control with teeth is the audit trail: every add/remove
   lands in `admin_audit` as `conductor.role_holders_change` with actor,
-  role, and the resulting holder set.
+  role, and the resulting holder set. Role creation, label changes and deletion
+  also write `conductor.role_created`, `conductor.role_updated` and
+  `conductor.role_deleted` with the session actor and stored role details.
   <!-- TODO(roles-split): when user roles split beyond 'admin', add a
        permission gate on POST/DELETE /roles/:key/holders (four-eyes or
        admin-only) — the audit trail alone stops being sufficient the moment
        non-admin operators exist. -->
+- **Template sharing separates author and reviewer when another active operator
+  exists.** The author can submit and a second operator must approve. An
+  installation with one active operator allows self-approval and marks it in
+  the audit entry. Submit, approve and reject record the actor, status and
+  version under ADR-0100. Sharing a new version requires a new review
+  (ADR-0253).
 - **Role batons now also decide who RECEIVES targeted reports (#330 B3).**
   The `targetedSend` kernel service resolves `role:<key>` addressees through
   the SAME holder registry the executor uses for approvals (one instance,
@@ -7358,6 +7417,13 @@ against a closed pattern and bound as query parameters; the `action` prefix's
 LIKE metacharacters are escaped. `before`/`after` are returned verbatim; no
 writer puts password material, hashes or secrets into them (a password reset
 row has neither).
+
+**Operator changes.** Routine edits name the acting operator and the routine
+owner separately. Agent instructions and arbitrary plugin or MCP config values
+stay out of the trail. Vault writes record operation metadata. MCP connection
+events use the actor saved from the initiating session in the pending OAuth
+flow (ADR-0246). Local ZIP uploads and Builder publishes record the ingested
+package id, version and source.
 
 **Consent history.** Granting or revoking a plugin's unauthenticated public
 path or its SQL ledger writes one `plugin.grants_change` row with the granted

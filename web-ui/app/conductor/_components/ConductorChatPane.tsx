@@ -8,7 +8,6 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   conductorBuilderTurn,
-  publishConductorWorkflow,
   resolveConductorText,
   type ConductorBuilderMessage,
   type ConductorGraphPatch,
@@ -20,11 +19,13 @@ import {
   type ConductorTemplateSlotMapping,
   type ConductorValidationError,
   type ConductorValidationResult,
+  type ConductorValidationWarning,
 } from '@/app/_lib/api';
 import { isSendKey } from '../../_lib/composerKeys';
 import { MissingCapabilityCards, PersonSuggestionCards } from './ConductorChatCards';
 import { clearChatDraft, loadChatDraft, saveChatDraft } from './chatDraftStore';
 import { resetStepPrincipal, setStepActionId, setStepPrincipal, stepChannel } from './graphLocalEdits';
+import { publishConductorDraft } from './draftPublish';
 
 // Conversational builder (US7). The user co-designs a Conductor workflow by chatting; each turn the
 // builder agent returns a patched draft graph + a reply. The draft lives here (client-side), so the
@@ -60,7 +61,7 @@ function slotCoverage(
 ): { filled: number; total: number } {
   let filled = 0;
   let total = 0;
-  for (const kind of ['agents', 'actions', 'roles', 'events', 'channels'] as const) {
+  for (const kind of ['agents', 'actions', 'roles', 'people', 'events', 'channels'] as const) {
     for (const slot of tpl.slots[kind] ?? []) {
       total += 1;
       const v = prefill[kind]?.[slot.key];
@@ -85,6 +86,23 @@ function summarize(graph: unknown): DraftSummary {
   const steps = Array.isArray(g.steps) ? g.steps.length : 0;
   const trigger = Array.isArray(g.triggers) && g.triggers[0]?.kind ? String(g.triggers[0].kind) : 'manual';
   return { steps, trigger };
+}
+
+function ValidationWarnings({ warnings, heading }: {
+  warnings?: ConductorValidationWarning[];
+  heading: string;
+}): React.JSX.Element | null {
+  if (!warnings?.length) return null;
+  return (
+    <details className="mt-2 text-[12px] text-[color:var(--warning,#f5a623)]" open>
+      <summary className="font-semibold">{heading}</summary>
+      <ul className="list-inside list-disc">
+        {warnings.map((warning, i) => (
+          <li key={i}><code>{warning.code}</code>{' · '}{warning.message}</li>
+        ))}
+      </ul>
+    </details>
+  );
 }
 
 // `onShowInDesigner` pushes the CURRENT chat draft into the visual canvas on explicit user action
@@ -119,6 +137,7 @@ export function ConductorChatPane({
   const [publishing, setPublishing] = useState(false);
   const [publishMsg, setPublishMsg] = useState<string | null>(null);
   const [publishErrors, setPublishErrors] = useState<ConductorValidationError[]>([]);
+  const [publishWarnings, setPublishWarnings] = useState<ConductorValidationWarning[]>([]);
   const lastAction = useRef(0);
   // Inline MCP connect (missing-capability card → modal → tool id written into the step).
   const [connectFor, setConnectFor] = useState<{ item: ConductorMissingCapability; serverId?: string } | null>(null);
@@ -161,6 +180,7 @@ export function ConductorChatPane({
     setConnectFor(null);
     setPublishMsg(null);
     setPublishErrors([]);
+    setPublishWarnings([]);
     clearChatDraft();
   }, []);
 
@@ -286,8 +306,14 @@ export function ConductorChatPane({
     setPublishing(true);
     setPublishMsg(null);
     setPublishErrors([]);
+    setPublishWarnings([]);
     try {
-      await publishConductorWorkflow({ slug: slug.trim(), name: name.trim(), graph, enable: true });
+      const result = await publishConductorDraft(
+        { slug: slug.trim(), name: name.trim(), graph, enable: true },
+        () => window.confirm(t('confirmPublishVersion', { slug: slug.trim() })),
+      );
+      if (!result) return;
+      setPublishWarnings(result.warnings ?? []);
       setPublishMsg(t('chatPublished', { slug: slug.trim() }));
     } catch (err) {
       if (err instanceof ApiError) {
@@ -297,8 +323,12 @@ export function ConductorChatPane({
         } catch {
           /* not json */
         }
-        setPublishMsg(err.message);
-      } else setPublishMsg(String(err));
+        if (err.code === 'conductor.reserved_slug' || err.code === 'conductor.reserved_slug_prefix') {
+          setPublishMsg(t('reservedWorkflowSlug', { slug: slug.trim() }));
+        } else if (err.code !== 'conductor.invalid_graph') {
+          setPublishMsg(t('publishWorkflowFailed'));
+        }
+      } else setPublishMsg(t('publishWorkflowFailed'));
     } finally {
       setPublishing(false);
     }
@@ -344,6 +374,7 @@ export function ConductorChatPane({
                     {it.validation.errors.map((e) => e.code).join(', ')}
                   </div>
                 )}
+                <ValidationWarnings warnings={it.validation?.warnings} heading={t('chatValidationWarnings')} />
                 {it.applyErrors && it.applyErrors.length > 0 && (
                   <div className="mt-1 text-[11px] text-[color:var(--danger,#e5484d)]">
                     {t('chatApplyIssues')} {it.applyErrors.join('; ')}
@@ -453,7 +484,12 @@ export function ConductorChatPane({
         <div className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           {t('chatDraftHeading')}
         </div>
-        <p className="text-[13px] text-[color:var(--fg-muted)]">{t('chatDraftSummary', { steps: summary.steps, trigger: summary.trigger })}</p>
+        <p className="text-[13px] text-[color:var(--fg-muted)]">
+          {t('chatDraftSummary', {
+            steps: summary.steps,
+            trigger: summary.trigger === 'cron' ? t('scheduleWithZone', { zone: 'UTC' }) : summary.trigger,
+          })}
+        </p>
         {lastValidation && (
           <p className={`text-[12px] ${lastValidation.ok ? 'text-[color:var(--fg-muted)]' : 'text-[color:var(--danger,#e5484d)]'}`}>
             {lastValidation.ok ? t('chatValidationOk') : t('chatDraftInvalid')}
@@ -481,6 +517,7 @@ export function ConductorChatPane({
           {publishing ? t('chatPublishing') : t('chatPublish')}
         </Button>
         {publishMsg && <p className="text-[12px] text-[color:var(--fg-muted)]">{publishMsg}</p>}
+        <ValidationWarnings warnings={publishWarnings} heading={t('validationWarningsHeading')} />
         {publishErrors.length > 0 && (
           <ul className="list-inside list-disc text-[12px] text-[color:var(--danger,#e5484d)]">
             {publishErrors.map((v, i) => (

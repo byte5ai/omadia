@@ -13,8 +13,4 @@ const setup = (): Promise<Seeded> => (seeded ??= seedInMemory(buildWorld()));
 
 runAclContract('InMemoryKnowledgeGraph', 'memorable-knowledge', setup);
 runAclContract('InMemoryKnowledgeGraph', 'memorable-knowledge', setup, { teamVisibility: false });
-runEmptyAudienceContract(
-  'InMemoryKnowledgeGraph',
-  setup,
-  'InMemoryKnowledgeGraph still admits operator-authored memories for audienceOwners [] (Neon returns none); no turn sends an empty audience today',
-);
+runEmptyAudienceContract('InMemoryKnowledgeGraph', setup);

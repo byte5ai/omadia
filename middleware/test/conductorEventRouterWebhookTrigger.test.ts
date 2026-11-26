@@ -78,7 +78,7 @@ describe('ConductorEventRouter — webhook trigger kind (issue #437)', () => {
     assert.deepEqual(started, [{ slug: 'wf-event', triggerKind: 'event' }]);
   });
 
-  it('does not match a webhook trigger with a different eventId, or a disabled workflow', async () => {
+  it('reports disabled matching subscribers and ignores different event ids', async () => {
     const started: Array<{ slug: string; triggerKind: string }> = [];
     const workflowStore = fakeWorkflowStore(
       [
@@ -87,11 +87,14 @@ describe('ConductorEventRouter — webhook trigger kind (issue #437)', () => {
       ],
       { v1: graphWithTrigger('webhook', 'a.different.event'), v2: graphWithTrigger('webhook', 'orders.created') },
     );
-    const router = new ConductorEventRouter({ workflowStore, executor: fakeExecutor(started) });
+    const logs: string[] = [];
+    const router = new ConductorEventRouter({ workflowStore, executor: fakeExecutor(started), log: (msg) => logs.push(msg) });
 
     const result = await router.emit('orders.created', {}, undefined);
 
     assert.equal(result.matchedWorkflows, 0);
+    assert.deepEqual(result.suppressed, [{ workflowSlug: 'wf-disabled', reason: 'workflow_disabled' }]);
+    assert.match(logs[0] ?? '', /orders.created.*wf-disabled.*workflow_disabled/);
     assert.deepEqual(started, []);
   });
 });

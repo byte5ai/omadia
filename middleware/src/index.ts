@@ -31,6 +31,7 @@ import { config, registrySeedFromEnv } from './config.js';
 import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
+import type { AttachmentBindingStore } from '@omadia/orchestrator';
 import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
 import { adminTokenThrottleWarnings, createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
 import { parseClientAddressPolicy } from './auth/clientAddress.js';
@@ -198,6 +199,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
   DEV_GRAPH_PATH,
   DEV_PATH_PREFIX,
@@ -353,6 +355,7 @@ import {
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 import {
+  createOptionalSession,
   createRequireAuth,
   createSessionGate,
   evaluateSessionToken,
@@ -365,7 +368,7 @@ import {
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { parseMcpActionId } from './conductor/mcpActionId.js';
 import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
-import { createMcpActionInvoker, mcpActionIds } from './conductor/mcpActionInvoker.js';
+import { createMcpActionInvoker, listMcpActions } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -405,7 +408,7 @@ import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
 } from './auth/platformSettings.js';
-import { initSetupToken, PgSetupTokenStore } from './auth/setupToken.js';
+import { initSetupToken, isDesktopLoopbackKernel, PgSetupTokenStore } from './auth/setupToken.js';
 import {
   describeTrustedProxies,
   parseTrustedProxies,
@@ -572,7 +575,10 @@ import {
   createLateBoundAttachmentBindingStore,
   createLateBoundGrantStore,
 } from './audience/lateBoundGrantStore.js';
-import { PostgresAttachmentBindingStore } from './audience/postgresAttachmentBindingStore.js';
+import {
+  InMemoryAttachmentBindingStore,
+  PostgresAttachmentBindingStore,
+} from './audience/postgresAttachmentBindingStore.js';
 import { PostgresGrantStore } from './audience/postgresGrantStore.js';
 import { createAudienceGrantRouter } from './audience/routes.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
@@ -1624,7 +1630,18 @@ async function main(): Promise<void> {
   // Nothing is published when the operator switched the floor off, and that
   // absence is what keeps the three guards inert ("not enforced ≠ closed").
   let audienceGrantStoreRef: PostgresGrantStore | undefined;
-  let attachmentBindingStoreRef: PostgresAttachmentBindingStore | undefined;
+  // #575 pins each attachment handle to the room that minted it. Since #1960
+  // (ADR-0178) this is chat isolation, not an audience rule: it applies with
+  // the floor on or off, and a read needs a binding written when a channel
+  // adapter stated the upload. Postgres keeps the pins; without it they live
+  // in memory for the process lifetime (dev / single-instance desktop).
+  let attachmentBindingStoreRef: AttachmentBindingStore | undefined = config.DATABASE_URL
+    ? undefined
+    : new InMemoryAttachmentBindingStore();
+  serviceRegistry.provide(
+    'attachmentBindings',
+    createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
+  );
   if (config.AUDIENCE_FLOOR_ENABLED) {
     const storedGrants = config.DATABASE_URL
       ? createLateBoundGrantStore(() => audienceGrantStoreRef)
@@ -1640,14 +1657,6 @@ async function main(): Promise<void> {
       );
     }
     serviceRegistry.provide('audienceGrants', audienceGrants);
-    // #575 — pins each attachment handle to the room that minted it. Same flag,
-    // because it is the same policy; it needs Postgres to remember the pins.
-    if (config.DATABASE_URL) {
-      serviceRegistry.provide(
-        'attachmentBindings',
-        createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
-      );
-    }
     console.log(
       `[middleware] audience floor ENABLED (baseline=${config.AUDIENCE_BASELINE_GRANTS}, grants=${
         config.DATABASE_URL ? 'Postgres' : 'baseline only'
@@ -2754,9 +2763,11 @@ async function main(): Promise<void> {
     }
     if (graphPool && audienceGrantStore) {
       audienceGrantStoreRef = audienceGrantStore;
-      attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
     }
   }
+  attachmentBindingStoreRef = graphPool
+    ? new PostgresAttachmentBindingStore(graphPool)
+    : (attachmentBindingStoreRef ?? new InMemoryAttachmentBindingStore());
 
   /**
    * Team display-name lookup, feature-detected per call against whatever
@@ -3414,14 +3425,22 @@ async function main(): Promise<void> {
                 // the raw <pre>; the block is stripped from the UI output.
                 const authBlock = (needsClient: boolean): string =>
                   `\n<mcp-auth-required serverId="${xmlAttr(server.id)}" server="${xmlAttr(server.name)}"${desc.issuerHost ? ` host="${xmlAttr(desc.issuerHost)}"` : ''} needsClient="${needsClient ? 'true' : 'false'}"></mcp-auth-required>`;
-                try {
-                  const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
-                  return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect (this opens the provider's login), then retry: ${authorizeUrl}${authBlock(false)}`;
-                } catch {
+                // #1908 (ADR-0175): no flow is started here and no authorize
+                // URL goes into the text. That URL carried a live `state`, and
+                // the text reaches the model, run contexts and group channels:
+                // whoever opened it could connect their provider account under
+                // this user. The Connect card starts the flow from the user's
+                // own session instead.
+                // Same rule as the auth-status route: only an issuer with no
+                // broker AND no stored client needs the one-time setup.
+                const storedClient =
+                  desc.issuer !== null ? await mcpAuditStore.getMcpOAuthClient(desc.issuer) : undefined;
+                if (!desc.brokered && desc.issuer !== null && storedClient === undefined) {
                   // Delegating server with no registered client yet — point
                   // the user at the one-time setup instead of a raw error.
                   return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
                 }
+                return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect in the chat (this opens the provider's login), then retry.${authBlock(false)}`;
               },
               // Vault-resolved config: secret headers (http) + env (stdio).
               ...(mcpConfigService
@@ -4182,6 +4201,12 @@ async function main(): Promise<void> {
     }),
   );
 
+  // #1762 (ADR-0180) — the owner of web chats written before owners existed:
+  // the instance's only account. Bound once the users table is wired below;
+  // until then (and without Postgres) such chats belong to nobody.
+  let resolveLegacyChatOwner: LegacyChatOwner = () => Promise.resolve(undefined);
+  const legacyChatOwner: LegacyChatOwner = () => resolveLegacyChatOwner();
+
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
   // callers could trigger LLM inference (cost) and reach the tool surface
@@ -4192,6 +4217,7 @@ async function main(): Promise<void> {
     requireAuth,
     createChatRouter({
       agentResolver,
+      legacyChatOwner,
       routeTurn: routeWebTurn,
       // #2055 — `/agent …` in the web chat, the same management-layer
       // handling every other channel gets from its resolver.
@@ -4252,7 +4278,11 @@ async function main(): Promise<void> {
   // here is defence-in-depth: if a future refactor splits mounts or moves
   // the sessions router to a different base path, the auth guarantee
   // travels with it.
-  app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
+  app.use(
+    '/api/chat',
+    requireAuth,
+    createChatSessionsRouter({ getStore: getChatSessionStore, legacyOwner: legacyChatOwner }),
+  );
 
   // Plugin-contributed navigation. The web-ui shell renders a static nav for
   // its own compiled surfaces and merges this for everything a plugin adds,
@@ -4921,6 +4951,7 @@ async function main(): Promise<void> {
     '/api/v1/operator/channels',
     requireAuth,
     createOperatorChannelsRouter({
+      getAudit: () => adminAudit,
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       getRegistry: () =>
@@ -5031,6 +5062,11 @@ async function main(): Promise<void> {
   // after the operator-agents router. 503s without a graphPool (in-memory KG
   // backend). Writes route through ConfigStore/AgentGraphStore → notify →
   // registry.reload(), and we reload inline so the response reflects the diff.
+  //
+  // #1908 (ADR-0175): the MCP OAuth callback is a public path, so `requireAuth`
+  // waves it through without reading the cookie. Attach the session best-effort
+  // so the callback can refuse a completer other than the flow's starter.
+  app.use('/api/v1/operator/mcp-oauth/callback', createOptionalSession(sessionDeps));
   app.use(
     '/api/v1/operator',
     requireAuth,
@@ -5102,7 +5138,18 @@ async function main(): Promise<void> {
           serversHint: e.plugin.permissions_summary.mcp_servers_hint ?? [],
         })),
       // Generic MCP OAuth (epic #459 W9) — begin/callback/manual-client routes.
-      ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
+      ...(mcpOAuthService
+        ? {
+            mcpOAuth: mcpOAuthService,
+            mcpOAuthUserKey,
+            // #1908 (ADR-0175) — desktop only: the OS browser that finishes the
+            // flow has no session; the loopback kernel's caller is its user.
+            mcpOAuthSessionlessCallback: isDesktopLoopbackKernel({
+              desktopEmbedded: config.OMADIA_DESKTOP_EMBEDDED,
+              host: config.HOST,
+            }),
+          }
+        : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
       // Issue #1342 — stdio switch + durable trace of saved stdio servers.
@@ -5780,8 +5827,11 @@ async function main(): Promise<void> {
               : Promise.resolve(undefined),
       listActions: async () => [
         WEBHOOK_POST_ACTION_ID,
-        ...deterministicActionRegistry.list(),
-        ...mcpActionIds(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
+        ...deterministicActionRegistry.list().map((id) => {
+          const requiredInputs = nativeToolRegistry.get(id)?.spec?.input_schema.required;
+          return requiredInputs?.length ? { id, requiredInputs } : id;
+        }),
+        ...listMcpActions(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
       ],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
@@ -5802,6 +5852,7 @@ async function main(): Promise<void> {
         // column and every audit write failed.
         await adminAudit?.record(roleChangeAuditEntry(entry));
       },
+      auditGovernanceChange: async (entry) => { await adminAudit?.record(entry); },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
       // #1707 — webhook administration lands in the admin trail. Closure, not the
       // instance, for the same reason as auditRoleChange: `adminAudit` is constructed
@@ -6039,6 +6090,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
     // this users table; every user write reloads the snapshot.
     humanNameDirectory.attach(userStore);
@@ -6423,6 +6475,7 @@ async function main(): Promise<void> {
         store: routinesHandle.store,
         runsStore: routinesHandle.runsStore,
         runner: routinesHandle.runner,
+        ...(adminAudit ? { audit: adminAudit } : {}),
         log: (msg) => console.log(msg),
       }),
     );
@@ -6776,6 +6829,7 @@ async function main(): Promise<void> {
     '/api/v1/admin/providers',
     requireAuth,
     createAdminProvidersRouter({
+      ...(adminAudit ? { audit: adminAudit } : {}),
       installedRegistry,
       vault: secretVault,
       reactivate: reactivateAgent,
@@ -7594,6 +7648,7 @@ async function main(): Promise<void> {
               draftStore,
               buildPipeline: builderBuildPipeline,
               packageUploadService,
+              ...(adminAudit ? { adminAudit } : {}),
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
             },
@@ -7943,6 +7998,10 @@ async function main(): Promise<void> {
     operatorAuth,
     eventCatalogRegistry,
     resolver: channelPluginResolver,
+    // omadia#838 — channels that declare `permissions.sql` get the grant
+    // check and kernel-run migrations of ADR-0050, like the tool runtime.
+    sqlGrantStore,
+    packagePathOf: (agentId) => channelPluginResolver.packagePathOf(agentId),
     coreApi: channelCoreApi,
     routes: routeRegistry,
     webSockets: webSocketRegistry,

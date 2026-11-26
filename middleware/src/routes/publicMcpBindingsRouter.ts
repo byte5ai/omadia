@@ -24,6 +24,7 @@
 
 import { Router, type NextFunction, type Request, type Response } from 'express';
 
+import { readOperatorAuditState, recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import type {
   PublicMcpKeyBindingAdminRow,
   PublicMcpKeyBindingAdminStore,
@@ -96,6 +97,7 @@ export interface PublicMcpBindingsRouterOptions {
   /** Absent ⇒ every route 503s. The store needs the graph pool; without it
    *  there is nothing to read or write. */
   readonly getStore: () => PublicMcpKeyBindingAdminStore | undefined;
+  readonly audit?: Pick<AdminAuditLog, 'record'>;
   /** Absent ⇒ every route 503s, BEFORE any handler runs. Never a fallback to
    *  "unauthenticated but mounted". */
   readonly operatorAuth?: OperatorSessionCheck;
@@ -110,6 +112,37 @@ export function createPublicMcpBindingsRouter(
   options: PublicMcpBindingsRouterOptions,
 ): Router {
   const router = Router();
+
+  function auditView(row: PublicMcpKeyBindingAdminRow | undefined) {
+    if (!row) return null;
+    return {
+      agentId: row.agentId,
+      readTools: row.readTools,
+      writeTools: row.writeTools,
+      writeRateLimitPerMinute: row.writeRateLimitPerMinute,
+      enabled: row.enabled,
+    };
+  }
+
+  function priorBinding(store: PublicMcpKeyBindingAdminStore, keyId: string) {
+    const get = store.get?.bind(store);
+    return options.audit && get
+      ? readOperatorAuditState(() => get(keyId))
+      : Promise.resolve('unknown' as const);
+  }
+
+  async function auditBinding(
+    req: Request,
+    before: PublicMcpKeyBindingAdminRow | undefined | 'unknown',
+    after: PublicMcpKeyBindingAdminRow,
+  ): Promise<void> {
+    await recordOperatorAudit(options.audit, req, {
+      action: 'mcp_server.public_binding_change',
+      target: 'public-mcp-key:' + after.keyId,
+      before: before === 'unknown' ? before : auditView(before),
+      after: auditView(after),
+    });
+  }
 
   // Fail-closed operator-session gate, applied to every route below. Copied
   // verbatim in behaviour from `adminKeysRouter.ts:76-110`.
@@ -371,7 +404,9 @@ export function createPublicMcpBindingsRouter(
         }
       }
 
+      const previous = await priorBinding(store, validated.value.keyId);
       const { binding, created } = await store.upsert(validated.value);
+      await auditBinding(req, created ? undefined : previous ?? 'unknown', binding);
 
       // The key is only ever a WARNING (see `keyUnknownWarning`): the write
       // still succeeds and the row is stored, but the operator is told the key
@@ -417,10 +452,14 @@ export function createPublicMcpBindingsRouter(
       }
 
       try {
+        const previous = await priorBinding(store, keyId);
         const binding = await store.setEnabled(keyId, enabled);
         if (!binding) {
           res.status(404).json({ error: 'not_found', keyId });
           return;
+        }
+        if (previous === 'unknown' || previous?.enabled !== binding.enabled) {
+          await auditBinding(req, previous ?? 'unknown', binding);
         }
         res.json({ binding });
       } catch (err) {

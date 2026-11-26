@@ -2,16 +2,16 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { auditActorFromRequest } from '../auth/adminAuditLog.js';
-import type { WebhookAuditEntryInput } from '../auth/adminAuditLog.js';
+import type { AuditEntryInput, WebhookAuditEntryInput } from '../auth/adminAuditLog.js';
 import type { ConductorWebhookPosture } from './webhookRoutes.js';
 
-import { validate } from '@omadia/conductor-core';
-import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-core';
+import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
 
 import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
 import { emptyGraph } from './graphPatch.js';
 import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
+import { reservedWorkflowSlugCode } from './workflowSlug.js';
 import { WorkflowSlugExistsError } from './workflowStore.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
@@ -24,7 +24,7 @@ import {
 import type { ConductorDiscussionService } from './discussionService.js';
 import { DiscussionNotGrantedError, DiscussionPeerDisabledError } from './discussionHere.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
-import type { ConductorRoleStore } from './roleStore.js';
+import { ConductorRoleExistsError, ConductorRoleInUseError, ConductorRoleNotFoundError, type ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
 import type { ConductorEventRouter } from './eventRouter.js';
 import {
@@ -45,6 +45,9 @@ import type { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import type { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 import { registerWebhookRoutes } from './webhookRoutes.js';
 import { requireUuidParam } from '../http/uuidParam.js';
+import { lockPublishedRoles, PublishRoleUnavailableError, validatePublishGraph, type PublishKnownRefs } from './publishValidation.js';
+import { actionCatalogId, type ActionCatalogEntry } from './mcpActionInvoker.js';
+import { recordGovernanceAudit } from './governanceAudit.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -69,6 +72,7 @@ export interface ConductorRouterDeps {
   discussionService?: ConductorDiscussionService;
   roleStore: ConductorRoleStore;
   scheduleStore: ConductorScheduleStore;
+  listWorkflowSchedules?: ConductorScheduleStore['listForWorkflow'];
   executor: ConductorRunExecutor;
   eventRouter: ConductorEventRouter;
   /** Read model of declared emittable events (US4) — powers the Designer's event-trigger picker. */
@@ -77,7 +81,7 @@ export interface ConductorRouterDeps {
   agentCatalog?: () => Array<{ slug: string; name: string }>;
   /** Registered deterministic-action / tool ids (incl. `mcp:<serverId>:<tool>`) — powers the
    *  Designer's action-step picker. May be async: the MCP part reads the server store. */
-  actionCatalog?: () => string[] | Promise<string[]>;
+  actionCatalog?: () => ActionCatalogEntry[] | Promise<ActionCatalogEntry[]>;
   /** People-directory union over the channel plugins (Conductor human-step principal
    *  resolution). Optional: absent on hosts without the kernel registry. */
   searchPeople?: (
@@ -101,8 +105,11 @@ export interface ConductorRouterDeps {
   };
   /** DB-backed user-template store (#478) — CRUD + immutable versions + telemetry. */
   templateStore?: ConductorTemplateStore;
-  /** Live known-reference sets for strict template validation. */
-  templateKnownRefs?: () => Promise<KnownRefs>;
+  /** Live known-reference sets for workflow publish, template resolution and builder prefills. */
+  templateKnownRefs?: () => Promise<PublishKnownRefs>;
+  isOperatorAccountId?: (id: string) => Promise<boolean>;
+  hasOtherActiveOperator?: (actor: AuditEntryInput['actor'], subject: string) => Promise<boolean>;
+  auditGovernanceChange?: (entry: AuditEntryInput) => Promise<void>;
   /** Issue #437 — inbound webhook endpoints (`/api/hooks/:endpointId` reads these) and
    *  outbound subscriptions (the run-lifecycle dispatcher reads these). Optional: absent
    *  on hosts without a Postgres pool (conductor inert), same as the other stores. */
@@ -235,26 +242,31 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
     // #330 — 'eph-' is the agent-generated namespace (createEphemeralRun); a manual
     // workflow squatting on it would collide with the reaper's lifecycle.
-    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
-      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `slug prefix '${EPHEMERAL_SLUG_PREFIX}' is reserved for ephemeral workflows` });
+    const slugCode = reservedWorkflowSlugCode(slug);
+    if (slugCode) {
+      res.status(400).json({ code: slugCode, message: `workflow slug '${slug}' is reserved` });
       return;
     }
     const graph = body.graph as unknown as WorkflowGraph;
-    const result = validate(graph);
-    if (!result.ok) {
-      res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
-      return;
-    }
     try {
+      const result = await validatePublishGraph(graph, deps);
+      if (!result.ok) {
+        res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
+        return;
+      }
       const out = await deps.workflowStore.createOrPublish({
         slug,
         name,
         description: typeof body.description === 'string' ? body.description : null,
         graph,
         enable: body.enable === true,
+        ...(body.expectNew === true ? { expectNew: true } : {}),
         // Reconcile cron schedules atomically with the publish: a reconcile failure rolls the whole
         // publish back rather than leaving stale schedules firing (e.g. a just-removed cron trigger).
-        onPublished: (client, workflowId) => deps.scheduleStore.reconcileOnClient(client, workflowId, graph),
+        onPublished: async (client, workflowId) => {
+          if (deps.templateKnownRefs) await lockPublishedRoles(client, graph);
+          await deps.scheduleStore.reconcileOnClient(client, workflowId, graph);
+        },
       });
       res.status(201).json({
         workflow: out.workflow,
@@ -265,6 +277,10 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
       });
     } catch (err) {
+      if (err instanceof PublishRoleUnavailableError) {
+        res.status(400).json({ code: 'conductor.invalid_graph', errors: err.errors });
+        return;
+      }
       // Reaped slugs surface here: the upsert's reaped_at guard turns a publish
       // onto a deleted workflow into a slug conflict instead of a silent,
       // hidden resurrection.
@@ -336,7 +352,11 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   // Action catalog — registered deterministic-action / tool ids for the Designer's action-step dropdown.
   router.get('/actions', async (_req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ actions: (await deps.actionCatalog?.()) ?? [] });
+      const entries = (await deps.actionCatalog?.()) ?? [];
+      const serverNames = Object.fromEntries(entries.flatMap((entry) =>
+        typeof entry === 'string' || !entry.serverName ? [] : [[entry.id, entry.serverName]],
+      ));
+      res.json({ actions: entries.map(actionCatalogId), ...(Object.keys(serverNames).length > 0 ? { serverNames } : {}) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.action_catalog_failed', message: errMsg(err) });
     }
@@ -453,17 +473,64 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
 
   router.post('/roles', async (req: Request, res: Response): Promise<void> => {
     const body = asObject(req.body);
-    const key = typeof body.key === 'string' ? body.key : '';
-    const label = typeof body.label === 'string' ? body.label : '';
+    const key = typeof body.key === 'string' ? body.key.trim() : '';
+    const label = typeof body.label === 'string' ? body.label.trim() : '';
     if (!key || !label) {
       res.status(400).json({ code: 'conductor.invalid_input', message: 'key and label are required' });
       return;
     }
     try {
-      await deps.roleStore.createRole({ key, label, description: typeof body.description === 'string' ? body.description : null });
+      const role = await deps.roleStore.createRole({ key, label, description: typeof body.description === 'string' ? body.description : null });
+      await recordGovernanceAudit(deps, req, { action: 'conductor.role_created', target: `conductor-role:${key}`, after: role });
       res.status(201).json({ ok: true });
     } catch (err) {
-      res.status(500).json({ code: 'conductor.role_create_failed', message: errMsg(err) });
+      if (err instanceof ConductorRoleExistsError) {
+        res.status(409).json({ code: 'conductor.role_exists', message: 'role key already exists' });
+        return;
+      }
+      console.error('[conductor] role creation failed:', err);
+      res.status(500).json({ code: 'conductor.role_create_failed', message: 'could not create role' });
+    }
+  });
+
+  router.patch('/roles/:key', async (req: Request, res: Response): Promise<void> => {
+    const label = asObject(req.body).label;
+    if (typeof label !== 'string' || !label.trim()) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: 'label is required' });
+      return;
+    }
+    const key = paramStr(req.params.key);
+    try {
+      const { before, after } = await deps.roleStore.updateLabel(key, label.trim());
+      await recordGovernanceAudit(deps, req, { action: 'conductor.role_updated', target: `conductor-role:${key}`, before, after });
+      res.json({ role: after });
+    } catch (err) {
+      if (err instanceof ConductorRoleNotFoundError) {
+        res.status(404).json({ code: 'conductor.role_not_found', message: 'role not found' });
+        return;
+      }
+      console.error('[conductor] role update failed:', err);
+      res.status(500).json({ code: 'conductor.role_update_failed', message: 'could not update role' });
+    }
+  });
+
+  router.delete('/roles/:key', async (req: Request, res: Response): Promise<void> => {
+    const key = paramStr(req.params.key);
+    try {
+      const before = await deps.roleStore.deleteRole(key);
+      await recordGovernanceAudit(deps, req, { action: 'conductor.role_deleted', target: `conductor-role:${key}`, before });
+      res.sendStatus(204);
+    } catch (err) {
+      if (err instanceof ConductorRoleNotFoundError) {
+        res.status(404).json({ code: 'conductor.role_not_found', message: 'role not found' });
+        return;
+      }
+      if (err instanceof ConductorRoleInUseError) {
+        res.status(409).json({ code: 'conductor.role_in_use', message: 'role has holders or is referenced by a published workflow' });
+        return;
+      }
+      console.error('[conductor] role deletion failed:', err);
+      res.status(500).json({ code: 'conductor.role_delete_failed', message: 'could not delete role' });
     }
   });
 
@@ -486,10 +553,10 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       // but the failure is loud, never silent.
       if (deps.auditRoleChange) {
         try {
+          const actor = auditActorFromRequest(req);
           await deps.auditRoleChange({
-            // The email column holds an email when there is one: an Entra sub is not.
-            actor: req.session?.email ?? req.session?.sub ?? 'operator',
-            actorUserId: auditActorFromRequest(req).id,
+            actor: actor.email ?? '',
+            actorUserId: actor.id,
             roleKey: key,
             action,
             holderId,
@@ -501,7 +568,12 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       }
       res.status(200).json({ holders });
     } catch (err) {
-      res.status(500).json({ code: 'conductor.role_assign_failed', message: errMsg(err) });
+      if (err instanceof ConductorRoleNotFoundError) {
+        res.status(404).json({ code: 'conductor.role_not_found', message: 'role not found' });
+        return;
+      }
+      console.error('[conductor] role holder update failed:', err);
+      res.status(500).json({ code: 'conductor.role_assign_failed', message: 'could not update role holder' });
     }
   });
 
@@ -634,7 +706,8 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       }
       const version = await deps.workflowStore.getVersion(wf.activeVersionId);
       const [enriched] = await attachTemplateHints([wf], deps, req.session?.sub ?? 'operator');
-      res.json({ workflow: enriched, graph: version?.graph ?? null });
+      const schedules = await deps.listWorkflowSchedules?.(wf.id);
+      res.json({ workflow: enriched, graph: version?.graph ?? null, ...(schedules ? { schedules } : {}) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.get_failed', message: errMsg(err) });
     }
@@ -740,8 +813,10 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(202).json({ run, steps });
     } catch (err) {
       if (err instanceof WorkflowNotFoundError) {
+        console.warn('[conductor] manual trigger suppressed (workflow_not_found)', { slug });
         res.status(404).json({ code: 'conductor.not_found', message: err.message });
       } else if (err instanceof WorkflowDisabledError) {
+        console.warn('[conductor] manual trigger suppressed (workflow_disabled)', { slug });
         res.status(409).json({ code: 'conductor.disabled', message: err.message });
       } else if (err instanceof WorkflowNotPublishedError) {
         res.status(409).json({ code: 'conductor.not_published', message: err.message });

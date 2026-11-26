@@ -1,5 +1,6 @@
 import type { NativeToolAttachment, NativeToolSpec } from '@omadia/plugin-api';
 import type { OfficeService } from './officeService.js';
+import { PerTurnBuffer } from '@omadia/diagrams';
 import {
   DocxDescriptorSchema,
   XlsxToolInputSchema,
@@ -135,9 +136,13 @@ export interface OfficeToolOptions {
  * (`create_xlsx`, `create_docx`) share one instance and one pending-attachment
  * buffer; the plugin registers the attachment sink exactly once (on the xlsx
  * tool) so `drain()` runs a single time per turn.
+ *
+ * #1961 (ADR-0177): the instance serves every turn, so files are filed under
+ * the id of the turn that created them and `drain(turnId)` returns only that
+ * turn's files — never another concurrent turn's.
  */
 export class OfficeTool {
-  private pending: NativeToolAttachment[] = [];
+  private readonly pending = new PerTurnBuffer<NativeToolAttachment>();
   private readonly log: (msg: string) => void;
 
   constructor(
@@ -194,7 +199,7 @@ export class OfficeTool {
       if (artifact.rowsWritten !== expectedRows) {
         return `Error: postcondition failed — wrote ${String(artifact.rowsWritten)} of ${String(expectedRows)} rows`;
       }
-      this.pending.push(toAttachment(artifact, 'office.xlsx'));
+      this.pending.push(this.opts.currentTurnId?.(), toAttachment(artifact, 'office.xlsx'));
       return compactResult(artifact);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -210,7 +215,7 @@ export class OfficeTool {
     }
     try {
       const artifact = await this.service.createDocx(parsed.data);
-      this.pending.push(toAttachment(artifact, 'office.docx'));
+      this.pending.push(this.opts.currentTurnId?.(), toAttachment(artifact, 'office.docx'));
       return compactResult(artifact);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -219,13 +224,10 @@ export class OfficeTool {
     }
   }
 
-  /** Drains attachments produced this turn and resets the buffer. Registered
-   *  once (on the xlsx tool) — see class doc. */
-  drain(): NativeToolAttachment[] | undefined {
-    if (this.pending.length === 0) return undefined;
-    const out = this.pending;
-    this.pending = [];
-    return out;
+  /** Drains the files `turnId` produced and forgets them. Registered once
+   *  (on the xlsx tool) — see class doc. */
+  drain(turnId: string | undefined): NativeToolAttachment[] | undefined {
+    return this.pending.drain(turnId);
   }
 
   /** Resolve a dataset sheet to real rows, or return an Error: string the
