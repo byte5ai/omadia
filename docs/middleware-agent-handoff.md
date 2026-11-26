@@ -1351,6 +1351,21 @@ emittiert** — der Transport ist vollständig.
 
 ### Conductor Workflow-Templates (Operator-API, #429)
 
+- **Zeitpläne:** `GET /:slug` liefert die gespeicherten Zonen als `schedules`.
+  Derselbe Cron-Ausdruck behält seine Zeile und Zone, neue Ausdrücke starten in UTC
+  (ADR-0250). Der Poller protokolliert verpasste oder deaktivierte Slots und startet
+  nur im aktuellen Zeitfenster. `POST /emit` liefert deaktivierte Event-Abonnenten
+  unter `suppressed` (ADR-0251).
+
+- **Rollenverwaltung:** `POST /roles` erstellt einen neuen Schlüssel (409 bei Duplikat).
+  `PATCH /roles/:key` ändert das Label, `DELETE /roles/:key` löscht unbenutzte Rollen
+  (409 bei aktiven Inhabern oder Referenzen in aktuellen Workflow-Versionen).
+  Unbekannte Rollen liefern 404. Änderungen schreiben Audit-Einträge nach ADR-0100.
+- **Abgeleitete Vorlagen und Freigaben:** `slot:person:<key>` bindet einen Nutzer beim
+  Instanziieren (ADR-0252). Die Ableitung markiert Schritte mit URLs in Aktionseingaben.
+  Autoren dürfen nur ohne weiteren aktiven Operator selbst freigeben. Jede Version
+  beginnt privat, Statuswechsel schreiben Audit-Einträge (ADR-0253).
+
 Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
 (kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
 Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`;
@@ -1396,11 +1411,12 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `description` defaulten aufs Manifest (en-aufgelöst) →
   `201 { workflow, version, warnings? }` (die `warnings` wie bei `resolve`, #1713).
 
-**Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
-**live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
-Event-Ids — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
-strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
-nur wohlgeformt.
+**Publish-Validierung:** beide Template-Routen und `POST /` teilen
+`validatePublishGraph` mit Live-Referenzen aus `templateKnownRefs` (Agent-Slugs,
+Action-IDs, Role-Keys, Event-Vorschläge). Statische `webhook.post`-URLs werden auf
+HTTP(S) geprüft. Bei registrierten Plugin- und MCP-Aktionen werden deklarierte
+Pflichteingaben auf Vorhandensein geprüft. UUIDs aus der Operator-Kontentabelle werden in Personen-Referenzen
+abgelehnt. Builder-Entwürfe dürfen fehlende Actions für die Inline-Einrichtung behalten.
 
 **Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
 `POST /conductors/emit` nimmt jede Id, und ein eingehender Webhook-Endpoint
@@ -1464,8 +1480,7 @@ conductor.template_not_found` wenn unsichtbar), **`POST /templates`** Body
 bundled/plugin/DB; `400 conductor.template_invalid` mit Issues-Array),
 **`PUT /templates/:id`** (author-only `403 conductor.template_forbidden`;
 `manifest.id` muss `:id` sein → 400; hängt Version `latestVersion+1` an —
-Status bleibt bewusst unverändert: das Gate regelt das Teilen, nicht jede
-Version), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
+Status startet wieder `private` (ADR-0253)), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
 **`GET /templates/:id/versions`**. `resolve`/`instantiate` akzeptieren
 optional `version` im Body (Default: latest); `instantiate` stempelt die
 Provenance **in derselben Transaktion** wie den Publish (via `onPublished`)
