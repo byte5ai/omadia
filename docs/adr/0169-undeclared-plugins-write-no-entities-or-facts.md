@@ -76,7 +76,9 @@ ever meant to carry the two syncs until their releases were out.
   repositories were checked on 2026-11-25 (ADR-0167), and the two shipped writers now
   declare.
 - 🔴 **Bad (residual, unchanged):** Any plugin may still declare `odoo` or `confluence`
-  (ADR-0167). The operator sees the declaration before install only once #2245 lands.
+  (ADR-0167). The operator is still the bound. ADR-0167's consequence that the store and
+  install views "do not show `entity_systems` yet (#2245)" is settled by PR #2248, which
+  shows the declaration before install and lands ahead of this change.
 - ⚪ **Neutral:** On Fly both entity syncs are off (`odoo_entity_sync_enabled`,
   `confluence_entity_sync_enabled`), so the live log check could not have shown the warning
   in any case; the declared path is held by the tests below.
