@@ -23,6 +23,11 @@
  * EMPTY IN, EMPTY OUT. An identity with nothing authored compiles to `''`,
  * and the caller stores NULL — which is what makes the platform-wide
  * assistant identity apply unchanged to every agent that never used this.
+ *
+ * ONLY THE INSTRUCTIONS REPLACE (#1878). The runtime replaces the platform
+ * identity with this text only when `instructions` is authored; otherwise the
+ * text holds only persona/boundaries/sycophancy and is appended after the
+ * platform identity (`assembleAgentIdentity` in the orchestrator package).
  */
 
 import {

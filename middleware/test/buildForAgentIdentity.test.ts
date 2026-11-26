@@ -470,3 +470,81 @@ test('unchanged descriptions do not rebuild anything', () => {
 
   assert.deepEqual(plan.actions, []);
 });
+
+// ---------------------------------------------------------------------------
+// #1878 — compiled sections without authored text extend the platform identity
+// ---------------------------------------------------------------------------
+
+const BOUNDARY_SECTION = '## Boundaries\n- No legal advice.';
+
+test('#1878 — a boundary alone is appended to the platform identity, not swapped for it', () => {
+  const identity = String(
+    identityOf(
+      buildForAgent(
+        agentRow({ instructions: BOUNDARY_SECTION, identityHasOwnInstructions: false }),
+        deps(),
+        RUNTIME,
+      ),
+    ),
+  );
+  assert.equal(identity, `${PLATFORM_IDENTITY}\n\n${BOUNDARY_SECTION}`);
+});
+
+test('#1878 — authored behaviour text still replaces the platform identity', () => {
+  const composed = `You are the sales agent.\n\n${BOUNDARY_SECTION}`;
+  const identity = identityOf(
+    buildForAgent(
+      agentRow({ instructions: composed, identityHasOwnInstructions: true }),
+      deps(),
+      RUNTIME,
+    ),
+  );
+  assert.equal(identity, composed);
+});
+
+test('#1878 — the name still closes an appended boundary section', () => {
+  const identity = String(
+    identityOf(
+      buildForAgent(
+        agentRow({
+          instructions: BOUNDARY_SECTION,
+          identityHasOwnInstructions: false,
+          identityName: 'Omi',
+        }),
+        deps(),
+        RUNTIME,
+      ),
+    ),
+  );
+  assert.ok(identity.startsWith(`${PLATFORM_IDENTITY}\n\n${BOUNDARY_SECTION}`));
+  assert.match(identity, /\n\nDein Name ist Omi\. [^\n]*$/);
+});
+
+test('#1878 — a per-family variant keeps the platform identity and the name', () => {
+  const built = buildForAgent(
+    agentRow({
+      instructions: BOUNDARY_SECTION,
+      identityHasOwnInstructions: false,
+      identityName: 'Omi',
+      instructionsByFamily: { opus: '## Persönlichkeit\n- direct' },
+    }),
+    deps(),
+    RUNTIME,
+  );
+  const byFamily = (built.orchestrator as unknown as {
+    identityByFamily?: Record<string, string>;
+  }).identityByFamily;
+  const opus = byFamily?.['opus'] ?? '';
+  assert.ok(opus.startsWith(`${PLATFORM_IDENTITY}\n\n## Persönlichkeit\n- direct`));
+  assert.match(opus, /Dein Name ist Omi\./);
+  assert.ok(opus.endsWith(RULES_SUFFIX));
+});
+
+test('#1878 — gaining or losing authored text rebuilds the agent', () => {
+  const plan = diffSnapshots(
+    snapshot(agentRow({ instructions: 'Same.', identityHasOwnInstructions: false })),
+    snapshot(agentRow({ instructions: 'Same.', identityHasOwnInstructions: true })),
+  );
+  assert.equal(plan.actions.length, 1);
+  assert.match((plan.actions[0] as { reason: string }).reason, /identity_instructions/);
+});

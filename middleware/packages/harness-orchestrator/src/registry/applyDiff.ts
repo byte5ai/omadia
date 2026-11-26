@@ -386,6 +386,9 @@ export function buildForAgent(
       ...(agent.instructions?.trim()
         ? { identityInstructions: agent.instructions.trim() }
         : {}),
+      // #1878 — without authored behaviour text the compiled sections extend
+      // the platform identity rather than replace it.
+      ...(agent.identityHasOwnInstructions === false ? { identityReplacesBase: false } : {}),
       // #967 — the agent's authored NAME. Layered onto whichever identity
       // text applies rather than replacing it, so a bot that was given a name
       // introduces itself under that name without losing the behaviour the
@@ -473,7 +476,10 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
   // system prompt, so changing it is runtime-relevant. Without this reason the
   // edit would be stored, reported as saved, and never actually spoken: the
   // registry would keep serving the Orchestrator built from the old text.
-  if ((oldAgent.instructions ?? '') !== (newAgent.instructions ?? '')) {
+  if (
+    (oldAgent.instructions ?? '') !== (newAgent.instructions ?? '') ||
+    oldAgent.identityHasOwnInstructions !== newAgent.identityHasOwnInstructions
+  ) {
     reasons.push('identity_instructions');
   }
   // #967 — the authored name is part of the system prompt too (it is what the

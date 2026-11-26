@@ -275,6 +275,20 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Identitätsschicht eines Agenten (#1878)
+
+`assembleAgentIdentity` (`harness-orchestrator/src/agentIdentityLayers.ts`)
+baut den Identitätsabschnitt jedes Agenten in fester Reihenfolge: Basis
+(plattformweite `assistant_identity`, sonst `DEFAULT_AGENT_IDENTITY`) →
+Steckbrief → Name → Identitätsregeln (#2056) → Rollenvertrag des Archetyps
+(#2060). Die Basis wird **nur** durch eigenen Verhaltenstext des Agenten
+ersetzt (`agent_identities.instructions` nicht leer). Hat der Agent nur
+Charakter, Grenzen oder Schmeichel-Bremse, hängt der kompilierte
+`composed_prompt` **hinter** die Basis (`AgentRow.identityHasOwnInstructions`
+= `false` → `identityReplacesBase: false`); vorher ersetzte schon eine einzelne
+Grenze die Plattform-Identität. Die Varianten pro Modellfamilie (#1033) laufen
+durch dieselbe Funktion und behalten damit Basis, Name und Steckbrief.
+
 ### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
 
 `workingModes.ts` (vorher `personaRouter.ts`) wählt pro Turn höchstens einen
