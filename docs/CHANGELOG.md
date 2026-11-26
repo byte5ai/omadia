@@ -184,6 +184,18 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — memory notes keep their meaning under prompt masking (ADR-0191) (2026-11-26)
+
+- **A note no longer reads as a fact about another term (#1841).** With `mask_user_prompt`
+  on, the `memory` tool stored notes with the turn's placeholders, and the next turn mints
+  the same placeholder for a different value. Every string of a `memory` input is now
+  restored with the turn's full map before the handler runs (refused when a placeholder
+  cannot be mapped back); every `memory` result and the prefetched `/memories` index are
+  masked through the reading turn's map (withheld when masking blocks). A note from before
+  the fix that carries a placeholder the reading turn minted is withheld with a notice.
+  Masking off is unchanged. Owner decision taken on the sweep's recommendation, reversible
+  (`memoryNoteSurrogates.ts`, orchestrator, `LocalSubAgent`, `ToolDispatchService`).
+
 ### Fixed — memorable knowledge lifecycle: deleted stays deleted, safe auto-merge (ADR-0190) (2026-11-26)
 
 - **Deleted, discarded and merged-away entries stay gone (#1819).** `deleteMemory` (both

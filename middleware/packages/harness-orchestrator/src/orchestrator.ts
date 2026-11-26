@@ -241,6 +241,12 @@ import type {
 } from './cliTurnRecord.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
+  isMemoryNoteTool,
+  maskMemoryNoteResult,
+  maskMemoryNoteText,
+  restoreMemoryNoteInput,
+} from './memoryNoteSurrogates.js';
+import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
 } from './promptSurrogateToolInput.js';
@@ -2045,7 +2051,7 @@ async function wireExtraSystemHint(
   privacy: PrivacyTurnHandle | undefined,
   input: ChatTurnInput,
   /** Prefetched `/memories` index block (`memoryIndexPrefetch.ts`) — kernel
-   *  prose around an intern-exempt tool result, so not masked. */
+   *  prose around a `memory` result already masked like one (ADR-0191). */
   memoryIndexBlock?: string,
 ): Promise<string | undefined> {
   const callerHint = input.extraSystemHint;
@@ -5685,8 +5691,16 @@ export class Orchestrator {
       if (index.reason !== 'no-handler') console.log(`[orchestrator] memory-index skipped reason=${index.reason}`);
       return undefined;
     }
-    console.log(`[orchestrator] memory-index prefetched chars=${String(index.listing.length)} ms=${String(Date.now() - startedAt)}`);
-    return memoryIndexHint(index.listing);
+    // #1841 / ADR-0191 — the listing names stored notes: masked through this
+    // turn's map like a `memory` result. Withheld ⇒ no index; the model keeps
+    // the ordinary read convention, whose results are masked the same way.
+    const listing = await maskMemoryNoteText(turnContext.current()?.privacyHandle, index.listing);
+    if (!listing.ok) {
+      console.log('[orchestrator] memory-index skipped reason=privacy-withheld');
+      return undefined;
+    }
+    console.log(`[orchestrator] memory-index prefetched chars=${String(listing.text.length)} ms=${String(Date.now() - startedAt)}`);
+    return memoryIndexHint(listing.text);
   }
 
   private bindTurnMemory(
@@ -9656,10 +9670,20 @@ export class Orchestrator {
     // (the broker checks first that the colleague may receive them).
     const asksSubAgentModel =
       domainTool !== undefined && domainTool.mcpServerId === undefined && domainTool !== this.consultTool;
+    // #1841 / ADR-0191 — a `memory` note is stored with the user's values
+    // (restored with the turn's full map), never with this turn's
+    // placeholders, which a later turn mints for other values.
+    const memoryNote =
+      isMemoryNoteTool(name) && replay === undefined && privacy !== undefined
+        ? await restoreMemoryNoteInput(privacy, input)
+        : undefined;
+    if (memoryNote !== undefined && !memoryNote.ok) return memoryNote.notice;
     const handlerInput =
-      asksSubAgentModel || isInternExemptTool(name)
-        ? input
-      : restorePromptSurrogatesInToolInput(privacy, input);
+      memoryNote !== undefined
+        ? memoryNote.input
+        : asksSubAgentModel || isInternExemptTool(name)
+          ? input
+          : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<NativeToolOutput> => {
       if (
         privacy !== undefined &&
@@ -9852,8 +9876,11 @@ export class Orchestrator {
           });
         }
         // #1544 — the handler ran on the user's values; what it echoes goes
-        // back to the model as the placeholders it wrote.
-        return remaskEchoedValues(privacy, result);
+        // back to the model as the placeholders it wrote. #1841 — a `memory`
+        // result is masked through THIS turn's map (ADR-0191).
+        return isMemoryNoteTool(name)
+          ? maskMemoryNoteResult(privacy, result)
+          : remaskEchoedValues(privacy, result);
       }
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never

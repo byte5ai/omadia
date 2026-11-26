@@ -2469,9 +2469,19 @@ requests, and only there, the shield acts on four kinds of text:
   search for a masked term finds it; a top-level MCP grant counts as such a
   tool. Kept on the surrogates: a domain tool that runs a sub-agent (its
   input is a question for a model; the sub-agent's inner data tools are
-  restored in turn) and the intern-exempt self tools (`memory`, stored
-  processes), whose stored text is read back in clear in later turns that no
-  longer know the value. Every tool result text a model gets, digests,
+  restored in turn) and the intern-exempt stored-process tools, whose stored
+  text is read back in clear in later turns that no longer know the value.
+  **`memory` notes (#1841, ADR-0191, `memoryNoteSurrogates.ts`):** a
+  surrogate is unique within one turn only, so a note stored with one turn's
+  placeholder read as a fact about another value in a later turn. With
+  `mask_user_prompt` on, every string of a `memory` input is restored with
+  the turn's full map before the handler runs (a surrogate restore cannot map,
+  or a throwing restore, refuses the call), and every `memory` result and the
+  prefetched `/memories` index are masked through the reading turn's map
+  (`maskUserPrompt`, origin `context`; blocked ⇒ withheld). A stored text that
+  carries a surrogate the reading turn minted (a note from before the fix) is
+  withheld with a notice. Residual: an old note's pool person name the reading
+  turn did not mint is not recognisable. Every tool result text a model gets, digests,
   bypassed results and errors included, is masked again with the turn's
   known values (`remaskPromptValues`: case-insensitive, whitespace in the
   value also matching `-`/`_`), and because restore only ever puts in a
