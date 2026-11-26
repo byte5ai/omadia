@@ -51,6 +51,7 @@ changelog.
 ### Fixed — Conductor Designer round-trip and editing safeguards (#1716, #1717, #1720)
 
 - The visual designer preserves existing triggers, filters, IDs and graph fields on save. Timer steps have a duration and expiry edge in the inspector. Trigger and principal labels and the default agent prompt are localized.
+- Regenerated the shared plugin UI stylesheet to include the timer color token.
 - Deleting a selection offers a one-step undo. The canvas prompts before leaving or replacing an unsaved draft. Publishing a new version for an existing slug requires confirmation. Operator route segments are reserved workflow slugs.
 
 ### Fixed — Conductor publish validation and builder diagnostics (#1722, #1723, #1724, #1928)
