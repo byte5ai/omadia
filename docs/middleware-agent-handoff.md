@@ -1951,10 +1951,25 @@ unlesbar (`[verschlüsselt — Schlüssel nicht verfügbar]`). Der v4-Shape-Clas
 läuft seitdem mit den **Identitäts**-Typen des C0-Baseline (E-Mail, IBAN,
 Telefon, Adresse, ID-Nummer — nicht `date`/`amount`) als `detector`-Booster
 (Telefonnummern-Spalte wäre sonst ein safe `id`-Handle; Datums-/Betragsspalten
-bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: die
-`query_rows`-DSL (`eq`/`contains`/`group_by`) arbeitet auf verschlüsselten
-Spalten über Ciphertext (jede Zelle unterschiedlich, frischer IV) — Filtern
-nach E-Mail funktioniert dort nicht; dafür sind die `__k_*`-Link-Keys da.
+bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: jede
+Zelle hat einen frischen IV, gespeicherte Werte einer verschlüsselten Spalte
+sind also nie vergleichbar. Seit #1849 lehnen beide Graph-Backends Filter und
+`group_by` auf einer Spalte mit mindestens einer `enc1:`-Zelle ab
+(`assertNoEncryptedQueryColumns`, Code `encrypted_column`) statt still 0
+Treffer bzw. eine Gruppe pro Zeile mit Ciphertext-Key zu liefern; das Modell
+liest die Zeilen ungefiltert und arbeitet mit den `v4_*`-Verben weiter.
+`group_by` braucht ein `aggregate`, `limit`/`offset` blättern durch die Gruppen,
+`totalGroups` nennt ihre Zahl (#1844, plugin-api 1.99.0).
+
+**Import (#1845/#1847/#1867):** CSV-Trennzeichen (`,` `;` Tab) wird erkannt,
+Nicht-UTF-8 als Windows-1252 dekodiert, doppelte Spaltennamen werden zu
+`a`, `a_2` (`datasetCsvDialect.ts`); Parser-Fehler haben Codes
+(`dataset.csv_unreadable` …), die die Admin-UI übersetzt. Datumszellen werden
+als ISO-8601 gespeichert (`datasetDates.ts`), Ziffernfolgen über 15 Stellen
+bleiben `string`. Maskiert wird die ganze Tabelle in einem linearen Durchlauf
+(`maskTableCells` im privacy-guard, ein Surrogat pro Wert und Tabelle), mit
+Event-Loop-Yields. Die web-ui puffert Request-Bodies bis 26 MiB
+(`proxyClientMaxBodySize`, `app/_lib/proxyBodyLimit.ts`, #1846).
 Schlägt das Internieren einer `query_dataset`-Seite fehl, hält der
 Orchestrator die Zeilen **zurück**, weil sie Klartext tragen. Seit #1267 gilt
 das für jedes Tool an jeder Naht (`internFailedNotice`, Abschnitt

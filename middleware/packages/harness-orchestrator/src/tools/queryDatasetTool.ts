@@ -113,6 +113,16 @@ function resolveDatasetId(
 
 export const QUERY_DATASET_TOOL_NAME = 'query_dataset';
 
+/** Validation codes a look at `get_schema` can fix. */
+const SCHEMA_HINT_CODES: ReadonlySet<string> = new Set([
+  'unknown_filter_column',
+  'unknown_group_by_column',
+  'unknown_aggregate_column',
+  'op_type_mismatch',
+  'aggregate_type_mismatch',
+  'aggregate_column_required',
+]);
+
 /**
  * #1093 — a backend failure answers as a tool error, never a throw (a throw is
  * a dead turn on the streaming path). Its TEXT is withheld from the model: a
@@ -131,7 +141,8 @@ export const queryDatasetToolSpec = {
     'Three operations via `query`:\n' +
     '- `list_datasets`: list the caller\'s datasets (id, name, row count, column names+types). Call this FIRST when you don\'t already know the `dataset_id`.\n' +
     '- `get_schema`: full column schema (name, inferred type) for one dataset — pass `dataset_id`.\n' +
-    '- `query_rows`: filter/aggregate over a dataset\'s rows — pass `dataset_id` plus any of `filters` (column/op/value, `op` one of eq/neq/gt/gte/lt/lte/contains — gt/gte/lt/lte only on number columns, contains only on string columns), `group_by` (a column name), `aggregate` ({fn: count/sum/avg/min/max, column?}), `limit`, `offset`. ' +
+    '- `query_rows`: filter/aggregate over a dataset\'s rows — pass `dataset_id` plus any of `filters` (column/op/value, `op` one of eq/neq/gt/gte/lt/lte/contains — gt/gte/lt/lte only on number columns, contains only on string columns), `group_by` (a column name; needs `aggregate`), `aggregate` ({fn: count/sum/avg/min/max, column?}), `limit`, `offset`. With `group_by`, `limit`/`offset` page through the groups and `totalGroups` says how many there are — page on when it exceeds what you got. ' +
+    'A column whose cells the privacy scan flagged at import is stored encrypted and cannot be a filter or `group_by` target (`encrypted_column` error) — read its rows unfiltered instead. ' +
     'A valid `dataset_id` is the uuid `list_datasets` returned for an UPLOADED dataset. A `ds_…` id from a privacy digest is a different id space and is NOT accepted here — use the `v4_*` verbs for those. ' +
     'NEVER invent column names — call `get_schema` first if unsure. Results are always paged/aggregated server-side; the response includes `totalMatched` so you can tell the user when there is more than what was returned. ' +
     'Columns named `__k_<column>` are LINK KEYS: a stable, identity-free key of `<column>` (same value in any of this user\'s uploads ⇒ same key, case/whitespace-insensitive). They are safe verb keys — use them as `by`/join keys in `v4_distinct`/`v4_join` to de-duplicate or match people across files or pages; never show them to the user and never filter on them with a guessed value.',
@@ -328,7 +339,13 @@ export class QueryDatasetTool {
           return JSON.stringify({ ...result, rows });
         } catch (err) {
           if (err instanceof DatasetQueryValidationError) {
-            return `Error: ${err.code} — ${err.message}. Call \`get_schema\` to see the real column names/types.`;
+            // The schema hint helps only where the call named a column or
+            // type wrongly; an encrypted column (#1849) or a group_by without
+            // an aggregate (#1844) is not fixed by reading the schema.
+            const schemaHint = SCHEMA_HINT_CODES.has(err.code)
+              ? ' Call `get_schema` to see the real column names/types.'
+              : '';
+            return `Error: ${err.code} — ${err.message}.${schemaHint}`;
           }
           return backendFailure(err);
         }

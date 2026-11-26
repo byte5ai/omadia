@@ -6507,10 +6507,14 @@
     },
     "upload": "Import",
     "uploading": "Importing",
-    "uploadLimits": "Up to {maxRows} rows and {maxMb} MB per file. Every cell passes the privacy scan before it is stored.",
+    "uploadLimits": "Up to {maxRows} rows and {maxMb} MB per file. Text cells pass the privacy scan before they are stored; number, date and true/false columns are not scanned.",
     "receipt": {
       "imported": "Import complete — {rows} rows stored.",
-      "privacyScan": "Privacy scan: {scanned} cells checked, {masked} masked.",
+      "privacyScan": "Privacy scan: {scanned} text cells checked, {masked} flagged.",
+      "importedSheets": "Import complete — {sheets} sheets, {rows} rows stored, one dataset per sheet.",
+      "sheet": "Sheet “{sheet}”: {rows} rows.",
+      "flaggedEncrypted": "Flagged cells are stored encrypted with their real values; only you can read them.",
+      "flaggedMasked": "Flagged cells are stored as pseudonyms; their real values are not kept.",
       "truncated": "{cells} cells exceeded the 4,000-character per-cell cap and were cut. Affected columns: {columns}."
     },
     "loading": "loading…",

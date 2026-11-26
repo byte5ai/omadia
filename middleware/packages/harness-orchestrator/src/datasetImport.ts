@@ -235,6 +235,18 @@ const BOOLEAN_RE = /^(?:true|false)$/i;
  *  minus sign). */
 const LEADING_ZERO_RE = /^-?0\d/;
 
+/** Significant digits a JS number keeps exactly (#1844). */
+const MAX_EXACT_DIGITS = 15;
+
+/** #1844 — a numeric literal `Number()` would round: more significant digits
+ *  than a double holds (`9007199254740993` → `…992`). Such a value is an
+ *  identifier (order, account, card number), not a quantity, so its column
+ *  stays `string` — exact, and inside the privacy scan. */
+function losesPrecision(value: string): boolean {
+  const digits = value.replace(/^-/, '').replace('.', '').replace(/^0+/, '');
+  return digits.length > MAX_EXACT_DIGITS;
+}
+
 /** Infer one column's type from every non-empty value across all rows —
  *  ALL values must agree for a type to win; a single non-conforming cell
  *  falls the column back to `'string'` (the safe default that never
@@ -246,7 +258,7 @@ function inferColumnType(values: readonly string[]): DatasetColumnType {
   if (nonEmpty.length === 0) return 'string';
   if (
     nonEmpty.every((v) => NUMBER_RE.test(v)) &&
-    !nonEmpty.some((v) => LEADING_ZERO_RE.test(v))
+    !nonEmpty.some((v) => LEADING_ZERO_RE.test(v) || losesPrecision(v))
   ) {
     return 'number';
   }

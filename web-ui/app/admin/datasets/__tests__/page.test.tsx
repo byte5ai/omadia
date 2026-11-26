@@ -364,11 +364,43 @@ describe('<AdminDatasetsPage />', () => {
     await user.click(screen.getByRole('button', { name: 'Import' }));
 
     expect(
-      await screen.findByText('Privacy scan: 480 cells checked, 12 masked.'),
+      await screen.findByText(/Privacy scan: 480 text cells checked, 12 flagged\./),
     ).toBeTruthy();
+    // #1844 — no key reported ⇒ the pseudonym wording, never "encrypted".
+    expect(screen.getByText(/stored as pseudonyms/)).toBeTruthy();
     expect(screen.getByText('Import complete — 120 rows stored.')).toBeTruthy();
     // The list is re-read so the new dataset appears without a manual refresh.
     expect(mockListDatasets).toHaveBeenCalledTimes(2);
+  });
+
+  it('#1844 — lists every sheet of a workbook and says flagged cells are encrypted', async () => {
+    const user = userEvent.setup();
+    const table = (id: string, rows: number, sheetName: string) => ({
+      dataset: { datasetId: id, rowCount: rows, graphNodeId: `node-${id}` },
+      privacyScan: { scannedCells: rows * 2, maskedCells: 3, encryptedAtRest: true },
+      truncation: { truncatedCellCount: 0, truncatedColumns: [] },
+      sheetName,
+    });
+    const kunden = table('ds-k', 100, 'Kunden');
+    mockUploadDataset.mockResolvedValue({
+      dataset: kunden.dataset,
+      privacyScan: kunden.privacyScan,
+      truncation: kunden.truncation,
+      datasets: [kunden, table('ds-o', 8, 'Orte')],
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Q3 orders');
+
+    await user.upload(
+      screen.getByLabelText('CSV or Excel file'),
+      new File(['x'], 'book.csv', { type: 'text/csv' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText(/2 sheets, 108 rows stored/)).toBeTruthy();
+    expect(screen.getByText('Sheet “Kunden”: 100 rows.')).toBeTruthy();
+    expect(screen.getByText('Sheet “Orte”: 8 rows.')).toBeTruthy();
+    expect(screen.getAllByText(/stored encrypted with their real values/)).toHaveLength(2);
   });
 
   it('clears the file input after an import so the SAME file can be re-imported', async () => {

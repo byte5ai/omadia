@@ -36,6 +36,9 @@ import {
   type DatasetQueryResult,
   type DatasetSummary,
   validateDatasetQueryOptions,
+  assertNoEncryptedQueryColumns,
+  datasetQueryValueColumns,
+  ENCRYPTED_DATASET_CELL_PREFIX,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
   type EntityIngest,
@@ -760,6 +763,27 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   }
 
   /**
+   * #1849 — which of `columns` hold at least one encrypted (`enc1:`) cell in
+   * this dataset. One query, one EXISTS per column; nothing to scan when the
+   * query compares no column by value.
+   */
+  private async encryptedDatasetColumns(
+    datasetId: string,
+    columns: readonly string[],
+  ): Promise<Set<string>> {
+    if (columns.length === 0) return new Set();
+    const result = await this.pool.query<{ column_name: string }>(
+      `SELECT c AS column_name FROM unnest($2::text[]) AS c
+       WHERE EXISTS (
+         SELECT 1 FROM dataset_rows
+         WHERE dataset_id = $1 AND starts_with(data->>c, $3)
+       )`,
+      [datasetId, columns, ENCRYPTED_DATASET_CELL_PREFIX],
+    );
+    return new Set(result.rows.map((r) => r.column_name));
+  }
+
+  /**
    * #1093 — `datasets.id` is a `uuid` column, so a non-uuid id raises
    * Postgres `22P02` before the id/tenant predicate is evaluated, which no
    * caller can tell apart from a real failure. An id that cannot address a
@@ -842,6 +866,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const columns = dataset.columns;
     const normalized = validateDatasetQueryOptions(columns, opts);
     const columnTypeByName = new Map(columns.map((c) => [c.name, c.type]));
+    assertNoEncryptedQueryColumns(
+      normalized,
+      await this.encryptedDatasetColumns(dataset.id, datasetQueryValueColumns(normalized)),
+    );
 
     // The id as STORED, not as spelled by the caller — `dataset_rows
     // .dataset_id` is a `uuid` column too, and the caller may have passed an
@@ -880,20 +908,33 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       const groupParams = [...params, normalized.groupBy];
       const groupIdx = groupParams.length;
       const groupExpr = `data->>$${String(groupIdx)}`;
+      const totalGroupsResult = await this.pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM (
+           SELECT 1 FROM dataset_rows WHERE ${whereSql} GROUP BY ${groupExpr}
+         ) g`,
+        groupParams,
+      );
       const aggSql = buildAggregateSelectSql(normalized.aggregate, groupParams);
+      const pageParams = [...groupParams, normalized.limit, normalized.offset];
+      const limitIdx = pageParams.length - 1;
+      const offsetIdx = pageParams.length;
+      // #1844 — `limit`/`offset` page through the groups; the key breaks ties
+      // so pages neither repeat nor skip a group. `COLLATE "C"` matches the
+      // in-memory backend's code-unit order.
       const result = await this.pool.query<{ key: unknown; value: string | null }>(
         `SELECT ${groupExpr} AS key, ${aggSql} AS value
          FROM dataset_rows WHERE ${whereSql}
          GROUP BY ${groupExpr}
-         ORDER BY value DESC NULLS LAST
-         LIMIT 200`,
-        groupParams,
+         ORDER BY value DESC NULLS LAST, (${groupExpr}) COLLATE "C" ASC NULLS LAST
+         LIMIT $${String(limitIdx)} OFFSET $${String(offsetIdx)}`,
+        pageParams,
       );
       return {
         groups: result.rows.map((r) => ({
           key: r.key,
           value: r.value === null ? null : Number(r.value),
         })),
+        totalGroups: Number(totalGroupsResult.rows[0]?.count ?? '0'),
         totalMatched,
       };
     }

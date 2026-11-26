@@ -11187,9 +11187,16 @@ export class Orchestrator {
           `per-person keys that are the same across all of this user's uploads; use ` +
           `them as the \`by\`/join key in \`v4_distinct\`/\`v4_join\` to de-duplicate or ` +
           `match across files, and never display them.`
-        : ` No link-key columns were generated for this file (the install has no ` +
-          `dataset link-key secret), so cross-file de-duplication on text columns is ` +
-          `not available — state that plainly if asked.`);
+        : scannedCells === 0
+          ? // #1844 — link keys exist only for text columns; a file of only
+            // numbers, dates and booleans needs none, and blaming a missing
+            // secret sent the user after a configuration that was fine.
+            ` This file has no text columns, so it carries no link-key columns — its ` +
+            `number, date and boolean columns are already usable as \`by\`/join keys ` +
+            `in \`v4_distinct\`/\`v4_join\`.`
+          : ` No link-key columns were generated for this file (the install has no ` +
+            `dataset link-key secret), so cross-file de-duplication on text columns is ` +
+            `not available — state that plainly if asked.`);
 
     return (
       `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +

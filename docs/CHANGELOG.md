@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
+
+- With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
+  and `totalGroups` reports their number; `group_by` without `aggregate` is refused
+  (`group_by_requires_aggregate`).
+- A filter or `group_by` on a column holding `enc1:` cells is refused with
+  `encrypted_column` (`assertNoEncryptedQueryColumns`, mirrors the `__k_*` refusal of
+  ADR 0098) instead of matching ciphertext.
+- Digit runs over 15 significant digits stay `string` instead of being rounded. The
+  `[dataset-imported]` block no longer blames a missing secret when a file has no text
+  columns. Upload hint and receipt say only text cells are scanned and whether flagged cells
+  are stored encrypted or as pseudonyms; the receipt lists every sheet.
+- plugin-api 1.99.0 (additive).
+
 ### Fixed — Dataset import: CSV dialects, ISO dates, linear masking, 25 MB uploads (#1845, #1846, #1847, #1867) (2026-11-26)
 
 - Date cells are stored as ISO-8601 (`d.m.yyyy`, slash dates, XLSX timestamps), so `date`
