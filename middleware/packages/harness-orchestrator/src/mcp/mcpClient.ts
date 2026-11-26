@@ -67,6 +67,7 @@ import { currentDispatchCaller } from '../toolCallerContext.js';
 import type { ToolDispatchCallerContext } from '../toolDispatchService.js';
 import { currentIdempotencyScope, sendsEachCallOnce } from '../toolIdempotency.js';
 import { recordMcpAuthPrompt } from './mcpAuthPromptMint.js';
+import { recordMcpStructured } from './mcpStructuredCapture.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
   extractMcpInputPrompt,
@@ -1696,6 +1697,9 @@ export class McpManager {
         const structured = extractStructured(res);
         if (structured !== undefined) {
           this.emitStructured(cfg, toolName, structured);
+          // #547 — a data action around this call builds its table from the
+          // payload, not from the model-facing text (ADR-0021 side channel).
+          recordMcpStructured(structured);
         }
         return { text: rendered, status: 'ok' };
       } catch (err) {

@@ -344,6 +344,7 @@ export {
   mcpInputUnattendedError,
   auditCaller,
 } from './mcp/mcpClient.js';
+export { captureMcpStructured } from './mcp/mcpStructuredCapture.js';
 export type {
   DeprecatedMcpTransport,
   McpAuthProvider,

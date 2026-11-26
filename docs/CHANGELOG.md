@@ -80,6 +80,13 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Added — MCP `structuredContent` feeds the data side channel (#547, ADR-0021) (2026-11-26)
+
+- A `deliver_data` data action on an MCP tool builds its table from the tool's
+  `structuredContent` (captured per call, `captureMcpStructured`) instead of parsing the
+  model-facing text, which fails for servers whose text mirror is prose. The model still
+  gets only the status (ADR-0021, ADR-0094); the text a model sees is unchanged.
+
 ### Fixed — typed MCP call outcomes, no interaction from unattended runs (ADR-0206) (2026-11-26)
 
 - **#1909** Conductor MCP action steps fail on an authorization request or an

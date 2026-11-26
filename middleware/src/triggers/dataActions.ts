@@ -9,6 +9,7 @@
  * model gets only a status (row count, columns).
  */
 
+import { captureMcpStructured } from '@omadia/orchestrator';
 import { describeToolCall, type DataPlanGuard, type TableData } from '@omadia/plugin-api';
 
 import type { DataActionResult } from './triggerChain.js';
@@ -33,6 +34,11 @@ export function extractRows(raw: string): { rows: unknown[]; parsed: unknown } |
   } catch {
     return undefined;
   }
+  return rowsOfValue(parsed);
+}
+
+/** Rows of an already-parsed result value — same rules as {@link extractRows}. */
+export function rowsOfValue(parsed: unknown): { rows: unknown[]; parsed: unknown } | undefined {
   if (Array.isArray(parsed)) return { rows: parsed, parsed };
   if (isRecord(parsed)) {
     for (const field of ROW_FIELDS) {
@@ -95,12 +101,16 @@ export function createDataActionRunner(
         if (!verdict.allowed) return { ok: false, error: `refused by the agent's boundaries: ${verdict.reason}` };
       }
       let raw: string;
+      let structured: readonly unknown[];
       try {
-        raw = await invoke(action.input);
+        // #547 — an MCP tool's `structuredContent` is the data; its text
+        // mirror is for the model and may be prose.
+        ({ value: raw, structured } = await captureMcpStructured(() => invoke(action.input)));
       } catch (err) {
         return { ok: false, error: `${action.tool} failed: ${err instanceof Error ? err.message : String(err)}` };
       }
-      const extracted = extractRows(raw);
+      const extracted =
+        structured.length === 1 ? rowsOfValue(structured[0]) ?? extractRows(raw) : extractRows(raw);
       if (!extracted) return { ok: false, error: `${action.tool} returned no structured data` };
       return { ok: true, rows: extracted.rows, columns: columnsOf(extracted.rows), raw: extracted.parsed };
     },
