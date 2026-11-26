@@ -319,6 +319,7 @@ export async function wireConductor(deps: {
    *  rotate, enable/disable, delete, payload scope). Passed straight through to the
    *  admin router; `index.ts` maps it onto `admin_audit`. */
   auditWebhookChange?: NonNullable<ConductorRouterDeps['auditWebhookChange']>;
+  auditGovernanceChange?: NonNullable<ConductorRouterDeps['auditGovernanceChange']>;
   /** Global inbound kill switch (`CONDUCTOR_WEBHOOKS_ENABLED`). Default true. */
   webhooksEnabled?: boolean;
   /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
@@ -675,7 +676,7 @@ export async function wireConductor(deps: {
   const templateKnownRefs = async (): Promise<KnownRefs> => ({
     agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
     actionIds: (await deps.listActions?.())?.map(actionCatalogId) ?? [],
-    roleKeys: (await roleStore.listRoles()).map((r) => r.key),
+    roleKeys: await roleStore.listRoleKeys(),
     eventIds: await knownEventIds(),
   });
   const users = new UserStore(deps.pool);
@@ -732,6 +733,8 @@ export async function wireConductor(deps: {
       templateStore,
       templateKnownRefs,
       isOperatorAccountId: async (id) => (await users.findById(id)) !== null,
+      hasOtherActiveOperator: (actor, subject) => users.hasOtherActiveOperator(actor.id, actor.email ?? subject),
+      ...(deps.auditGovernanceChange ? { auditGovernanceChange: deps.auditGovernanceChange } : {}),
       webhookEndpoints,
       webhookSubscriptions,
       ...(deps.auditRoleChange ? { auditRoleChange: deps.auditRoleChange } : {}),

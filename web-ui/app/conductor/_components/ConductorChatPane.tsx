@@ -61,7 +61,7 @@ function slotCoverage(
 ): { filled: number; total: number } {
   let filled = 0;
   let total = 0;
-  for (const kind of ['agents', 'actions', 'roles', 'events', 'channels'] as const) {
+  for (const kind of ['agents', 'actions', 'roles', 'people', 'events', 'channels'] as const) {
     for (const slot of tpl.slots[kind] ?? []) {
       total += 1;
       const v = prefill[kind]?.[slot.key];

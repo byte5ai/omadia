@@ -5648,6 +5648,24 @@ export async function createConductorRole(key: string, label: string): Promise<v
   return postJson(`${CONDUCTOR_BASE}/roles`, { key, label });
 }
 
+export async function updateConductorRoleLabel(key: string, label: string): Promise<void> {
+  await getJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function deleteConductorRole(key: string): Promise<void> {
+  const path = `${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}`;
+  const response = await fetch(botApi(path), { method: 'DELETE', credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    maybeNavigateToLogin(response.status);
+    throw new ApiError(response.status, `DELETE ${path} failed: ${response.status}`, body);
+  }
+}
+
 export async function assignRoleHolder(key: string, holderId: string, action: 'add' | 'remove'): Promise<{ holders: string[] }> {
   return postJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}/holders`, { holderId, action });
 }
@@ -5806,6 +5824,7 @@ export interface ConductorTemplateSlots {
   agents?: ConductorTemplateSlot[];
   actions?: ConductorTemplateSlot[];
   roles?: ConductorTemplateSlot[];
+  people?: ConductorTemplateSlot[];
   events?: ConductorTemplateSlot[];
   channels?: ConductorTemplateSlot[];
   text?: ConductorTemplateTextSlot[];
@@ -5815,7 +5834,7 @@ export interface ConductorTemplateSlots {
  *  `text` maps declared text-slot keys to the substituted strings (#478,
  *  additive — absent for pure-ref v1 mappings). */
 export type ConductorTemplateSlotMapping = Partial<
-  Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', Record<string, string>>
+  Record<'agents' | 'actions' | 'roles' | 'people' | 'events' | 'channels', Record<string, string>>
 > & {
   text?: Record<string, string>;
 };
@@ -5869,7 +5888,7 @@ export async function fetchConductorTemplate(id: string): Promise<{ template: Co
  *  is mounted at /conductors, so the path carries no '/workflows' prefix. */
 export async function saveWorkflowAsTemplate(
   slug: string,
-): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number } }> {
+): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number }; urlInputStepIds?: string[] }> {
   return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/save-as-template`, {});
 }
 

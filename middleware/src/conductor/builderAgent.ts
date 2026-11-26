@@ -365,6 +365,7 @@ const PREFILL_REFS: Record<TemplateSlotKind, keyof KnownRefs | null> = {
   agents: 'agentIds',
   actions: 'actionIds',
   roles: 'roleKeys',
+  people: null,
   events: null,
   channels: null,
 };
@@ -430,6 +431,7 @@ function filterPrefill(raw: unknown, manifest: TemplateManifest, knownRefs: Know
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return prefill;
   const rec = raw as Record<string, unknown>;
   for (const kind of REF_SLOT_KINDS) {
+    if (kind === 'people') continue;
     const values = rec[kind];
     if (typeof values !== 'object' || values === null || Array.isArray(values)) continue;
     const declared = new Set((manifest.slots[kind] ?? []).map((s) => s.key));
@@ -515,6 +517,7 @@ function buildPrompt(
           'If one or more catalog templates clearly fit the request, ALSO include a "templateProposals" array (max 3) in your JSON object:',
           '  "templateProposals": [ { "templateId": "<id from the catalog above>", "version": <its catalog version>, "reason": "<one short user-facing sentence>", "prefill": { "<kind>": { "<slot key>": "<value>" }, "text": { "<text key>": "<string>" } } } ]',
           "  prefill kinds are 'agents'|'actions'|'roles'|'events'|'channels'|'text'; values are best-effort guesses from the conversation — partial or an empty {} is fine.",
+          '  Leave people slots for the operator to map using the directory.',
           '  Never propose ids that are not in the catalog above, and do not rebuild a proposed template step-by-step with patches.',
           '',
         ]

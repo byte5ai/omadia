@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor role and template governance (#1708, #1718, #1719, #1725)
+
+- Role creation rejects duplicate keys, label updates are separate, and unknown role assignments return 404. Role deletion refuses roles with active holders or references in active workflow versions. Create, edit and delete write admin audit rows. Soft-deleting a workflow removes its schedules.
+- Derived templates use person slots for user principals, suggest an available slug based on the template name, and flag action inputs containing HTTP(S) URLs. See ADR-0252.
+- Template submissions and reviews write admin audit rows. Authors can approve their own version on a single-operator install. New versions start private and require review before sharing. See ADR-0253.
+
 ### Fixed — Conductor Designer round-trip and editing safeguards (#1716, #1717, #1720)
 
 - The visual designer preserves existing triggers, filters, IDs and graph fields on save. Timer steps have a duration and expiry edge in the inspector. Trigger and principal labels and the default agent prompt are localized.

@@ -1,5 +1,6 @@
 import { isTemplateExpression, validate } from '@omadia/conductor-core';
-import type { ValidationResult, WorkflowGraph } from '@omadia/conductor-core';
+import type { ValidationError, ValidationResult, WorkflowGraph } from '@omadia/conductor-core';
+import type { PoolClient } from 'pg';
 
 import { isUuid } from '../http/uuidParam.js';
 import type { ConductorRouterDeps } from './routes.js';
@@ -40,4 +41,27 @@ export async function validatePublishGraph(
     }
   }
   return { ...result, ok: result.errors.length === 0 };
+}
+
+export class PublishRoleUnavailableError extends Error {
+  constructor(readonly errors: ValidationError[]) {
+    super('a referenced role disappeared during publish');
+  }
+}
+
+/** Hold referenced roles until the active-version write commits, against role deletion. */
+export async function lockPublishedRoles(client: PoolClient, graph: WorkflowGraph): Promise<void> {
+  const steps = graph.steps.filter((step) => step.kind === 'human' && step.human?.principal.kind === 'role');
+  if (steps.length === 0) return;
+  const keys = [...new Set(steps.map((step) => step.human!.principal.ref))];
+  const { rows } = await client.query<{ key: string }>(
+    'SELECT key FROM conductor_roles WHERE key = ANY($1::text[]) ORDER BY key FOR KEY SHARE',
+    [keys],
+  );
+  const live = new Set(rows.map((row) => row.key));
+  const errors = steps.flatMap((step): ValidationError[] => {
+    const key = step.human!.principal.ref;
+    return live.has(key) ? [] : [{ code: 'unknown_role_ref', message: `step '${step.id}' references unknown role '${key}'`, nodeIds: [step.id] }];
+  });
+  if (errors.length > 0) throw new PublishRoleUnavailableError(errors);
 }

@@ -5792,6 +5792,7 @@ async function main(): Promise<void> {
         // column and every audit write failed.
         await adminAudit?.record(roleChangeAuditEntry(entry));
       },
+      auditGovernanceChange: async (entry) => { await adminAudit?.record(entry); },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
       // #1707 — webhook administration lands in the admin trail. Closure, not the
       // instance, for the same reason as auditRoleChange: `adminAudit` is constructed

@@ -31,6 +31,12 @@ export type AuditAction =
   // security decision and belongs in the trail (any operator can assign
   // themselves — the single-role system has no finer permission today).
   | 'conductor.role_holders_change'
+  | 'conductor.role_created'
+  | 'conductor.role_updated'
+  | 'conductor.role_deleted'
+  | 'conductor.template_submitted'
+  | 'conductor.template_approved'
+  | 'conductor.template_rejected'
   // #330 C2a — plugin-driven conversation bind/unbind: a binding decides
   // which Agent answers a group, so the auto-bind lifecycle belongs in the
   // same trail as the role batons.

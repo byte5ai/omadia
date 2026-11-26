@@ -1351,6 +1351,15 @@ emittiert** — der Transport ist vollständig.
 
 ### Conductor Workflow-Templates (Operator-API, #429)
 
+- **Rollenverwaltung:** `POST /roles` erstellt einen neuen Schlüssel (409 bei Duplikat).
+  `PATCH /roles/:key` ändert das Label, `DELETE /roles/:key` löscht unbenutzte Rollen
+  (409 bei aktiven Inhabern oder Referenzen in aktuellen Workflow-Versionen).
+  Unbekannte Rollen liefern 404. Änderungen schreiben Audit-Einträge nach ADR-0100.
+- **Abgeleitete Vorlagen und Freigaben:** `slot:person:<key>` bindet einen Nutzer beim
+  Instanziieren (ADR-0252). Die Ableitung markiert Schritte mit URLs in Aktionseingaben.
+  Autoren dürfen nur ohne weiteren aktiven Operator selbst freigeben. Jede Version
+  beginnt privat, Statuswechsel schreiben Audit-Einträge (ADR-0253).
+
 Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
 (kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
 Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`;

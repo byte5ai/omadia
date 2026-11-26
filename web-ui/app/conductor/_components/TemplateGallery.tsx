@@ -43,6 +43,7 @@ import type { ConductorTemplate, ConductorTemplateSlots } from '@/app/_lib/api';
 /** Render order + per-kind plural i18n key for the "you will map" summary. */
 const SLOT_SUMMARY_KINDS: ReadonlyArray<readonly [keyof ConductorTemplateSlots, string]> = [
   ['roles', 'templateSlotRoles'],
+  ['people', 'templateSlotPeople'],
   ['agents', 'templateSlotAgents'],
   ['actions', 'templateSlotActions'],
   ['events', 'templateSlotEvents'],
@@ -207,7 +208,9 @@ export function TemplateGallery({
       setConfirmDeleteId(null);
       onCatalogChanged?.();
     } catch (err) {
-      setActionError(t('templateRequestFailed', { message: serverErrorMessage(err) }));
+      setActionError(err instanceof ApiError && err.code === 'conductor.template_self_approval_forbidden'
+        ? t('templateSelfApprovalForbidden')
+        : t('templateRequestFailed', { message: serverErrorMessage(err) }));
     } finally {
       setPendingAction(null);
     }
