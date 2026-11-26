@@ -78,10 +78,12 @@ import {
   type ModelCatalogSync,
 } from '../platform/modelCatalogSync.js';
 import { applyProviderAssignment } from '../platform/providerAssignment.js';
+import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { rebuildOrder } from '../platform/providerDependents.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
+  readonly audit?: Pick<AdminAuditLog, 'record'>;
   readonly vault?: SecretVault;
   /** Tear down + re-activate a plugin so it re-reads its config. */
   readonly reactivate?: (agentId: string) => Promise<void>;
@@ -515,7 +517,15 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
 
     // The validation + persist rules live in `providerAssignment.ts` so the
     // subscription-login hand-off (OM-79) applies exactly the same checks.
-    const result = await applyProviderAssignment(deps, { pluginId, provider, model });
+    const result = await applyProviderAssignment({
+      ...deps,
+      onAssignmentPersisted: (id, before, after) => recordOperatorAudit(deps.audit, req, {
+        action: 'provider.assignment_change',
+        target: 'plugin:' + id,
+        before,
+        after,
+      }),
+    }, { pluginId, provider, model });
     if (!result.ok) {
       res.status(result.status).json({
         code: result.code,

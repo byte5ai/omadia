@@ -1,5 +1,7 @@
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
 
+import { ENCRYPTED_DATASET_CELL_PREFIX } from '@omadia/plugin-api';
+
 import { resolveDatasetLinkKeySecret } from './datasetLinkKey.js';
 
 /**
@@ -38,8 +40,10 @@ import { resolveDatasetLinkKeySecret } from './datasetLinkKey.js';
  * garbage and never to a throw that would take a whole query down.
  */
 
-/** Marks an encrypted cell. Versioned so a future scheme can coexist. */
-export const ENCRYPTED_CELL_PREFIX = 'enc1:';
+/** Marks an encrypted cell. Versioned so a future scheme can coexist. The
+ *  constant lives in plugin-api so the graph backends refuse queries on
+ *  encrypted columns (#1849) by the same prefix. */
+export const ENCRYPTED_CELL_PREFIX = ENCRYPTED_DATASET_CELL_PREFIX;
 
 /** What a reader shows for a cell it holds no key for. */
 export const UNAVAILABLE_CELL = '[verschlüsselt — Schlüssel nicht verfügbar]';

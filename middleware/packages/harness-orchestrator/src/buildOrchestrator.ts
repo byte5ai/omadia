@@ -67,6 +67,7 @@ import {
   type AiDisclosureSetup,
 } from './orchestrator.js';
 import type { AnswerVerbosity } from './answerVerbosity.js';
+import type { AnswerLanguage } from './answerLanguage.js';
 import {
   LlmScreener,
   HttpProxyScreener,
@@ -457,6 +458,12 @@ export interface OrchestratorDeps {
    * `OrchestratorOptions.answerVerbosity`.
    */
   readonly answerVerbosity?: AnswerVerbosity;
+  /**
+   * #1992 / ADR-0220 — fallback answer language (`answer_language`), shared by
+   * every Agent this process builds. Absent → German. See
+   * `OrchestratorOptions.answerLanguage`.
+   */
+  readonly answerLanguage?: AnswerLanguage;
   /**
    * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
    * shipping default (standard, active) on every channel. See
@@ -1010,9 +1017,9 @@ export function buildOrchestratorForAgent(
         }
       : {}),
     log: (msg, fields): void => {
-      console.error(
-        `[security-audit] ${msg}${fields ? ` ${JSON.stringify(fields)}` : ''}`,
-      );
+      // #1832 — some callers already carry the prefix; write it once.
+      const line = msg.startsWith('[security-audit]') ? msg : `[security-audit] ${msg}`;
+      console.error(`${line}${fields ? ` ${JSON.stringify(fields)}` : ''}`);
     },
   });
 
@@ -1235,6 +1242,7 @@ export function buildOrchestratorForAgent(
     ...((config.answerVerbosity ?? deps.answerVerbosity)
       ? { answerVerbosity: config.answerVerbosity ?? deps.answerVerbosity }
       : {}),
+    ...(deps.answerLanguage ? { answerLanguage: deps.answerLanguage } : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
@@ -1295,6 +1303,7 @@ export function buildOrchestratorForAgent(
       // A channel turn's routine has to name this Agent, see `initRoutines`.
       agentSlug: config.agentId,
     });
+    const cliModel = config.model.replace(/-cli$/, '') || 'sonnet';
     return {
       orchestrator,
       bundle: {
@@ -1309,10 +1318,12 @@ export function buildOrchestratorForAgent(
           // A refusal under OMADIA_PRIVACY_FORCE_GUARDED is worded in the
           // turn's language, by the same rule as the in-process notices.
           noticeLocale: (input) => orchestrator.noticeLocale(input),
-          // ADR-0017 — the CLI cannot mask, so a turn is refused while a
-          // privacy guard runs (not only under the org policy).
+          // ADR-0195 — a guarded turn runs through its own privacy handle
+          // (masks, interning, v4 tools, restore, receipt); one that gets no
+          // handle is refused (fail closed), as under the org policy.
           privacyGuarded: () => deps.privacyGuard() !== undefined,
-          model: config.model.replace(/-cli$/, '') || 'sonnet',
+          turnPrivacy: (input, turnId) => orchestrator.cliTurnPrivacy(input, turnId, cliModel),
+          model: cliModel,
           // #1391 — persist every successful CLI turn like an in-process one
           // (session log + graph nodes, facts, excerpt, auto-promotion,
           // `onAfterTurn`), so Memory and recall stop being blank here.

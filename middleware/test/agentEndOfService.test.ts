@@ -384,7 +384,7 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
       updateAgent: (id: string, patch: { status?: string }) => {
         order.push(`store.updateAgent(${id}, ${JSON.stringify(patch)})`);
         agents = agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) as typeof agents;
-        return Promise.resolve();
+        return Promise.resolve(agents.find((a) => a.id === id));
       },
       deleteAgent: (id: string, deletedBy?: string) => {
         order.push(`store.deleteAgent(${id}, ${String(deletedBy)})`);
@@ -491,9 +491,12 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
 
   it('a rename, and disabling an agent that is already disabled, end nothing', async () => {
     await call('PATCH', '/mara', { name: 'Mara M.' });
+    assert.equal(audits.at(-1)?.action, 'agent.update');
+    assert.equal((audits.at(-1)?.after as { name: string }).name, 'Mara M.');
     agents = agents.map((a) => ({ ...a, status: a.slug === 'mara' ? 'disabled' : a.status }));
     await call('PATCH', '/mara', { status: 'disabled' });
     assert.equal(order.some((o) => o.startsWith('endOfService')), false);
+    assert.deepEqual(audits.map(({ action }) => action), ['agent.update']);
     // Re-enabling never resumes anything: it is a status change and an audit row.
     order = [];
     await call('PATCH', '/mara', { status: 'enabled' });

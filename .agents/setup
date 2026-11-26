@@ -81,7 +81,9 @@ for workspace in middleware web-ui desktop; do
   [[ "$workspace" != desktop ]] || version=$desktop_node_version
   # Use the kernel toolchain's npm for both runtimes. Node 24's bundled npm
   # can silently skip dependency install scripts unless separately approved.
+  # The local embedding adapter uses the CPU provider.
   step "Dependencies: $workspace" env PATH="$toolchains/node-v$version/bin:$PATH" \
+    ONNXRUNTIME_NODE_INSTALL_CUDA=skip \
     node "$toolchains/node-v$node_version/lib/node_modules/npm/bin/npm-cli.js" \
     --prefix "$workspace" ci --include=dev --include=optional --no-audit --no-fund
 done

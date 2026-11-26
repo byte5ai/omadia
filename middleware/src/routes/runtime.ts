@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import { isDeepStrictEqual } from 'node:util';
+import { auditActorFromRequest, recordOperatorAudit } from '../auth/adminAuditLog.js';
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
 
 import type { BackgroundJobRegistry } from '../platform/backgroundJobRegistry.js';
@@ -387,6 +388,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       try {
         await deps.installedRegistry.updateConfig(id, nextConfig);
         await auditPrivacyChange(deps, req, id, installed.config, nextConfig);
+        await auditPluginConfigChange(deps, req, id, installed.config, nextConfig);
         // #1076 — an `llm_provider` change also rebuilds the plugins that
         // inherit it (extras from the orchestrator), dependents first.
         await reactivateAfterProviderWrite(providerWriteDeps(deps), id, {
@@ -817,7 +819,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         return;
       }
 
-      await applySetupValues(deps, id, installed, setEntries, deleteKeys, res);
+      await applySetupValues(deps, req, id, installed, setEntries, deleteKeys, res);
     },
   );
 
@@ -908,7 +910,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         });
         return;
       }
-      await applySetupValues(deps, id, installed, outcome.values, [], res);
+      await applySetupValues(deps, req, id, installed, outcome.values, [], res);
     },
   );
 
@@ -1092,6 +1094,7 @@ function providerWriteDeps(deps: RuntimeDeps): RuntimeDeps & {
 
 async function applySetupValues(
   deps: RuntimeDeps,
+  req: Request,
   id: string,
   installed: { config?: Record<string, unknown> },
   setEntries: Record<string, string>,
@@ -1136,9 +1139,26 @@ async function applySetupValues(
   // before anything is written.
   const typedFields = resolveTypedFields(deps.catalog, id);
   const typedValues: Record<string, unknown> = {};
+  // #1998 — an empty `enum` value is a clear: the key is removed, so the
+  // plugin applies its own default (as an install without the value does).
+  // A required enum cannot be cleared.
+  const clearedEnums = new Set<string>();
   for (const [k, v] of Object.entries(setEntries)) {
     const field = typedFields.get(k);
     if (!field) continue;
+    if (field.type === 'enum' && v === '') {
+      if (field.required) {
+        res.status(400).json({
+          code: 'runtime.setup_field_invalid',
+          message: `value for '${k}' is required`,
+          field: k,
+          reason: 'required',
+        });
+        return;
+      }
+      clearedEnums.add(k);
+      continue;
+    }
     const coerced = coerceSetupFieldValue(field, v);
     if ('error' in coerced) {
       res.status(400).json({
@@ -1158,7 +1178,8 @@ async function applySetupValues(
   const configSet: Record<string, unknown> = {};
   const configDelete: string[] = [];
   for (const [k, v] of Object.entries(setEntries)) {
-    if (isSecret(k)) vaultSet[k] = v;
+    if (clearedEnums.has(k)) configDelete.push(k);
+    else if (isSecret(k)) vaultSet[k] = v;
     else configSet[k] = Object.hasOwn(typedValues, k) ? typedValues[k] : v;
   }
 
@@ -1184,9 +1205,22 @@ async function applySetupValues(
 
     if (Object.keys(vaultSet).length > 0) {
       await vault.setMany(id, vaultSet);
+      await recordOperatorAudit(deps.audit, req, {
+        action: 'plugin.secret_change',
+        target: 'plugin:' + id,
+        after: { operation: 'set', count: Object.keys(vaultSet).length },
+      });
     }
     for (const key of vaultDelete) {
       await vault.deleteKey(id, key);
+      if (storedVaultKeys.has(key)) {
+        await recordOperatorAudit(deps.audit, req, {
+          action: 'plugin.secret_change',
+          target: 'plugin:' + id,
+          before: { present: true },
+          after: { operation: 'delete', present: false },
+        });
+      }
     }
     let providerChanged = false;
     const providerWritten =
@@ -1198,6 +1232,7 @@ async function applySetupValues(
       };
       for (const k of configDelete) delete nextConfig[k];
       await deps.installedRegistry.updateConfig(id, nextConfig);
+      await auditPluginConfigChange(deps, req, id, installed.config ?? {}, nextConfig);
       providerChanged = isEffectiveProviderChange(installed.config, nextConfig);
     }
     // #1076 — same dependent rebuild as PATCH /installed/:id/config.
@@ -1267,8 +1302,10 @@ function dependentRebuildFailure(err: ProviderDependentRebuildError | ProviderPl
 }
 
 /**
- * The plugin's `boolean` / `integer` setup fields by key — the types whose
- * stored value is not the string the patch body carries. Empty without a
+ * The plugin's `boolean` / `integer` / `enum` setup fields by key — the types
+ * the install path coerces or checks beyond the string the patch body carries
+ * (#1998: an `enum` edit refuses a value the manifest does not list, as the
+ * install does — ADR-0054, one validation for both paths). Empty without a
  * catalog entry. Other types are stored as sent (their format check is the
  * `pattern` gate above).
  */
@@ -1280,7 +1317,7 @@ function resolveTypedFields(
   const schema = entry ? extractSetupSchema(entry) : null;
   return new Map(
     (schema?.fields ?? [])
-      .filter((f) => f.type === 'boolean' || f.type === 'integer')
+      .filter((f) => f.type === 'boolean' || f.type === 'integer' || f.type === 'enum')
       .map((f) => [f.key, f]),
   );
 }
@@ -1288,6 +1325,9 @@ function resolveTypedFields(
 /** English (no request locale) tail of the 400 message for a typed field. */
 function typedValueExpectation(field: InstallSetupField): string {
   if (field.type === 'boolean') return "must be 'true' or 'false'";
+  if (field.type === 'enum') {
+    return `must be one of: ${(field.enum ?? []).map((o) => o.value).join(', ')}`;
+  }
   return field.min !== undefined
     ? `must be a whole number of at least ${field.min}`
     : 'must be a whole number';
@@ -1520,6 +1560,44 @@ async function auditPrivacyChange(
       err instanceof Error ? err.message : err,
     );
   }
+}
+
+/** Arbitrary plugin config may contain credentials, including in undeclared fields. */
+async function auditPluginConfigChange(
+  deps: RuntimeDeps,
+  req: Request,
+  id: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Promise<void> {
+  if (!deps.audit) return;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const privacyKeys = new Set([
+    ...Object.keys(privacySettingsOf(before)),
+    ...Object.keys(privacySettingsOf(after)),
+  ]);
+  const changed = [...keys].filter((key) =>
+    !privacyKeys.has(key) && !isDeepStrictEqual(before[key], after[key]),
+  );
+  if (changed.length === 0) return;
+  const typed = resolveTypedFields(deps.catalog, id);
+  const summarize = (config: Record<string, unknown>) => ({
+    fieldsPresent: changed.filter((key) => Object.hasOwn(config, key)).length,
+    settings: Object.fromEntries(changed.flatMap((key) => {
+      const type = typed.get(key)?.type;
+      const value = config[key];
+      return (type === 'boolean' && typeof value === 'boolean') ||
+        (type === 'integer' && typeof value === 'number' && Number.isSafeInteger(value))
+        ? [[key, value]]
+        : [];
+    })),
+  });
+  await recordOperatorAudit(deps.audit, req, {
+    action: 'plugin.config_change',
+    target: 'plugin:' + id,
+    before: summarize(before),
+    after: { ...summarize(after), fieldsChanged: changed.length },
+  });
 }
 
 /** #1497 activation result, plus #1860's note when the new values wait for

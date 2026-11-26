@@ -398,3 +398,48 @@ describe('createOrchestratorDispatcher', () => {
     assert.equal(input.channelIdentity, undefined);
   });
 });
+
+describe('#1774 / #1826 — reserved origin types at intake (ADR-0182)', () => {
+  async function originSeen(channelId: string, channelType: string): Promise<unknown> {
+    let seen: unknown = 'not-called';
+    const bundle: ChatAgentBundle = {
+      agent: {
+        chat: () => Promise.resolve({ text: '' }),
+        async *chatStream(input) {
+          seen = input.origin;
+          await Promise.resolve();
+          yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+        },
+      },
+    };
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined,
+      getAgentBundle: () => bundle,
+    });
+    await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        channelId,
+        metadata: { origin: { channelType, scope: { kind: 'personal', userId: 'victim' } } },
+      }),
+    );
+    return seen;
+  }
+
+  it('no channel plugin may state the kernel web origin `http`', async () => {
+    assert.equal(await originSeen('de.byte5.channel.teams', 'http'), undefined);
+    assert.equal(await originSeen('@omadia/channel-api', 'HTTP'), undefined);
+  });
+
+  it('only the Public API channel may state `api`', async () => {
+    assert.equal(await originSeen('de.byte5.channel.teams', 'api'), undefined);
+    assert.deepEqual(await originSeen('@omadia/channel-api', 'api'), {
+      channelType: 'api',
+      scope: { kind: 'personal', userId: 'victim' },
+    });
+  });
+
+  it('other channel types pass unchanged', async () => {
+    assert.equal(((await originSeen('de.byte5.channel.teams', 'teams')) as { channelType: string }).channelType, 'teams');
+  });
+});

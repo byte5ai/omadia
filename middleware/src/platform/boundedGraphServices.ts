@@ -36,7 +36,6 @@ import {
   GraphServiceRefusedError,
   KgEntityNamespaceError,
   MemoryPathError,
-  agentScopePrefix,
   neighborsOfType,
   scopeBelongsToAgent,
   type EditProcessInput,
@@ -59,7 +58,9 @@ import {
   currentGraphNodeViewer,
   currentProcessBoundary,
   currentProcessReadFilter,
+  creatorOfCurrentTurn,
   graphNodeFilter,
+  processWriteScope,
   graphScopeFor,
   graphSessionAccess,
   turnContext,
@@ -448,6 +449,11 @@ export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]:
     addOwner: 'kernel-only',
     removeOwner: 'kernel-only',
     deleteMemory: 'kernel-only',
+    listOwnerlessMemorableKnowledge: 'kernel-only',
+    deleteOwnerlessMemory: 'kernel-only',
+    findOmadiaUserIdByChannelIdentity: 'kernel-only',
+    countUserIdentity: 'kernel-only',
+    purgeUserIdentity: 'kernel-only',
     countMemorableKnowledge: 'kernel-only',
     purgeMemorableKnowledge: 'kernel-only',
     countConversationHistory: 'kernel-only',
@@ -644,14 +650,17 @@ export function boundProcessMemory(service: ProcessMemoryService, pluginId: stri
   };
   return Object.freeze({
     // A process lands only in this agent's scopes: another agent's
-    // `query_processes` and plan reuse would serve it (INV-2).
+    // `query_processes` and plan reuse would serve it (INV-2). Like
+    // `write_process` (#2223): none in a context-bound turn, where processes
+    // are not readable either.
     async write(input) {
       if (!currentBoundary()) throw new GraphServiceRefusedError(pluginId, capability, 'write', 'no-boundary');
-      const prefix = agentScopePrefix(turnContext.current()?.agentSlug ?? 'default');
-      if (!scopeBelongsToAgent(input.scope, prefix)) {
+      if (processWriteScope(input.scope) !== input.scope) {
         throw new GraphServiceRefusedError(pluginId, capability, 'write', 'out-of-scope');
       }
-      return service.write(input);
+      // #1843 — the creator is the turn's caller, never what the plugin says.
+      const { createdByOmadiaUserId: _ignored, ...rest } = input;
+      return service.write({ ...rest, ...creatorOfCurrentTurn() });
     },
     async edit(input: EditProcessInput): Promise<EditProcessResult> {
       if (!(await readableRecord('edit', input.id))) return { ok: false, reason: 'not-found' };

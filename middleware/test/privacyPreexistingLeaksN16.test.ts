@@ -312,9 +312,9 @@ describe('#1540 · raw-store readers carry the mark over', () => {
     const body = `SIGNIFICANT: ${REAL} bekommt Rechnungen am 1. des Monats, netto 14 Tage, als PDF an die Buchhaltung.`;
     const rows = [
       { virtual_path: '/memories/orchestrators/a/note.md', content: markUnprotectedNote(body) },
-      // A plugin's ctx.memory file: raw by construction, no marker needed.
-      { virtual_path: '/memories/orchestrators/a/plugins/crm/cache.md', content: body },
     ];
+    // Plugin storage (`…/plugins/<id>/`) is excluded by the scan itself
+    // (#1829); scratchPromotionReaper.pg.test.ts covers that on real SQL.
     const pool = {
       query: async (sql: string) => (/SELECT/i.test(sql) ? { rows } : { rows: [] }),
     } as never;
@@ -342,7 +342,7 @@ describe('#1540 · raw-store readers carry the mark over', () => {
       log: () => {},
     });
     await reaper.runOnce();
-    assert.equal(created.length, 2);
+    assert.equal(created.length, 1);
     assert.ok(created.every((c) => c.unprotected === true));
     assert.ok(!scored.join('').includes(UNPROTECTED_NOTE_MARKER));
     assert.ok(!created[0]?.summary.includes(UNPROTECTED_NOTE_MARKER));

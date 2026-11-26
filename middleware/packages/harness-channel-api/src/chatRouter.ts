@@ -31,11 +31,12 @@ import {
   AI_PROVENANCE_HEADER,
   AI_PROVENANCE_HEADER_VALUE,
   ENVELOPE_PROVENANCE,
+  suppressNoReplyStream,
 } from '@omadia/channel-sdk';
 import type { ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
 import { CHAT_WRITE_SCOPE, requireApiKey } from '@omadia/api-key-auth';
 
-import { channelKeyOf } from './channelKey.js';
+import { apiKeyOrigin, channelKeyOf } from './channelKey.js';
 
 /** Relative to the router's mount prefix (`/api/public/v1`). */
 export const CHAT_ROUTE = '/chat';
@@ -230,23 +231,13 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
       };
 
       try {
-        // W5 memory-ACL (#860), coordinator decision 1 — this router emits NO
-        // `metadata.origin`, so an API turn resolves context-free and gets the
-        // agent-private memory stack, byte-identical to today. Deliberate:
-        //
-        //  - An API key is its own identity, not a delegate for a human in a
-        //    team or a channel (issue #438, see below), so there is no team or
-        //    channel this turn could honestly be said to belong to.
-        //  - `conversationId` is caller-supplied and only becomes safe after
-        //    the `internalConversationId` hash below. Deriving a memory
-        //    partition from the pre-hash value would let one caller name
-        //    another's tier; deriving it from the post-hash value would create
-        //    a per-key tier that no operator surface can list or purge by any
-        //    name a human knows.
-        //
-        // Giving API callers context memory means resolving a real tenant from
-        // the key and emitting an explicit `origin` — a deliberate change, not
-        // something to inherit by accident.
+        // #1826 (ADR-0182) — an API key is its own identity (issue #438), so
+        // its turns run in that key's one-person room: `metadata.origin` names
+        // the key (never the caller-supplied `conversationId`), which gives it
+        // its own `user` tier under `enforce` / `enforce-strict` and a
+        // one-person audience under `members`. Two keys of one agent no longer
+        // read each other's notes. Under `off` the agent keeps one shared tree
+        // (ADR-0116), as for every channel.
         const turn: IncomingTurn = {
           channelId: deps.channelId,
           // #1106 — routing selector: stable per API key, never
@@ -307,6 +298,7 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
             ...(key.label ? { displayName: key.label } : {}),
           },
           text: parsed.data.message,
+          metadata: { origin: apiKeyOrigin(key.keyId) },
         };
         // The orchestrator (or, with verifier mode on, the verifier wrapper)
         // can yield an in-band `{type:'error', ...}` event on this already-open
@@ -314,7 +306,10 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         // Track whether one was seen so we don't record 'ok' for a turn that
         // actually failed (same bug class as issue #403).
         let sawInBandError = false;
-        for await (const event of deps.core.handleTurnStream(turn)) {
+        // #1896 — a bare NO_REPLY ends as a silent `done`, never as text.
+        for await (const event of suppressNoReplyStream(
+          deps.core.handleTurnStream(turn),
+        )) {
           if (isErrorEvent(event)) sawInBandError = true;
           // #1094 — a `done` marked `degraded` is a turn that threw after a
           // tool had already committed. It stays `done` on the wire (#506),

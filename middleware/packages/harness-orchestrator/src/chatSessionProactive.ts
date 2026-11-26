@@ -58,7 +58,8 @@ export function mergeServerProactiveMessages(
     );
   }
 
-  const { resetAt: _clientResetAt, ...incomingRest } = incoming;
+  // `ownerUserId` is server-owned too (#1762): the caller stamps it.
+  const { resetAt: _clientResetAt, ownerUserId: _clientOwner, ...incomingRest } = incoming;
   const base: ChatSession = {
     ...incomingRest,
     ...(existing?.resetAt !== undefined ? { resetAt: existing.resetAt } : {}),

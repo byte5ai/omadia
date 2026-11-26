@@ -42,6 +42,307 @@ changelog.
 - **A provider plugin's config change reaches every LLM plugin (#1891).** A config or secret write to a provider plugin (e.g. `anthropic_base_url` of `@omadia/plugin-llm-anthropic`) rebuilds the provider plugin, then in `rebuildOrder` the LLM plugins that may run on its provider (the agent runtime always, last; the verifier and orchestrator-extras when their provider chain names it); orchestrator-extras no longer keeps calling the old endpoint until a restart. A plugin that does not come back up — or a provider plugin that itself stays down, in which case nothing is rebuilt onto it — is reported as `runtime.dependent_rebuild_failed`.
 - **System modules use the kernel provider pool; provider keys in one vault scope (#2240, ADR-0215).** The verifier and orchestrator-extras build their providers from the kernel `llmProviderPool` only, like the agent runtime. Provider API keys live in one kernel vault scope (id `@omadia/orchestrator`); LLM access (and the orchestrator's own secret editor) writes only there and rebuilds every installed LLM plugin, so one rotation reaches all three. Boot migration `consolidateProviderCredentials` clears the verifier's and extras' scopes key by key: a copy equal to the kernel key is dropped, every other copy is renamed to `superseded:<key>` (numbered when taken) — never deleted, never logged, never promoted into the kernel scope (a key only a module held must be entered under LLM access; the boot log says so); idempotent. A revoke under LLM access and a provider plugin's uninstall also remove the `superseded:` copies. A provider API key sent to the verifier's or extras' own scope is refused with `400 runtime.provider_key_in_kernel_scope`; both manifests drop their `anthropic_api_key` field (`@omadia/verifier` 0.2.0, `@omadia/orchestrator-extras` 0.3.0). An install that ran extras on a dedicated Anthropic key now runs it on the LLM-access key (old key kept as `superseded:<key>`, boot log warns). The verifier now shares the pool's retry budget. ADR-0215 (Proposed) supersedes the pool part of ADR-0165.
 
+### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
+
+- With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
+  and `totalGroups` reports their number; `group_by` without `aggregate` is refused
+  (`group_by_requires_aggregate`).
+- A filter or `group_by` on a column holding `enc1:` cells is refused with
+  `encrypted_column` (`assertNoEncryptedQueryColumns`, mirrors the `__k_*` refusal of
+  ADR 0098) instead of matching ciphertext.
+- Digit runs over 15 significant digits stay `string` instead of being rounded. The
+  `[dataset-imported]` block no longer blames a missing secret when a file has no text
+  columns. Upload hint and receipt say only text cells are scanned and whether flagged cells
+  are stored encrypted or as pseudonyms; the receipt lists every sheet.
+- plugin-api 1.101.0 (additive).
+
+### Fixed — Dataset import: CSV dialects, ISO dates, linear masking, 25 MB uploads (#1845, #1846, #1847, #1867) (2026-11-26)
+
+- Date cells are stored as ISO-8601 (`d.m.yyyy`, slash dates, XLSX timestamps), so `date`
+  columns sort and filter in date order; impossible dates no longer type a column `date`.
+- `parseCsv` detects the separator (`,` `;` tab), decodes Windows-1252 when the file is not
+  UTF-8, keeps repeated header names as `a`, `a_2`, and returns coded failures
+  (`dataset.csv_unreadable`, `csv_ragged_rows`, `csv_empty`, `row_cap`, `reserved_column`)
+  that the admin UI translates.
+- The import masks the whole table with `maskTableCells` (privacy-guard) in linear time, one
+  surrogate per value per table (#1546), and yields to the event loop; per-cell `maskPrompt`
+  was quadratic and blocked `/health` and every chat (20,000 rows now ~1 s).
+- The web UI raises `proxyClientMaxBodySize` to 26 MiB (`app/_lib/proxyBodyLimit.ts`; the
+  login gate keeps covering `/bot-api`, ADR 0161), answers 413 for larger bodies and
+  refuses an over-limit file before uploading.
+
+### Changed — Subscription CLI runs under the Privacy Shield instead of being refused (#2239, #2241; ADR-0195, ADR-0196) (2026-11-26)
+
+- Agents on the Claude subscription (`claude-cli`) now answer on instances with a privacy
+  guard. The CLI turn gets its own privacy handle (`Orchestrator.cliTurnPrivacy`,
+  `cliTurnPrivacy.ts`); message, steering hint, recall and replayed history are masked
+  before the spawn, loopback tool results are interned, and the v4 tools are offered. The
+  stream is restored, including placeholders split across two chunks
+  (`StreamSurrogateRestorer`). The answer takes the server render and the restore; the
+  receipt is attached to `done`. A guard without a handle still refuses before the spawn.
+- Builder and preview-chat CLI sub-agents run as operator jobs outside the shield, like
+  their API-key path; only `OMADIA_PRIVACY_FORCE_GUARDED` refuses them (decided per
+  recommendation, reversible). The conductor workflow builder reports a CLI privacy refusal
+  as `ConductorBuilderUnavailableError` (503).
+- ADR-0195 supersedes the CLI part of ADR-0165.
+
+### Changed — Privacy Shield: per-operation intern exemptions, diagrams and transcripts (#1866, #1967, #1985; ADR-0197, ADR-0198) (2026-11-26)
+
+- `query_dataset` hands the model `list_datasets` and `get_schema` (column names and types,
+  no sample cell) in clear, so a dataset is found by the name the user gave it; `query_rows`
+  stays interned (`INTERN_EXEMPT_OPERATIONS`, `isInternExemptCall` in
+  `privacyInternPolicy.ts`).
+- `render_diagram`, `create_xlsx` and `create_docx` results (file metadata and link, never a
+  cell value) are exempt, while their handlers still run on the user's restored values
+  (`runsOnModelInput`), so a diagram reply no longer shows the signed URL as an
+  "Originaldaten" table.
+- A `transcribe_recording` transcript of a recording uploaded in the same turn
+  (adapter-stated `storedAttachments` key, ADR-0178) is prompt-masked instead of interned,
+  so the agent can answer about it; any other key, or one typed into the message, stays
+  interned.
+- The public MCP endpoint additionally refuses tools with exempt operations
+  (`query_dataset`) and no longer lists the now-exempt file producers (`render_diagram`,
+  `create_xlsx`, `create_docx`), whose uninterned result its masking check would refuse.
+
+### Fixed — Privacy Shield v4: nested siblings, true totals, every render (#1728, #1848, #1769) (2026-11-26)
+
+- A tool result with one record list next to a nested object (weather: `location`/`current`
+  plus `other_matches`) no longer drops the nested objects in Guarded mode; it stays one
+  nested row, so the main content reaches the model. Empty siblings (`warnings: []`) still
+  let the list become the rows (`v4/datasetStore.ts`).
+- `totalMatched` is envelope metadata instead of a column on every row. The render footer
+  counts the envelope total (`totalMatched`/`total`) instead of the queried page; when the
+  turn dataset holds only a page, the Excel offer names the queried rows instead of
+  promising the full list (`v4/materializer.ts`).
+- A turn that calls `v4_render_answer` more than once shows every render in call order on
+  the buffered and the streaming path (before, the last render overwrote the others). Prose
+  is joined, masked values merged, `isError` only when every render failed
+  (`v4/renderedAnswers.ts`).
+
+### Added — operator tool for owner-less legacy web chats (#1762 follow-up, ADR-0184) (2026-11-26)
+
+- `POST /api/v1/admin/chats/assign-orphans` `{ userId, dryRun? }` gives every web chat without
+  an owner (written before ADR-0180) to one account, stamping its `providerUserId` (the session
+  `sub` the chat routes compare). Owned chats never change; idempotent. `dryRun: true` answers
+  `{ wouldAssign, unreadable }` and changes nothing. A real run writes `admin_audit`
+  `chat.assign_orphans` (target `user:<users.id>`, `after: { owner, count }`) first and changes
+  nothing if that fails. Unknown account 404, disabled account 409.
+
+### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
+
+- Memory purge, axis "User": the selector may be the omadia user id, the account id from
+  `/admin/users/<id>` or `<channel>~<id>` of a known channel identity; the preview names the
+  resolved person (`resolvedUser`, warning `user_selector_resolved`) and an unknown uuid
+  warns `user_unknown` (#1840). The user detail page shows the omadia user id.
+- Shared remembered facts only lose the purged owner (ACL audit `shrink` row); facts they own
+  alone are deleted, and the preview and result count excerpts and de-owned facts separately
+  (`kgDeownedCount`, `kgExcerptCount`) (#1842).
+- With a resolved person the purge also deletes their datasets, the processes they created
+  and their `User` / `ChannelIdentity` nodes; channel turns are matched by `<kind>:<id>`
+  (#1843). The account-delete dialog says memory and data stay and points to the purge.
+- **Migration** `harness-knowledge-graph-neon` **0038_process_created_by** — nullable
+  `processes.created_by_omadia_user_id` + partial index; `write_process` stamps the turn's
+  omadia user id, the bounded `processMemory@1` sets it from the turn, never from the plugin.
+- `memory_purge_audit.deleted_detail` (jsonb, added by the audit store's idempotent DDL) keeps
+  all layer counts. plugin-api 1.100.0 also adds `MemorableKnowledgeCount` /
+  `MemorableKnowledgePurgeResult`, `findOmadiaUserIdByChannelIdentity?`,
+  `count/purgeUserIdentity?`, `ProcessMemoryService.count/purgeByCreator?`,
+  `WriteProcessInput.createdByOmadiaUserId` and `SYSTEM_ACTOR_OMADIA_USER_ID`.
+
+### Fixed — memory tool hygiene: reaper, rules, error paths (#1829, #1831, #1832, ADR-0185) (2026-11-26)
+
+- The scratch promotion reaper no longer reads plugin storage
+  (`/memories/orchestrators/<slug>/plugins/<id>/`): plugin files are never scored, promoted or
+  dropped (#1829).
+- Rule entries follow their `/memories/_rules/` files (#1831): exact path match instead of an
+  unescaped `LIKE` prefix, a changed file updates the entry and its embedding, a removed file
+  removes the entry. `runDurableRulesSync` runs at boot and after a purge of axis `all`.
+- Owner-less memorable knowledge can be deleted one by one: `GET|DELETE
+  /api/v1/admin/memory/ownerless[/:id]` (audited first, owned entries → 409) and the Danger
+  Zone section "Memories without an owner". plugin-api **1.100.0** adds the optional
+  `listOwnerlessMemorableKnowledge` / `deleteOwnerlessMemory`; `admin_audit` action
+  `memory.ownerless_delete`.
+- Memory tool (#1832): error texts carry only model-facing `/memories/…` paths (the namespacer
+  maps physical roots back; a scope violation no longer names the agent), the per-call log line
+  carries command, path and outcome but no note content, `MemoryPathDenied` /
+  `MemoryScopeViolation` log one line without a stack trace, and `effectiveMemoryScope` audit
+  lines carry `[security-audit]` once.
+
+### Added — core seams for channel plugins: enum PATCH validation, channels empty state, attachment byte read (ADR-0222) (2026-11-26)
+
+- **#1998 (core part)** — the post-install setup PATCH (`/api/v1/admin/runtime/installed/:id/secrets`)
+  validates `enum` fields with the install path's `coerceSetupFieldValue`: a value the manifest does
+  not list is refused with `400 runtime.setup_field_invalid` (`reason: enum_mismatch`) and nothing is
+  written (ADR-0054: one validation for both paths). An empty value removes an optional enum (the
+  plugin's default applies); a required enum (the manifest default) cannot be cleared. The
+  Telegram `dm_policy` enum and its fail-closed parsing are the plugin's part.
+- **#2001 (core part)** — the `/operator/channels` empty state no longer claims Telegram reports
+  its keys; it explains that only channel plugins with a key directory appear (en + de).
+- **#1993 (core part)** — new optional `CoreApi.readAttachment(url)` (`@omadia/channel-sdk` 0.3.17,
+  `AttachmentReadResult`): a channel reads an outgoing attachment's bytes in-process
+  (`src/channels/attachmentByteReader.ts`: loopback GET, only under an operator-granted public
+  path, no credentials, no redirects, 15 s, 25 MiB) and uploads them instead of handing its platform
+  an unreachable `localhost` URL. ADR-0222 (Proposed). The Telegram multipart upload and visible
+  failure note follow in omadia-channel-telegram.
+
+### Fixed — fast lane refuses wrong maps and unfitting tools, hands its fetched result to the agent (ADR-0221) (2026-11-26)
+
+`@omadia/fast-path` 0.7.0.
+
+- **#1898** — a planned column that no returned record fills counts as a wrong map
+  (`mapRefreshRecords`): the turn misses as `unmappable`, the plan is booked as a failure and the
+  answer cache is not written, instead of rendering a table with empty columns as an answer.
+- **#1931** — the router can decide `agent_no_tool` ("none of the offered tools returns this"),
+  which goes to the agent as a complex turn; with only one offered tool a deterministic decision
+  needs confidence 0.8 (`ROUTER_MIN_CONFIDENCE_SINGLE_TOOL`) instead of 0.6.
+- **#1930** — a miss after the fast lane's query ran (`tool-error`, `truncated`, `unmappable`,
+  `empty-result`, `summary-unresolvable`) carries the executed call (`ChatTriageOutcome.executed`);
+  the fast-lane wrapper hands it to the agent as a per-turn hint (`fastLaneHandoffHint`), masked
+  like any `extraSystemHint`. Without a Privacy Shield it includes the output (max 12 000 chars);
+  under a shield only the call and row count. Amends ADR-0074's "miss runs byte-for-byte" rule —
+  ADR-0221 (Proposed).
+
+### Changed — the answer language follows the user (ADR-0220) (2026-11-26)
+
+- **#1992** — the system prompt no longer hard-codes German. The agent answers in the language of
+  the user's latest message; a message without a recognizable language keeps the conversation's
+  language, and only without a conversation does the new `@omadia/orchestrator` setup field
+  `answer_language` apply (enum `de`/`en`/`fr`/`es`/`it`/`nl`/`pl`, default `de`). Wired like
+  `answer_verbosity` through `OrchestratorDeps`. `ChatTurnInput.locale` stays a hint for kernel
+  notices. Decision after the recheck's recommendation, reversible — ADR-0220 (Proposed).
+
+### Fixed — plugin channel turns carry their channel kind; replayed answers drop the disclosure line (2026-11-26)
+
+- **#1994** — receipts (`turn_receipts.channel`) and the per-channel AI-disclosure override now read
+  the turn's channel kind through one derivation, `turnChannelKind` (`@omadia/orchestrator`): the
+  minted channel identity's kind, else the kind `TurnOrigin.channelType` names. Telegram and Teams
+  turns no longer record `channel = NULL`, a `telegram=`/`teams=` override applies, and the
+  `/health` posture claim for those kinds is true. No plugin release needed.
+- **#2003** — replayed prior turns lose every known AI-disclosure line (all locales and levels,
+  `stripKnownAiDisclosureLines` in `@omadia/channel-sdk`) before they reach the model, on the
+  in-process path (`maskPriorTurnsForWire`) and the subscription-CLI path (`maskHistory`). The model
+  no longer sees the boundary's marking as its own words and stops repeating it. Covers Telegram,
+  Teams and every other channel.
+
+### Fixed — web chat shows no internal sentinels or notes; Delete session removes it (2026-11-26)
+
+- **#1896** — a bare `NO_REPLY` no longer reaches streamed turns as text. `suppressNoReplyStream`
+  (`@omadia/channel-sdk` 0.3.17) holds `text_delta` while the text can still become the sentinel and turns
+  a no-reply `done` into `answer: ''` + `silent: true`. Wired into `/api/chat/stream` and the public
+  API channel (`harness-channel-api` `chatRouter`). The web chat renders no bubble for a silent
+  turn; the session schema keeps `silent`. Text already released ("explanation\nNO_REPLY") is taken
+  back with one `text_retract`; a retract back to zero re-arms the hold for a later iteration.
+- **#1956** — the session logger mirrors the user-facing answer into the web-chat document: the
+  `<!-- orchestrator:rendered_table … -->` and `rendered_attachments` notes are stripped
+  (`stripOrchestratorNotes`), so a reload shows no note text and the client's PUT matches the
+  mirror (no duplicate turn). A NO_REPLY turn is mirrored silent and empty.
+- **#1900** — the web chat no longer renders process-promotion nudge cards (decision after the
+  recommendation, ADR-0021: a decoration needs a working next action; the card's buttons only
+  logged to the console and its text was written for the model). `NudgeCard` and its `nudgeCard`
+  catalog keys are gone; the `<nudge>` parser stays for the tool trace.
+- **#1886** — "Delete session" in the agent-unavailable banner removes the session from the list
+  and resets the picked agent instead of clearing it (the clear's PUT recreated the session).
+
+### Security — web, routine and API turns are one-person rooms; memories private by default (#1774, #1826, #1823, ADR-0182, ADR-0183) (2026-11-26)
+
+- Web chat turns carry `TurnOrigin { channelType: 'http', scope: personal(<omadia user id>) }`,
+  built only from the session (`webTurnOrigin`, `routes/chat.ts`); web routines carry the same
+  origin from `routine.userId`; Public API turns carry `{ channelType: 'api', scope:
+  personal('key:<keyId>') }` (`apiKeyOrigin`). In `enforce` / `enforce-strict` each account and
+  each key gets its own `user` tier, in `members` a one-person audience (`isWebAccountTurn`).
+  `off` keeps one shared tree (ADR-0116). A channel plugin can no longer state `http`, and only
+  `@omadia/channel-api` may state `api` (`readTurnOrigin`; such a turn runs context-free).
+- The `[security-audit] effectiveMemoryScope` line names the mode that is set (`members` was
+  logged as `enforce-strict`). The memory tab texts (en/de) say what each mode does for web
+  accounts and API keys.
+- `createMemorableKnowledge` stores `private` when no visibility is given (both backends,
+  matching the plugin-api doc). "Save as memory" writes `private` and stamps `originAgent` from
+  its source turn. **Graph migration `0037_memorable_knowledge_private_by_default`** moves every
+  defaulted `team` MemorableKnowledge row that has owners to `private`; durable rules
+  (`system:rules-hook`), owner-less rows and `public` rows stay shared. plugin-api **1.99.0**
+  records the behaviour change (and `addOwner`/`removeOwner` from #1821). Recall's `teamVisibility` stays on and now only admits knowledge
+  shared on purpose.
+- **Upgrade note:** on `enforce-strict` / `members` agents, web and API turns no longer read
+  notes written to the agent tree before this change. A hand-set `team` row becomes private and
+  must be re-shared.
+
+### Security — memory owners are real users, chosen only by the saver (#1821, #1852, ADR-0181) (2026-11-26)
+
+- `POST /api/v1/memory` makes the saver the only owner and involved user. `aclOwners` or
+  `involvedOmadiaUserIds` naming anyone else answer `400 memory.foreign_owner`;
+  `derivedFromTurnIds` keeps only turns the saver sent (others are dropped and counted in
+  `droppedSourceTurns`).
+- `POST /api/v1/memory/:id/owners` refuses an id with no user behind it
+  (`400 memory.unknown_user`) and writes the `INVOLVED` edge, so the new owner finds the entry in
+  `GET /api/v1/memory` and `/memories`; `DELETE …/owners/:userId` drops the edge again.
+  `KnowledgeGraph.addOwner` throws `user_not_found` on both backends (plugin-api doc updated).
+
+### Security — web chats belong to the account that created them (#1762, ADR-0180) (2026-11-26)
+
+- `ChatSession.ownerUserId` (the session's `sub`) is stamped by the server on the first
+  `PUT /api/chat/sessions/:id`; a body cannot set or move it and `GET` does not return it.
+- `GET /api/chat/sessions` lists only the caller's chats. `GET`, `PUT`, `DELETE`,
+  `POST …/reset` and `POST …/re-snapshot` on another account's chat answer `404 not_found`;
+  a request without an account saves nothing (`401 no_account`).
+- `POST /api/chat`, `/api/chat/stream` and `/api/chat/steer` with another account's
+  `sessionId` answer 404 before an agent resolves, so its tail, pin and routines stay with
+  the owner; a web routine therefore only delivers into its creator's chat.
+- **Upgrade note:** chats written before this change have no owner. On an instance with exactly
+  one account they belong to it; with several accounts they are hidden from everyone (kept
+  under `/memories/chat-sessions/`, not deleted). The canary HTTP sweep's `#1762` todo is now
+  an assertion.
+
+### Security — process write tools bounded to the turn's agent (#2223, #2224) (2026-11-26)
+
+- `edit_process` loads the record first and changes only a process the turn may read
+  (`currentProcessReadFilter`): another agent's process, or any process in a context-bound
+  `enforce-strict` / `members` turn or outside a bounded turn, answers like a missing id.
+- `write_process` stores only in this agent's scopes (`processWriteScope`,
+  `@omadia/orchestrator`): an unqualified scope is qualified with the agent, another agent's
+  scope is refused, and nothing is written in a context-bound turn or without a boundary. The
+  bounded `processMemory@1` write for plugins applies the same rule.
+- `InMemoryKnowledgeGraph` returns no memorable knowledge and no excerpt for an empty
+  `audienceOwners`, like Neon (#2224); the `empty-audience-inmemory` divergence is gone.
+- The canary sweep (Neon) gained a write probe: every viewer edits every process of its tenant
+  and writes into another agent's scope through a dry store; only processes the oracle lets it
+  read and its own qualified scope may reach the store.
+
+### Fixed — MCP and Builder audit coverage (#1740, #1951) (2026-11-26)
+
+- MCP server administration, tool discovery, verdict acknowledgements, grants,
+  registries, OAuth and public bindings write operator audit rows. The audit
+  page offers a common MCP filter for these and existing MCP events.
+- Core migration `0115_mcp_oauth_flow_audit_actor` retains the signed-in
+  initiator until the OAuth flow is consumed. Callbacks that pass the
+  completer check and persist a token record that initiator (ADRs 0175, 0246).
+- Local ZIP uploads and Builder publishes record package version and source.
+  The owner's Builder history shows manual spec and slot edits and groups
+  consecutive saves from one editing burst (ADR-0245).
+
+### Fixed — routine and operator audit coverage (#1752, #1764) (2026-11-26)
+
+- Routine pause, resume, trigger, template changes and deletion identify the
+  routine owner separately from the acting operator. Deletes retain the name,
+  cron and channel. Template rows describe format and section types.
+- Agent, helper, working-mode, model, provider, binding and plugin setting
+  changes use the signed-in operator's audit identity. Plugin credentials,
+  arbitrary configuration values and agent instructions stay out of the trail.
+- Agent status transitions retain the existing `agent.disable` event in both
+  directions. The end-of-service action runs only when disabling.
+
+### Fixed — audit test and orb setup (#2185, #2186) (2026-11-26)
+
+- The role-holders PostgreSQL test runs the auth migrator and deletes only its own audit rows.
+- Orb dependency installation skips the unused ONNX Runtime CUDA download and keeps CPU support.
+
+### Security — the last standalone grandfather row is gone (#838) (2026-11-26)
+
+- `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` is empty. Its last row,
+  `@omadia/channel-teams` → `graphPool`, was the C7 SQL ramp. Teams 0.46.0 declares
+  `permissions.sql` with its own migrations, the channel runtime honours the operator grant
+  (#2254), and the grant is given on the instance. Without a grant, Teams runs without a
+  database instead of failing.
+
 ### Fixed — Conductor schedule zones and suppressed triggers (#1714, #1715)
 
 - Conductor evaluates each schedule in its stored IANA zone through the scheduler helper shared with routines. Republishing an unchanged expression keeps the original zone.

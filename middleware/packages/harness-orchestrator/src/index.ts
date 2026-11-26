@@ -475,6 +475,8 @@ export {
   MODEL_REFUSAL_NOTICE,
   localizeRefusalNotice,
   finalAnswerText,
+  // #2241 — the prompt-mask refusal delivered as answer text.
+  isPromptMaskBlockedNotice,
 } from './orchestrator.js';
 // #1500 — answer text across tool-loop iterations, preamble dropped.
 export { AnswerTextAccumulator } from './answerTextAccumulator.js';
@@ -614,7 +616,15 @@ export type { PrivacyTurnHandle, PromptMaskOptions } from './privacyHandle.js';
 // Verifier privacy hand-over: the continuation a held turn hands to the
 // answer-verifier wrapper (see privacyEgress.ts).
 export type { PrivacyEgressContinuation } from './privacyEgress.js';
-export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
+export {
+  INTERN_EXEMPT_OPERATIONS,
+  INTERN_EXEMPT_TOOLS,
+  PROMPT_MASKED_UPLOAD_TOOLS,
+  isInternExemptCall,
+  isInternExemptTool,
+  isPromptMaskedUploadCall,
+  runsOnModelInput,
+} from './privacyInternPolicy.js';
 // Tool errors on their way to a model: the one helper every dispatch seam
 // routes a thrown exception or a returned `Error:` text through. The MCP
 // connect prompt passes on per-dispatch provenance (`McpAuthPromptMint`).
@@ -686,6 +696,13 @@ export type {
   CliUsage,
 } from './cliChatAgent.js';
 export { resolveCliSpawnTimeoutMs, CLI_SPAWN_TIMEOUT_ENV_KEY } from './cliChatAgent.js';
+/** #2241 — a CLI privacy refusal delivered as answer text. */
+export { isCliPrivacyRefusal } from './cliChatAgent.js';
+export type {
+  CliTurnPrivacy,
+  CliReleasedAnswer,
+  CliPrivacyReceiptFields,
+} from './cliTurnPrivacy.js';
 /** #1085 — the binary name the kernel's `resolveCliBin` is asked to resolve. */
 export { DEFAULT_CLI_BINARY } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
@@ -704,9 +721,12 @@ export {
   graphSessionAccess,
   type GraphNodeViewer,
 } from './graphNodeAccess.js';
+export { WEB_ACCOUNT_CHANNEL_TYPE, isWebAccountTurn, webAccountOrigin } from './webAccountOrigin.js';
 export {
   currentProcessBoundary,
   currentProcessReadFilter,
+  creatorOfCurrentTurn,
+  processWriteScope,
   type ProcessBoundary,
 } from './tools/processMemoryTool.js';
 
@@ -752,6 +772,13 @@ export {
   parseAnswerVerbosity,
 } from './answerVerbosity.js';
 export type { AnswerVerbosity } from './answerVerbosity.js';
+export {
+  ANSWER_LANGUAGES,
+  DEFAULT_ANSWER_LANGUAGE,
+  buildAnswerLanguageRule,
+  parseAnswerLanguage,
+  type AnswerLanguage,
+} from './answerLanguage.js';
 
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';
@@ -771,8 +798,11 @@ export type {
   RunTraceOutcomeCounts,
 } from './runTraceObservability.js';
 export {
+  ChatSessionNotOwnedError,
   ChatSessionStore,
   InvalidSessionIdError,
+  chatSessionOwnedBy,
+  chatSessionOwner,
   ServerMirroredSessionError,
   isServerMirroredSession,
   isValidSessionId,
@@ -880,7 +910,7 @@ export {
   MEMBER_BASELINE_CAPABILITIES,
   MemberBaselineGrantStore,
 } from './memberBaselineGrantStore.js';
-export { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
+export { CHANNEL_KIND_BY_ORIGIN, turnChannelKind } from './resolveTurnOwnerIdentity.js';
 export {
   audienceRoomFor,
   chatParticipantsFromRoster,
