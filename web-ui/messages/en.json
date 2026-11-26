@@ -2294,9 +2294,9 @@
     "actionDelete": "Delete",
     "actionDrain": "Drain sessions",
     "actionKill": "Kill sessions",
-    "drainTooltip": "Clear snapshot on every session bound to this agent — next turn re-captures from current config",
+    "drainTooltip": "Release every web chat pinned to this agent — the history stays, the next message picks the agent again",
     "deleteConfirm": "Delete agent \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good.",
-    "killConfirm": "Kill all sessions for \"{slug}\"? History will be lost.",
+    "killConfirm": "Delete all web chats pinned to \"{slug}\" from the server? Their history is lost. A browser that still has one of these chats open keeps its own copy until it is deleted there.",
     "memoryScopeHeading": "Memory scope",
     "memoryScopeEmpty": "No scope (runtime registry not active)",
     "pluginsHeading": "Plugins",
@@ -3456,7 +3456,10 @@
     "privacyProfiles": {
       "default": "default",
       "strict": "strict"
-    }
+    },
+    "drainConfirm": "Release all web chats pinned to \"{slug}\"? Their history stays; the next message in each chat picks the agent again.",
+    "drainResult": "{count, plural, =0 {No web chat is pinned to \"{slug}\".} one {# web chat released from \"{slug}\".} other {# web chats released from \"{slug}\".}}",
+    "killResult": "{count, plural, =0 {No web chat is pinned to \"{slug}\".} one {# web chat of \"{slug}\" deleted.} other {# web chats of \"{slug}\" deleted.}}"
   },
   "builder": {
     "issueReport": {

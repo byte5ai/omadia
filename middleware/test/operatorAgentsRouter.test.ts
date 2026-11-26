@@ -3893,6 +3893,15 @@ describe('createOperatorAgentsRouter', () => {
     ]);
   });
 
+  it('#1884: POST /:slug/drain and /kill answer 404 for an unknown agent', async () => {
+    for (const mode of ['drain', 'kill']) {
+      const res = await fetch(`${baseUrl}/does-not-exist/${mode}`, { method: 'POST' });
+      assert.equal(res.status, 404);
+      assert.equal(((await res.json()) as { error: string }).error, 'not_found');
+    }
+    assert.deepEqual(registry.invalidateCalls, []);
+  });
+
   it('POST /reload triggers a manual registry reload', async () => {
     const res = await fetch(`${baseUrl}/reload`, { method: 'POST' });
     assert.equal(res.status, 200);

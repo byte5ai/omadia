@@ -4859,57 +4859,37 @@ export function createOperatorAgentsRouter(
     }
   });
 
-  // ── force-invalidate: drain ─────────────────────────────────────────
-  router.post('/:slug/drain', async (req: Request, res: Response) => {
-    const live = svc();
-    if (!live) return unavailable(res);
-    const sessionStore = options.getChatSessionStore();
-    if (!sessionStore) {
-      res.status(503).json({
-        error: 'chat_session_store_unavailable',
-        message: 'chatAgent@1 not published — chatSessionStore unavailable.',
-      });
-      return;
-    }
-    try {
-      const slug = slugParam(req, res);
-      if (!slug) return;
-      const affected = await live.registry.forceInvalidate(
-        slug,
-        'drain',
-        sessionStore,
-      );
-      res.json({ ok: true, affected });
-    } catch (err) {
-      badRequest(res, err);
-    }
-  });
-
-  // ── force-invalidate: kill ──────────────────────────────────────────
-  router.post('/:slug/kill', async (req: Request, res: Response) => {
-    const live = svc();
-    if (!live) return unavailable(res);
-    const sessionStore = options.getChatSessionStore();
-    if (!sessionStore) {
-      res.status(503).json({
-        error: 'chat_session_store_unavailable',
-        message: 'chatAgent@1 not published — chatSessionStore unavailable.',
-      });
-      return;
-    }
-    try {
-      const slug = slugParam(req, res);
-      if (!slug) return;
-      const affected = await live.registry.forceInvalidate(
-        slug,
-        'kill',
-        sessionStore,
-      );
-      res.json({ ok: true, affected });
-    } catch (err) {
-      badRequest(res, err);
-    }
-  });
+  // ── force-invalidate: drain / kill ──────────────────────────────────
+  // Both act on the web chats pinned to the agent (ADR-0146): drain drops
+  // the pin and keeps the history, kill deletes the chat. Unknown agents are
+  // a 404, not "0 affected" (#1884).
+  for (const mode of ['drain', 'kill'] as const) {
+    router.post(`/:slug/${mode}`, async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      const sessionStore = options.getChatSessionStore();
+      if (!sessionStore) {
+        res.status(503).json({
+          error: 'chat_session_store_unavailable',
+          message: 'chatAgent@1 not published — chatSessionStore unavailable.',
+        });
+        return;
+      }
+      try {
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        if (!(await live.store.getAgentBySlug(slug))) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const affected = await live.registry.forceInvalidate(slug, mode, sessionStore);
+        console.log(`[operator-agents] ${mode} ${slug}: ${String(affected)} web chat session(s)`);
+        res.json({ ok: true, affected });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    });
+  }
 
   // ── plugin catalog (B3a multi-select source) ────────────────────────
   // Returns the installed-plugin projection the dashboard needs to render

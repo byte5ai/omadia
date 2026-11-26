@@ -2294,9 +2294,9 @@
     "actionDelete": "Löschen",
     "actionDrain": "Sessions drainen",
     "actionKill": "Sessions killen",
-    "drainTooltip": "Snapshot auf allen an diesen Agenten gebundenen Sessions leeren — nächster Turn nimmt frische Config aus der Registry",
+    "drainTooltip": "Alle Web-Chats lösen, die an diesen Agenten gebunden sind — der Verlauf bleibt, die nächste Nachricht wählt den Agenten neu",
     "deleteConfirm": "Agent „{slug}“ wirklich löschen? Er geht außer Dienst; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
-    "killConfirm": "Alle Sessions von „{slug}\" killen? History geht verloren.",
+    "killConfirm": "Alle Web-Chats, die an „{slug}“ gebunden sind, auf dem Server löschen? Ihr Verlauf geht verloren. Ein Browser, in dem einer dieser Chats noch offen ist, behält seine eigene Kopie, bis sie dort gelöscht wird.",
     "memoryScopeHeading": "Memory-Scope",
     "memoryScopeEmpty": "Kein Scope (Runtime-Registry nicht aktiv)",
     "pluginsHeading": "Plugins",
@@ -3456,7 +3456,10 @@
     "privacyProfiles": {
       "default": "Standard",
       "strict": "strikt"
-    }
+    },
+    "drainConfirm": "Alle Web-Chats lösen, die an „{slug}“ gebunden sind? Der Verlauf bleibt; die nächste Nachricht in jedem Chat wählt den Agenten neu.",
+    "drainResult": "{count, plural, =0 {An „{slug}“ ist kein Web-Chat gebunden.} one {# Web-Chat von „{slug}“ gelöst.} other {# Web-Chats von „{slug}“ gelöst.}}",
+    "killResult": "{count, plural, =0 {An „{slug}“ ist kein Web-Chat gebunden.} one {# Web-Chat von „{slug}“ gelöscht.} other {# Web-Chats von „{slug}“ gelöscht.}}"
   },
   "builder": {
     "issueReport": {

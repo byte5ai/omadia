@@ -4782,6 +4782,17 @@ Bestätigung gilt, wenn ein solcher Agent Default-Agent wird
 Capability-Plugin ist, mit `400 not_a_capability_plugin`. Bestehende Zeilen
 bleiben und lassen sich weiter umschalten.
 
+**Sitzungen lösen/löschen** (`POST /:slug/drain`, `POST /:slug/kill`, #1884).
+Beide wirken auf die Web-Chats, die an den Agenten gebunden sind (`snapshot`,
+ADR-0146): `drain` löst die Bindung und behält den Verlauf, `kill` löscht den Chat
+auf dem Server. Unbekannter Slug → `404 not_found`; Antwort `{ ok, affected }`, die
+Agenten-Seite zeigt die Zahl. Die Bindung ist server-eigen wie `resetAt`: ein
+Client-`PUT /api/chat/sessions/:id` kann sie weder setzen noch entfernen
+(`mergeServerProactiveMessages`); vorher ging sie mit dem ersten Client-PUT
+verloren, und `drain`/`kill` fanden nie einen Chat. Grenze: ein Browser, der einen
+gelöschten Chat noch lokal hat, legt ihn beim nächsten Laden wieder an (ohne
+Bindung); der Bestätigungstext sagt das.
+
 **Entfernt** (ohne Kompatibilitätsschicht)
 - `POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
   zurücksetzen“, #2054).

@@ -91,6 +91,8 @@ export function AgentsDashboard({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  // #1884 — what a successful action did, when it says more than "done".
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [endOfService, setEndOfService] = useState<EndOfServiceResult | null>(null);
   const [deletedRefresh, setDeletedRefresh] = useState(0);
@@ -154,11 +156,17 @@ export function AgentsDashboard({
 
   const channelTypes = useMemo(() => channelTypesOfCatalog(catalog), [catalog]);
 
-  function run(label: string, op: () => Promise<unknown>): void {
+  function run(
+    label: string,
+    op: () => Promise<unknown>,
+    describeSuccess?: (result: unknown) => string,
+  ): void {
     setError(null);
+    setNotice(null);
     setBusy(label);
     op()
       .then((result) => {
+        if (describeSuccess) setNotice(describeSuccess(result));
         // #2088 — a disable or a delete answers with what ended with the
         // agent; show it instead of a silent status flip.
         const change = result as AgentChangeResult | undefined;
@@ -194,6 +202,14 @@ export function AgentsDashboard({
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
+      )}
+      {notice && (
+        <p
+          role="status"
+          className="rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 p-3 text-sm text-[color:var(--accent)]"
+        >
+          {notice}
+        </p>
       )}
       {endOfService && (
         <EndOfServiceNotice result={endOfService} onDismiss={() => setEndOfService(null)} />
@@ -288,12 +304,18 @@ export function AgentsDashboard({
                 )
               }
               onDrain={() =>
-                run(`drain:${agent.slug}`, () =>
-                  drainAgentSessions(agent.slug),
+                run(
+                  `drain:${agent.slug}`,
+                  () => drainAgentSessions(agent.slug),
+                  (result) => t('drainResult', { count: affectedOf(result), slug: agent.slug }),
                 )
               }
               onKill={() =>
-                run(`kill:${agent.slug}`, () => killAgentSessions(agent.slug))
+                run(
+                  `kill:${agent.slug}`,
+                  () => killAgentSessions(agent.slug),
+                  (result) => t('killResult', { count: affectedOf(result), slug: agent.slug }),
+                )
               }
             />
           ))
@@ -737,7 +759,13 @@ function AgentCard(props: {
               type="button"
               className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
               disabled={props.disabled}
-              onClick={() => props.onDrain()}
+              onClick={() =>
+                confirmAction.ask({
+                  title: t('drainConfirm', { slug: agent.slug }),
+                  confirmLabel: t('actionDrain'),
+                  onConfirm: props.onDrain,
+                })
+              }
               title={t('drainTooltip')}
             >
               {t('actionDrain')}
@@ -992,6 +1020,12 @@ function bindingsRevisionKey(agent: OperatorAgentDto): string {
  * `validateSnapshot`); the bare `error.message` is just
  * `"PUT /v1/... failed: 409"` which tells the operator nothing.
  */
+/** #1884 — the `affected` count of a drain/kill answer (0 when absent). */
+function affectedOf(result: unknown): number {
+  const affected = (result as { affected?: unknown } | null)?.affected;
+  return typeof affected === 'number' ? affected : 0;
+}
+
 /** `true` for a 409 — the default-agent PUT's refusal (agent not available
  *  to everyone in every channel, or disabled). */
 function isConflict(err: unknown): boolean {
