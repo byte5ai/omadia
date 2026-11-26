@@ -7169,6 +7169,13 @@ async function main(): Promise<void> {
       // packageUploadService is required only when bundles vendor plugins
       // — the import path is happy without it for source-only imports.
       draftStore,
+      // #1787 — bundle imports that create a draft respect the draft cap.
+      draftQuota,
+      // #1788 — a rollback that restored a draft rebuilds its preview. The
+      // scheduler is created further down; this runs at request time.
+      onDraftRestored: (userEmail: string, draftId: string) => {
+        builderRebuildScheduler.schedule(userEmail, draftId);
+      },
       uploadedPackageStore,
       ...(packageUploadService ? { packageUploadService } : {}),
     }),

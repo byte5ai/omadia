@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder slot code travels with the spec (preview, self-extension, bundles, rollback) (2026-11-26)
+
+The Builder keeps slot code in `draft.slots`, not in `spec.slots`; five paths
+passed only the spec and failed codegen with `missing_required_slot`. The
+manifest preview now passes the draft's slots (#1726). A self-extension
+proposal patches the live spec with the draft's slots merged in, installs as
+the next patch version, and removes its throwaway draft when the install fails
+(#1786). Profile snapshots and bundles carry `knowledge/slots.json`; the bundle
+import restores it into the new draft, checks the draft quota like create /
+restore / clone, and reports a replaced installed plugin version
+(`replaced_version`), which the import dialog shows before it opens the draft
+(#1787). A rollback restores the draft's spec and slots (spec only for older
+snapshots, and says so) and schedules a preview rebuild (#1788). A bundle whose
+plugin id + version is already installed keeps the installed package and
+creates the draft instead of failing on the duplicate-version guard
+(`kept_installed`, #1811).
+
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
 
 The auto-rebuild scheduler and the preview routes now share one build-and-warm

@@ -4219,6 +4219,8 @@
       "toastNoDiff": "No difference since last snapshot",
       "toastSnapshotCreated": "Snapshot created ({hash})",
       "toastRollbackDone": "Rollback complete · {count, plural, one {# file} other {# files}} restored",
+      "toastRollbackDraftRestored": "Rollback complete · draft spec and slot code restored",
+      "toastRollbackSpecOnly": "Rollback complete · draft spec restored; this snapshot has no slot code, so the slots stay as they are",
       "noteOptional": "Note (optional)",
       "notePlaceholder": "Why this state?",
       "vendorBundleLabel": "Pack plugin ZIPs into the bundle (air-gap export)",
@@ -4233,7 +4235,7 @@
       "colLive": "Live",
       "rollbackConfirmTitle": "Confirm rollback",
       "rollbackBodyPrefix": "Live ",
-      "rollbackBodySuffix": " + knowledge files are reset to the snapshot state. Plugin pins stay unchanged.",
+      "rollbackBodySuffix": " + knowledge files, the draft's spec and its slot code are reset to the snapshot state. A snapshot taken before slot code was captured restores the spec only. Plugin pins stay unchanged.",
       "rollbackTypeHint": "Type the first 12 characters of the bundle hash to confirm.",
       "rollbackExpected": "Expected:",
       "rollbackExecute": "Perform rollback",
@@ -4411,7 +4413,13 @@
         },
         "errors": {
           "notZip": "Bundle must be a .zip file.",
-          "conflict": "Profile already has diverging live content ({assets}). Enable “Overwrite” to replace it."
+          "conflict": "Profile already has diverging live content ({assets}). Enable “Overwrite” to replace it.",
+          "quotaExceeded": "The draft limit is reached. Delete a draft, then import again."
+        },
+        "notice": {
+          "replaced": "The installed plugin {id} was switched from {from} to {to} by this bundle.",
+          "kept": "{id} {version} was already installed; the installed package was kept.",
+          "continue": "Open draft"
         }
       },
       "quota": {

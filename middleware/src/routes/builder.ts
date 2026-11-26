@@ -269,7 +269,7 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
         const { renderManifestPreview } = await import(
           '../plugins/builder/manifestPreview.js'
         );
-        const yaml = await renderManifestPreview(draft.spec);
+        const yaml = await renderManifestPreview(draft.spec, draft.slots);
         res.json({ manifest: yaml });
       } catch (err) {
         sendError(res, err, 'builder.manifest_preview_failed');
