@@ -5346,7 +5346,7 @@
       "kg": {
         "on": "KG an",
         "off": "KG aus",
-        "onHint": "Erfolgreiche Tool-Ergebnisse dieses Servers werden in deinen Knowledge Graph geschrieben (recallbar, nur für dich sichtbar). Rohwerte nur, wenn der Server zusätzlich unmaskiert ist; sonst ein wertfreier Digest. Klicken, um die Aufnahme zu stoppen.",
+        "onHint": "Erfolgreiche Tool-Ergebnisse dieses Servers werden in deinen Knowledge Graph geschrieben (recallbar, nur für dich sichtbar); fehlgeschlagene Aufrufe nicht. Setzt einen aktiven Privacy Guard voraus. Rohwerte nur, wenn der Server zusätzlich unmaskiert ist; sonst nur Anzahlen, keine Namen oder Werte. Klicken, um die Aufnahme zu stoppen.",
         "offHint": "Tool-Ergebnisse dieses Servers werden NICHT in den Knowledge Graph geschrieben. Klicken, um sie als recallbare, nutzer-eigene Observations aufzunehmen."
       },
       "config": {

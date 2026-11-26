@@ -123,6 +123,17 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — MCP result safety: binary content, one result cap, KG ingest (ADR-0207) (2026-11-26)
+
+- **#1920** MCP `image`/`audio` blocks and blob resources reach the model as a type/size
+  placeholder, never as base64 text. A tool result the Privacy Shield does not intern
+  (operator bypass, bypassed sub-agent narration, no privacy guard) is cut to 200 000
+  characters with a notice (`capToolResultText`). Provider image blocks for unmasked
+  servers are a follow-up (ADR-0207).
+- **#1934** MCP → Knowledge-Graph ingest skips failed calls and the connect prompt; the
+  digest for a masked server holds counts only, no field names. The KG toggle's tooltip
+  (en/de) says that ingest needs an active Privacy Guard.
+
 ### Fixed — MCP grants and hydration (W09-10) (2026-11-26)
 
 - **#1910** Sub-agent (helper) MCP tools carry the discovered description and input
