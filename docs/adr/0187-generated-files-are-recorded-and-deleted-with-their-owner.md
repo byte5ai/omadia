@@ -36,7 +36,7 @@ tracked and deleted with their chat and person, or only expire by a documented b
 
 Chosen option: **A**.
 
-- **Contract.** Kernel service `generatedObjects@1` (plugin-api 1.101.0): `record(producer, key)`
+- **Contract.** Kernel service `generatedObjects@1` (plugin-api 1.103.0): `record(producer, key)`
   files the key under the current turn's canonical omadia user id and `sessionScope`;
   `registerDeleter(producer, fn)` names how the producer deletes. Office and Diagrams declare it
   in `optional_requires` and record every key a turn gets, cache hits included.

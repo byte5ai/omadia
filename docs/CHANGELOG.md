@@ -39,7 +39,7 @@ changelog.
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn
-  gets through the new kernel service `generatedObjects@1` (plugin-api **1.101.0**), filed under
+  gets through the new kernel service `generatedObjects@1` (plugin-api **1.103.0**), filed under
   the turn's person and chat. Deleting a chat releases the caller's records of that chat; the
   memory purge releases the person's (axis "User") or all records (axis "All") and counts them in
   the preview. A key left without any record is deleted from the bucket; an inactive producer or a
