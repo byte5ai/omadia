@@ -3804,6 +3804,21 @@ Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
 Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
 `web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
 
+**Alle Verbraucher folgen live (#1815/#1817/#1855, ADR-0194).** orchestrator-extras
+löst `embeddingClient@1` pro Aufruf auf (`liveEmbeddingClient.ts`: Recall,
+Widerspruchs- und Duplikaterkennung, Themenerkennung); der `topicDetector` ist
+publiziert, sobald ein LLM da ist, und antwortet ohne Anbieter mit
+continue-default. `memoryFeatureStatus.topicDetector` wird beim Lesen berechnet.
+Das KG-Gate prüft bei jedem Lesen von Client, Schreibfreigabe oder Epoche, ob die
+Registry den freigegebenen Client noch publiziert; sonst Rückzug (Writes aus,
+Epoche +1, Backfill gestoppt) und Neubewertung in place — Deinstallieren oder
+Deaktivieren braucht also keinen Admin-Klick mehr. Der Kernel markiert ein
+entsorgtes Modell-Service-Registrat (`embeddingClient`, `transcription`,
+`decisionModel`) als zurückgezogen: Aufrufe über eine gehaltene Referenz werfen
+`ModelServiceWithdrawnError`. Der Recall-Judge löst `class:fast` pro Aufruf auf,
+solange `kg_recall_relevance_judge_model` leer ist. Tests:
+`test/embeddingLiveRebind1815.test.ts`.
+
 ### Run-Trace- und Capture-Filter-Zähler: `GET /api/admin/run-trace` (#684 / #1082)
 
 Die Run-Trace-Outcomes (#684) und die Zahl der vom Capture-Filter als

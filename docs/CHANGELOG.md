@@ -148,6 +148,26 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
+
+- **#1815** `@omadia/orchestrator-extras` no longer captures `embeddingClient@1` in
+  `activate()`. Context recall (memory, durable and turn legs), contradiction and
+  merge-candidate detection (incl. the bulk merge services) and topic detection resolve the
+  client per call (`liveEmbeddingClient.ts`), so **Reactivate provider** / **Switch
+  provider** work without a restart. The topic detector is now published whenever an LLM
+  is available and answers continue-default (`reason: no-embedding-provider`) while no
+  provider is published; `memoryFeatureStatus@1` reports its state at read time.
+- **#1817** The knowledge-graph gate withdraws its approved client as soon as the registry
+  stops publishing it (uninstall, deactivate, reactivate): writes off, epoch bumped,
+  backfill stood down, then an in-place re-evaluation against the registry. The backfill no
+  longer counts an attempt for an embed that failed after the epoch moved. The kernel now
+  marks a disposed model-service registration (`embeddingClient`, `transcription`,
+  `decisionModel`) withdrawn: calls through a held reference reject with
+  `ModelServiceWithdrawnError` and never reach the removed adapter.
+- **#1855** The recall relevance judge resolves `class:fast` per call when
+  `kg_recall_relevance_judge_model` is unset, so it uses the discovered fast model after a
+  restart as after a reactivation. The boot log reads `recallJudge=on(class:fast per call, now …)`.
+- Log lines of the extras now read `embed=live, now on|off`.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

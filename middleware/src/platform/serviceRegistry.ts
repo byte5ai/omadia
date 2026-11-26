@@ -47,7 +47,7 @@ import {
   resolvePerCallerService,
   type ServiceCaller,
 } from '@omadia/plugin-api';
-import { gateModelService } from './modelGatewayServices.js';
+import { gateModelService, withdrawModelService } from './modelGatewayServices.js';
 
 /** Attribution used when core resolves a service for itself rather than on
  *  behalf of a plugin. A per-caller factory can branch on it to hand the
@@ -166,6 +166,9 @@ export class ServiceRegistry {
       if (this.providers.get(name) !== impl) return false;
       this.providers.delete(name);
       if (this.ownProvides.get(name)?.impl === impl) this.ownProvides.delete(name);
+      // #1817 / ADR-0194 — a consumer that still holds the model service
+      // (captured before this disposal) must not reach the removed adapter.
+      withdrawModelService(gated);
       return true;
     };
     return this.track(owner, name, dispose);

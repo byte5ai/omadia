@@ -165,8 +165,16 @@ export async function activate(
 ): Promise<OrchestratorExtrasPluginHandle> {
   const knowledgeGraph =
     ctx.services.get<KnowledgeGraph>('knowledgeGraph');
-  const embeddingClient =
+  // #1815 / ADR-0194 — resolved on EVERY use, never captured here. The
+  // active `embeddingClient@1` provider can be reactivated, switched or
+  // uninstalled while this plugin stays up (Admin → Embedding provider does
+  // exactly that, without a restart); a boot-time capture kept recall, merge
+  // and contradiction detection and topic detection on the boot answer.
+  const resolveEmbeddingClient = (): EmbeddingClient | undefined =>
     ctx.services.get<EmbeddingClient>('embeddingClient');
+  /** For log lines only: the provider state at this instant. */
+  const embedState = (): string =>
+    `live, now ${resolveEmbeddingClient() ? 'on' : 'off'}`;
   // OB-74 (Palaia Phase 5) — optional capability. When the KG provider
   // doesn't publish it (e.g. in-memory backend, migration not yet applied)
   // the assembler degrades to manual-boost only without per-agent block/boost.
@@ -548,11 +556,27 @@ export async function activate(
     typeof recallJudgeEnabledRaw === 'string'
       ? recallJudgeEnabledRaw.toLowerCase() === 'false'
       : recallJudgeEnabledRaw === false;
-  const recallJudgeModel =
-    (ctx.config.get<string>('kg_recall_relevance_judge_model') ?? '').trim() ||
+  // #1855 / ADR-0194 — an operator-set model is fixed; the default follows
+  // `class:fast` PER CALL. Live model discovery lands after the plugins
+  // activated, so resolving it here kept the built-in seed's fast model after
+  // every restart and the discovered one after any reactivation. The boot
+  // value decides only whether a judge is built at all, and the last good
+  // answer is kept if the class stops resolving mid-run.
+  const configuredJudgeModel = (
+    ctx.config.get<string>('kg_recall_relevance_judge_model') ?? ''
+  ).trim();
+  const resolveFastModel = (): string | undefined =>
     resolveModelRef('class:fast', {
       defaultProvider: providerId as ProviderId,
     })?.modelId;
+  const recallJudgeModel = configuredJudgeModel || resolveFastModel();
+  let lastFastModel = recallJudgeModel ?? '';
+  const judgeModel: string | (() => string) = configuredJudgeModel
+    ? configuredJudgeModel
+    : (): string => {
+        lastFastModel = resolveFastModel() ?? lastFastModel;
+        return lastFastModel;
+      };
   // `decisionModel@1` (optional) — resolved per call, never at activation: a
   // decision-model plugin may activate after this one or go away later. Each
   // site has its own kill switch (setup fields, default on); off ⇒ LLM only.
@@ -568,7 +592,7 @@ export async function activate(
     llm && !recallRelevanceJudgeDisabled && recallJudgeModel
       ? createRecallRelevanceJudge({
           llm,
-          model: recallJudgeModel,
+          model: judgeModel,
           log: ctx.log,
           privacy: inTurnPrivacy,
           ...(recallDecisionEnabled ? { decide: decisionModel } : {}),
@@ -650,7 +674,7 @@ export async function activate(
   // service so its own searches see the same view live readers do.
   const inconsistencyDetector = createInconsistencyDetector({
     graph: captureWrappedKg,
-    ...(embeddingClient ? { embeddingClient } : {}),
+    embeddingClient: resolveEmbeddingClient,
     ...(llm ? { llm, model: factModel } : {}),
     log: (msg) => { console.error(msg); },
     // Fire-and-forget after a memory write, possibly after the turn that
@@ -667,7 +691,7 @@ export async function activate(
     log: (msg) => { console.error(msg); },
   });
   ctx.log(
-    `[harness-orchestrator-extras] inconsistency-detector ready (embed=${embeddingClient ? 'on' : 'off'}, judge=${llm ? 'on' : 'off'})`,
+    `[harness-orchestrator-extras] inconsistency-detector ready (embed=${embedState()}, judge=${llm ? 'on' : 'off'})`,
   );
 
   // Slice 10 — MergeCandidate detector + triggering wrapper. Stack
@@ -695,7 +719,7 @@ export async function activate(
   );
   const mergeCandidateDetector = createMergeCandidateDetector({
     graph: inconsistencyWrappedKg,
-    ...(embeddingClient ? { embeddingClient } : {}),
+    embeddingClient: resolveEmbeddingClient,
     ...(autoMergeDisabled
       ? {}
       : { autoMergeThreshold, minSimilarity: autoMergeThreshold }),
@@ -718,7 +742,7 @@ export async function activate(
     wrappedKg,
   );
   ctx.log(
-    `[harness-orchestrator-extras] merge-candidate-detector ready (embed=${embeddingClient ? 'on' : 'off'})`,
+    `[harness-orchestrator-extras] merge-candidate-detector ready (embed=${embedState()})`,
   );
 
   ctx.log(
@@ -768,13 +792,13 @@ export async function activate(
       durableRelevanceJudgeEnabled,
       ...(durableKinds ? { durableKinds } : {}),
     },
-    embeddingClient,
+    resolveEmbeddingClient,
     agentPriorities,
     processMemory,
     relevanceJudge,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (tail=${String(contextTailSize)}, budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)},judge=${durableRelevanceJudgeEnabled ? 'on' : 'off'})`})`,
+    `[harness-orchestrator-extras] context-assembler ready (tail=${String(contextTailSize)}, budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${!memoryRecallDisabled ? `on(${embedState()},limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${configuredJudgeModel ? configuredJudgeModel : `class:fast per call, now ${recallJudgeModel ?? '?'}`})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)},judge=${durableRelevanceJudgeEnabled ? 'on' : 'off'})`})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,
@@ -937,7 +961,7 @@ export async function activate(
     bulkMergeDetect,
   );
   ctx.log(
-    `[harness-orchestrator-extras] bulkMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
+    `[harness-orchestrator-extras] bulkMergeDetect ready (embed=${embedState()})`,
   );
 
   // Slice 12 — Bulk Excerpt Merge Detect. Cosine-only (no Anthropic
@@ -952,7 +976,7 @@ export async function activate(
     bulkExcerptMergeDetect,
   );
   ctx.log(
-    `[harness-orchestrator-extras] bulkExcerptMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
+    `[harness-orchestrator-extras] bulkExcerptMergeDetect ready (embed=${embedState()})`,
   );
 
   // Slice 11 — Topic clustering. Operator-triggered, cosine-only
@@ -1036,23 +1060,22 @@ export async function activate(
       `[harness-orchestrator-extras] sessionBriefing ready (openTasksLookup=${graphPool ? 'on' : 'off'})`,
     );
 
-    if (embeddingClient) {
-      const topicDetector = new TopicDetector(embeddingClient, llm, {
-        upperThreshold,
-        lowerThreshold,
-        classifierModel,
-        // The channel classifies before it starts the turn.
-        privacy: outsideTurnPrivacy,
-      });
-      disposeTopicDetector = ctx.services.provide(
-        TOPIC_DETECTOR_SERVICE,
-        topicDetector,
-      );
-    } else {
-      ctx.log(
-        '[harness-orchestrator-extras] embeddingClient missing — TopicDetector skipped (Teams topic routing falls back to continue-default)',
-      );
-    }
+    // #1815 — published whenever an LLM is available; the embedding client is
+    // resolved per classify call. Without a provider at that moment the
+    // detector answers continue-default, the same answer a channel gets when
+    // no detector is published, so installing a provider later turns topic
+    // detection on without a restart.
+    const topicDetector = new TopicDetector(resolveEmbeddingClient, llm, {
+      upperThreshold,
+      lowerThreshold,
+      classifierModel,
+      // The channel classifies before it starts the turn.
+      privacy: outsideTurnPrivacy,
+    });
+    disposeTopicDetector = ctx.services.provide(
+      TOPIC_DETECTOR_SERVICE,
+      topicDetector,
+    );
   } else {
     // OM-102 — name the whole chain that was tried. The old wording blamed a
     // missing `anthropic_api_key`, which sent abo-only operators looking for a
@@ -1068,27 +1091,34 @@ export async function activate(
   // Each feature reports the guard that actually disabled IT — no positional
   // fallback chain, which previously blamed a missing embedding provider for a
   // topic detector that was really waiting on an LLM.
-  const memoryFeatureReasons: Partial<
+  const staticFeatureReasons: Partial<
     Record<MemoryFeature, MemoryFeatureReasonCode>
   > = {
     ...(disposeFactExtractor ? {} : { factExtractor: 'no_llm_provider' }),
-    ...(disposeTopicDetector
-      ? {}
-      : {
-          topicDetector: llm
-            ? ('no_embedding_provider' as const)
-            : ('no_llm_provider' as const),
-        }),
     ...(scratchReaperReason ? { scratchReaper: scratchReaperReason } : {}),
+  };
+  // #1815 — the topic detector's state is LIVE: it is published whenever an
+  // LLM is available and embeds through the provider that is active at call
+  // time, so "on" depends on the registry right now, not on the boot answer.
+  // The admin status route reads this object per request.
+  const topicDetectorReason = (): MemoryFeatureReasonCode | undefined => {
+    if (!disposeTopicDetector) return 'no_llm_provider';
+    return resolveEmbeddingClient() ? undefined : 'no_embedding_provider';
   };
   const memoryFeatureStatus: MemoryFeatureStatus = {
     factExtractor: disposeFactExtractor ? 'active' : 'disabled',
-    topicDetector: disposeTopicDetector ? 'active' : 'disabled',
+    get topicDetector() {
+      return topicDetectorReason() ? 'disabled' : 'active';
+    },
     scratchReaper: scratchReaperReason ? 'disabled' : 'active',
     ...(resolvedProvider ? { providerId: resolvedProvider.providerId } : {}),
-    ...(Object.keys(memoryFeatureReasons).length > 0
-      ? { reasons: Object.freeze(memoryFeatureReasons) }
-      : {}),
+    get reasons() {
+      const topic = topicDetectorReason();
+      return Object.freeze({
+        ...staticFeatureReasons,
+        ...(topic ? { topicDetector: topic } : {}),
+      });
+    },
     // Diagnostics only — English, rendered secondary, never the UI sentence.
     ...(resolvedProvider
       ? {}
@@ -1121,7 +1151,7 @@ export async function activate(
   );
 
   ctx.log(
-    `[harness-orchestrator-extras] ready (llmProvider=${resolvedProvider ? `${resolvedProvider.providerId} via ${resolvedProvider.source}` : 'none'}, contextRetriever=on, factExtractor=${llm ? 'on' : 'off'}, topicDetector=${llm && embeddingClient ? 'on' : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, palaiaExcerpt=${disposePalaiaExcerpt ? 'on' : 'off'}, nudgeProviders=on)`,
+    `[harness-orchestrator-extras] ready (llmProvider=${resolvedProvider ? `${resolvedProvider.providerId} via ${resolvedProvider.source}` : 'none'}, contextRetriever=on, factExtractor=${llm ? 'on' : 'off'}, topicDetector=${disposeTopicDetector ? `on(embed=${embedState()})` : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, palaiaExcerpt=${disposePalaiaExcerpt ? 'on' : 'off'}, nudgeProviders=on)`,
   );
 
   return {

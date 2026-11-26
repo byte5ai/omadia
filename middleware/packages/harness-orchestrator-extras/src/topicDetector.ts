@@ -1,13 +1,14 @@
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import type { ConversationTurn } from '@omadia/plugin-api';
-import {
-  cosineSimilarity,
-  type EmbeddingClient,
-} from '@omadia/embeddings';
+import { cosineSimilarity, type EmbeddingClient } from '@omadia/embeddings';
 
 import { TOPIC_CLASSIFIER_MAX_TOKENS, VERDICT_JUDGE_REASONING } from './classifierBudgets.js';
 import type { OpenJobPrivacy } from './jobPrivacy.js';
+import {
+  currentEmbeddingClient,
+  type EmbeddingClientSource,
+} from './liveEmbeddingClient.js';
 
 /**
  * Three-stage topic-detection pipeline:
@@ -82,7 +83,9 @@ export class TopicDetector {
   private readonly privacy: OpenJobPrivacy | undefined;
 
   constructor(
-    private readonly embeddings: EmbeddingClient,
+    /** Resolved per call (#1815, ADR-0194): the provider may change or go
+     *  away while this detector is published. */
+    private readonly embeddings: EmbeddingClientSource,
     private readonly llm: LlmProvider,
     opts: TopicDetectorOptions = {},
   ) {
@@ -96,7 +99,14 @@ export class TopicDetector {
       return { decision: 'continue', reason: 'no-history' };
     }
 
-    const similarity = await this.computeSimilarity(input);
+    const embeddings = currentEmbeddingClient(this.embeddings);
+    if (!embeddings) {
+      // No provider right now — the same answer a channel gets when no
+      // detector is published at all (continue-default), without a log line
+      // per turn.
+      return { decision: this.opts.fallbackDecision, reason: 'no-embedding-provider' };
+    }
+    const similarity = await this.computeSimilarity(input, embeddings);
     if (!Number.isFinite(similarity)) {
       // Embedding itself failed — we don't want to block the turn, but we also
       // don't want to send a clarification card for every turn while the
@@ -152,16 +162,17 @@ export class TopicDetector {
 
   private async computeSimilarity(
     input: TopicClassifyInput,
+    embeddings: EmbeddingClient,
   ): Promise<number> {
     const tail = input.history.slice(-this.opts.centroidDepth);
     // Embed the new message + the tail's user messages in parallel. Ollama
     // usually takes ~80 ms per call; going parallel keeps the critical path
     // at roughly that single-call latency.
     const [newVec, tailVecs] = await Promise.all([
-      this.embeddings.embed(input.userMessage).catch(() => [] as number[]),
+      embeddings.embed(input.userMessage).catch(() => [] as number[]),
       Promise.all(
         tail.map((t) =>
-          this.embeddings.embed(t.userMessage).catch(() => [] as number[]),
+          embeddings.embed(t.userMessage).catch(() => [] as number[]),
         ),
       ),
     ]);
