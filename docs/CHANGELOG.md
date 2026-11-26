@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Added — memory lifecycle invariants (memory-ACL test plan, step 5) (2026-11-26)
+
+- **Real lifecycle jobs on the seeded world** (`middleware/test/memoryAccess/lifecycleInvariants.pg.test.ts`,
+  `lifecycleCleanup.pg.test.ts`, shared harness `lifecycle.ts`). On Neon: identity resolution, turn
+  promotion, bulk promotion, the scratch reaper, owner removal, the decay sweep on rows aged 90 days,
+  the transcript backfill, auto-merge and a user purge. Around each job the memorable-knowledge search
+  is read for every viewer and mode; a canary someone gains without an ACL audit row from that job
+  fails. Memories a job creates must stay within what the oracle allows for an item of that shape. A
+  backfill must keep each turn's owners, user and Privacy Shield flag; a user purge must remove the
+  person's datasets and member-notes trees from every tenant table and de-own shared memories with a
+  `shrink` row (ADR-0186).
+- **Random operation sequences** (`lifecycleInvariants.test.ts`, `fast-check`, new dev dependency):
+  owner adds and removals, edits and deletes on the in-memory graph; access never widens without an
+  `expand` audit row and a deleted memory is read by nobody. Scope keys of different raw scopes never
+  collide (`scopeGraphKey`).
+- **Known gaps, kept as `todo` tests naming their issue:** #2277 (`scopeGraphKey` returns its own
+  output unchanged, so a raw scope spelled like a key lands in that partition; behind
+  `OMADIA_INJECTIVE_SCOPE_KEYS`, off by default), #2278 (deleting an unprotected turn, e.g. by a user
+  purge, unmasks the memories derived from it for shielded turns: promotion stamps no `unprotected`,
+  only the `DERIVED_FROM` edge marks them), #2279 (a user purge misses memories owned by the person's
+  raw channel id, as Teams auto-promotion writes them).
+- The seed now registers each members tier in `members-index`, as the binder does; the purge finds a
+  person's member notes through it.
+- CI `PG_TEST_FLOOR` 798 → 828: the 11 new Postgres tests (2 of them `todo`) on top of the measured
+  817 with step 4.
+
 ### Added — memory completeness guards (memory-ACL test plan, step 4) (2026-11-26)
 
 - **Surface inventory** (`middleware/test/memoryAccess/surfaceInventory.test.ts`). Every

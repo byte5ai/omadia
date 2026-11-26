@@ -379,7 +379,11 @@ jobs:
           # 2 in-memory + 3 Neon tests).
           # 795 → 798 with the ACL contract after migrations
           # (memoryAccess/aclAfterMigrations.pg, 3 tests, memory-ACL step 4d).
-          PG_TEST_FLOOR: '798'
+          # 798 → 828 with the memory lifecycle invariants (memoryAccess/
+          # lifecycle*.pg, 11 tests incl. 2 todo for #2278/#2279, step 5).
+          # Measured locally on top of #2276, whose CI head reported ran=817:
+          # the floor had 19 tests of slack, re-pinned to the measured total.
+          PG_TEST_FLOOR: '828'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
