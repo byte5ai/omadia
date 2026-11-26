@@ -40,7 +40,6 @@ export function toolsForTurn(input: Pick<ChatTurnInput, 'toolsOff' | 'unattended
   if (isToolsOffTurn(input)) return [];
   const tools = build();
   // #1770 / ADR 0242 — nobody can answer a question in an unattended turn.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   return isUnattendedTurn(input) ? tools.filter((t) => !UNATTENDED_DROPPED_TOOLS.has(String(t?.name))) : tools;
 }
 
