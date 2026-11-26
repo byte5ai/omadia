@@ -159,6 +159,14 @@ Contract: ADR-0230 (Proposed).
   restart is pending, and the `/memory` badge names the running backend. ADR-0192 records
   the rule and supersedes the "memory backend follows the environment on every boot"
   sentence of ADR-0047 (ADR-0124 already stated the precedence).
+- **#1858** `GRAPH_EMBEDDING_BACKFILL_*` now take effect on existing installs. The boot
+  writes a backfill setting of `@omadia/knowledge-graph-neon` only when its variable is set,
+  records what it wrote in the hidden key `_env_seeded`, and on every boot lets boot-written
+  values follow the variable (or drops them when it is unset). A value an operator saved in
+  the Store wins; a set variable it overrides is logged as `⚠ … is ignored`. Values the old
+  migration wrote unasked (the built-in defaults) count as boot-written. ADR-0193 records
+  the rule (`src/plugins/envSeededConfig.ts`); the variables are now in `.env.example` and
+  handoff §10.
 
 ### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
 

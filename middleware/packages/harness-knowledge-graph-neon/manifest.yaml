@@ -96,8 +96,8 @@ setup:
       type: "string"
       required: false
       help:
-        en: "'true' enables the in-process embedding backfill scheduler (re-embeds turns whose post-commit `embedAndStoreTurn` failed). Default: 'true'. Migrated from GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op without `embeddingClient`."
-        de: "'true' aktiviert den in-process Embedding-Backfill-Scheduler (re-embedded Turns deren post-commit `embedAndStoreTurn` failed). Default: 'true'. Migriert aus GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op ohne `embeddingClient`."
+        en: "'true' enables the in-process embedding backfill scheduler (re-embeds turns whose post-commit `embedAndStoreTurn` failed). Default: 'true'. Seeded from GRAPH_EMBEDDING_BACKFILL_ENABLED while that variable is set and this field was not edited here; a value saved here wins (the boot log names a variable it overrides). No-op without `embeddingClient`."
+        de: "'true' aktiviert den in-process Embedding-Backfill-Scheduler (re-embedded Turns deren post-commit `embedAndStoreTurn` failed). Default: 'true'. Kommt aus GRAPH_EMBEDDING_BACKFILL_ENABLED, solange die Variable gesetzt ist und das Feld hier nicht geändert wurde; ein hier gespeicherter Wert gewinnt (das Boot-Log nennt eine Variable, die er überdeckt). No-op ohne `embeddingClient`."
     - key: "graph_embedding_backfill_interval_minutes"
       label:
         en: "Backfill Interval (minutes)"
@@ -105,8 +105,8 @@ setup:
       type: "string"
       required: false
       help:
-        en: "Sweep interval of the backfill scheduler. Default: 5. Migrated from GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
-        de: "Sweep-Intervall des Backfill-Schedulers. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
+        en: "Sweep interval of the backfill scheduler. Default: 5. Seeded from GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES while that variable is set and this field was not edited here; a value saved here wins (the boot log names a variable it overrides)."
+        de: "Sweep-Intervall des Backfill-Schedulers. Default: 5. Kommt aus GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES, solange die Variable gesetzt ist und das Feld hier nicht geändert wurde; ein hier gespeicherter Wert gewinnt (das Boot-Log nennt eine Variable, die er überdeckt)."
     - key: "graph_embedding_backfill_batch_size"
       label:
         en: "Backfill Batch Size"
@@ -114,8 +114,8 @@ setup:
       type: "string"
       required: false
       help:
-        en: "Maximum number of turns per sweep. Default: 20. Migrated from GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
-        de: "Maximale Anzahl Turns pro Sweep. Default: 20. Migriert aus GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
+        en: "Maximum number of turns per sweep. Default: 20. Seeded from GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE while that variable is set and this field was not edited here; a value saved here wins (the boot log names a variable it overrides)."
+        de: "Maximale Anzahl Turns pro Sweep. Default: 20. Kommt aus GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE, solange die Variable gesetzt ist und das Feld hier nicht geändert wurde; ein hier gespeicherter Wert gewinnt (das Boot-Log nennt eine Variable, die er überdeckt)."
     - key: "graph_embedding_backfill_max_attempts"
       label:
         en: "Backfill Max Attempts"
@@ -123,8 +123,8 @@ setup:
       type: "string"
       required: false
       help:
-        en: "Hard cap on retries per turn. Default: 5. Migrated from GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
-        de: "Hard cap auf Retries pro Turn. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
+        en: "Hard cap on retries per turn. Default: 5. Seeded from GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS while that variable is set and this field was not edited here; a value saved here wins (the boot log names a variable it overrides)."
+        de: "Hard cap auf Retries pro Turn. Default: 5. Kommt aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS, solange die Variable gesetzt ist und das Feld hier nicht geändert wurde; ein hier gespeicherter Wert gewinnt (das Boot-Log nennt eine Variable, die er überdeckt)."
     # OB-73 (Phase 4): Tiering-Lifecycle. Decay-Score-Update + HOT/WARM/COLD
     # rotation + Done-Task-TTL run as an hourly cron (decay-rotation), GC + hard
     # limits as a daily cron (gc-quotas — Slice C). This job USES the columns

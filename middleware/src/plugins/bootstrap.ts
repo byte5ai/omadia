@@ -18,6 +18,7 @@ import type { InstalledAgent, InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
+import { applyEnvSeeds, type EnvSeed } from './envSeededConfig.js';
 
 const DIAGRAMS_TOOL_ID = '@omadia/diagrams';
 const OFFICE_TOOL_ID = '@omadia/plugin-office';
@@ -119,6 +120,11 @@ export interface BootstrapDeps {
    * like `onPluginRemoved`). A throwing hook is logged, never fatal.
    */
   onPluginInstalled?: (pluginId: string) => void;
+  /**
+   * #1858 — raw environment, to tell a SET variable from a schema default
+   * (ADR-0193). Absent → `process.env`.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** #1481 — true (and logged) when the operator uninstalled this built-in. */
@@ -959,6 +965,13 @@ export async function bootstrapKnowledgeGraphFromEnv(
     return;
   }
 
+  // #1858 (ADR-0193): the backfill variables follow the environment on every
+  // boot while their value is boot-owned; an operator value wins and a set
+  // variable it shadows is logged.
+  if (deps.registry.has(KNOWLEDGE_GRAPH_NEON_ID)) {
+    await reconcileNeonBackfillSeeds(deps, log);
+  }
+
   if (otherInstalled) {
     log(
       `[bootstrap] ${otherId} already installed — skipping ${targetId} migration (operator-managed)`,
@@ -993,21 +1006,13 @@ export async function bootstrapKnowledgeGraphFromEnv(
   if (deps.config.GRAPH_TENANT_ID && deps.config.GRAPH_TENANT_ID !== 'default') {
     config['graph_tenant_id'] = deps.config.GRAPH_TENANT_ID;
   }
-  if (databaseUrl) {
-    // Backfill knobs only matter for the Neon backend.
-    config['graph_embedding_backfill_enabled'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_ENABLED,
-    );
-    config['graph_embedding_backfill_interval_minutes'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES,
-    );
-    config['graph_embedding_backfill_batch_size'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE,
-    );
-    config['graph_embedding_backfill_max_attempts'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS,
-    );
-  }
+  // Backfill knobs only matter for the Neon backend. Only SET variables are
+  // written (ADR-0193); an unset one leaves the plugin default in charge.
+  const seeded =
+    targetId === KNOWLEDGE_GRAPH_NEON_ID
+      ? (applyEnvSeeds(config, neonBackfillSeeds(deps), deps.env ?? process.env)
+          .config ?? config)
+      : config;
 
   await deps.registry.register({
     id: targetId,
@@ -1015,11 +1020,67 @@ export async function bootstrapKnowledgeGraphFromEnv(
     installed_at: new Date().toISOString(),
     status: 'active',
     origin: 'bundled',
-    config,
+    config: seeded,
   });
 
   log(
     `[bootstrap] ⚐ auto-installed ${targetId} (database_url=${databaseUrl ? '(set)' : '(unset → in-memory backend)'})`,
+  );
+}
+
+/** The four `GRAPH_EMBEDDING_BACKFILL_*` variables and the Neon config keys
+ *  they seed (#1858). `value` is the validated `Config` value. */
+function neonBackfillSeeds(deps: BootstrapDeps): EnvSeed[] {
+  const c = deps.config;
+  return [
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_ENABLED',
+      configKey: 'graph_embedding_backfill_enabled',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_ENABLED),
+      legacyDefault: 'true',
+    },
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES',
+      configKey: 'graph_embedding_backfill_interval_minutes',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES),
+      legacyDefault: '5',
+    },
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE',
+      configKey: 'graph_embedding_backfill_batch_size',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE),
+      legacyDefault: '20',
+    },
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS',
+      configKey: 'graph_embedding_backfill_max_attempts',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS),
+      legacyDefault: '5',
+    },
+  ];
+}
+
+/** Re-apply the backfill seeds to an installed Neon entry on every boot. */
+async function reconcileNeonBackfillSeeds(
+  deps: BootstrapDeps,
+  log: (msg: string) => void,
+): Promise<void> {
+  const entry = deps.registry.get(KNOWLEDGE_GRAPH_NEON_ID);
+  if (!entry) return;
+  const result = applyEnvSeeds(
+    entry.config ?? {},
+    neonBackfillSeeds(deps),
+    deps.env ?? process.env,
+  );
+  for (const s of result.shadowed) {
+    log(
+      `[bootstrap] ⚠ ${KNOWLEDGE_GRAPH_NEON_ID}: ${s.envName}='${s.envValue}' is ignored — the plugin setting ${s.configKey}='${s.stored}' was set by an operator and wins (change it in the plugin settings)`,
+    );
+  }
+  if (result.config === null) return;
+  await deps.registry.register({ ...entry, config: result.config });
+  log(
+    `[bootstrap] ⚐ ${KNOWLEDGE_GRAPH_NEON_ID}: embedding-backfill settings reconciled from the environment`,
   );
 }
 

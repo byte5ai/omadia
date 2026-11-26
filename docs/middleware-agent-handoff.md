@@ -5332,6 +5332,13 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
 | `USAGE_FX_DISABLED` | `true` schaltet den Abruf des EZB-Tageskurses für die EUR-Ansicht des Kosten-Dashboards ab (`GET www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`, ohne Credentials, höchstens alle 6 h). Default aus — für air-gapped oder egress-beschränkte Installationen. Ohne Kurs bleibt das Dashboard in USD. Siehe Abschnitt Usage-Telemetrie, Lesepfad. |
 
+### Env-Variablen, die Plugin-Settings seeden (#1858, ADR-0193)
+
+| Variable | Wirkung |
+|---|---|
+| `GRAPH_EMBEDDING_BACKFILL_ENABLED`, `GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES`, `GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE`, `GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS` | Seeden die gleichnamigen Settings (`graph_embedding_backfill_*`) von `@omadia/knowledge-graph-neon`. `bootstrapKnowledgeGraphFromEnv` schreibt nur **gesetzte** Variablen und merkt sich im versteckten Key `_env_seeded`, welche Werte vom Boot stammen (`src/plugins/envSeededConfig.ts`). Ein vom Boot geschriebener Wert folgt der Variable bei jedem Boot (geändert oder, wenn die Variable wegfällt, entfernt → Plugin-Default). Speichert ein Operator den Wert im Store, gewinnt er; eine gesetzte Variable, die er überdeckt, loggt der Boot als `⚠ … is ignored`. Alt-Installationen ohne Marker: Werte gleich dem eingebauten Default (`true`/`5`/`20`/`5`, vom alten Migrationspfad immer geschrieben) zählen als Boot-Werte. Validierung in `config.ts` bleibt (Wert außerhalb des Bereichs stoppt den Boot). |
+| `MEMORY_BACKEND` | Gilt nur, solange auf `/admin/memory-backend` keine Auswahl gespeichert ist. Die gespeicherte Auswahl (`memory_backend`) gewinnt bei **jedem** Boot und wird beim Provider-Wechsel auf den neu installierten Sibling übertragen (#1834, ADR-0192). |
+
 ### Self-Update und Release-Check (#432, #1381)
 
 | Variable | Wirkung |
