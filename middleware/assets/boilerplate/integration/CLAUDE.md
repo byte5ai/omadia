@@ -608,9 +608,9 @@ fine — `ctx.services.get(...)` mehrfach pro `activate()` ist OK.
 > Für Entities und Turn-Suche ist `ctx.knowledgeGraph` der Normalweg.
 > Entity- und Fact-Writes (`ingestEntities`, `ingestFacts`) bleiben auf beiden
 > Wegen in den Systemen aus `permissions.graph.entity_systems` (ADR-0167) —
-> das eigene System dort deklarieren. Mit Deklaration wirft ein fremdes
-> System `KgEntityNamespaceError`; ohne Deklaration schreibt der Service im
-> Übergang noch, mit Warnung im Log.
+> das eigene System dort deklarieren. Ein fremdes System wirft
+> `KgEntityNamespaceError`; ohne Deklaration wirft jeder Entity- und
+> Fact-Write (ADR-0169).
 
 > **Preview vs. Install**: Im Preview-Iframe ist `ctx.routes.register` ein
 > No-op-Stub — der Aufruf läuft durch ohne zu crashen, aber die Routes werden

@@ -185,6 +185,10 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
     // Not even a fact that mentions no entity.
     await assert.rejects(() => bounded.ingestFacts([fact([])]), /system='fact'/);
     assert.deepEqual(calls, [], 'a refused write never reached the graph');
+    // An empty batch writes nothing and still passes through.
+    await bounded.ingestEntities([]);
+    await bounded.ingestFacts([]);
+    assert.deepEqual(calls, ['ingestEntities', 'ingestFacts']);
   });
 
   it('enforce-strict: an entity another conversation captured stays out; synced master data stays in', async () => {

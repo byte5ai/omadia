@@ -192,9 +192,9 @@ export function entityWriteGuard(pluginId: string, entitySystems: readonly strin
         }
         const mentioned = fact.mentionedEntityIds ?? [];
         // ADR-0169: an undeclared plugin writes no fact, not even one that
-        // mentions no entity. The error names the fact namespace then.
-        if (allowed.size === 0) {
-          throw new KgEntityNamespaceError(pluginId, mentioned[0] ? systemOfEntityId(mentioned[0]) : 'fact');
+        // mentions no entity (a mention is refused by `assertSystem` below).
+        if (allowed.size === 0 && mentioned.length === 0) {
+          throw new KgEntityNamespaceError(pluginId, 'fact');
         }
         for (const id of mentioned) assertSystem(systemOfEntityId(id));
       }

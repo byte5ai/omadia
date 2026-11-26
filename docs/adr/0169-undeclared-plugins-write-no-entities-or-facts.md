@@ -8,6 +8,7 @@ Proposed
 - **Deciders:** Owner decision of 2026-11-26 recorded in
   [ADR-0167](0167-plugin-entity-writes-stay-in-declared-entity-systems.md) ("How the
   transition ends"); tracked by #2244.
+- **Supersedes:** —
 - **Refines:** [ADR-0167](0167-plugin-entity-writes-stay-in-declared-entity-systems.md)
   (ends its transition for undeclared writers).
 
@@ -52,8 +53,8 @@ ever meant to carry the two syncs until their releases were out.
 - `entityWriteGuard` (`middleware/src/platform/boundedGraphServices.ts`) takes the
   declared systems only; the `'undeclared'` pass is gone. With no declared system, every
   entity is refused (`KgEntityNamespaceError` naming its system) and so is every fact,
-  even one that mentions no entity (the error then names `fact`). Nothing reaches the
-  graph.
+  even one that mentions no entity (the error then names `fact`). A refused batch never
+  reaches the graph; an empty batch writes nothing and passes through as before.
 - The rules of ADR-0167 stay as they are for declaring plugins: the entity's `system` and
   the system of every mentioned id must be declared, a `factId` must be a fact id, kernel
   namespaces are never an entity system.
