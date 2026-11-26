@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder preview turns and choice cards (2026-11-26)
+
+- Preview model calls carry turn and draft-session IDs. The usage page counts Builder
+  and preview calls against the same draft (#1741).
+- The preview shows a localized model refusal, preserves the declined outcome on
+  reload, and omits declined requests from later model input (#1810, ADR-0236).
+- Builder choice cards accept free text and can be dismissed. They expire after five
+  minutes, and Stop cancels the pending question in either workspace view (#1803,
+  ADR-0235).
+
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
 
 The auto-rebuild scheduler and the preview routes now share one build-and-warm

@@ -4823,6 +4823,13 @@ Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
   sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
   Admin-Session.
 
+**Vorschau-Turns.** Die Modellnutzung trägt eine Turn-ID und die Session
+`builder-preview:<draftId>`. Die Nutzungsseite fasst Vorschau und Builder
+zusammen und zählt einen Entwurf einmal. Eine Modellablehnung markiert den
+Nutzereintrag mit `status: declined`. Die UI rendert den Systemhinweis aus
+`turn_declined` bzw. dem gespeicherten Status. Abgelehnte Nachrichten gehen
+nicht in den Modellkontext späterer Vorschau-Turns (ADR-0236).
+
 ### Plugin Builder: ein Turn pro Draft, Stopp auf dem Server (#2214)
 
 Seit #1899 läuft ein Builder-Turn nach einem Disconnect weiter. `DraftTurnLock`
@@ -4855,6 +4862,11 @@ Chat-Route und AutoFix) lässt pro Draft genau einen laufenden Turn zu.
   denselben Abort ab (`error builder.turn_timeout`).
 - **Detached-Turn.** Das `finally` des Turn-Tasks wirft nicht mehr:
   `finalize()` ist abgesichert, der Lock wird immer freigegeben.
+- **Rückfragen.** Eine offene Frage bleibt im Chat. Die Choice-Karte bietet
+  konkrete Optionen, eine freie Antwort und Schließen. Der vorhandene
+  Owner-Endpunkt akzeptiert dazu `value`, `answer` oder `cancel: true`.
+  Nach fünf Minuten läuft die Karte ab und verschwindet auch in anderen
+  Tabs. Die freie Antwort zählt als Chat-Eingabe (ADR-0235).
 - **Grenze.** Der Lock liegt im Speicher wie Ring-Buffer und Choice-Karten:
   ein Turn überlebt keinen Neustart, sein Lock auch nicht. Mehrere
   Middleware-Instanzen teilen ihn nicht.

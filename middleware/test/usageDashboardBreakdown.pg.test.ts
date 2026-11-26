@@ -89,7 +89,7 @@ before(async () => {
   initUsageRecorder(pool);
   // Three builder drafts, one with two rows.
   row('sub-agent builder-aaaa', 1, '2026-03-02T10:00:00Z', { cacheCreationTokens: 500 });
-  row('sub-agent builder-aaaa', 1, '2026-03-02T10:05:00Z', { cacheCreationTokens: 300 });
+  row('sub-agent builder-preview-aaaa', 1, '2026-03-02T10:05:00Z', { cacheCreationTokens: 300 });
   row('sub-agent builder-bbbb', 2, '2026-03-02T11:00:00Z');
   row('sub-agent builder-cccc', 3, '2026-03-02T12:00:00Z');
   // Twelve ordinary sources, costs 0.12 … 0.01 — the last two are the tail.

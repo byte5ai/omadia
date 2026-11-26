@@ -4,7 +4,10 @@ import type { LlmProvider } from '@omadia/llm-provider';
 import { resolveClaudeCliBin } from '../../platform/cliBinary.js';
 import {
   LocalSubAgent,
+  SubAgentRefusalError,
   createCliSubAgent,
+  today,
+  turnContext,
   type AskObserver,
   type LocalSubAgentTool,
 } from '@omadia/orchestrator';
@@ -72,6 +75,7 @@ export type PreviewChatEvent =
       durationMs: number;
     }
   | { type: 'turn_done'; turnId: string }
+  | { type: 'turn_declined'; turnId: string }
   | { type: 'error'; code: string; message: string };
 
 const DEFAULT_MAX_TOKENS = 4096;
@@ -171,7 +175,15 @@ export class PreviewChatService {
     this.policyEnv = deps.policyEnv ?? process.env;
   }
 
-  async *runTurn(opts: RunTurnOptions): AsyncIterable<PreviewChatEvent> {
+  runTurn(opts: RunTurnOptions): AsyncIterable<PreviewChatEvent> {
+    const turnId = randomUUID();
+    return turnContext.runGenerator(
+      { turnId, turnDate: today(), sessionScope: `builder-preview:${opts.handle.draftId}` },
+      () => this.runTurnInScope(opts, turnId),
+    );
+  }
+
+  private async *runTurnInScope(opts: RunTurnOptions, turnId: string): AsyncGenerator<PreviewChatEvent> {
     // #1540 — the preview's model loop has no Privacy Shield (no turn handle,
     // no interning), even while a privacy guard runs. Under the org policy it
     // is refused before anything is stored or sent, like a CLI turn
@@ -207,8 +219,6 @@ export class PreviewChatService {
       };
       return;
     }
-
-    const turnId = randomUUID();
 
     yield { type: 'chat_message', role: 'user', text: opts.userMessage };
 
@@ -295,7 +305,7 @@ export class PreviewChatService {
     // user already said when probing the preview agent (same fix as
     // composeContextualMessage in builderAgent.ts).
     const contextualMessage = composeContextualMessage(
-      draft.previewTranscript,
+      draft.previewTranscript.filter((entry) => entry.status !== 'declined'),
       opts.userMessage,
     );
 
@@ -324,6 +334,14 @@ export class PreviewChatService {
       });
     }
     await askPromise;
+    if (askError instanceof SubAgentRefusalError) {
+      await this.draftStore.update(opts.userEmail, draftId, {
+        previewTranscript: [...draft.previewTranscript, { ...userTurn, status: 'declined' }],
+      });
+      yield { type: 'turn_declined', turnId };
+      yield { type: 'turn_done', turnId };
+      return;
+    }
     if (askError) {
       throw askError;
     }

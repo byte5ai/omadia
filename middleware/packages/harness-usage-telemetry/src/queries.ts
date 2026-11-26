@@ -254,9 +254,11 @@ async function fetchByKey(
 ): Promise<UsageByKey[]> {
   const params: unknown[] = [];
   const where = windowClause(w, params, b);
-  // `members` counts the distinct raw sources a row folds.
+  // Builder chat and preview have separate sources but count the same draft.
   const keyExpr = column === 'source' ? SOURCE_KEY_EXPR : 'model';
-  const membersExpr = column === 'source' ? 'COUNT(DISTINCT source)' : '1';
+  const membersExpr = column === 'source'
+    ? `COUNT(DISTINCT regexp_replace(source, '^sub-agent builder-preview-', 'sub-agent builder-'))`
+    : '1';
   const { rows } = await pool.query(
     `SELECT
        ${keyExpr}                         AS key,

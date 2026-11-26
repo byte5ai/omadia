@@ -3435,6 +3435,12 @@
     }
   },
   "builder": {
+    "choice": {
+      "answerLabel": "Your own answer",
+      "send": "Send answer",
+      "dismiss": "Dismiss",
+      "failed": "Could not save your response. Try again."
+    },
     "issueReport": {
       "kicker": "Report core bug to omadia",
       "publicWarning": "This text goes into the <strong>public</strong> repo. Secrets and personal data were removed automatically — please review before filing.",
@@ -3508,10 +3514,12 @@
         "errorUnknown": "Unknown error — please try again.",
         "errorProviderGeneric": "The Plugin Builder couldn't reach the AI service just now. Please try again in a moment.",
         "errorChoiceFailed": "Your choice could not be saved.",
+        "errorStopFailed": "Could not stop the turn. Try again.",
         "errorChoiceFailedMessage": "Your choice could not be saved: {message}"
       }
     },
     "workspace": {
+      "previewModelLabel": "Preview",
       "backToDrafts": "Drafts",
       "publish": "Publish",
       "viewModeAriaLabel": "Choose view",
@@ -3773,6 +3781,8 @@
           "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
           "fixWithBuilder": "Fix with builder"
         },
+        "declined": "The model declined this request for safety reasons.",
+        "previewModelSettings": "Preview model settings",
         "replyMarker": "Preview"
       },
       "secrets": {

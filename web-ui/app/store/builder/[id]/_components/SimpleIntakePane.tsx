@@ -11,7 +11,7 @@ import { Send, Sparkles, StopCircle } from 'lucide-react';
 
 import {
   ApiError,
-  resolveBuilderUserChoice,
+  stopBuilderTurn,
   streamBuilderTurn,
 } from '../../../../_lib/api';
 import type {
@@ -21,7 +21,7 @@ import type {
 } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
 import { humanizeProviderError } from '../../../../_lib/providerErrorMessage';
-import { ChoiceCard } from '../../../../_components/ChoiceCard';
+import { BuilderChoiceCard, type BuilderChoice } from './BuilderChoiceCard';
 
 import { BuilderMarkdown } from './BuilderMarkdown';
 import { isSendKey } from '../../../../_lib/composerKeys';
@@ -40,18 +40,8 @@ interface SimpleIntakePaneProps {
   initialTranscript: TranscriptEntry[];
   /** Pending `ask_user_choice` smart-card, hoisted by the Workspace from
    *  the SpecEventBus and shared with the Extended view. */
-  pendingUserChoice?: {
-    choiceId: string;
-    question: string;
-    options: ReadonlyArray<{
-      value: string;
-      label: string;
-      description?: string;
-    }>;
-  } | null;
-  /** Called optimistically after the operator picks an option so the
-   *  parent can clear the card without waiting for the bus echo. */
-  onUserChoiceResolved?: () => void;
+  pendingUserChoice?: BuilderChoice | null;
+  onUserChoiceResolved?: (choiceId: string) => void;
   /** Issue #224 — lifts the in-flight turn flag to the Workspace so it can
    *  lock the simple/extended view toggle while a reply streams (toggling
    *  unmounts this pane and would abort the stream + drop the live message).
@@ -96,6 +86,8 @@ export function SimpleIntakePane({
   );
   const [input, setInput] = useState('');
   const [inflight, setInflight] = useState(false);
+  const [turnId, setTurnId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Issue #224 — mirror the in-flight flag up to the Workspace, and force it
   // back to `false` on unmount so the view toggle never stays locked.
@@ -173,10 +165,12 @@ export function SimpleIntakePane({
         }
       } finally {
         setInflight(false);
+        setTurnId(null);
         abortRef.current = null;
       }
 
       function applyEvent(ev: BuilderTurnEvent): void {
+        if (ev.type === 'turn_started') setTurnId(ev.turnId);
         const nextStatus = friendlyStatusKey(ev);
         if (nextStatus !== null) setStatusKey(nextStatus);
 
@@ -193,13 +187,19 @@ export function SimpleIntakePane({
     [draftId, inflight, input, model, nextKey, scrollToBottom, t],
   );
 
-  const onStop = useCallback(() => {
-    abortRef.current?.abort();
-    setTimeout(() => {
-      setInflight(false);
-      abortRef.current = null;
-    }, 5000);
-  }, []);
+  const onStop = useCallback(async () => {
+    if (!turnId || stopping) return;
+    const controller = abortRef.current;
+    setStopping(true);
+    try {
+      await stopBuilderTurn(draftId, turnId);
+      controller?.abort();
+    } catch {
+      if (abortRef.current === controller) setError(t('errorStopFailed'));
+    } finally {
+      setStopping(false);
+    }
+  }, [draftId, stopping, t, turnId]);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -209,46 +209,6 @@ export function SimpleIntakePane({
       }
     },
     [onSend],
-  );
-
-  const [choiceSubmitting, setChoiceSubmitting] = useState(false);
-  const onChooseUserChoice = useCallback(
-    async (value: string) => {
-      if (!pendingUserChoice || choiceSubmitting) return;
-      const { choiceId, options } = pendingUserChoice;
-      const picked = options.find((o) => o.value === value);
-      const transcriptText = picked?.label ?? value;
-      setMessages((prev) => [
-        ...prev,
-        { key: nextKey('msg'), role: 'user', text: transcriptText },
-      ]);
-      scrollToBottom();
-      setChoiceSubmitting(true);
-      setError(null);
-      onUserChoiceResolved?.();
-      try {
-        await resolveBuilderUserChoice({ draftId, choiceId, value });
-      } catch (err) {
-        if (err instanceof ApiError) {
-          setError(humanizeApiError(err));
-        } else if (err instanceof Error) {
-          setError(t('errorChoiceFailedMessage', { message: err.message }));
-        } else {
-          setError(t('errorChoiceFailed'));
-        }
-      } finally {
-        setChoiceSubmitting(false);
-      }
-    },
-    [
-      pendingUserChoice,
-      choiceSubmitting,
-      draftId,
-      nextKey,
-      onUserChoiceResolved,
-      scrollToBottom,
-      t,
-    ],
   );
 
   const empty = messages.length === 0;
@@ -287,17 +247,14 @@ export function SimpleIntakePane({
           )}
 
           {pendingUserChoice ? (
-            <ChoiceCard
-              choice={{
-                question: pendingUserChoice.question,
-                options: pendingUserChoice.options.map((o) => ({
-                  value: o.value,
-                  label: o.label,
-                })),
-              }}
-              disabled={choiceSubmitting}
-              onChoose={(v) => {
-                void onChooseUserChoice(v);
+            <BuilderChoiceCard
+              key={pendingUserChoice.choiceId}
+              draftId={draftId}
+              choice={pendingUserChoice}
+              onResolved={onUserChoiceResolved}
+              onReply={(text) => {
+                setMessages((prev) => [...prev, { key: nextKey('msg'), role: 'user', text }]);
+                scrollToBottom();
               }}
             />
           ) : null}
@@ -336,7 +293,8 @@ export function SimpleIntakePane({
             <Button
               variant="danger"
               pill
-              onClick={onStop}
+              onClick={() => { void onStop(); }}
+              disabled={!turnId || stopping}
               className="h-[50px] shrink-0 text-[13px]"
             >
               <StopCircle className="size-4" aria-hidden />

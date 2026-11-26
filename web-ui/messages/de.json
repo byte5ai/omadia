@@ -3435,6 +3435,12 @@
     }
   },
   "builder": {
+    "choice": {
+      "answerLabel": "Eigene Antwort",
+      "send": "Antwort senden",
+      "dismiss": "Schließen",
+      "failed": "Deine Antwort konnte nicht gespeichert werden. Versuche es erneut."
+    },
     "issueReport": {
       "kicker": "Core-Bug an omadia melden",
       "publicWarning": "Dieser Text geht in das <strong>öffentliche</strong> Repo. Secrets und personenbezogene Daten wurden automatisch entfernt — bitte vor dem Anlegen prüfen.",
@@ -3508,10 +3514,12 @@
         "errorUnknown": "Unbekannter Fehler — bitte erneut versuchen.",
         "errorProviderGeneric": "Der Plugin Builder konnte den KI-Dienst gerade nicht erreichen. Bitte versuch es gleich noch einmal.",
         "errorChoiceFailed": "Auswahl konnte nicht gespeichert werden.",
+        "errorStopFailed": "Der Turn konnte nicht gestoppt werden. Versuche es erneut.",
         "errorChoiceFailedMessage": "Auswahl konnte nicht gespeichert werden: {message}"
       }
     },
     "workspace": {
+      "previewModelLabel": "Vorschau",
       "backToDrafts": "Drafts",
       "publish": "Bereitstellen",
       "viewModeAriaLabel": "Ansicht wählen",
@@ -3773,6 +3781,8 @@
           "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
         },
+        "declined": "Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt.",
+        "previewModelSettings": "Einstellungen für das Vorschau-Modell",
         "replyMarker": "Vorschau"
       },
       "secrets": {

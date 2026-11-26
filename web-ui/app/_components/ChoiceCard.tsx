@@ -22,10 +22,12 @@ export function ChoiceCard({
   choice,
   disabled,
   onChoose,
+  children,
 }: {
   choice: PendingUserChoice;
   disabled: boolean;
   onChoose: (value: string) => void;
+  children?: React.ReactNode;
 }): React.ReactElement {
   const t = useTranslations('chat');
   return (
@@ -56,6 +58,7 @@ export function ChoiceCard({
           </Button>
         ))}
       </div>
+      {children}
     </div>
   );
 }

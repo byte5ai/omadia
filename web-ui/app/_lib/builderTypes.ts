@@ -223,6 +223,7 @@ export interface TranscriptEntry {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  status?: 'declined';
 }
 
 export interface Draft extends DraftSummary {
@@ -507,6 +508,7 @@ export interface TemplateSlotsResponse {
 
 export type PreviewStreamEvent =
   | { type: 'chat_message'; role: 'user' | 'assistant'; text: string }
+  | { type: 'turn_declined'; turnId: string }
   | { type: 'tool_use'; useId: string; toolId: string; input: unknown }
   | {
       type: 'tool_result';

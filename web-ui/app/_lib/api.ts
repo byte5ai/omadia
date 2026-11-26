@@ -3697,11 +3697,11 @@ export async function stopBuilderTurn(
 export async function resolveBuilderUserChoice(input: {
   draftId: string;
   choiceId: string;
-  value: string;
-}): Promise<{ ok: boolean }> {
+} & ({ value: string } | { answer: string })): Promise<{ ok: boolean }> {
+  const selection = 'value' in input ? { value: input.value } : { answer: input.answer };
   return postJson<{ ok: boolean }>(
     `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/user-choice/${encodeURIComponent(input.choiceId)}`,
-    { value: input.value },
+    selection,
   );
 }
 

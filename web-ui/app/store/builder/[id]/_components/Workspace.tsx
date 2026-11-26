@@ -166,6 +166,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   // render is disallowed by react-hooks/refs.
   const chatStreamingRef = useRef(chatStreaming);
   const viewModeRef = useRef(viewMode);
+  const focusPreviewModelAfterSwitch = useRef(false);
   useEffect(() => {
     chatStreamingRef.current = chatStreaming;
     viewModeRef.current = viewMode;
@@ -208,6 +209,19 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     },
     [initialDraft.id],
   );
+  useEffect(() => {
+    if (viewMode !== 'extended' || !focusPreviewModelAfterSwitch.current) return;
+    focusPreviewModelAfterSwitch.current = false;
+    document.getElementById('builder-preview-model')?.focus();
+  }, [viewMode]);
+  const openPreviewModel = () => {
+    if (viewMode === 'extended') {
+      document.getElementById('builder-preview-model')?.focus();
+    } else {
+      focusPreviewModelAfterSwitch.current = true;
+      void handleViewModeChange('extended');
+    }
+  };
   const tw = useTranslations('builder.workspace');
   const [busStatus, setBusStatus] = useState<'open' | 'closed' | 'error'>(
     'closed',
@@ -272,6 +286,10 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       description?: string;
     }>;
   } | null>(null);
+  const clearUserChoice = useCallback((choiceId: string) => {
+    setPendingUserChoice((choice) => choice?.choiceId === choiceId ? null : choice);
+  }, []);
+
   // Issue #206 — pending core-bug report. Fed by the SpecEventBus
   // (`issue_report_pending`); the chat panes render an IssueReportCard so the
   // operator confirms the sanitized body before anything is filed.
@@ -819,9 +837,10 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
           model={draft.codegenModel}
           onBuildStatus={setBuildStatus}
           pendingUserChoice={pendingUserChoice}
-          onUserChoiceResolved={() => setPendingUserChoice(null)}
+          onUserChoiceResolved={clearUserChoice}
           onIntakeStreamingChange={setBuilderChatStreaming}
           onPreviewStreamingChange={setPreviewChatStreaming}
+          onOpenPreviewModel={draft.status !== 'archived' ? openPreviewModel : undefined}
         />
       ) : (
         <>
@@ -845,7 +864,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             pendingInput={pendingChatInput}
             onPendingInputConsumed={() => setPendingChatInput(null)}
             pendingUserChoice={pendingUserChoice}
-            onUserChoiceResolved={() => setPendingUserChoice(null)}
+            onUserChoiceResolved={clearUserChoice}
             onStreamingChange={setBuilderChatStreaming}
           />
         );
@@ -920,6 +939,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             }
             onBufferedSecretKeysChange={handleBufferedSecretKeysChange}
             onStreamingChange={setPreviewChatStreaming}
+            onOpenPreviewModel={draft.status !== 'archived' ? openPreviewModel : undefined}
           />
         );
 
@@ -1425,7 +1445,8 @@ function WorkspaceHeader({
             onChange={onCodegenModelChange}
           />
           <ModelSelector
-            label="Preview"
+            id="builder-preview-model"
+            label={tw('previewModelLabel')}
             value={draft.previewModel}
             models={models}
             enabled={modelEditingEnabled}
@@ -1580,12 +1601,14 @@ function PluginKindBadge({ kind }: { kind: BuilderPluginKind }): React.ReactElem
  *   als `TemplateSwitcher` + `AutoFixToggle`).
  */
 function ModelSelector({
+  id,
   label,
   value,
   models,
   enabled,
   onChange,
 }: {
+  id?: string;
   label: string;
   value: BuilderModelId;
   models: BuilderModelInfo[];
@@ -1616,6 +1639,7 @@ function ModelSelector({
       </span>
       <span className="relative inline-flex items-center">
         <select
+          id={id}
           value={canonicalValue}
           onChange={(e) => {
             void onChange(e.target.value);

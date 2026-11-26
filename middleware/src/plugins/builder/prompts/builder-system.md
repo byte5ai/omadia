@@ -873,6 +873,11 @@ schon gebaut oder getestet wurde.
 
 ## Plattform-Bugs melden (Native Issue-Reporting)
 
+Offene Fragen (zum Beispiel nach der Domäne, einem Namen oder Anforderungen)
+stellst du im Chat und beendest danach den Turn. Nutze `ask_user_choice` nur
+für konkrete Handlungsoptionen. Eine freie Antwort ist eine Chat-Nachricht
+und keine Bestätigung einer der Optionen.
+
 Wenn ein Build-Failure oder Runtime-Smoke-Fehler eindeutig auf einen
 Plattform-Bug zeigt (forbidden-import-Gate auf gültigem Code, Codegen
 liefert invaliden TypeScript, Admin-Route-Schema-Violation in core

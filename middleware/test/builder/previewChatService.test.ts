@@ -7,6 +7,7 @@ import { z } from 'zod';
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AskObserver } from '@omadia/orchestrator';
+import { SubAgentRefusalError, turnContext } from '@omadia/orchestrator';
 
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import {
@@ -461,6 +462,39 @@ describe('PreviewChatService', () => {
           ),
         /anthropic-rate-limit/,
       );
+    });
+
+    it('attributes preview model calls and keeps declined turns out of later prompts', async () => {
+      const userEmail = 'alice@example.com';
+      const draft = await store.create(userEmail, 'Echo Bot');
+      const questions: string[] = [];
+      const contexts: ReturnType<typeof turnContext.current>[] = [];
+      const service = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
+        draftStore: store,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'test-model' }),
+        buildSubAgent: () => ({
+          async ask(question) {
+            questions.push(question);
+            contexts.push(turnContext.current());
+            if (questions.length === 1) throw new SubAgentRefusalError('internal-name');
+            return 'Done';
+          },
+        }),
+      });
+      const opts = { userEmail, handle: makeHandle({ draftId: draft.id }), modelChoice: 'test-model' };
+
+      const first = await collectEvents(service.runTurn({ ...opts, userMessage: 'First request' }));
+      const done = first.find((event) => event.type === 'turn_done');
+      assert.ok(done);
+      assert.deepEqual(first[1], { type: 'turn_declined', turnId: done.turnId });
+      assert.equal(contexts[0]?.sessionScope, `builder-preview:${draft.id}`);
+      assert.equal(contexts[0]?.turnId, done.turnId);
+      assert.equal((await store.load(userEmail, draft.id))?.previewTranscript[0]?.status, 'declined');
+
+      await collectEvents(service.runTurn({ ...opts, userMessage: 'Next request' }));
+      assert.deepEqual(questions, ['First request', 'Next request']);
+      assert.notEqual(contexts[1]?.turnId, contexts[0]?.turnId);
     });
 
     it('throws if the draft does not belong to the requesting user', async () => {
