@@ -35,6 +35,26 @@ export type AuditAction =
   // which Agent answers a group, so the auto-bind lifecycle belongs in the
   // same trail as the role batons.
   | 'channel.binding_change'
+  | 'routine.pause'
+  | 'routine.resume'
+  | 'routine.trigger'
+  | 'routine.template_change'
+  | 'routine.delete'
+  | 'agent.create'
+  | 'agent.update'
+  | 'agent.model_policy_change'
+  | 'agent.identity_change'
+  | 'agent.fast_lane_change'
+  | 'agent.peer_mode_change'
+  | 'agent.channel_policy_change'
+  | 'agent.plugin_change'
+  | 'agent.sessions_drain'
+  | 'agent.sessions_kill'
+  | 'agent.subagent_change'
+  | 'agent.persona_skill_change'
+  | 'provider.assignment_change'
+  | 'plugin.config_change'
+  | 'plugin.secret_change'
   // #330 round 4 — the operator terminated a live facilitation from the admin
   // lens. The lens is gone (#2067); the action stays for the rows it wrote.
   | 'conductor.facilitation_terminate'
@@ -295,6 +315,31 @@ export interface AuditEntryInput {
   target: string;
   before?: unknown;
   after?: unknown;
+}
+
+/** A missing snapshot must not prevent an otherwise valid operator mutation. */
+export async function readOperatorAuditState<T>(read: () => Promise<T>): Promise<T | 'unknown'> {
+  try {
+    return await read();
+  } catch {
+    console.error('[admin-audit] could not read the prior state');
+    return 'unknown';
+  }
+}
+
+/** Record a completed operator mutation without changing its outcome. */
+export async function recordOperatorAudit(
+  audit: Pick<AdminAuditLog, 'record'> | undefined,
+  req: Request,
+  entry: Omit<AuditEntryInput, 'actor'>,
+): Promise<void> {
+  if (!audit) return;
+  try {
+    await audit.record({ ...entry, actor: auditActorFromRequest(req) });
+  } catch {
+    // The database error itself can include payload data.
+    console.error(`[admin-audit] failed to record ${entry.action}`);
+  }
 }
 
 export interface AuditEntry {

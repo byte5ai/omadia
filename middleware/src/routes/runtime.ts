@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import { isDeepStrictEqual } from 'node:util';
+import { auditActorFromRequest, recordOperatorAudit } from '../auth/adminAuditLog.js';
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
 
 import type { BackgroundJobRegistry } from '../platform/backgroundJobRegistry.js';
@@ -378,6 +379,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       try {
         await deps.installedRegistry.updateConfig(id, nextConfig);
         await auditPrivacyChange(deps, req, id, installed.config, nextConfig);
+        await auditPluginConfigChange(deps, req, id, installed.config, nextConfig);
         // #1076 — an `llm_provider` change also rebuilds the plugins that
         // inherit it (extras from the orchestrator), dependents first.
         await reactivateAfterProviderWrite(deps, id, {
@@ -808,7 +810,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         return;
       }
 
-      await applySetupValues(deps, id, installed, setEntries, deleteKeys, res);
+      await applySetupValues(deps, req, id, installed, setEntries, deleteKeys, res);
     },
   );
 
@@ -899,7 +901,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         });
         return;
       }
-      await applySetupValues(deps, id, installed, outcome.values, [], res);
+      await applySetupValues(deps, req, id, installed, outcome.values, [], res);
     },
   );
 
@@ -1049,6 +1051,7 @@ function resolveJsonFileField(
  */
 async function applySetupValues(
   deps: RuntimeDeps,
+  req: Request,
   id: string,
   installed: { config?: Record<string, unknown> },
   setEntries: Record<string, string>,
@@ -1140,9 +1143,22 @@ async function applySetupValues(
 
     if (Object.keys(vaultSet).length > 0) {
       await vault.setMany(id, vaultSet);
+      await recordOperatorAudit(deps.audit, req, {
+        action: 'plugin.secret_change',
+        target: 'plugin:' + id,
+        after: { operation: 'set', count: Object.keys(vaultSet).length },
+      });
     }
     for (const key of vaultDelete) {
       await vault.deleteKey(id, key);
+      if (storedVaultKeys.has(key)) {
+        await recordOperatorAudit(deps.audit, req, {
+          action: 'plugin.secret_change',
+          target: 'plugin:' + id,
+          before: { present: true },
+          after: { operation: 'delete', present: false },
+        });
+      }
     }
     let providerChanged = false;
     const providerWritten =
@@ -1154,6 +1170,7 @@ async function applySetupValues(
       };
       for (const k of configDelete) delete nextConfig[k];
       await deps.installedRegistry.updateConfig(id, nextConfig);
+      await auditPluginConfigChange(deps, req, id, installed.config ?? {}, nextConfig);
       providerChanged = isEffectiveProviderChange(installed.config, nextConfig);
     }
     // #1076 — same dependent rebuild as PATCH /installed/:id/config.
@@ -1457,6 +1474,44 @@ async function auditPrivacyChange(
       err instanceof Error ? err.message : err,
     );
   }
+}
+
+/** Arbitrary plugin config may contain credentials, including in undeclared fields. */
+async function auditPluginConfigChange(
+  deps: RuntimeDeps,
+  req: Request,
+  id: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Promise<void> {
+  if (!deps.audit) return;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const privacyKeys = new Set([
+    ...Object.keys(privacySettingsOf(before)),
+    ...Object.keys(privacySettingsOf(after)),
+  ]);
+  const changed = [...keys].filter((key) =>
+    !privacyKeys.has(key) && !isDeepStrictEqual(before[key], after[key]),
+  );
+  if (changed.length === 0) return;
+  const typed = resolveTypedFields(deps.catalog, id);
+  const summarize = (config: Record<string, unknown>) => ({
+    fieldsPresent: changed.filter((key) => Object.hasOwn(config, key)).length,
+    settings: Object.fromEntries(changed.flatMap((key) => {
+      const type = typed.get(key)?.type;
+      const value = config[key];
+      return (type === 'boolean' && typeof value === 'boolean') ||
+        (type === 'integer' && typeof value === 'number' && Number.isSafeInteger(value))
+        ? [[key, value]]
+        : [];
+    })),
+  });
+  await recordOperatorAudit(deps.audit, req, {
+    action: 'plugin.config_change',
+    target: 'plugin:' + id,
+    before: summarize(before),
+    after: { ...summarize(after), fieldsChanged: changed.length },
+  });
 }
 
 /** #1497 activation result, plus #1860's note when the new values wait for

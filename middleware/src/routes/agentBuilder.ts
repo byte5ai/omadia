@@ -684,6 +684,10 @@ export function createAgentBuilderRouter(
     }
   }
 
+  function auditMutation(req: Request, entry: Omit<AuditEntryInput, 'actor'>): Promise<void> {
+    return recordBroadReachAudit({ ...entry, actor: auditActorFromRequest(req) });
+  }
+
   async function agentOr404(
     l: Live,
     slug: string,
@@ -813,6 +817,11 @@ export function createAgentBuilderRouter(
         },
         options.getActiveProvider?.(),
       );
+      await auditMutation(req, {
+        action: 'agent.subagent_change',
+        target: 'agent:' + agent.slug,
+        after: subAgentAuditView(row),
+      });
       await reload(l);
       res.json(subAgentNode(row));
     } catch (err) {
@@ -857,6 +866,15 @@ export function createAgentBuilderRouter(
           req.body ?? {},
           options.getActiveProvider?.(),
         );
+        await auditMutation(req, {
+          action: 'agent.subagent_change',
+          target: 'agent:' + agent.slug,
+          before: subAgentAuditView(current),
+          after: {
+            ...subAgentAuditView(row),
+            instructionsChanged: current.systemPromptOverride !== row.systemPromptOverride,
+          },
+        });
         await reload(l);
         res.json(subAgentNode(row));
       } catch (err) {
@@ -871,7 +889,19 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        await l.graph.deleteSubAgent(str(req.params.id));
+        const id = str(req.params.id);
+        const previous = options.recordAudit
+          ? (await l.graph.listAllSubAgents()).find((row) => row.id === id)
+          : undefined;
+        await l.graph.deleteSubAgent(id);
+        if (previous) {
+          await auditMutation(req, {
+            action: 'agent.subagent_change',
+            target: 'agent:' + previous.parentAgentId,
+            before: subAgentAuditView(previous),
+            after: null,
+          });
+        }
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -951,6 +981,11 @@ export function createAgentBuilderRouter(
         // operator confirms, but the attach itself is never blocked.
         const risks = scanSkillForRisks(skill.frontmatter, skill.body, skill.description);
         const link = await l.graph.addPersonaSkill(agent.id, skillId);
+        await auditMutation(req, {
+          action: 'agent.persona_skill_change',
+          target: 'agent:' + agent.slug,
+          after: { skillId: link.skillId, attached: true },
+        });
         await reload(l);
         res.json({
           agentId: link.agentId,
@@ -972,7 +1007,19 @@ export function createAgentBuilderRouter(
       try {
         const agent = await agentOr404(l, str(req.params.slug), res);
         if (!agent) return;
-        await l.graph.removePersonaSkill(agent.id, str(req.params.skillId));
+        const skillId = str(req.params.skillId);
+        const previous = options.recordAudit
+          ? (await l.graph.listPersonaSkills(agent.id)).find((row) => row.skillId === skillId)
+          : undefined;
+        await l.graph.removePersonaSkill(agent.id, skillId);
+        if (previous) {
+          await auditMutation(req, {
+            action: 'agent.persona_skill_change',
+            target: 'agent:' + agent.slug,
+            before: { skillId: previous.skillId, attached: true },
+            after: { skillId: previous.skillId, attached: false },
+          });
+        }
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -3443,6 +3490,18 @@ function effectiveFallbackOf(
   if (fallback === 'none') return null;
   if (fallback === 'auto') return effectiveModel;
   return `${fallback.provider}:${fallback.model}`;
+}
+
+function subAgentAuditView(row: SubAgentRow) {
+  return {
+    id: row.id,
+    skillId: row.skillId,
+    model: row.model,
+    status: row.status,
+    maxTokens: row.maxTokens,
+    maxIterations: row.maxIterations,
+    instructionsSet: Boolean(row.systemPromptOverride),
+  };
 }
 
 function subAgentNode(s: SubAgentRow) {

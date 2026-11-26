@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine and operator audit coverage (#1752, #1764) (2026-11-26)
+
+- Routine pause, resume, trigger, template changes and deletion identify the
+  routine owner separately from the acting operator. Deletes retain the name,
+  cron and channel. Template rows describe format and section types.
+- Agent, helper, working-mode, model, provider, binding and plugin setting
+  changes use the signed-in operator's audit identity. Plugin credentials,
+  arbitrary configuration values and agent instructions stay out of the trail.
+
 ### Fixed — audit test and orb setup (#2185, #2186) (2026-11-26)
 
 - The role-holders PostgreSQL test runs the auth migrator and deletes only its own audit rows.
