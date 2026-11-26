@@ -150,7 +150,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -483,6 +483,7 @@ import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService } from './platform/agentEndOfService.js';
+import { createAgentSlugState } from './platform/agentSlugState.js';
 import { createSystemNoticeOutbox } from './platform/systemNoticeOutbox.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
@@ -4597,6 +4598,19 @@ async function main(): Promise<void> {
   const releaseAgentChannelBots = agentChannelIdentities
     ? (agentId: string) => agentChannelIdentities.releaseAll(agentId)
     : undefined;
+  // #1881 (ADR-0218) — a delete moves the slug-keyed memory under the
+  // tombstone (with its discretion labels) and removes the slug's public MCP
+  // key bindings; a create refuses a slug that still has state, because the
+  // graph's scopes cannot be moved. Named here for the same lazy match.
+  const agentSlugState = createAgentSlugState({
+    memoryStore: () => memoryStore,
+    labelMoves: (store, agentSlug) =>
+      new LabelledMemoryStore(store, discretionStore, agentSlug, { labelReads: false }),
+    mcpBindings: () => (graphPool ? createPublicMcpKeyBindingAdminStore(graphPool) : undefined),
+    knowledgeGraph: () => knowledgeGraph,
+    tenantId: graphTenantId,
+    log: (m) => console.warn(m),
+  });
   app.use(
     '/api/v1/operator/agents',
     requireAuth,
@@ -4653,6 +4667,8 @@ async function main(): Promise<void> {
       hasPackage: (id: string) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
       // #2088 — end of service before a disable or a delete; the audit of both.
       endOfService: agentEndOfService,
+      // #1881 (ADR-0218) — see `agentSlugState` above.
+      slugState: agentSlugState,
       recordAudit: async (entry) => {
         await adminAudit?.record(entry);
       },

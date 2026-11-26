@@ -4725,6 +4725,31 @@ Operator-Jobs: die Routentabelle steht in `platform/operatorJobRoutes.ts`
 (Agent-Builder-Skill-Verdict, Plugin-Builder-Turn/-Preview, Workflow-Designer,
 Memory- und Issue-Tools).
 
+### Slug-gebundener Zustand eines gelöschten Agenten (#1881, ADR-0218)
+
+Memory, Graph-Scopes und Public-MCP-Key-Bindings hängen am Slug, der Delete gibt
+den Slug frei. `platform/agentSlugState.ts` (Option `slugState` des
+Operator-Agents-Routers, verdrahtet in `src/index.ts`):
+
+- **`DELETE /api/v1/operator/agents/:slug`** verschiebt nach dem Registry-Reload
+  `/memories/orchestrators/<slug>` und `/memories/contexts/<slug>` unter den
+  Platzhalter-Slug des Tombstones (`deleted-<id>`, über `LabelledMemoryStore`,
+  damit Discretion-Labels mitwandern) und löscht die `public_mcp_key_bindings`
+  des Slugs. Antwort (`slug_state`) und Audit `agent.slug_state_moved` nennen,
+  was passiert ist (`moved_to_slug`, `memory_moved`, `mcp_bindings_removed`,
+  `failures`). Ein Fehler blockiert den Delete nicht.
+- **Danach purgebar** über den Danger-Zone-Purge (ADR-0120), Achse `agent`,
+  Selektor = Platzhalter-Slug.
+- **`POST /api/v1/operator/agents`** und **`POST …/onboarding/first-agent`**
+  lehnen einen Slug ab, unter dem noch Zustand liegt (Graph-Verlauf `<slug>::…`,
+  `MemorableKnowledge` mit `origin_agent`, Memory-Baum, Binding):
+  `409 slug_state_remains` mit `remaining`; Prüfung nicht möglich →
+  `503 slug_state_unverifiable`. Der Graph wird nicht verschoben (externe IDs
+  enthalten den Scope); Abhilfe ist der Purge des alten Slugs.
+- Nicht abgedeckt (ADR-0218): Web-Chat-Tabs des alten Agenten, Quality-Guard
+  `agent_overrides`, Routinen (#1745), slug-gebundene Tuning-Tabellen des
+  Graph-Providers.
+
 ### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
 
 Router `routes/operatorAgents.ts` unter `/api/v1/operator/agents`, der

@@ -97,6 +97,9 @@ export type AuditAction =
   | 'agent.end_of_service'
   | 'agent.disable'
   | 'agent.delete'
+  // #1881 (ADR-0218) — after a delete: the slug's memory moved under the
+  // tombstone, its public MCP key bindings removed (and what failed).
+  | 'agent.slug_state_moved'
   | 'agent.purge'
   // #2054 — spec 2042 §5.7: the operator confirmed a grant that gives an agent
   // access to every connected system, or made such an agent the default

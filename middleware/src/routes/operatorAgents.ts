@@ -6,6 +6,7 @@ import type { AgentTombstone } from '@omadia/orchestrator';
 
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
 import type { AgentEndOfService, EndOfServiceReport } from '../platform/agentEndOfService.js';
+import { hasRemainingSlugState, type AgentSlugState, type SlugStateRetirement } from '../platform/agentSlugState.js';
 
 import { formatPrincipal, parsePrincipal } from '@omadia/channel-sdk';
 import {
@@ -38,6 +39,7 @@ import {
   type ContextMemoryMode,
   type AgentRow,
   type OrchestratorRegistry,
+  tombstoneSlug,
 } from '@omadia/orchestrator';
 
 import {
@@ -1773,6 +1775,12 @@ export interface OperatorAgentsRouterOptions {
    * tests) = the change happens without it.
    */
   readonly endOfService?: AgentEndOfService;
+  /**
+   * #1881 (ADR-0218) — the state other stores keep under an agent's slug: a
+   * delete moves or removes it, a create refuses a slug that still has some.
+   * Absent (minimal mounts, unit tests) = neither happens.
+   */
+  readonly slugState?: AgentSlugState;
   /** The admin audit; absent = no database for it, the change is logged only. */
   readonly recordAudit?: (entry: AuditEntryInput) => Promise<void>;
   /** A tombstone younger than this needs a typed confirmation to be purged. Default 30. */
@@ -1988,6 +1996,16 @@ async function listPeerChatCandidates(
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** #1881 — what a delete did with the slug-keyed state of the agent. */
+function slugStateDto(retirement: SlugStateRetirement) {
+  return {
+    moved_to_slug: retirement.toSlug,
+    memory_moved: retirement.memoryMoved,
+    mcp_bindings_removed: retirement.mcpBindingsRemoved,
+    failures: retirement.failures,
+  };
+}
+
 /** A tombstone for the operator: when it may be purged without typing its slug. */
 function tombstoneDto(tombstone: AgentTombstone, retentionDays: number) {
   const purgeableFrom = new Date(Date.parse(tombstone.deletedAt) + retentionDays * DAY_MS);
@@ -2057,6 +2075,39 @@ export function createOperatorAgentsRouter(
     } catch (err) {
       console.error(`[security-audit] ${entry.action} ${entry.target} could not be recorded:`, err instanceof Error ? err.message : String(err));
     }
+  };
+
+  /**
+   * #1881 (ADR-0218) — a new agent must not inherit what an earlier agent
+   * with the same slug left behind (memory, graph history, MCP key bindings).
+   * Answers the refusal and returns true when state is still keyed by `slug`,
+   * or when that cannot be checked.
+   */
+  const refuseSlugWithState = async (res: Response, slug: string): Promise<boolean> => {
+    if (!options.slugState) return false;
+    let remaining;
+    try {
+      remaining = await options.slugState.remaining(slug);
+    } catch (err) {
+      console.error(`[operator-agents] checking the state left under slug '${slug}' failed:`, err instanceof Error ? err.message : String(err));
+      res.status(503).json({
+        error: 'slug_state_unverifiable',
+        message: `could not check whether data of an earlier agent "${slug}" remains; try again`,
+      });
+      return true;
+    }
+    if (!hasRemainingSlugState(remaining)) return false;
+    res.status(409).json({
+      error: 'slug_state_remains',
+      message: `data of an earlier agent "${slug}" remains (memory, conversation history or MCP key bindings); purge it under Danger Zone → memory purge, axis "agent", selector "${slug}", and remove its MCP key bindings, or choose another slug`,
+      remaining: {
+        memory_trees: remaining.memoryTrees,
+        mcp_bindings: remaining.mcpBindings,
+        graph_history: remaining.graphHistory,
+        memorable_knowledge: remaining.memorableKnowledge,
+      },
+    });
+    return true;
   };
 
   /** #2054 — what an agent's reach is computed from; every source optional. */
@@ -2370,6 +2421,7 @@ export function createOperatorAgentsRouter(
         actor: auditActorFromRequest(req),
       });
       if (refusedBroadReach(res, gate)) return;
+      if (await refuseSlugWithState(res, agentRef.slug)) return;
       const agent = await live.store.createAgent({
         slug: agentRef.slug,
         name: body.name,
@@ -2628,6 +2680,7 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
+      if (await refuseSlugWithState(res, body.slug)) return;
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
@@ -2744,8 +2797,24 @@ export function createOperatorAgentsRouter(
         after: { tombstone: true, deleted_at: tombstone?.deletedAt ?? null },
       });
       await live.registry.reload();
+      // #1881 (ADR-0218) — after the reload, so no runtime of the agent
+      // writes under the old slug any more: its memory moves under the
+      // tombstone's placeholder slug, its MCP key bindings go.
+      const slugState = tombstone
+        ? await options.slugState?.retire(existing.slug, tombstoneSlug(existing.id))
+        : undefined;
+      if (slugState) {
+        await recordAudit({
+          actor,
+          action: 'agent.slug_state_moved',
+          target: `agent:${existing.id}`,
+          before: { slug: existing.slug },
+          after: slugStateDto(slugState),
+        });
+      }
       res.json({
         ok: true,
+        ...(slugState ? { slug_state: slugStateDto(slugState) } : {}),
         ...(tombstone && typeof tombstone.deletedAt === 'string'
           ? { tombstone: tombstoneDto(tombstone, retentionDays()) }
           : {}),

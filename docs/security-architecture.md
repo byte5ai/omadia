@@ -7248,6 +7248,23 @@ A user purge misses a Turn whose `user_id` is a raw channel id (Telegram id,
 Teams `29:` id without an AAD id) when its run trace was never ingested, since
 the `BELONGS_TO` edge to the user cluster is the only other link.
 
+**A deleted agent's state and a reused slug (#1881, ADR-0218).** Memory, graph
+scopes and public MCP key bindings are keyed by the agent's slug, and a delete
+frees the slug. So a delete (`DELETE /api/v1/operator/agents/:slug`, after the
+registry reload) moves `/memories/orchestrators/<slug>` and
+`/memories/contexts/<slug>` under the tombstone's placeholder slug
+(`deleted-<id prefix>`; discretion labels move with the notes) and removes the
+slug's `public_mcp_key_bindings` rows. The moved trees stay purgeable here
+(axis `agent`, selector = the placeholder slug, shown in the delete response
+as `slug_state.moved_to_slug` and in the `agent.slug_state_moved` audit row). The graph
+cannot be moved (its external ids embed the scope), so creating an agent with
+a slug that still has graph history, curated memory (`origin_agent`), a memory
+tree or a binding is refused with `409 slug_state_remains` until it is purged
+here; a check that cannot answer refuses with `503 slug_state_unverifiable`.
+Not covered: web chat tabs of the deleted agent, the Quality Guard's
+`agent_overrides`, routines (#1745), and the graph provider's tuning tables
+keyed by slug (ADR-0218 lists them).
+
 ## 10p. MCP outbound targets and stdio servers (#1341, #1342)
 
 Only an admin can add an MCP server or an MCP registry (`/api/v1/operator`
