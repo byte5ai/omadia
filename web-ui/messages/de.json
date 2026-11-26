@@ -2803,7 +2803,7 @@
       "boundaries": {
         "presetsHeading": "Grenzen aus der Bibliothek",
         "presetsHint": "Harte Verbote. Sie landen als eigener Abschnitt im Prompt, unterhalb des Charakters.",
-        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, ersetzt, was du hier festlegst, dessen Wert für dieses Feld: Eigene Grenzen ersetzen seine Standard-Grenzen, eine eigene Stufe der Schmeichel-Bremse ersetzt seine Standard-Stufe. Nur Felder, die du hier offen lässt, kommen vom Quality Guard.",
         "unknownPresets": "Unbekannte Vorlagen bleiben gespeichert, wirken aber nicht: {ids}",
         "categories": {
           "data": "Daten",
@@ -2822,7 +2822,8 @@
           "medium": "Mittel",
           "high": "Stark"
         },
-        "sycophancyFacilitatorHint": "Für einen Facilitator ist die Bremse immer aktiv: Ein Moderator, der einer Stimme schmeichelt, ist parteiisch."
+        "sycophancyFacilitatorHint": "Für einen Facilitator ist die Bremse immer aktiv: Ein Moderator, der einer Stimme schmeichelt, ist parteiisch.",
+        "sycophancyUnset": "Nicht gesetzt (Vorgabe des Quality Guard gilt)"
       },
       "facilitator": {
         "issueOnTab": "{tab}: {issue}",
@@ -3943,7 +3944,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} ausgewählt",
-        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, ersetzt, was du hier festlegst, dessen Wert für dieses Feld: Eigene Grenzen ersetzen seine Standard-Grenzen, eine eigene Stufe der Schmeichel-Bremse ersetzt seine Standard-Stufe. Nur Felder, die du hier offen lässt, kommen vom Quality Guard.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
         "customHint": "Jede als vollständigen Satz formulieren — sie erreicht den Agenten genau so, wie eingegeben.",

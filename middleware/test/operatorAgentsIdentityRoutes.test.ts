@@ -750,6 +750,18 @@ describe('operator agent identity routes (#914)', () => {
     assert.equal(reloads, 1);
   });
 
+  it('reloads the registry when only the anti-flattery level moved from unset to off (#1894)', async () => {
+    reloads = 0;
+    // "Not set" and "off" compile to the same prompt, but "off" switches the
+    // Quality Guard's default off — the built agent reads that once.
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ quality: { sycophancy: 'off' } }),
+    });
+    assert.equal(reloads, 1);
+  });
+
   it('does not reload when nothing about the identity changed', async () => {
     await fetch(`${baseUrl}/sales/identity`, {
       method: 'PUT',

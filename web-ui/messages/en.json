@@ -2803,7 +2803,7 @@
       "boundaries": {
         "presetsHeading": "Limits from the library",
         "presetsHint": "Hard prohibitions. They land as their own prompt section, below the character.",
-        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
+        "pluginStackNote": "If the Quality Guard plugin is installed, what you set here replaces its value for that field: your own limits replace its default limits, and your own anti-flattery level replaces its default level. Only the fields you leave open here come from the Quality Guard.",
         "unknownPresets": "Unknown presets stay stored but do not apply: {ids}",
         "categories": {
           "data": "Data",
@@ -2822,7 +2822,8 @@
           "medium": "Medium",
           "high": "Strong"
         },
-        "sycophancyFacilitatorHint": "The guard is always on for a facilitator: a moderator who flatters one voice is partial."
+        "sycophancyFacilitatorHint": "The guard is always on for a facilitator: a moderator who flatters one voice is partial.",
+        "sycophancyUnset": "Not set (the Quality Guard default applies)"
       },
       "facilitator": {
         "issueOnTab": "{tab}: {issue}",
@@ -3943,7 +3944,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} selected",
-        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
+        "pluginStackNote": "If the Quality Guard plugin is installed, what you set here replaces its value for that field: your own limits replace its default limits, and your own anti-flattery level replaces its default level. Only the fields you leave open here come from the Quality Guard.",
         "unknownPresets": "Unknown preset IDs: {ids}",
         "customLabel": "Custom boundaries (one per line)",
         "customHint": "Write each as a complete sentence — it reaches the agent exactly as typed.",

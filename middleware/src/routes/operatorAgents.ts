@@ -3294,12 +3294,19 @@ export function createOperatorAgentsRouter(
       // #2043 — the language reaches the built agent (its refusal text) and
       // the engine's profile read, so a change reloads like the name does.
       const languageChanged = (before?.language ?? null) !== language;
+      // #1894 — the quality block also decides what the Quality Guard adds
+      // (`responseGuardProfileFor`), which the built agent reads once. "Not
+      // set" → "off" compiles to the same prompt but switches the guard's
+      // default off, so the composed text alone misses that change.
+      const qualityChanged =
+        JSON.stringify(before?.quality ?? null) !== JSON.stringify(quality);
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
         descriptionChanged ||
         verbosityChanged ||
-        languageChanged
+        languageChanged ||
+        qualityChanged
       ) {
         await live.registry.reload();
       }
