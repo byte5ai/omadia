@@ -48,6 +48,11 @@ class StubRunner {
   public readonly rows = new Map<string, Routine>();
   public chatAvailable = false;
   public triggerCalls: string[] = [];
+  public running = new Set<string>();
+
+  isRunning(id: string): boolean {
+    return this.running.has(id);
+  }
 
   seed(routine: Routine): void {
     this.rows.set(routine.id, routine);
@@ -172,5 +177,31 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'routines.not_active');
     assert.equal(h.runner.triggerCalls.length, 0);
+  });
+
+  // #1748 — one run per routine: a second "run now" while one is in flight
+  // is refused instead of starting an overlapping run that also delivers.
+  it('returns 409 routines.run_in_progress while a run is in flight — without dispatching a second one', async () => {
+    h.runner.chatAvailable = true;
+    h.runner.running.add('00000000-0000-4000-8000-000000000001');
+
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
+      method: 'POST',
+    });
+
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string };
+    assert.equal(body.code, 'routines.run_in_progress');
+    assert.equal(h.runner.triggerCalls.length, 0);
+  });
+
+  it('marks the accepted routine as running in the 202 body', async () => {
+    h.runner.chatAvailable = true;
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
+      method: 'POST',
+    });
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { routine: { running: boolean } };
+    assert.equal(body.routine.running, true);
   });
 });

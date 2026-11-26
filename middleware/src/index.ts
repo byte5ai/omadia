@@ -669,7 +669,7 @@ import { ObservedConversationInvites } from './platform/observedConversationInvi
 import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
-import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
+import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver, ChatTurnInput } from '@omadia/channel-sdk';
 import type {
   AgentIdentityProvider,
   ChannelReadinessProvider,
@@ -3745,6 +3745,9 @@ async function main(): Promise<void> {
         const speaker = speakerOf(bundle.agent);
         return {
           runTurn: (input) => raw.runTurn(input),
+          // #1763 — on the subscription CLI the tool loop is the CLI's: the
+          // run goes through the agent's chat agent like a chat turn there.
+          ...(bundle.externalToolLoop ? { chat: (input: ChatTurnInput) => bundle.agent.chat(input) } : {}),
           ...(emitter ? { emitter } : {}),
           ...(speaker ? { speaker } : {}),
         };

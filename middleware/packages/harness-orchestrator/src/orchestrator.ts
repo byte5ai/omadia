@@ -2996,6 +2996,20 @@ interface KernelRefusalBox {
 }
 
 /**
+ * #1747 — stop a turn whose caller cancelled it (`turnContext.abortSignal`):
+ * a routine run past its timeout, or one whose routine was paused or deleted.
+ * Checked at the top of every tool-loop iteration, so no further model call
+ * is paid for; throws the signal's reason so the caller can tell a timeout
+ * from a cancellation.
+ */
+function throwIfTurnAborted(): void {
+  const signal = turnContext.current()?.abortSignal;
+  if (signal?.aborted !== true) return;
+  const reason: unknown = signal.reason;
+  throw reason instanceof Error ? reason : new Error('turn aborted by its caller');
+}
+
+/**
  * Wrap a slot observer so sub-agent events emitted AFTER the deadline are
  * dropped. A sub-agent that keeps running past its abort would otherwise keep
  * pushing `sub_tool_use`/`sub_tool_result` events into a turn that already
@@ -5908,6 +5922,8 @@ export class Orchestrator {
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
           : {}),
+        // #1747 — an outer caller's cancellation (routine timeout, pause).
+        ...(parent?.abortSignal ? { abortSignal: parent.abortSignal } : {}),
         // Canvas sentinel tap — installed by the ui-orchestrator in its
         // OUTER scope before this turn scope exists; must survive into the
         // turn so dispatchTool can hand raw sentinels past the privacy guard.
@@ -6967,6 +6983,7 @@ export class Orchestrator {
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        throwIfTurnAborted();
         // Final pass: the loop guard stopped, the wall-clock budget is spent,
         // or this is the last allowed iteration. Suppress tool use (#1211, see
         // `toolParamsFor`) so the model MUST answer in text, and append the
@@ -8379,6 +8396,7 @@ export class Orchestrator {
           console.warn('[orchestrator] observer.onIteration threw:', err);
         }
 
+        throwIfTurnAborted();
         // Final pass: loop guard stopped, wall-clock budget spent, or last
         // allowed iteration → answer with tool use suppressed (#1211, see
         // `toolParamsFor`) — best-effort finalize.

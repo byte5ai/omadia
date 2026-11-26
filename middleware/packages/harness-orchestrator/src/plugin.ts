@@ -325,6 +325,13 @@ const DEFAULT_MAX_TURN_SECONDS = 0;
 export interface ChatAgentBundle {
   agent: ChatAgent;
   raw: Orchestrator;
+  /**
+   * #1763 — true when the agent's tool loop runs outside `raw` (the
+   * subscription CLI owns it). `raw` then sits on a tool-less provider, so a
+   * kernel caller that needs a full turn (a routine run) must go through
+   * `agent.chat`, never `raw.runTurn`.
+   */
+  externalToolLoop?: boolean;
   sessionLogger: SessionLogger;
   chatSessionStore: ChatSessionStore;
 }

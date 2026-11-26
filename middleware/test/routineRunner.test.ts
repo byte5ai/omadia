@@ -1522,3 +1522,176 @@ describe('#1598 — a routine runs on the orchestrator that created it', () => {
   });
 });
 
+
+describe('#1746 / #1747 / #1748 — run control: cancel, timeout signal, one run at a time', () => {
+  /** An orchestrator whose turn waits until the test releases it. */
+  function gatedOrchestrator(): {
+    orchestrator: OrchestratorLike;
+    started: Promise<void>;
+    release: () => void;
+    seenSignals: Array<AbortSignal | undefined>;
+    runTurnCalls: () => number;
+  } {
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((r) => {
+      markStarted = r;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const seenSignals: Array<AbortSignal | undefined> = [];
+    let calls = 0;
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        calls += 1;
+        seenSignals.push(turnContext.current()?.abortSignal);
+        markStarted();
+        await gate;
+        return { answer: 'late answer', toolCalls: 0, iterations: 1 };
+      },
+    };
+    return { orchestrator, started, release, seenSignals, runTurnCalls: () => calls };
+  }
+
+  it('a pause during a run records `cancelled`, stops the turn signal and delivers nothing', async () => {
+    const gated = gatedOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: gated.orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const run = h.scheduler.fire(routine.id);
+    await gated.started;
+    assert.equal(h.runner.isRunning(routine.id), true);
+    await h.runner.pauseRoutine(routine.id, OWNER_SCOPE);
+    assert.equal(gated.seenSignals[0]?.aborted, true, 'the turn sees the cancellation');
+    gated.release();
+    await run;
+
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts.length, 1);
+    assert.equal(h.runsStore.inserts[0]!.status, 'cancelled');
+    assert.match(h.runsStore.inserts[0]!.errorMessage ?? '', /paused while it ran/);
+    assert.equal(h.runner.isRunning(routine.id), false);
+  });
+
+  it('a delete during a run writes no run row (its history went with it) and delivers nothing', async () => {
+    const gated = gatedOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: gated.orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const run = h.scheduler.fire(routine.id);
+    await gated.started;
+    await h.runner.deleteRoutine(routine.id, OWNER_SCOPE);
+    gated.release();
+    await run;
+
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts.length, 0);
+    assert.equal(h.store.recordRunCalls.length, 0);
+  });
+
+  it('a routine paused elsewhere while the turn ran is not delivered (status re-read before delivery)', async () => {
+    const gated = gatedOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: gated.orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const run = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await gated.started;
+    // Another instance (or the harness) paused the row; this runner was not told.
+    h.store.rows.set(routine.id, { ...h.store.rows.get(routine.id)!, status: 'paused' });
+    gated.release();
+    await run;
+
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts[0]!.status, 'cancelled');
+    assert.equal(h.runsStore.inserts[0]!.trigger, 'manual');
+  });
+
+  it('a manual run while one is in flight is refused; a cron firing then is skipped', async () => {
+    const gated = gatedOrchestrator();
+    const h = makeHarness({ orchestrator: gated.orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const first = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await gated.started;
+    await assert.rejects(
+      h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE),
+      (err: Error) => err.name === 'RoutineRunInProgressError',
+    );
+    await h.scheduler.fire(routine.id);
+    gated.release();
+    await first;
+
+    assert.equal(gated.runTurnCalls(), 1, 'exactly one turn ran');
+    assert.equal(h.runsStore.inserts.length, 1);
+    assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+
+  it('a manual run hands the turn an abort signal (its timeout), like a scheduled one', async () => {
+    const gated = gatedOrchestrator();
+    const h = makeHarness({ orchestrator: gated.orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+    const run = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await gated.started;
+    assert.ok(gated.seenSignals[0], 'the turn context carries an abort signal');
+    assert.equal(gated.seenSignals[0]!.aborted, false);
+    gated.release();
+    await run;
+  });
+
+  it('resuming a routine that is already active and armed does not re-register it', async () => {
+    const h = makeHarness();
+    const routine = await h.runner.createRoutine(baseInput);
+    let registers = 0;
+    const original = h.scheduler.register.bind(h.scheduler);
+    h.scheduler.register = (agentId, spec, handler) => {
+      registers += 1;
+      return original(agentId, spec, handler);
+    };
+    await h.runner.resumeRoutine(routine.id, OWNER_SCOPE);
+    assert.equal(registers, 0);
+  });
+
+  it('effectiveTimeoutMs raises a stored timeout below the floor', async () => {
+    const { effectiveTimeoutMs, MIN_ROUTINE_TIMEOUT_MS } = await import('../src/plugins/routines/routineRunControl.js');
+    assert.equal(effectiveTimeoutMs(1000), MIN_ROUTINE_TIMEOUT_MS);
+    assert.equal(effectiveTimeoutMs(600_000), 600_000);
+  });
+});
+
+describe('#1763 — a routine on an agent whose tool loop runs outside the kernel (subscription CLI)', () => {
+  it('runs through the agent chat agent, delivers its published answer as-is and records unknown counts', async () => {
+    let runTurnCalls = 0;
+    const chatInputs: ChatTurnInput[] = [];
+    const orchestrator: OrchestratorLike = {
+      runTurn(): Promise<ChatTurnResult> {
+        runTurnCalls += 1;
+        return Promise.reject(new Error('claude-cli provider supports only forced single-tool structured output'));
+      },
+      chat(input: ChatTurnInput): Promise<SemanticAnswer> {
+        chatInputs.push(input);
+        return Promise.resolve({ text: 'cli answer', turnId: 'turn-cli' });
+      },
+    };
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+
+    assert.equal(runTurnCalls, 0, 'the tool-less in-process orchestrator is never used');
+    assert.equal(chatInputs.length, 1);
+    assert.equal(chatInputs[0]!.sessionScope, `routine:${routine.id}`);
+    assert.equal(chatInputs[0]!.userId, USER);
+    assert.equal(sender.calls.length, 1);
+    assert.equal(sender.calls[0]!.message.text, 'cli answer');
+    const run = h.runsStore.inserts[0]!;
+    assert.equal(run.status, 'ok');
+    assert.equal(run.answer, 'cli answer');
+    assert.equal(run.iterations, null);
+    assert.equal(run.toolCalls, null);
+  });
+});

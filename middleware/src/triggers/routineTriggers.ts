@@ -241,7 +241,9 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
         const row = await routines.get(routineId);
         const ran = row?.lastRunAt && row.lastRunAt.getTime() >= started.getTime() - 1000;
         const base = { costUsd: metered.costUsd, modelCalls: metered.value.modelCalls };
-        if (!row || !ran) return { delivered: false, ...base };
+        // #1746 — a run its owner cancelled (pause, delete) is no failure:
+        // it must not count towards the circuit breaker.
+        if (!row || !ran || row.lastRunStatus === 'cancelled') return { delivered: false, ...base };
         return row.lastRunStatus === 'ok'
           ? { delivered: true, ...base }
           : { delivered: false, ...base, error: row.lastRunError ?? `routine run ${row.lastRunStatus ?? 'failed'}` };

@@ -15,6 +15,7 @@
  */
 
 import type { DataPlanGuard } from '@omadia/plugin-api';
+import { turnContext } from './turnContext.js';
 import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
 import { createLlmSummaryJudge, createSummaryBoundaryGuard } from './summaryBoundaryGuard.js';
 import type { ConsultationPort } from './consultation/consultTool.js';
@@ -1294,6 +1295,12 @@ export function buildOrchestratorForAgent(
       isToolGranted: (name, agentId, scope) => orchestrator.isToolGranted(name, agentId, scope),
       // A channel turn's routine has to name this Agent, see `initRoutines`.
       agentSlug: config.agentId,
+      // #1763 — a templated routine run captures raw tool results here too:
+      // CLI tool calls run inside the caller's restored turn context, so the
+      // routine runner's capture hook is reachable through it.
+      captureRawToolResult: (name, result) => {
+        turnContext.current()?.captureRawToolResult?.(name, result);
+      },
     });
     return {
       orchestrator,
@@ -1396,6 +1403,7 @@ export function buildOrchestratorForAgent(
             : {}),
         })),
         raw: orchestrator,
+        externalToolLoop: true,
         sessionLogger,
         chatSessionStore,
       },

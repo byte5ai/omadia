@@ -5,6 +5,7 @@ import {
 } from '@omadia/plugin-api';
 import { z } from 'zod';
 
+import { DEFAULT_ROUTINE_TIMEOUT_MS, MIN_ROUTINE_TIMEOUT_MS } from './routineRunControl.js';
 import {
   RoutineNameConflictError,
   type Routine,
@@ -53,8 +54,8 @@ const ManageRoutineInputSchema = z.object({
   /** Required for `pause`, `resume`, `delete`. UUID returned by `create` /
    *  `list`. */
   id: z.string().uuid().optional(),
-  /** Optional for `create`. Defaults to 60_000ms. */
-  timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+  /** Optional for `create`. Defaults to 600_000 ms; #1747 — at least 30 s. */
+  timeoutMs: z.number().int().min(MIN_ROUTINE_TIMEOUT_MS).max(DEFAULT_ROUTINE_TIMEOUT_MS).optional(),
   /**
    * Optional for `create`. Email of ANOTHER person this routine should
    * proactively message (cold-start 1:1 outreach — e.g. an HR review
@@ -149,7 +150,7 @@ export const manageRoutineToolSpec = {
       timeoutMs: {
         type: 'integer',
         description:
-          'Pro-Run-Timeout in ms. Optional bei `create`. 1000–600000 (1s–10min). Default 600000 (10min) — passt für Tool-heavy Routinen mit KG-Lookups oder Sub-Agent-Delegation.',
+          'Pro-Run-Timeout in ms. Optional bei `create`. 30000–600000 (30s–10min). Default 600000 (10min) — passt für Tool-heavy Routinen mit KG-Lookups oder Sub-Agent-Delegation.',
       },
       targetEmail: {
         type: 'string',

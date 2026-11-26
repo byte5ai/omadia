@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine runs: cancel, timeout, one run at a time, subscription CLI (W22, 2026-11-26)
+
+- **Run control** (#1746, #1747, #1748, `routineRunControl.ts`): pausing or deleting a routine
+  cancels its run in flight; the run is recorded as the new status `cancelled` (routines
+  migration `0007_routine_runs_cancelled`), not as `timeout`, and nothing is delivered. The
+  status is read once more before delivery, so a pause on another instance also holds. A run
+  deleted mid-flight writes no run row (its history goes with the routine). A cancelled run
+  does not count towards the trigger's circuit breaker. The abort signal reaches the agent
+  turn (`turnContext.abortSignal`, checked at the top of every tool-loop iteration), manual
+  runs get the routine's timeout too, and the timeout floor is 30 s (`manage_routine` rejects
+  less; stored rows below it are raised). One run per routine at a time: `POST
+  /api/v1/routines/:id/trigger` answers `409 routines.run_in_progress` while one is in flight,
+  a cron firing then is skipped, and the routine DTO carries `running`. Resuming an active
+  routine no longer re-arms it.
+- **Subscription CLI** (#1763): a routine on an agent whose tool loop the CLI owns
+  (`ChatAgentBundle.externalToolLoop`) runs through the agent's chat agent instead of the
+  tool-less in-process orchestrator, so it no longer fails on every run. Raw tool results for
+  output templates are captured on that path too; tool calls and iterations are recorded as
+  unknown there.
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

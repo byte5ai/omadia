@@ -25,6 +25,15 @@ import {
 import type { RoutineOutputTemplate } from './routineOutputTemplate.js';
 import { renderRoutineTemplate } from './routineTemplateRenderer.js';
 import { routineTurnContext } from './routineTurnContext.js';
+import {
+  InFlightRuns,
+  RoutineRunCancelledError,
+  RoutineRunInProgressError,
+  abortMessage,
+  abortedStatus,
+  effectiveTimeoutMs,
+  timeoutSignal,
+} from './routineRunControl.js';
 
 /**
  * Structural subset of `JobScheduler` the runner depends on. Typed as a
@@ -59,6 +68,15 @@ export interface OrchestratorLike {
   readonly emitter?: AnswerEmitter;
   /** #2045 — the agent the routine's answers are from. */
   readonly speaker?: AgentSpeaker;
+  /**
+   * #1763 — present when the agent's tool loop runs outside the kernel (the
+   * subscription CLI): the run goes through the agent's own chat agent, like
+   * a chat turn on it, instead of `runTurn` on its tool-less in-process
+   * orchestrator. Its answer is already published (identity guard, speaker),
+   * so the runner does not pass it through the emitter again. The run keeps
+   * no run trace on this path; tool calls and iterations stay unknown.
+   */
+  readonly chat?: (input: ChatTurnInput) => Promise<SemanticAnswer>;
 }
 
 /**
@@ -294,6 +312,8 @@ export class RoutineRunner {
   private readonly maxActivePerUser: number;
   /** Map from routine id → dispose fn returned by scheduler.register. */
   private readonly disposers = new Map<string, () => void>();
+  /** #1748 — one run per routine in flight, cron and manual alike. */
+  private readonly inFlight = new InFlightRuns();
   private started = false;
 
   constructor(opts: RoutineRunnerOptions) {
@@ -360,8 +380,14 @@ export class RoutineRunner {
     if (routine.status !== 'active') {
       throw new RoutineNotActiveError(id, routine.name, routine.status);
     }
-    const controller = new AbortController();
-    await this.runOnce(routine, controller.signal, 'manual');
+    if (this.inFlight.has(id)) throw new RoutineRunInProgressError(id);
+    // #1747 — a manual run gets the same timeout a scheduled one does.
+    const timeout = timeoutSignal(effectiveTimeoutMs(routine.timeoutMs));
+    try {
+      await this.runOnce(routine, timeout.signal, 'manual');
+    } finally {
+      timeout.clear();
+    }
     // Re-read so caller gets the updated last_run_* fields.
     const updated = await this.store.get(id);
     return updated ?? routine;
@@ -376,6 +402,11 @@ export class RoutineRunner {
   async peekRoutine(id: string): Promise<Routine | null> {
     const row = await this.store.get(id);
     return row ?? null;
+  }
+
+  /** #1748 — whether a run of the routine is in flight in this process. */
+  isRunning(id: string): boolean {
+    return this.inFlight.has(id);
   }
 
   /**
@@ -523,16 +554,24 @@ export class RoutineRunner {
     // confirm the id.
     if (!updated) throw new RoutineNotFoundError(id);
     this.unregisterFromScheduler(id);
+    // #1746 — a run in flight stops at its next step and delivers nothing.
+    this.inFlight.cancel(id, 'paused');
     return updated;
   }
 
   async resumeRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
+    // #1746 — resuming a routine that is already active and armed changes
+    // nothing: re-registering would settle and re-create its trigger under a
+    // run that is in flight.
+    const before = await this.store.get(id);
+    const alreadyRunning = before?.status === 'active' && this.disposers.has(id);
     let updated = await this.store.setStatus(
       id,
       'active',
       ownerFilter(scope),
     );
     if (!updated) throw new RoutineNotFoundError(id);
+    if (alreadyRunning && !(updated.until && updated.until.getTime() <= Date.now())) return updated;
     // #2082 — resuming a routine past its deadline is its owner's choice to
     // go on: a new period starts when it is scheduled.
     if (updated.until && updated.until.getTime() <= Date.now()) {
@@ -573,7 +612,12 @@ export class RoutineRunner {
    */
   async deleteRoutine(id: string, scope: RoutineActorScope): Promise<boolean> {
     const deleted = await this.store.delete(id, ownerFilter(scope));
-    if (deleted) this.unregisterFromScheduler(id);
+    if (deleted) {
+      this.unregisterFromScheduler(id);
+      // #1746 — the run in flight stops spending; its history row goes with
+      // the routine (`routine_runs` cascades), like the rest of its history.
+      this.inFlight.cancel(id, 'deleted');
+    }
     return deleted;
   }
 
@@ -607,7 +651,7 @@ export class RoutineRunner {
     const spec: JobSpec = {
       name: routine.id,
       schedule: { cron: routine.cron },
-      timeoutMs: routine.timeoutMs,
+      timeoutMs: effectiveTimeoutMs(routine.timeoutMs),
       // skip a tick if a previous run is still in flight — long-running
       // agent turns shouldn't queue up duplicates.
       overlap: 'skip',
@@ -627,10 +671,33 @@ export class RoutineRunner {
     this.disposers.delete(id);
   }
 
+  /**
+   * #1748 — one run per routine at a time. A cron firing while a run is in
+   * flight is skipped (the trigger's at-most-once occurrence is spent, no
+   * second turn is paid for); a manual one is refused before it gets here.
+   */
   private async runOnce(
     routine: Routine,
     signal: AbortSignal,
     trigger: RoutineRunTrigger = 'cron',
+  ): Promise<void> {
+    const own = this.inFlight.acquire(routine.id);
+    if (!own) {
+      if (trigger === 'manual') throw new RoutineRunInProgressError(routine.id);
+      this.log(`[routines/runner] routine ${routine.id} ('${routine.name}') still running; ${trigger} firing skipped`);
+      return;
+    }
+    try {
+      await this.runLocked(routine, AbortSignal.any([signal, own.signal]), trigger);
+    } finally {
+      this.inFlight.release(routine.id, own);
+    }
+  }
+
+  private async runLocked(
+    routine: Routine,
+    signal: AbortSignal,
+    trigger: RoutineRunTrigger,
   ): Promise<void> {
     const startedAt = new Date();
     let status: RoutineRunStatus = 'ok';
@@ -644,6 +711,9 @@ export class RoutineRunner {
     // run: nothing is recorded. Recording it as `ok` overwrote the
     // `last_run_error` that explains an auto-pause (deleted web chat).
     let skipped = false;
+    // #1763 — a run through the agent's chat agent reports no tool calls or
+    // iterations; they are recorded as unknown, not as zero.
+    let countsKnown = true;
 
     try {
       // Re-read the row before invoking. A pause/delete that landed
@@ -685,23 +755,11 @@ export class RoutineRunner {
       if (refused) throw new OwnBotDeliveryRefusedError(refused);
 
       if (signal.aborted) {
-        status = 'timeout';
-        errorMessage = signal.reason instanceof Error
-          ? signal.reason.message
-          : 'aborted before invocation';
+        status = abortedStatus(signal);
+        errorMessage = abortMessage(signal, 'aborted before invocation');
         return;
       }
 
-      // Use `runTurn` (not the higher-level `chat`) so we keep the per-
-      // turn `runTrace` for the call-stack viewer. `toSemanticAnswer`
-      // converts the kernel-shaped result into the channel-agnostic
-      // outgoing-message contract the proactive sender expects.
-      //
-      // Phase C.2 — for routines with an output_template, install a raw
-      // tool-result capture so the template renderer (C.4/C.5) can pull
-      // data sections directly from the tool handler's output instead
-      // of letting the LLM author markdown rows. Non-templated routines
-      // skip the wrap entirely — byte-identical to pre-C.2 behaviour.
       // Spec 2042 §5.10 — the run (its security screener before the turn
       // scope, the turn, the emitter's guard) is the turn of the agent that
       // actually runs it, scheduled or "run now", whatever context the
@@ -709,21 +767,32 @@ export class RoutineRunner {
       const slug = orchestrator.speaker?.slug;
       const asAgentTurn = <T>(work: () => Promise<T>): Promise<T> =>
         slug ? runInExecutionContext({ kind: 'agent_turn', ownerId: slug, agentSlug: slug }, work) : work();
-      const turn = await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator));
+      const turn = await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator, signal));
       result = turn.result;
       cardBody = turn.cardBody;
+      countsKnown = turn.published === undefined;
 
       if (signal.aborted) {
-        // Agent finished after the timer fired but before send. Skip
-        // delivery — the user shouldn't get late noise — but record the
-        // timeout so they can extend `timeoutMs` if needed.
-        status = 'timeout';
-        errorMessage = 'agent finished after timeout, delivery skipped';
+        // Agent finished after the timer fired (or the routine was paused or
+        // deleted) but before send. Skip delivery — the user shouldn't get
+        // late noise — and record why.
+        status = abortedStatus(signal);
+        errorMessage = status === 'timeout'
+          ? 'agent finished after timeout, delivery skipped'
+          : abortMessage(signal, 'run cancelled, delivery skipped');
+        return;
+      }
+      // #1746 — the routine may have been paused or deleted on another
+      // instance (or by the harness) while the turn ran: read it once more.
+      const current = await this.store.get(routine.id);
+      if (!current || current.status !== 'active') {
+        status = 'cancelled';
+        errorMessage = new RoutineRunCancelledError(current ? 'paused' : 'deleted').message;
         return;
       }
 
       const finished = result;
-      const answer = await asAgentTurn(() => publishRoutineAnswer(orchestrator, finished));
+      const answer = turn.published ?? (await asAgentTurn(() => publishRoutineAnswer(orchestrator, finished)));
       await sender.send({
         conversationRef: fresh.conversationRef,
         message: answer,
@@ -735,8 +804,8 @@ export class RoutineRunner {
         ...(cardBody ? { cardBody } : {}),
       });
     } catch (err) {
-      status = signal.aborted ? 'timeout' : 'error';
-      errorMessage = errMsg(err);
+      status = signal.aborted ? abortedStatus(signal) : 'error';
+      errorMessage = signal.aborted ? abortMessage(signal, errMsg(err)) : errMsg(err);
       if (err instanceof ProactiveTargetGoneError) {
         errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage);
       } else if (err instanceof OwnBotDeliveryRefusedError) {
@@ -746,7 +815,13 @@ export class RoutineRunner {
         `[routines/runner] routine ${routine.id} ('${routine.name}') ${status}: ${errorMessage}`,
       );
     } finally {
-      if (!skipped) {
+      // #1746 — a routine deleted mid-run took its history with it; there is
+      // no row left to attach this run to.
+      const deleted = signal.reason instanceof RoutineRunCancelledError && signal.reason.cancelCause === 'deleted';
+      if (deleted) {
+        this.log(`[routines/runner] routine ${routine.id} ('${routine.name}') was deleted during the run; no run row written`);
+      }
+      if (!skipped && !deleted) {
         const finishedAt = new Date();
 
         // Append-only per-run history with full agentic trace. Failures
@@ -762,8 +837,8 @@ export class RoutineRunner {
           errorMessage,
           prompt,
           answer: result?.answer ?? null,
-          iterations: result?.iterations ?? null,
-          toolCalls: result?.toolCalls ?? null,
+          iterations: countsKnown ? (result?.iterations ?? null) : null,
+          toolCalls: countsKnown ? (result?.toolCalls ?? null) : null,
           runTrace: result?.runTrace ?? null,
         });
 
@@ -846,10 +921,15 @@ export class RoutineRunner {
     // re-resolved) so one run never straddles two orchestrator instances
     // across a mid-run key rotation.
     orchestrator: OrchestratorLike,
-  ): Promise<{
-    readonly result: ChatTurnResult;
-    readonly cardBody?: readonly unknown[];
-  }> {
+    // #1747 — reaches the turn through `turnContext.abortSignal`, so a
+    // timeout, pause or delete stops the tool loop at its next iteration.
+    signal: AbortSignal,
+  ): Promise<RoutineTurn> {
+    const input = (userMessage: string): ChatTurnInput => ({
+      userMessage,
+      userId: routine.userId,
+      sessionScope: `routine:${routine.id}`,
+    });
     if (routine.outputTemplate === null) {
       // The scope is deliberate, and it must match the templated branch below.
       // `orchestrator.runTurn` reads `turnContext.current()` as its parent and
@@ -859,16 +939,10 @@ export class RoutineRunner {
       // templated branch, which does open one, would behave differently for the
       // same routine. Same routine, same owner, two identities, decided by
       // whether an output template happens to be configured.
-      const result = await turnContext.run(
-        { turnId: '', turnDate: today() },
-        () =>
-          orchestrator.runTurn({
-            userMessage: routine.prompt,
-            userId: routine.userId,
-            sessionScope: `routine:${routine.id}`,
-          }),
+      return turnContext.run(
+        { turnId: '', turnDate: today(), abortSignal: signal },
+        () => runAgentTurn(orchestrator, input(routine.prompt)),
       );
-      return { result };
     }
 
     const template = routine.outputTemplate;
@@ -884,7 +958,7 @@ export class RoutineRunner {
       rawToolResults.set(toolName, rawResult);
     };
 
-    const llmResult = await routineTurnContext.withRawToolResults(
+    const llmTurn = await routineTurnContext.withRawToolResults(
       rawToolResults,
       () =>
         turnContext.run(
@@ -896,22 +970,27 @@ export class RoutineRunner {
             turnId: '',
             turnDate: today(),
             captureRawToolResult,
+            abortSignal: signal,
           },
-          () =>
-            orchestrator.runTurn({
-              userMessage: augmentedPrompt,
-              userId: routine.userId,
-              sessionScope: `routine:${routine.id}`,
-            }),
+          () => runAgentTurn(orchestrator, input(augmentedPrompt)),
         ),
     );
 
-    return this.composeTemplatedAnswer(
+    const composed = this.composeTemplatedAnswer(
       routine,
       template,
       rawToolResults,
-      llmResult,
+      llmTurn.result,
     );
+    // The chat-agent path published the model's slot JSON; the rendered
+    // template is what goes out, as the system's composition of the agent's
+    // data and slots, with the agent as its speaker.
+    return llmTurn.published
+      ? {
+          ...composed,
+          published: withText(llmTurn.published, composed.result.answer),
+        }
+      : composed;
   }
 
   /**
@@ -986,6 +1065,38 @@ export class RoutineRunner {
       cardBody: rendered.items,
     };
   }
+}
+
+/** What one routine turn produced. */
+interface RoutineTurn {
+  readonly result: ChatTurnResult;
+  readonly cardBody?: readonly unknown[];
+  /**
+   * #1763 — the answer as the agent's chat agent already published it; set
+   * only on that path, where the runner must not publish it again.
+   */
+  readonly published?: SemanticAnswer;
+}
+
+/** The published answer with another text (its data-free variant dropped). */
+function withText(answer: SemanticAnswer, text: string): SemanticAnswer {
+  const copy: SemanticAnswer = { ...answer, text };
+  delete copy.textWithoutData;
+  return copy;
+}
+
+/**
+ * #1763 — the agent's full turn: its chat agent where the tool loop runs
+ * outside the kernel (subscription CLI), else `runTurn` on its orchestrator,
+ * which keeps the run trace.
+ */
+async function runAgentTurn(orchestrator: OrchestratorLike, input: ChatTurnInput): Promise<RoutineTurn> {
+  if (!orchestrator.chat) return { result: await orchestrator.runTurn(input) };
+  const published = await orchestrator.chat(input);
+  return {
+    result: { answer: published.text, toolCalls: 0, iterations: 0 },
+    published,
+  };
 }
 
 /**

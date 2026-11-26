@@ -6,6 +6,7 @@ import {
   parseRoutineOutputTemplate,
   type RoutineOutputTemplate,
 } from '../plugins/routines/routineOutputTemplate.js';
+import { RoutineRunInProgressError } from '../plugins/routines/routineRunControl.js';
 import {
   RoutineNotFoundError,
   type RoutineActorScope,
@@ -51,6 +52,8 @@ export interface RoutineDto {
   lastRunError: string | null;
   /** Phase C.7 — server-side output template, null = legacy LLM-renders path. */
   outputTemplate: RoutineOutputTemplate | null;
+  /** #1748 — a run is in flight on this instance; "run now" answers 409 meanwhile. */
+  running: boolean;
 }
 
 export interface PreviewRoutineTemplateRequest {
@@ -101,7 +104,7 @@ export interface RoutineRunSummaryDto {
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
-  status: 'ok' | 'error' | 'timeout';
+  status: 'ok' | 'error' | 'timeout' | 'cancelled';
   errorMessage: string | null;
   iterations: number | null;
   toolCalls: number | null;
@@ -147,7 +150,7 @@ function toRunDetail(r: RoutineRun): RoutineRunDetailDto {
   };
 }
 
-function toDto(r: Routine): RoutineDto {
+function toDto(r: Routine, running = false): RoutineDto {
   return {
     id: r.id,
     tenant: r.tenant,
@@ -164,6 +167,7 @@ function toDto(r: Routine): RoutineDto {
     lastRunStatus: r.lastRunStatus,
     lastRunError: r.lastRunError,
     outputTemplate: r.outputTemplate,
+    running,
   };
 }
 
@@ -202,7 +206,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       // requireAuth — any valid operator session, see OPERATOR_SCOPE.
       const rows = await deps.store.listAll();
       const body: ListRoutinesResponse = {
-        routines: rows.map(toDto),
+        routines: rows.map((r) => toDto(r, deps.runner.isRunning(r.id))),
         count: rows.length,
       };
       res.json(body);
@@ -233,7 +237,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           status === 'paused'
             ? await deps.runner.pauseRoutine(id, OPERATOR_SCOPE)
             : await deps.runner.resumeRoutine(id, OPERATOR_SCOPE);
-        const body: RoutineResponse = { routine: toDto(updated) };
+        const body: RoutineResponse = { routine: toDto(updated, deps.runner.isRunning(updated.id)) };
         res.json(body);
       } catch (err) {
         if (err instanceof RoutineNotFoundError) {
@@ -289,6 +293,15 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       // guaranteed to fail in the background — the web-ui maps this code
       // to a "set the key in Settings" message. Cron fires keep recording
       // `error` runs so the misconfiguration stays visible in history.
+      // #1748 — one run per routine: a second "run now" (or one while the
+      // cron run is in flight) is refused instead of delivering twice.
+      if (deps.runner.isRunning(id)) {
+        res.status(409).json({
+          code: 'routines.run_in_progress',
+          message: new RoutineRunInProgressError(id).message,
+        });
+        return;
+      }
       if (!deps.runner.chatAgentAvailable(routine.agentSlug ?? null)) {
         res.status(503).json({
           code: 'routines.chat_unavailable',
@@ -310,7 +323,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
             `[routines/route] background trigger run for ${id} failed: ${errMsg(err)}`,
           );
         });
-      const body: RoutineResponse = { routine: toDto(routine) };
+      const body: RoutineResponse = { routine: toDto(routine, true) };
       res.status(202).json(body);
     },
   );
