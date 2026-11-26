@@ -2138,6 +2138,8 @@ export interface AdminUsersListResponse {
 
 export interface AdminUserResponse {
   user: AdminUser;
+  /** #1765 — routines the user owns; deleted with the account. Only on GET /:id. */
+  routine_count?: number;
 }
 
 export async function listAdminUsers(): Promise<AdminUsersListResponse> {
@@ -3372,9 +3374,21 @@ export interface RoutineDto {
   createdAt: string;
   updatedAt: string;
   lastRunAt: string | null;
-  lastRunStatus: 'ok' | 'error' | 'timeout' | null;
+  lastRunStatus: RoutineRunStatus | null;
   lastRunError: string | null;
   outputTemplate: RoutineOutputTemplateDto | null;
+  /** #1748 — a run is in flight; "run now" is refused meanwhile. */
+  running?: boolean;
+  /** #1744 — the agent that runs the routine (null = bound to none). */
+  agentSlug?: string | null;
+  /** #1744 / #1745 — why no agent may run it (server text), else null. */
+  agentProblem?: string | null;
+  /** #1743 — the zone the cron pattern runs in. */
+  timeZone?: string;
+  /** #1749 — next run (ISO), null when it does not run again. */
+  nextRunAt?: string | null;
+  /** #2082 — deadline (ISO), null until first scheduled. */
+  until?: string | null;
 }
 
 export interface ListRoutinesResponse {
@@ -3490,8 +3504,8 @@ export async function setRoutineTemplate(
 }
 
 export type PreviewRoutineTemplateResponse =
-  | { ok: true; format: 'markdown'; text: string }
-  | { ok: true; format: 'adaptive-card'; items: readonly unknown[] }
+  | { ok: true; format: 'markdown'; text: string; warnings?: readonly string[] }
+  | { ok: true; format: 'adaptive-card'; items: readonly unknown[]; warnings?: readonly string[] }
   | { ok: false; reason: string };
 
 /**
@@ -3550,7 +3564,7 @@ export async function deleteRoutine(id: string): Promise<void> {
 }
 
 export type RoutineRunTrigger = 'cron' | 'catchup' | 'manual';
-export type RoutineRunStatus = 'ok' | 'error' | 'timeout';
+export type RoutineRunStatus = 'ok' | 'error' | 'timeout' | 'cancelled' | 'silent';
 
 /**
  * Lightweight summary used for the per-routine run-history list. The full
@@ -3568,6 +3582,8 @@ export interface RoutineRunSummaryDto {
   errorMessage: string | null;
   iterations: number | null;
   toolCalls: number | null;
+  /** #1776 — metered model cost (USD); null = not metered. */
+  costUsd?: number | null;
 }
 
 export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
@@ -3581,6 +3597,8 @@ export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
 export interface ListRoutineRunsResponse {
   runs: RoutineRunSummaryDto[];
   count: number;
+  /** #1776 — cost of all recorded runs (USD). */
+  totalCostUsd?: number;
 }
 
 export interface RoutineRunResponse {
@@ -3589,12 +3607,14 @@ export interface RoutineRunResponse {
 
 export async function listRoutineRuns(
   id: string,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; before?: string } = {},
 ): Promise<ListRoutineRunsResponse> {
   const params = new URLSearchParams();
   if (typeof opts.limit === 'number' && Number.isFinite(opts.limit)) {
     params.set('limit', String(Math.trunc(opts.limit)));
   }
+  // #1749 — load more: runs that started before this ISO instant.
+  if (opts.before) params.set('before', opts.before);
   const suffix = params.toString() ? `?${params.toString()}` : '';
   return getJson<ListRoutineRunsResponse>(
     `/v1/routines/${encodeURIComponent(id)}/runs${suffix}`,

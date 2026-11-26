@@ -45,7 +45,23 @@ changelog.
   disclosure is folded in, so a disclosure line alone is never delivered. The run's Privacy
   Shield receipt is stored on the delivery (`ChatMessage.privacyReceipt`, server-written
   only; a client PUT cannot add or change it) and shown like a chat turn's. The routine badge
-  names the delivery time, and a visible chat re-reads its deliveries every minute.
+  names the delivery time, and a visible chat re-reads its deliveries every minute. The
+  deliveries block is framed as data and names times in `PROACTIVE_TIMEZONE` (ADR 0244).
+- **Cleanup** (#1753, #1757, #1765): deleting a user account deletes their routines (audited
+  as `routines_deleted`, the admin confirmation names the count, `routine_count` on `GET
+  /api/v1/admin/users/:id`). Closing a chat tab asks first and names the routines that deliver
+  into it; deleting the chat pauses them with the reason and removes the chat's markdown
+  transcripts (`/memories/sessions/<id>/`, `sessionTranscriptDir`); `GET
+  /api/chat/sessions/:id/routines` lists them. Deleting a routine removes its transcripts.
+  The run history keeps at most 200 runs per routine and none older than 90 days (pruned on
+  insert).
+- **Routines page** (#1749, #1754, #1758): the DTO names `timeZone`, `nextRunAt` and `until`;
+  rows keep their order (`created_at`); the page shows the next run and deadline in the
+  routine's zone, the agent and an agent problem, run cost and the routine's total, loads more
+  runs (`GET /:id/runs?before=`), polls while a run is in flight with "run now" disabled, and
+  translates headers, statuses (`cancelled`, `silent`), buttons and server errors (route codes
+  mapped, otherwise the server's reason under a localized headline; template save and preview
+  no longer show "… failed: 400", and the preview lists source warnings).
 
 ### Fixed — routine runs: cancel, timeout, one run at a time, subscription CLI (W22, 2026-11-26)
 

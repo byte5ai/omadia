@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import { readOperatorAuditState, recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { requireUuidParam } from '../http/uuidParam.js';
+import { nextCronRun, UTC_ZONE } from '../scheduler/zonedCron.js';
 import {
   parseRoutineOutputTemplate,
   type RoutineOutputTemplate,
@@ -61,6 +62,12 @@ export interface RoutineDto {
   agentSlug: string | null;
   /** #1744 / #1745 — why no agent may run it (disabled, deleted, replaced, unbound), else null. */
   agentProblem: string | null;
+  /** #1743 / #1749 — the zone the cron pattern is evaluated in (ADR 0240). */
+  timeZone: string;
+  /** #1749 — the next run (ISO), null when paused, past its deadline or never again. */
+  nextRunAt: string | null;
+  /** #1749 / #2082 — the routine's deadline (ISO), null until first scheduled. */
+  until: string | null;
 }
 
 export interface PreviewRoutineTemplateRequest {
@@ -185,7 +192,22 @@ function toDto(r: Routine, running = false, agentProblem: string | undefined = u
     running,
     agentSlug: r.agentSlug ?? null,
     agentProblem: agentProblem ?? null,
+    timeZone: r.timezone ?? UTC_ZONE,
+    nextRunAt: nextRunAtOf(r),
+    until: r.until ? r.until.toISOString() : null,
   };
+}
+
+/** #1749 — the routine's next run in its zone, if it runs again before its deadline. */
+function nextRunAtOf(r: Routine, now: Date = new Date()): string | null {
+  if (r.status !== 'active') return null;
+  try {
+    const next = nextCronRun(r.cron, r.timezone ?? UTC_ZONE, now);
+    if (!next || (r.until && next > r.until)) return null;
+    return next.toISOString();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -372,6 +394,13 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       const limitRaw = req.query['limit'];
       const limit =
         typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : 50;
+      // #1749 — load more: runs that started before this ISO instant.
+      const beforeRaw = req.query['before'];
+      const before = typeof beforeRaw === 'string' ? new Date(beforeRaw) : undefined;
+      if (before !== undefined && Number.isNaN(before.getTime())) {
+        res.status(400).json({ code: 'routines.invalid_before', message: "'before' must be an ISO date-time" });
+        return;
+      }
       try {
         // Ensure parent exists so a 404 differs from "exists with zero runs".
         const parent = await deps.store.get(id);
@@ -385,6 +414,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         const rows = await deps.runsStore.listForRoutine(
           id,
           Number.isFinite(limit) ? limit : 50,
+          before,
         );
         const total = await deps.runsStore.totalCost(id);
         const body: ListRoutineRunsResponse = {

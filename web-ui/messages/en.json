@@ -2050,7 +2050,9 @@
         "unavailable": "The verifier could not run for this answer, so nothing was checked.",
         "checkFailed": "The verifier's checks failed for this answer, so no claim was confirmed."
       }
-    }
+    },
+    "closeChatConfirm": "Close this chat? It is deleted permanently.",
+    "closeChatConfirmWithRoutines": "Close this chat? It is deleted permanently, and {count, plural, one {its routine {names} is} other {its # routines ({names}) are}} paused."
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -6105,6 +6107,7 @@
       "dangerHeading": "Danger zone",
       "dangerHelp": "Deleting removes the account permanently. The audit log keeps the entry. The account’s memory and data (remembered facts, conversations, datasets, processes) are NOT deleted with it: purge them first in the Danger Zone, axis User, with the omadia user id above.",
       "confirmDelete": "Really delete this account? This cannot be undone. Its memory and data stay unless you purged them in the Danger Zone first.",
+      "confirmDeleteWithRoutines": "Really delete this account? Its {count, plural, one {# routine is} other {# routines are}} deleted with it. This cannot be undone. Its memory and data stay unless you purged them in the Danger Zone first.",
       "delete": "Delete user",
       "deleting": "Deleting …",
       "omadiaUserId": "omadia user id: {id} — use it for the memory purge (axis User).",
@@ -7132,7 +7135,11 @@
       "columnLastRun": "Last run",
       "columnActions": "Actions",
       "emptyTitle": "No routines yet.",
-      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the <toolName>manage_routine</toolName> tool and creates it."
+      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the <toolName>manage_routine</toolName> tool and creates it.",
+      "columnName": "Name",
+      "columnCron": "Schedule",
+      "columnChannel": "Channel",
+      "columnStatus": "Status"
     },
     "row": {
       "neverRan": "never",
@@ -7156,7 +7163,27 @@
       "columnTrigger": "Trigger",
       "columnStatus": "Status",
       "columnIterTools": "Iter · Tools",
-      "columnDetail": "Detail"
+      "columnDetail": "Detail",
+      "timeoutShort": "timeout {seconds} s",
+      "runsToggle": "Runs",
+      "refresh": "Refresh",
+      "traceLink": "Trace →",
+      "nextRun": "Next: {time}",
+      "zone": "Time zone: {zone}",
+      "noNextRun": "No next run",
+      "until": "Runs until {time}",
+      "agent": "Agent: {slug}",
+      "agentNone": "No agent",
+      "agentProblemTitle": "No agent can run this routine",
+      "running": "Running …",
+      "columnCost": "Cost",
+      "totalCost": "Cost of all recorded runs: {cost}",
+      "loadMore": "Load more",
+      "fieldTimeZone": "Time zone",
+      "fieldNextRun": "Next run",
+      "fieldUntil": "Runs until",
+      "fieldAgent": "Agent",
+      "historyLoaded": "{count, plural, one {# run shown} other {# runs shown}}"
     },
     "trigger": {
       "cron": "Cron",
@@ -7170,7 +7197,14 @@
       "triggerNoticeWeb": "Started — the result is added to the chat this routine was created in and shows up there the next time you open or return to that chat.",
       "triggerChatUnavailable": "No agent can run this routine: its agent was deleted, no default agent is set, or no LLM API key is configured (Admin → Settings).",
       "triggerNotActive": "This routine is paused — resume it first, then trigger it. If it was paused because its chat is gone: when that chat still exists in your browser, open it first; otherwise delete the routine and create it again from a chat.",
-      "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
+      "deleteConfirm": "Delete routine ''{name}''? This cannot be undone.",
+      "pause": "Pause",
+      "resume": "Resume",
+      "delete": "Delete",
+      "triggerRunning": "A run of this routine is in progress — wait until it has finished.",
+      "triggerAgentUnavailable": "No agent can run this routine: its agent is disabled, deleted or was replaced. Details are shown on the routine.",
+      "actionFailed": "The action failed.",
+      "running": "Running …"
     },
     "templateEditor": {
       "heading": "Output Template",
@@ -7201,7 +7235,11 @@
       "slotsNotObject": "slots must be a JSON object.",
       "slotsJsonBroken": "slots JSON is broken: {message}",
       "renderingBusy": "Rendering…",
-      "rendererRejected": "Renderer rejected:"
+      "rendererRejected": "Renderer rejected:",
+      "previewWarningsLabel": "The preview could not fill every data section:",
+      "previewFailed": "The preview failed.",
+      "saveFailedReason": "The template was not saved.",
+      "previewRun": "Preview"
     },
     "runTrace": {
       "empty": "No run trace available (typical for errors before `runTurn` or for older runs before trace persistence was enabled).",
@@ -7220,6 +7258,17 @@
       "sectionTrace": "Call Stack · Run Trace",
       "noAnswer": "No answer stored (run aborted or failed before delivery).",
       "traceDescription": "Complete agentic trace of this run — iterations, agent tool calls and internal helper invocations. Click a row to expand / collapse the node."
+    },
+    "status": {
+      "active": "Active",
+      "paused": "Paused"
+    },
+    "runStatus": {
+      "ok": "OK",
+      "error": "Error",
+      "timeout": "Timed out",
+      "cancelled": "Cancelled",
+      "silent": "Nothing to report"
     }
   },
   "system": {

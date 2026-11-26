@@ -2050,7 +2050,9 @@
         "unavailable": "Der Verifier konnte für diese Antwort nicht laufen, es wurde nichts geprüft.",
         "checkFailed": "Die Prüfungen des Verifiers sind für diese Antwort fehlgeschlagen, es wurde keine Aussage bestätigt."
       }
-    }
+    },
+    "closeChatConfirm": "Diesen Chat schließen? Er wird endgültig gelöscht.",
+    "closeChatConfirmWithRoutines": "Diesen Chat schließen? Er wird endgültig gelöscht, und {count, plural, one {seine Routine {names} wird} other {seine # Routinen ({names}) werden}} pausiert."
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -6105,6 +6107,7 @@
       "dangerHeading": "Gefahrenzone",
       "dangerHelp": "Löschen entfernt das Konto permanent. Das Audit-Log behält den Eintrag. Memory und Daten des Kontos (gemerkte Fakten, Gespräche, Datensätze, Prozesse) werden dabei NICHT gelöscht: zuerst in der Gefahrenzone, Achse User, mit der omadia-User-ID oben purgen.",
       "confirmDelete": "Dieses Konto wirklich löschen? Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
+      "confirmDeleteWithRoutines": "Dieses Konto wirklich löschen? {count, plural, one {Die # Routine wird} other {Die # Routinen werden}} mit ihm gelöscht. Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
       "delete": "Nutzer löschen",
       "deleting": "Lösche …",
       "omadiaUserId": "omadia-User-ID: {id} — für den Memory-Purge (Achse User).",
@@ -7132,7 +7135,11 @@
       "columnLastRun": "Letzter Lauf",
       "columnActions": "Aktionen",
       "emptyTitle": "Noch keine Routinen.",
-      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das <toolName>manage_routine</toolName> Tool und legt sie an."
+      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das <toolName>manage_routine</toolName> Tool und legt sie an.",
+      "columnName": "Name",
+      "columnCron": "Zeitplan",
+      "columnChannel": "Kanal",
+      "columnStatus": "Status"
     },
     "row": {
       "neverRan": "noch nie",
@@ -7156,7 +7163,27 @@
       "columnTrigger": "Auslöser",
       "columnStatus": "Status",
       "columnIterTools": "Iter. · Tools",
-      "columnDetail": "Detail"
+      "columnDetail": "Detail",
+      "timeoutShort": "Timeout {seconds} s",
+      "runsToggle": "Läufe",
+      "refresh": "Aktualisieren",
+      "traceLink": "Ablauf →",
+      "nextRun": "Nächster Lauf: {time}",
+      "zone": "Zeitzone: {zone}",
+      "noNextRun": "Kein nächster Lauf",
+      "until": "Läuft bis {time}",
+      "agent": "Ausgeführt von {slug}",
+      "agentNone": "Kein Agent",
+      "agentProblemTitle": "Kein Agent kann diese Routine ausführen",
+      "running": "Läuft gerade …",
+      "columnCost": "Kosten",
+      "totalCost": "Kosten aller erfassten Läufe: {cost}",
+      "loadMore": "Weitere laden",
+      "fieldTimeZone": "Zeitzone",
+      "fieldNextRun": "Nächster Lauf",
+      "fieldUntil": "Läuft bis",
+      "fieldAgent": "Agent",
+      "historyLoaded": "{count, plural, one {# Lauf angezeigt} other {# Läufe angezeigt}}"
     },
     "trigger": {
       "cron": "Cron",
@@ -7170,7 +7197,14 @@
       "triggerNoticeWeb": "Gestartet — das Ergebnis landet im Chat, in dem die Routine angelegt wurde, und erscheint dort, sobald du den Chat das nächste Mal öffnest oder zu ihm zurückkehrst.",
       "triggerChatUnavailable": "Kein Agent kann diese Routine ausführen: Ihr Agent wurde gelöscht, kein Standard-Ansprechpartner ist gesetzt oder kein LLM-API-Key ist konfiguriert (Admin → Einstellungen).",
       "triggerNotActive": "Diese Routine ist pausiert — erst fortsetzen, dann auslösen. Wurde sie pausiert, weil ihr Chat fehlt: Gibt es den Chat in deinem Browser noch, öffne ihn zuerst; sonst lösche die Routine und lege sie aus einem Chat neu an.",
-      "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
+      "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden.",
+      "pause": "Pausieren",
+      "resume": "Fortsetzen",
+      "delete": "Löschen",
+      "triggerRunning": "Ein Lauf dieser Routine ist gerade aktiv — warte, bis er fertig ist.",
+      "triggerAgentUnavailable": "Kein Agent kann diese Routine ausführen: ihr Agent ist deaktiviert, gelöscht oder wurde ersetzt. Details stehen bei der Routine.",
+      "actionFailed": "Die Aktion ist fehlgeschlagen.",
+      "running": "Läuft …"
     },
     "templateEditor": {
       "heading": "Output Template",
@@ -7201,7 +7235,11 @@
       "slotsNotObject": "slots muss ein JSON-Objekt sein.",
       "slotsJsonBroken": "slots-JSON kaputt: {message}",
       "renderingBusy": "Rendert…",
-      "rendererRejected": "Renderer abgelehnt:"
+      "rendererRejected": "Renderer abgelehnt:",
+      "previewWarningsLabel": "Die Vorschau konnte nicht jeden Datenbereich füllen:",
+      "previewFailed": "Die Vorschau ist fehlgeschlagen.",
+      "saveFailedReason": "Die Vorlage wurde nicht gespeichert.",
+      "previewRun": "Vorschau rendern"
     },
     "runTrace": {
       "empty": "Kein Run-Trace verfügbar (typisch bei Errors vor `runTurn` oder bei älteren Runs vor Aktivierung der Trace-Persistierung).",
@@ -7220,6 +7258,17 @@
       "sectionTrace": "Call-Stack · Run-Trace",
       "noAnswer": "Keine Antwort gespeichert (Run vor Delivery abgebrochen oder fehlgeschlagen).",
       "traceDescription": "Vollständiger agentischer Trace dieses Runs — Iterationen, Agent-Tool-Calls und Aufrufe interner Helfer. Klick auf eine Zeile expandiert / collapse-t den Knoten."
+    },
+    "status": {
+      "active": "Aktiv",
+      "paused": "Pausiert"
+    },
+    "runStatus": {
+      "ok": "OK",
+      "error": "Fehler",
+      "timeout": "Zeitüberschreitung",
+      "cancelled": "Abgebrochen",
+      "silent": "Nichts zu melden"
     }
   },
   "system": {

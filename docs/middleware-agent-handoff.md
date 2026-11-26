@@ -6764,7 +6764,9 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
-  pro Prozess);
+  pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
+  Zustellungen und Transkripte ohne Komplett-Rewrite pro Lauf (#1753, Rest); Graph-Knoten
+  gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
   `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
 
@@ -11693,6 +11695,21 @@ Intern-Ausnahme), [ADR 0242](adr/0242-unattended-turns-for-routines-and-triggers
   „recent turns“-Block. Routine-Turns laufen außerhalb jedes Routines-Principals.
 - **Templates**: kein `html`, keine leeren `sections`, static-only ohne Turn, Status `silent`
   bei `[[nothing]]`, Quellprobleme als Warnungen im Lauf.
+
+## Routinen, Welle 5: Oberfläche, Zustellung, Aufräumen (W23) (2026-11-26)
+
+Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.md).
+
+- **Zustellungen im Web-Chat**: `routineDeliveriesHint` (`routineDeliveryContext.ts`) hängt die
+  letzten drei Zustellungen eines Chats als gekennzeichneten Datenblock an jeden Turn
+  (`routes/chat.ts`, Option `timeZone`). Leere Läufe werden vor der Disclosure erkannt; der
+  Receipt einer Zustellung liegt als `ChatMessage.privacyReceipt` (nur serverseitig).
+- **Aufräumen**: Konto löschen → Routinen weg (`UserRoutinesPort`, `routine_count`); Chat löschen
+  → Routinen pausiert (`ChatRoutinesPort`, `GET /api/chat/sessions/:id/routines`) und
+  Transkripte weg (`purgeSessionTranscripts`); Routine löschen → Transkripte weg. Laufhistorie:
+  200 pro Routine, 90 Tage (`RoutineRunsStore.prune`).
+- **Routinen-Seite**: DTO `timeZone`, `nextRunAt`, `until`; Läufe `?before=`;
+  Fehlertexte über `routineErrors.ts` + `serverErrorCode`.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 

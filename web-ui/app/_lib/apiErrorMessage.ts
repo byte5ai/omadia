@@ -63,6 +63,14 @@ export function serverErrorMessage(err: unknown): string | null {
 }
 
 /**
+ * The machine `code` of the middleware's error envelope (`{ code, message }`),
+ * or `null` when there is none. For callers that map known codes to copy.
+ */
+export function serverErrorCode(err: unknown): string | null {
+  return nonEmpty(parseBody(err)?.['code']);
+}
+
+/**
  * The per-field rejections from a validation envelope (`errors: [{ key,
  * message }]`), e.g. a 400 `settings.invalid_values`. Empty when there are
  * none; malformed entries are skipped rather than guessed at.

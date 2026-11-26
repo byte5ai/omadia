@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 
 type Formatter = ReturnType<typeof useFormatter>;
@@ -10,8 +10,10 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   listRoutineRuns,
   type RoutineDto,
+  type RoutineRunStatus,
   type RoutineRunSummaryDto,
 } from '../../_lib/api';
+import { routineErrorText, type RoutineErrorText } from './routineErrors';
 import { RoutineActions } from './RoutineActions';
 import { RoutineTemplateEditor } from './RoutineTemplateEditor';
 
@@ -36,22 +38,43 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
   const format = useFormatter();
   const [expanded, setExpanded] = useState(false);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const tActions = useTranslations('routines.actions');
   const [runs, setRuns] = useState<RoutineRunSummaryDto[] | null>(null);
+  const [totalCostUsd, setTotalCostUsd] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<RoutineErrorText | null>(null);
 
-  const loadRuns = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await listRoutineRuns(routine.id, { limit: HISTORY_LIMIT });
-      setRuns(resp.runs);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [routine.id]);
+  // `before` set = load more (append older runs); unset = refresh the newest.
+  const loadRuns = useCallback(
+    async (before?: string): Promise<void> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const resp = await listRoutineRuns(routine.id, {
+          limit: HISTORY_LIMIT,
+          ...(before ? { before } : {}),
+        });
+        setRuns((prev) => (before && prev ? [...prev, ...resp.runs] : resp.runs));
+        setHasMore(resp.runs.length === HISTORY_LIMIT);
+        if (typeof resp.totalCostUsd === 'number') setTotalCostUsd(resp.totalCostUsd);
+      } catch (err) {
+        setError(routineErrorText(err, (k) => tActions(k), t('historyErrorTitle')));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [routine.id, t, tActions],
+  );
+
+  // #1749 — a run that just ended shows up without pressing "Refresh".
+  const lastRunAt = routine.lastRunAt;
+  useEffect(() => {
+    if (!expanded || runs === null) return;
+    const timer = window.setTimeout(() => void loadRuns(), 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastRunAt]);
 
   const handleToggle = (): void => {
     const next = !expanded;
@@ -107,6 +130,14 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
                   {routine.prompt}
                 </span>
               )}
+              <span className="mt-1 block truncate text-[11px] text-[color:var(--fg-subtle)]">
+                {routine.agentSlug ? t('agent', { slug: routine.agentSlug }) : t('agentNone')}
+              </span>
+              {routine.agentProblem ? (
+                <span className="mt-1 block text-[11px] text-[color:var(--danger)]" title={routine.agentProblem}>
+                  {t('agentProblemTitle')}
+                </span>
+              ) : null}
             </span>
           </button>
         </td>
@@ -126,7 +157,20 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
             {routine.cron}
           </div>
           <div className="mt-1 whitespace-nowrap text-[10px] text-[color:var(--fg-subtle)]">
-            timeout {(routine.timeoutMs / 1000).toFixed(0)}s
+            {routine.nextRunAt
+              ? t('nextRun', { time: formatInZone(routine.nextRunAt, routine.timeZone, format) })
+              : t('noNextRun')}
+          </div>
+          <div className="whitespace-nowrap text-[10px] text-[color:var(--fg-subtle)]">
+            {t('zone', { zone: routine.timeZone ?? 'UTC' })}
+          </div>
+          {routine.until ? (
+            <div className="whitespace-nowrap text-[10px] text-[color:var(--fg-subtle)]">
+              {t('until', { time: formatInZone(routine.until, routine.timeZone, format) })}
+            </div>
+          ) : null}
+          <div className="whitespace-nowrap text-[10px] text-[color:var(--fg-subtle)]">
+            {t('timeoutShort', { seconds: (routine.timeoutMs / 1000).toFixed(0) })}
           </div>
         </td>
         <td className="px-4 py-3 font-mono text-[12px] text-[color:var(--fg-muted)]">
@@ -141,16 +185,8 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
               <div className="whitespace-nowrap">
                 {formatDate(routine.lastRunAt, format)}
               </div>
-              <div
-                className={
-                  routine.lastRunStatus === 'ok'
-                    ? 'text-[color:var(--ok)]'
-                    : routine.lastRunStatus === null
-                      ? ''
-                      : 'text-[color:var(--danger)]'
-                }
-              >
-                {routine.lastRunStatus ?? '—'}
+              <div>
+                {routine.lastRunStatus ? <RunStatusPill status={routine.lastRunStatus} /> : '—'}
               </div>
               {routine.lastRunError ? (
                 <div
@@ -169,7 +205,7 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
                 aria-controls={`runs-${routine.id}`}
               >
                 <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
-                Runs
+                {t('runsToggle')}
               </button>
             </>
           ) : (
@@ -201,10 +237,16 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
             <RunHistoryPanel
               routineId={routine.id}
               runs={runs}
+              totalCostUsd={totalCostUsd}
+              hasMore={hasMore}
               loading={loading}
               error={error}
               onRefresh={(): void => {
                 void loadRuns();
+              }}
+              onLoadMore={(): void => {
+                const oldest = runs?.at(-1)?.startedAt;
+                if (oldest) void loadRuns(oldest);
               }}
             />
           </td>
@@ -216,6 +258,8 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
 
 function DetailsPanel({ routine }: { routine: RoutineDto }): React.ReactElement {
   const t = useTranslations('routines.row');
+  const tStatus = useTranslations('routines.status');
+  const tRun = useTranslations('routines.runStatus');
   const format = useFormatter();
   return (
     <div className="space-y-4">
@@ -238,16 +282,34 @@ function DetailsPanel({ routine }: { routine: RoutineDto }): React.ReactElement 
           value={`${(routine.timeoutMs / 1000).toFixed(0)}s (${routine.timeoutMs}ms)`}
           mono
         />
-        <DetailField label={t('fieldStatus')} value={routine.status} />
+        <DetailField label={t('fieldStatus')} value={tStatus(routine.status)} />
+        <DetailField label={t('fieldTimeZone')} value={routine.timeZone ?? 'UTC'} mono />
+        <DetailField
+          label={t('fieldNextRun')}
+          value={routine.nextRunAt ? formatInZone(routine.nextRunAt, routine.timeZone, format) : t('noNextRun')}
+        />
+        <DetailField
+          label={t('fieldUntil')}
+          value={routine.until ? formatInZone(routine.until, routine.timeZone, format) : '—'}
+        />
+        <DetailField label={t('fieldAgent')} value={routine.agentSlug ?? t('agentNone')} mono />
         <DetailField
           label={t('lastRun')}
           value={
             routine.lastRunAt
-              ? `${formatDate(routine.lastRunAt, format)} · ${routine.lastRunStatus ?? '—'}`
+              ? `${formatDate(routine.lastRunAt, format)} · ${routine.lastRunStatus ? tRun(routine.lastRunStatus) : '—'}`
               : t('neverRan')
           }
         />
       </div>
+      {routine.agentProblem ? (
+        <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--danger)]">
+            {t('agentProblemTitle')}
+          </div>
+          <div className="mt-2 font-mono text-[11px] text-[color:var(--danger)]">{routine.agentProblem}</div>
+        </div>
+      ) : null}
       {routine.lastRunError ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-3">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--danger)]">
@@ -291,15 +353,21 @@ function DetailField({
 function RunHistoryPanel({
   routineId,
   runs,
+  totalCostUsd,
+  hasMore,
   loading,
   error,
   onRefresh,
+  onLoadMore,
 }: {
   routineId: string;
   runs: RoutineRunSummaryDto[] | null;
+  totalCostUsd: number | null;
+  hasMore: boolean;
   loading: boolean;
-  error: string | null;
+  error: RoutineErrorText | null;
   onRefresh: () => void;
+  onLoadMore: () => void;
 }): React.ReactElement {
   const t = useTranslations('routines.row');
   const format = useFormatter();
@@ -307,7 +375,12 @@ function RunHistoryPanel({
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-          {t('historyTitle', { count: HISTORY_LIMIT })}
+          {t('historyLoaded', { count: runs?.length ?? 0 })}
+          {totalCostUsd !== null ? (
+            <span className="ml-3 normal-case tracking-normal">
+              {t('totalCost', { cost: formatUsd(totalCostUsd, format) })}
+            </span>
+          ) : null}
         </div>
         <Button
           variant="secondary"
@@ -317,13 +390,13 @@ function RunHistoryPanel({
           disabled={loading}
           className="text-[10px] uppercase tracking-[0.16em]"
         >
-          {loading ? t('loading') : 'Refresh'}
+          {loading ? t('loading') : t('refresh')}
         </Button>
       </div>
       {error ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-3 text-[12px] text-[color:var(--danger)]">
-          <div className="font-semibold">{t('historyErrorTitle')}</div>
-          <div className="mt-1 font-mono text-[10px]">{error}</div>
+          <div className="font-semibold">{error.headline}</div>
+          {error.detail ? <div className="mt-1 font-mono text-[10px]">{error.detail}</div> : null}
         </div>
       ) : runs === null ? (
         <div className="text-[12px] text-[color:var(--fg-subtle)]">
@@ -343,6 +416,7 @@ function RunHistoryPanel({
                 <th className="px-3 py-2">{t('columnStatus')}</th>
                 <th className="px-3 py-2">{t('columnDuration')}</th>
                 <th className="px-3 py-2">{t('columnIterTools')}</th>
+                <th className="px-3 py-2">{t('columnCost')}</th>
                 <th className="px-3 py-2">{t('columnError')}</th>
                 <th className="px-3 py-2 text-right">{t('columnDetail')}</th>
               </tr>
@@ -368,6 +442,9 @@ function RunHistoryPanel({
                   <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-[color:var(--fg-muted)]">
                     {run.iterations ?? '—'} · {run.toolCalls ?? '—'}
                   </td>
+                  <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-[color:var(--fg-muted)]">
+                    {typeof run.costUsd === 'number' ? formatUsd(run.costUsd, format) : '—'}
+                  </td>
                   <td className="px-3 py-2 font-mono text-[10px] text-[color:var(--danger)]">
                     {run.errorMessage ? (
                       <span
@@ -385,7 +462,7 @@ function RunHistoryPanel({
                       href={`/routines/${routineId}/runs/${run.id}`}
                       className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition hover:border-[color:var(--accent)]"
                     >
-                      Trace →
+                      {t('traceLink')}
                     </Link>
                   </td>
                 </tr>
@@ -394,6 +471,11 @@ function RunHistoryPanel({
           </table>
         </div>
       )}
+      {hasMore ? (
+        <Button variant="secondary" size="sm" pill onClick={onLoadMore} disabled={loading}>
+          {t('loadMore')}
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -403,6 +485,7 @@ function StatusBadge({
 }: {
   status: 'active' | 'paused';
 }): React.ReactElement {
+  const t = useTranslations('routines.status');
   const tone = status === 'active' ? 'ok' : 'warn';
   const colorVar = tone === 'ok' ? '--ok' : '--warn';
   return (
@@ -417,7 +500,7 @@ function StatusBadge({
         className="inline-block h-1.5 w-1.5 rounded-full"
         style={{ backgroundColor: `var(${colorVar})` }}
       />
-      {status}
+      {t(status)}
     </span>
   );
 }
@@ -456,10 +539,19 @@ function TriggerPill({
 function RunStatusPill({
   status,
 }: {
-  status: 'ok' | 'error' | 'timeout';
+  status: RoutineRunStatus;
 }): React.ReactElement {
+  const t = useTranslations('routines.runStatus');
+  // A silent run is a success that delivered nothing; a cancelled one was
+  // stopped by its owner — neither is an error.
   const colorVar =
-    status === 'ok' ? '--ok' : status === 'error' ? '--danger' : '--warn';
+    status === 'ok' || status === 'silent'
+      ? '--ok'
+      : status === 'error'
+        ? '--danger'
+        : status === 'cancelled'
+          ? '--fg-subtle'
+          : '--warn';
   return (
     <span
       className="inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]"
@@ -472,9 +564,27 @@ function RunStatusPill({
         className="inline-block h-1 w-1 rounded-full"
         style={{ backgroundColor: `var(${colorVar})` }}
       />
-      {status}
+      {t(status)}
     </span>
   );
+}
+
+/** #1749 — a run time in the routine's own zone (the zone is named beside it). */
+function formatInZone(iso: string, timeZone: string | undefined, format: Formatter): string {
+  try {
+    return format.dateTime(new Date(iso), {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: timeZone ?? 'UTC',
+    });
+  } catch {
+    return iso;
+  }
+}
+
+/** #1776 — run cost in USD, the ledger's currency (ADR 0088). */
+function formatUsd(usd: number, format: Formatter): string {
+  return format.number(usd, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 });
 }
 
 function formatDate(iso: string, format: Formatter): string {
