@@ -51,6 +51,9 @@ export interface DiagramServiceOptions {
   maxSourceBytes: number;
   maxPngBytes: number;
   log?: (message: string) => void;
+  /** ADR-0187 — called with the key of every render the turn got (cache hit
+   *  or fresh), so the kernel can file it under the turn's person and chat. */
+  onPersisted?: (key: string) => Promise<void>;
 }
 
 export class DiagramService {
@@ -95,6 +98,8 @@ export class DiagramService {
     } else {
       this.options.log?.(`[diagrams] cache-hit kind=${input.kind} key=${summarise(key)}`);
     }
+
+    await this.options.onPersisted?.(key);
 
     const url = signUrl({
       key,

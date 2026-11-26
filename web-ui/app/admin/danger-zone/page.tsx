@@ -83,6 +83,7 @@ const WARNING_CODES: ReadonlySet<string> = new Set([
   'user_selector_resolved',
   'user_unknown',
   'user_layers_unsupported',
+  'generated_files_pending',
 ]);
 const ERROR_CODES: ReadonlySet<string> = new Set([
   'invalid_selector',
@@ -98,7 +99,7 @@ const codeRich = {
   ),
 };
 
-type ExtraCountKey = 'excerpts' | 'datasets' | 'processes' | 'identity' | 'deowned';
+type ExtraCountKey = 'excerpts' | 'datasets' | 'processes' | 'identity' | 'generatedFiles' | 'deowned';
 
 const TONE_CLASS = {
   danger: 'font-mono text-[color:var(--danger)]',
@@ -244,7 +245,8 @@ export default function DangerZonePage(): React.ReactElement {
       (preview.kgDeownedCount ?? 0) +
       (preview.datasetCount ?? 0) +
       (preview.processCount ?? 0) +
-      (preview.identityCount ?? 0) ===
+      (preview.identityCount ?? 0) +
+      (preview.generatedFileCount ?? 0) ===
       0;
 
   const canDelete = preview !== null && !nothingToDelete && confirmMatches && !deleting;
@@ -431,6 +433,7 @@ export default function DangerZonePage(): React.ReactElement {
                 ['datasets', preview.datasetCount],
                 ['processes', preview.processCount],
                 ['identity', preview.identityCount],
+                ['generatedFiles', preview.generatedFileCount],
               ]}
             />
             <ExtraCounts tone="muted" rows={[['deowned', preview.kgDeownedCount]]} />
@@ -526,6 +529,7 @@ export default function DangerZonePage(): React.ReactElement {
                 ['datasets', result.datasetsDeleted],
                 ['processes', result.processesDeleted],
                 ['identity', result.identityDeleted],
+                ['generatedFiles', result.generatedFilesDeleted],
                 ['deowned', result.kgDeowned],
               ]}
             />

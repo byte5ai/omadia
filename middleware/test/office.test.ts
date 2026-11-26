@@ -529,6 +529,27 @@ describe('office content-addressed cache (#645 AC#2)', () => {
     });
   }
 
+  it('#1986 — reports the key of every generated file, cache hit included', async () => {
+    const persisted: string[] = [];
+    const svc = new OfficeService({
+      store: new CountingStore(),
+      secret: SECRET,
+      publicBaseUrl: 'https://bot.example.com',
+      tenantId: 'dev',
+      signedUrlTtlSec: 60,
+      onPersisted: (key) => {
+        persisted.push(key);
+        return Promise.resolve();
+      },
+    });
+    const descriptor = { sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] }] };
+    await svc.createXlsx(descriptor);
+    await svc.createXlsx(descriptor);
+    assert.equal(persisted.length, 2);
+    assert.equal(persisted[0], persisted[1]);
+    assert.match(persisted[0] ?? '', /^documents\/dev\/[0-9a-f]{64}\//);
+  });
+
   it('re-rendering the same xlsx descriptor hits the cache across a wall-clock gap', async (t) => {
     // The whole point of ooxmlNormalize: without it the two renders below get
     // different bytes → different sha → a second write, defeating dedup. Move

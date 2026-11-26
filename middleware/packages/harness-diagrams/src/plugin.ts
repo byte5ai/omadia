@@ -1,6 +1,8 @@
-import type {
-  NativeToolAttachment,
-  PluginContext,
+import {
+  GENERATED_OBJECTS_SERVICE_NAME,
+  type GeneratedObjectsService,
+  type NativeToolAttachment,
+  type PluginContext,
 } from '@omadia/plugin-api';
 
 import { DiagramService } from './diagramService.js';
@@ -8,6 +10,9 @@ import { DiagramTool, diagramToolSpec, type DiagramBrandMemory } from './diagram
 import { createDiagramsRouter } from './diagramsRouter.js';
 import { createKrokiClient } from './krokiClient.js';
 import { createTigrisStore } from './tigrisStore.js';
+
+/** The producer id the kernel files this plugin's renders under (ADR-0187). */
+const PRODUCER_ID = '@omadia/diagrams';
 
 /**
  * @omadia/diagrams — plugin entry point for kind: tool packages.
@@ -72,6 +77,12 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
     bucket: tigrisBucket,
   });
   const kroki = createKrokiClient({ baseUrl: krokiBaseUrl });
+  // ADR-0187 (#1986) — renders are recorded under the turn's person and chat
+  // and deleted with them. Optional: without the kernel service the bucket's
+  // lifecycle rule is the only expiry.
+  const generated = ctx.services.get<GeneratedObjectsService>(GENERATED_OBJECTS_SERVICE_NAME);
+  const deleteObject = store.delete?.bind(store);
+  const disposeDeleter = deleteObject ? generated?.registerDeleter(PRODUCER_ID, deleteObject) : undefined;
   const service = new DiagramService({
     kroki,
     store,
@@ -82,6 +93,7 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
     maxSourceBytes,
     maxPngBytes,
     log: (msg) => ctx.log(msg),
+    ...(generated ? { onPersisted: (key: string) => generated.record(PRODUCER_ID, key) } : {}),
   });
 
   // Brand-logo auto-lookup reads /memories/_brand/logo.md which is outside
@@ -145,6 +157,7 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
       ctx.log('deactivating diagrams plugin');
       disposeTool();
       disposeRoute();
+      disposeDeleter?.();
     },
   };
 }
