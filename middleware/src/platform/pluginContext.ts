@@ -4,7 +4,6 @@ import path from 'node:path';
 import { scopeOperatorAuthToPlugin } from '../auth/operatorAuthAccessor.js';
 
 import {
-  KgEntityNamespaceError,
   KgServiceUnavailableError,
   LlmBudgetExceededError,
   LlmModelNotAllowedError,
@@ -100,6 +99,7 @@ import {
 import { normalizeTypedSetupValue } from '../plugins/setupFieldValue.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
 import { pluginLlmUsageSource, recordPluginLlmUsage } from './pluginLlmUsage.js';
+import { shieldPluginLlmCall } from './pluginLlmPrivacy.js';
 import { builtinClassDefault } from './builtinLlmProviders.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
@@ -118,6 +118,7 @@ import { SCRATCH_DIR } from './paths.js';
 import {
   BOUNDED_GRAPH_SERVICE_NAMES,
   boundGraphService,
+  entityWriteGuard,
   boundedTurnReads,
   holdsRawGraphServices,
 } from './boundedGraphServices.js';
@@ -426,7 +427,9 @@ export function createPluginContext(
       // modules that implement the boundary hold the raw services.
       // A provider reading back its own registration holds the object anyway.
       const holdsRaw = rawGraphServices || serviceRegistry.providedBy(agentId, name);
-      return resolved !== undefined && !holdsRaw ? boundGraphService(name, resolved, agentId) : resolved;
+      return resolved !== undefined && !holdsRaw
+        ? boundGraphService(name, resolved, agentId, extractEntitySystems(agentId, catalog))
+        : resolved;
     },
     // #795 — the accessor an `optional_requires:` entry is consumed
     // through. Same gates in the same order as `get`: a name the manifest
@@ -1645,7 +1648,7 @@ function createKnowledgeGraphAccessor(
   // boot even when the kg-provider activates later (provider-ordering is
   // not deterministic across restarts). The first ingest call resolves —
   // throwing KgServiceUnavailableError if no provider is around.
-  const allowed = new Set(entitySystems);
+  const guard = entityWriteGuard(callerAgentId, entitySystems);
   function resolveKg(): KnowledgeGraph {
     const kg = serviceRegistry.get<KnowledgeGraph>(
       'knowledgeGraph',
@@ -1658,19 +1661,13 @@ function createKnowledgeGraphAccessor(
   return {
     entitySystems,
     async ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult> {
-      for (const ent of entities) {
-        if (!allowed.has(ent.system)) {
-          throw new KgEntityNamespaceError(callerAgentId, ent.system);
-        }
-      }
+      guard.entities(entities);
       return resolveKg().ingestEntities(entities);
     },
     async ingestFacts(facts: FactIngest[]): Promise<FactIngestResult> {
-      // Facts don't carry a system namespace directly — the namespace is
-      // implicit in `mentionedEntityIds` (each ext-id begins with the
-      // system prefix). We don't validate them here: the producer is the
-      // plugin, and the read path tolerates dangling references. A future
-      // hardening pass MAY parse out the prefix and assert it's allowed.
+      // ADR-0167 — a fact names its systems through `mentionedEntityIds`
+      // (`<system>:<model>:<id>`); each must be one of the plugin's own.
+      guard.facts(facts);
       return resolveKg().ingestFacts(facts);
     },
     // ADR-0040 / ADR-0044 — a domain tool searches within the turn's graph
@@ -1918,14 +1915,22 @@ function createLlmAccessor(
         pinnedClassDefault: builtinClassDefault,
       });
 
+      // ADR-0017 — the privacy shield covers plugin model calls too: inside a
+      // guarded turn the prompt is masked before it leaves and the answer is
+      // restored before the plugin reads it (`pluginLlmPrivacy.ts`).
+      const shielded = await shieldPluginLlmCall(
+        turnContext.current()?.privacyHandle,
+        callerAgentId,
+        req,
+      );
       callsUsed += 1;
       const result = await provider.complete({
-        ...req,
+        ...shielded.request,
         model,
         maxTokens: effectiveMaxTokens,
       });
       recordPluginLlmUsage(pluginLlmUsageSource(callerAgentId), activeProvider, result);
-      return result;
+      return shielded.restore(result);
     },
   };
 }

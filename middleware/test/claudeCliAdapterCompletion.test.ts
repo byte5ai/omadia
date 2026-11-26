@@ -62,6 +62,7 @@ const COL = {
   costUsd: 6,
   referenceCostUsd: 9,
   provider: 11,
+  cacheCreation1hTokens: 13,
 } as const;
 
 interface FakeCli {
@@ -125,6 +126,7 @@ const okJson = (result: string): string =>
       output_tokens: 34,
       cache_read_input_tokens: 800,
       cache_creation_input_tokens: 64,
+      cache_creation: { ephemeral_5m_input_tokens: 24, ephemeral_1h_input_tokens: 40 },
     },
     total_cost_usd: 0.0123,
   });
@@ -205,6 +207,7 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
     assert.equal(p[COL.outputTokens], 34);
     assert.equal(p[COL.cacheReadTokens], 800);
     assert.equal(p[COL.cacheCreationTokens], 64);
+    assert.equal(p[COL.cacheCreation1hTokens], 40, 'the 1-hour write split is kept (#2236)');
     assert.equal(p[COL.costUsd], 0, 'a flat-fee call is not billed per token');
     assert.equal(p[COL.referenceCostUsd], 0.0123);
   });

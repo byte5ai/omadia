@@ -115,3 +115,7 @@ sweep of every cross-schema `$ref` for no behavioural gain. Documented in the
   `test/validator.test.ts`, `fixtures/_gallery.json`, and the state-as-glyph rule in
   `omadia-ui-orchestrator/src/composition.ts`.
 - Tracking issue: #343.
+
+## Errata
+
+- 2026-11-25: the canvas packages moved to `byte5ai/omadia-ui-support` (#1682): `@omadia/canvas-core` (schemas, validator tests, gallery fixtures) and `@omadia/ui-orchestrator` (`packages/ui-orchestrator`, `composition.ts`). The `middleware/packages/canvas-core/…` and `omadia-ui-orchestrator/…` paths above no longer exist in this repo.

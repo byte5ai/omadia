@@ -32,6 +32,8 @@ import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
+import { createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
+import { parseClientAddressPolicy } from './auth/clientAddress.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
@@ -552,6 +554,7 @@ import { createPublicPathMount } from './platform/publicPathMount.js';
 import { buildResolutionChain } from './platform/pluginContext.js';
 import { installPluginEgressGuard } from './platform/pluginEgressGuard.js';
 import { createPluginEgressSource } from './platform/pluginEgressSource.js';
+import { createPreviewEgressRoots } from './platform/previewEgressRoots.js';
 import { createTeamsSsoAudienceSource } from './platform/teamsSsoAudiences.js';
 import { createTeamsSsoGate } from './auth/teamsSsoGate.js';
 import { createTeamsSsoVerifier } from './auth/teamsSsoVerifier.js';
@@ -1340,9 +1343,17 @@ async function main(): Promise<void> {
   // of them activates: their own requests through the global `fetch` and
   // `node:http(s)` are refused outside their network permission, and model
   // providers are reached only through the gateway (enforced since S3b).
+  // ADR-0017 — Builder previews run in-process too; their extracts are
+  // guarded like installed packages (`previewEgressRoots.ts`).
+  const previewEgressRoots = createPreviewEgressRoots(BUILDER_PREVIEWS_DIR);
   installPluginEgressGuard({
     mode: 'enforce',
-    source: createPluginEgressSource({ catalog: pluginCatalog, installedRegistry, llmProviderCatalog }),
+    source: createPluginEgressSource({
+      catalog: pluginCatalog,
+      installedRegistry,
+      llmProviderCatalog,
+      previews: previewEgressRoots,
+    }),
     onObservation: (o) => {
       console.warn(
         `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})`,
@@ -4111,6 +4122,12 @@ async function main(): Promise<void> {
       token: config.ADMIN_TOKEN,
       store: memoryStore,
       audit: () => adminAudit,
+      // The password limiter's client rule: per vouched address, never the
+      // shared TCP peer.
+      throttle: createAdminTokenThrottle({
+        clientAddress: parseClientAddressPolicy(config.AUTH_LOGIN_CLIENT_ADDRESS),
+        ipv6PrefixBits: config.AUTH_LOGIN_IPV6_PREFIX,
+      }),
       // #1082 — per request: the orchestrator plugin publishes the tally
       // on activate, possibly after this router is mounted.
       runTraceStats: () =>
@@ -5675,8 +5692,22 @@ async function main(): Promise<void> {
       dispatchDenial: mcpDispatchDenial,
       log: (m) => console.log(m),
     });
+    // Spec 2042 §5.4 / ADR-0018 — two agents may discuss only when each holds
+    // a consultation grant for the other (same grants as `consult`). One check
+    // for the chat capability, the operator route and every utterance.
+    const discussionMutualGrant = async (a: string, b: string, channelType: string): Promise<boolean> => {
+      const registry = getRegistry();
+      const left = registry?.get(a)?.agent.id;
+      const right = registry?.get(b)?.agent.id;
+      return (
+        left !== undefined &&
+        right !== undefined &&
+        consultationStore.hasMutualGrants(left, right, channelType)
+      );
+    };
     const conductorWiring = await wireConductor({
       pool: graphPool,
+      mutualGrant: discussionMutualGrant,
       // #2090 — one reservation per conversation, shared by agent discussions
       // and native facilitations. A reservation left by a discussion whose
       // attachment is gone is stale and is taken over.
@@ -5857,16 +5888,7 @@ async function main(): Promise<void> {
         peerGate,
         // Spec 2042 §5.4 — and every two of them hold consultation grants for
         // each other (same grants as `consult`).
-        mutualGrant: async (a, b, channelType) => {
-          const registry = getRegistry();
-          const left = registry?.get(a)?.agent.id;
-          const right = registry?.get(b)?.agent.id;
-          return (
-            left !== undefined &&
-            right !== undefined &&
-            consultationStore.hasMutualGrants(left, right, channelType)
-          );
-        },
+        mutualGrant: discussionMutualGrant,
         log: (msg: string) => console.log(msg),
       }),
     );
@@ -6940,6 +6962,7 @@ async function main(): Promise<void> {
   // trigger a fresh build through the BuildPipeline → BuildQueue path.
   const previewRuntime = new PreviewRuntime({
     previewsRoot: BUILDER_PREVIEWS_DIR,
+    egressRoots: previewEgressRoots,
     templateNodeModulesPath: path.join(BUILDER_BUILD_TEMPLATE_DIR, 'node_modules'),
     // Solution B: read through to the live kernel ServiceRegistry so an
     // integration-backed agent under test resolves the real services its

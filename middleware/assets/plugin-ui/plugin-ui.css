@@ -2492,6 +2492,8 @@
   --step-kind-action: #8B9CFF;
   --step-kind-human: #F2B95E;
   --step-kind-badge-fg: #0B0B0B;
+  --canvas-edge: light-dark(#B1B1B7, #8D919C);
+  --canvas-edge-selected: light-dark(#555555, #D2D5DD);
   --accent: light-dark(#1F8FA3, #6FC8D6);
   --accent-hover: light-dark(#197D90, #88D2DE);
   --accent-active: light-dark(#146B7C, #A1DCE6);

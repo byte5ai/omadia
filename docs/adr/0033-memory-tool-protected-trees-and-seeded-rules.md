@@ -115,3 +115,7 @@ changing the grant model every turn already has.
 - Tests: `memoryContextIsolation.test.ts`, `orchestratorMemoryNamespacer.test.ts`,
   `contextMemoryNamespacer.test.ts`.
 - Related: ADR-0016, ADR-0019, [ADR-0040](0040-one-graph-read-boundary-per-turn.md) (read side).
+
+## Errata
+
+- 2026-11-25: "Off" is no longer the default context-memory mode. Migration `0099_context_memory_default_members.sql` made `members` the default for new agents; agents created earlier keep `off`.

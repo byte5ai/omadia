@@ -565,6 +565,17 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return neighbors;
   }
 
+  async getNeighborsOfType(
+    nodeIds: readonly string[],
+    type: GraphNodeType,
+  ): Promise<Map<string, GraphNode[]>> {
+    const out = new Map<string, GraphNode[]>();
+    for (const id of nodeIds) {
+      out.set(id, (await this.getNeighbors(id)).filter((n) => n.type === type));
+    }
+    return out;
+  }
+
   async stats(): Promise<GraphStats> {
     const byNodeType: Record<GraphNodeType, number> = {
       Session: 0,

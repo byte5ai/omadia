@@ -90,6 +90,13 @@
   --step-kind-human:    #F2B95E;
   --step-kind-badge-fg: #0B0B0B;
 
+  /* ---- Conductor canvas edges ----
+     The transitions between steps. Light keeps xyflow's own grey; dark lifts
+     it off xyflow's #141414 pane (xyflow's #3E3E3E there is ~1.6:1).
+     Consumed by `.conductor-canvas` in globals.css. */
+  --canvas-edge:          light-dark(#B1B1B7, #8D919C);
+  --canvas-edge-selected: light-dark(#555555, #D2D5DD);
+
   /* ============================================================
      Accent — active palette. Default = Lagoon (spec §2.5.3).
      Overridden by [data-palette="petrol"|"atelier"|"lagoon"] below.

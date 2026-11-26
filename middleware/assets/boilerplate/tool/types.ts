@@ -356,8 +356,8 @@ export interface EntityIngestResult {
   readonly skipped: number;
 }
 
-/** Atomic subject-predicate-object fact. `mentionedEntityIds` may reference
- *  entities owned by other systems (the KG tolerates dangling refs). */
+/** Atomic subject-predicate-object fact. Every id in `mentionedEntityIds`
+ *  must carry one of the manifest's `entity_systems` (ADR-0167). */
 export interface FactIngest {
   readonly subject: string;
   readonly predicate: string;
@@ -376,7 +376,8 @@ export interface KnowledgeGraphAccessor {
    *  manifest's `entity_systems` whitelist. */
   ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult>;
 
-  /** Persist atomic facts. No namespace check on the predicate strings. */
+  /** Persist atomic facts. The systems of `mentionedEntityIds` are checked
+   *  against `entity_systems`; the predicate strings are free-form. */
   ingestFacts(facts: FactIngest[]): Promise<FactIngestResult>;
 
   /** Read-only: full-text Turn search. Returns implementation-specific hits

@@ -114,3 +114,8 @@ Chosen option: **A**.
   `conductorPatternPromptAudience.test.ts`.
 - Related: ADR-0013, ADR-0018, [ADR-0127](0127-conductor-channel-origin-binds-agent-steps.md),
   [ADR-0129](0129-conductor-ephemeral-workflows-only-from-curated-patterns.md). Border: channels, discretion.
+
+## Errata
+
+- 2026-11-25 (#2237): consultation grants in both directions are no longer a chat-start-only rule. `ConductorDiscussionService.start` checks the peer gate of every participant and the mutual grants of every pair on every start path, the operator route `POST /conductors/discussions` included (403 `conductor.discussion_not_granted` / `conductor.discussion_peer_disabled`), as [ADR-0018](0018-consultation-instead-of-delegation.md) requires.
+- 2026-11-25 (#2237): a discussion run is marked in its context (`authorization: 'mutual_consultation_grants'`); before every contribution the speaker's grants are checked again, and a missing grant ends the run (the step throws, before the agent works, or the say outcome `not_granted`). "A failed delivery never fails the run" holds for every other say outcome.

@@ -46,7 +46,7 @@ import { UNKNOWN_READERS, unionLabels } from './discretion/labels.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
-import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
+import { CLI_CHAT_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
 import { TOOLS_OFF_DIRECTIVE, isToolsOffTurn } from './toolsOffTurn.js';
 import {
   OMADIA_MCP_SERVER_NAME,
@@ -130,6 +130,7 @@ const EMPTY_USAGE: CliUsage = {
   outputTokens: 0,
   cacheReadInputTokens: 0,
   cacheCreationInputTokens: 0,
+  cacheCreation1hInputTokens: 0,
   costUsd: 0,
   numTurns: 0,
 };
@@ -336,6 +337,9 @@ export interface CliUsage {
   readonly outputTokens: number;
   readonly cacheReadInputTokens: number;
   readonly cacheCreationInputTokens: number;
+  /** The part of {@link cacheCreationInputTokens} written with the 1-hour TTL
+   *  (`usage.cache_creation.ephemeral_1h_input_tokens`), billed at 2x (#2236). */
+  readonly cacheCreation1hInputTokens: number;
   readonly costUsd: number;
   readonly numTurns: number;
 }
@@ -377,6 +381,7 @@ function recordCliTurnUsage(
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadInputTokens,
     cacheCreationTokens: usage.cacheCreationInputTokens,
+    cacheCreation1hTokens: usage.cacheCreation1hInputTokens,
     // The subscription is a flat fee; nothing is billed per call.
     costUsd: 0,
     referenceCostUsd: usage.costUsd,
@@ -819,6 +824,8 @@ export class StreamJsonParser {
         usagePayload === undefined ? 0 : asNumber(usagePayload.cache_read_input_tokens) ?? 0,
       cacheCreationInputTokens:
         usagePayload === undefined ? 0 : asNumber(usagePayload.cache_creation_input_tokens) ?? 0,
+      // #2236 — the 1-hour write split, as the metered path records it.
+      cacheCreation1hInputTokens: normalizeUsage(usagePayload).cacheCreation1hTokens ?? 0,
       costUsd: asNumber(payload.total_cost_usd) ?? 0,
       numTurns: numTurns ?? this.messageStartCount,
     };
@@ -1072,6 +1079,13 @@ export interface CliChatAgentDeps {
    */
   readonly policyEnv?: NodeJS.ProcessEnv;
   /**
+   * ADR-0017 — whether a Privacy Shield guards this instance's turns (a
+   * privacy guard service is installed). The CLI path cannot mask, so a turn
+   * is refused while it holds, exactly as under the org policy. Absent →
+   * only the org policy decides (sub-agents, operator tools).
+   */
+  readonly privacyGuarded?: () => boolean;
+  /**
    * The language a notice to the user is written in, for `input`: the turn's
    * AI-disclosure locale, else the operator's configured one
    * (`Orchestrator.noticeLocale`). Absent or `undefined` → German.
@@ -1211,6 +1225,12 @@ export const CLI_PRIVACY_SHIELD_REQUIRED_LOG =
   'CLI (claude-cli) runs without the Privacy Shield. Assign this agent a provider ' +
   'with an API key under LLM access, or unset OMADIA_PRIVACY_FORCE_GUARDED.';
 
+/** ADR-0017 — the same refusal when a privacy guard is installed. */
+export const CLI_PRIVACY_GUARD_ACTIVE_LOG =
+  'turn refused: a Privacy Shield guards this instance and the Claude subscription ' +
+  'CLI (claude-cli) cannot mask what it sends. Assign this agent a provider with an ' +
+  'API key under LLM access, or remove the privacy guard plugin.';
+
 /** The stream of a refused turn: one `done`, after clearing any card state a
  *  previous turn left behind (as `streamTurn` does). */
 async function* refusedTurnStream(
@@ -1296,6 +1316,13 @@ export class CliChatAgent implements ChatAgent {
       // A channel's outer scope carries a placeholder id (`''`); the audit
       // rows of this turn name the CLI turn instead.
       turnId: parent?.turnId || cliTurnId,
+      // ADR-0044 — the box the memory binding publishes this turn's graph read
+      // boundary into, shared by reference with every loopback tool call.
+      // Always a fresh one, as an in-process turn starts with: a caller's box
+      // would get this turn's boundary written over its own. Without a box the
+      // boundary had nowhere to go and every graph read of the turn failed
+      // closed.
+      graphReadScope: {},
       ...fields,
     };
   }
@@ -1408,12 +1435,26 @@ export class CliChatAgent implements ChatAgent {
    * in-process path. Read per turn, like the in-process check.
    */
   private refusedByPolicy(): boolean {
+    return this.forceGuarded() || this.guardActive();
+  }
+
+  private forceGuarded(): boolean {
     return isPrivacyForceGuarded(this.deps.policyEnv ?? process.env);
+  }
+
+  /** ADR-0017 — a guard that fails to answer counts as active (fail closed). */
+  private guardActive(): boolean {
+    try {
+      return this.deps.privacyGuarded?.() === true;
+    } catch {
+      return true;
+    }
   }
 
   /** The refusal for `input`'s language, logged for the operator. */
   private refusalAnswer(input: ChatTurnInput): string {
-    (this.deps.logger ?? consoleSpawnLogger).warn(CLI_PRIVACY_SHIELD_REQUIRED_LOG, {
+    const cause = this.forceGuarded() ? CLI_PRIVACY_SHIELD_REQUIRED_LOG : CLI_PRIVACY_GUARD_ACTIVE_LOG;
+    (this.deps.logger ?? consoleSpawnLogger).warn(cause, {
       ...(input.sessionScope !== undefined ? { sessionScope: input.sessionScope } : {}),
     });
     return cliPrivacyShieldRequiredAnswer(this.deps.noticeLocale?.(input));

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0165](0165-model-gateway-is-an-admission-check-per-adapter.md) (gateway form, system-module pools, CLI under a privacy guard)
 
 - **Date:** 2026-11-19
 - **Deciders:** Owner (byte5); spec author iret77

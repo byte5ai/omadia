@@ -375,7 +375,9 @@ jobs:
           # 12 tests, #1851), on top of #2233; measured ran=788.
           # 788 → 790 with the 1-hour cache-write split (usageCacheWrite1h.pg,
           # 2 tests, #2236).
-          PG_TEST_FLOOR: '790'
+          # 790 → 795 with the batched neighbour read (kgNeighborsOfType.pg,
+          # 2 in-memory + 3 Neon tests).
+          PG_TEST_FLOOR: '795'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

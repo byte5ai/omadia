@@ -14,6 +14,7 @@ import type {
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
 import { previewServiceGateFor, type PreviewServiceGate } from './previewServices.js';
 import { createHttpAccessor, isAuditMode } from '../../platform/httpAccessor.js';
+import type { PreviewEgressRoots } from '../../platform/previewEgressRoots.js';
 import { pluginLlmUsageSource, recordPluginLlmUsage } from '../../platform/pluginLlmUsage.js';
 import {
   createPreviewMemoryAccessor,
@@ -421,6 +422,11 @@ export interface PreviewRuntimeDeps {
    *  package without bundled deps — without this link `import('./toolkit.js')`
    *  fails with `Cannot find package 'zod'`. */
   templateNodeModulesPath?: string;
+  /** ADR-0017 — the egress guard's view of active previews. When set, each
+   *  extract is registered with its manifest's network permission while the
+   *  preview is open, so the draft's own `fetch`/`node:http(s)` calls are
+   *  judged like an installed plugin's instead of passing as kernel code. */
+  egressRoots?: PreviewEgressRoots;
   /** Test override — extracts a zip buffer into the destination directory. */
   extractZip?: (zipBuffer: Buffer, destDir: string) => Promise<void>;
   /** Test override — replaces the dynamic-import + activate step. */
@@ -438,6 +444,7 @@ export class PreviewRuntime {
   private readonly log: (...args: unknown[]) => void;
   private readonly templateNodeModulesPath: string | undefined;
   private readonly hostServices: PreviewHostServices | undefined;
+  private readonly egressRoots: PreviewEgressRoots | undefined;
   private readonly extractZip: (zipBuffer: Buffer, destDir: string) => Promise<void>;
   private readonly activateModule: (
     entryAbs: string,
@@ -450,6 +457,7 @@ export class PreviewRuntime {
     this.log = deps.logger ?? ((...args) => console.log('[preview]', ...args));
     this.templateNodeModulesPath = deps.templateNodeModulesPath;
     this.hostServices = deps.serviceRegistry;
+    this.egressRoots = deps.egressRoots;
     this.extractZip = deps.extractZip ?? defaultExtractZip;
     this.activateModule = deps.activateModule ?? defaultActivateModule;
   }
@@ -629,6 +637,18 @@ export class PreviewRuntime {
       logger: (...args) => this.log(`[${agentId}]`, ...args),
     });
 
+    // Registered before the module loads: top-level code of the draft may
+    // already make requests.
+    const unregisterEgress =
+      this.egressRoots?.register({
+        packageRoot,
+        agentId,
+        network: {
+          outbound: network.outbound,
+          publicWeb: network.webScanner && auditMode === 'public-web',
+        },
+      }) ?? (() => {});
+
     let handle: PreviewPluginHandle;
     try {
       handle = await withTimeout(
@@ -637,6 +657,7 @@ export class PreviewRuntime {
         `preview activate(${agentId}) timed out`,
       );
     } catch (err) {
+      unregisterEgress();
       await fs.rm(previewDir, { recursive: true, force: true });
       throw err;
     }
@@ -664,6 +685,7 @@ export class PreviewRuntime {
         } catch (err) {
           this.log(`close failed for ${agentId}: ${(err as Error).message}`);
         }
+        unregisterEgress();
         await fs.rm(previewDir, { recursive: true, force: true });
       },
     };

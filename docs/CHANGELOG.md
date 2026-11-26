@@ -59,6 +59,81 @@ changelog.
   name, identity, cause (`disconnect` | `server_delete`) and revocation outcome, never a token.
 - Decision record: ADR-0168.
 
+### Fixed — Conductor canvas edges readable in dark mode (2026-11-25)
+
+- The transitions in the Conductor designer and the template preview were xyflow's `#3e3e3e`
+  on its `#141414` dark pane (about 1.6:1). They now come from two theme tokens,
+  `--canvas-edge` / `--canvas-edge-selected` (dark `#8d919c` / `#d2d5dd`, light unchanged),
+  through `.conductor-canvas`. The canvas follows the app's theme (`data-theme`) instead of
+  only the OS. Checked in light, dark and both forced themes.
+
+### Security — follow-ups to the bounded graph services (ADR-0044, ADR-0167) (2026-11-25)
+
+- A turn the subscription CLI answered had no graph read boundary when the agent had no
+  memory tool (a facilitator, a memory plugin not ready). Every loopback read (process tools,
+  a plugin's bounded `knowledgeGraph@1`) failed closed and came back empty. The CLI turn now
+  gets its own boundary box, and the binding that fills it runs before the memory-tool gate.
+- ADR-0167: entity and fact writes through `knowledgeGraph@1` and `ctx.knowledgeGraph` stay
+  in the plugin's declared `permissions.graph.entity_systems` (`KgEntityNamespaceError`
+  otherwise). The accessor's `ingestFacts` now checks too. Plugins that declare no
+  `entity_systems` (integration-odoo, integration-confluence today) still write through the
+  service, with a `[security-audit]` warning; how that transition ends is open (the manifest
+  loader strips the reserved `odoo` / `confluence` systems, ADR-0167). For every plugin,
+  declared or not, the kernel's own node namespaces (`turn`, `session`, `user`, channel
+  kinds, …), systems with a colon and non-`fact:` fact ids are refused.
+- The bounded `findEntities` in a context-bound `enforce-strict` / `members` turn read the
+  capturing turns with one `getNeighbors` per hit (N+1). It now makes one batched call,
+  `KnowledgeGraph.getNeighborsOfType` (plugin-api 1.98.0, optional; one SQL query on Neon,
+  `neighborsOfType` falls back per node for a provider without it).
+- `topicClustering@1` was raw for any plugin that declared it: `list(viewerId)` and
+  `getWithMembers(id, viewerId)` took any account as the viewer, and `recluster()` deleted
+  and rebuilt every account's topics. Plugins now get a form where every method throws
+  `GraphServiceRefusedError` (`kernel-only`), and only a boundary implementer may `replace`
+  it. The admin topic routes keep the raw service. No plugin declares it.
+
+### Security — a brake on wrong ADMIN_TOKEN bearers (2026-11-25)
+
+- `/api/admin/*` compared every bearer it got, as often as a client sent one. Wrong tokens now
+  fill a per-client leaky bucket (`routes/adminTokenThrottle.ts`: 10 failures, one drained
+  every 6 s); a full bucket answers 429 with `Retry-After` before the token is compared. The
+  client is keyed by `AUTH_LOGIN_CLIENT_ADDRESS` / `AUTH_LOGIN_IPV6_PREFIX`, like the password
+  limiter's client layer, and the shared TCP peer is never braked (one sender would lock every
+  operator out). On Fly the key is `Fly-Client-IP`.
+
+### Fixed — subscription CLI rows keep the 1-hour cache-write split (2026-11-25)
+
+- The two `claude-cli` write sites (chat turns via `recordCliTurnUsage`, completions in
+  `claudeCliAdapter.ts`) are not provider-boundary sites and kept recording every cache write
+  as 5-minute, so their `cache_creation_1h_tokens` stayed 0 and any token-based figure over
+  those rows priced the 1-hour writes at 1.25×. Both now read
+  `usage.cache_creation.ephemeral_1h_input_tokens` through `normalizeUsage`. Billed cost is
+  unchanged (subscription rows bill 0; `reference_cost_usd` is the CLI's own figure).
+
+### Fixed — code brought in line with ADRs 0002, 0012, 0017 and 0018 (2026-11-25)
+
+- **Plugin `ctx.llm` behind the Privacy Shield (ADR-0017).** Inside a guarded turn the
+  accessor masks the system prompt and every message through the turn's privacy handle
+  (values the turn already masked always, the detectors when `mask_user_prompt` is on),
+  refuses the call when masking is `blocked` (`LlmPrivacyBlockedError`), and restores the
+  answer and tool-call inputs before the plugin reads them (`pluginLlmPrivacy.ts`).
+- **Builder previews in the network sandbox (ADR-0017).** An open preview's extract is an
+  egress-guard root with the draft manifest's hosts and never model-provider access; any
+  other code under the previews directory gets no network (`previewEgressRoots.ts`).
+- **Subscription CLI refused under a privacy guard (ADR-0017).** A `claude-cli` turn is now
+  refused before the spawn whenever a privacy guard is installed, not only under
+  `OMADIA_PRIVACY_FORCE_GUARDED`; the operator log names the cause
+  (`CLI_PRIVACY_GUARD_ACTIVE_LOG`). Agents on the CLI need an API-key provider on such
+  instances.
+- **One authorization for discussions (ADR-0018).** Peer switches and mutual consultation
+  grants are checked on every start path, the operator route included (403
+  `conductor.discussion_not_granted` / `conductor.discussion_peer_disabled`), and before
+  every contribution; a revoked grant ends the running discussion.
+- **Workflow builder on the default agent (ADR-0012).** The builder runs on the instance's
+  default agent instead of the removed `fallback` slug and says so when none is set; its
+  prompt no longer suggests `fallback` as an agent id.
+- **Desktop licence (ADR-0002).** `desktop/package.json` declares MIT like the rest of the
+  repository.
+
 ### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
 
 - Anthropic bills cache writes by TTL: 1.25× the input rate for 5 minutes, 2× for 1 hour. The

@@ -170,6 +170,14 @@ export interface KnowledgeGraph {
   listSessions(filter?: SessionFilter): Promise<SessionSummary[]>;
   /** Graph-walk helper: returns every direct neighbour of a node. */
   getNeighbors(nodeId: string): Promise<GraphNode[]>;
+  /**
+   * The direct neighbours of type `type` of several nodes at once, keyed by
+   * the requested node id (every id present; `[]` for none or an unknown id).
+   * One round-trip instead of a {@link getNeighbors} per node. Optional:
+   * callers go through {@link neighborsOfType}, which falls back to
+   * {@link getNeighbors} per node for a provider without it.
+   */
+  getNeighborsOfType?(nodeIds: readonly string[], type: GraphNodeType): Promise<Map<string, GraphNode[]>>;
   /** Coarse counts for the UI header / sanity checks. */
   stats(): Promise<GraphStats>;
   /**
@@ -2411,6 +2419,24 @@ export interface EntityCapturedTurnsHit {
 // / `sessionNodeId` derive node ids FROM the scope, so an unqualified scope at
 // any write/read site silently breaks recall (no error, just misses).
 // ---------------------------------------------------------------------------
+
+/**
+ * The neighbours of type `type` of several nodes, keyed by node id: one
+ * {@link KnowledgeGraph.getNeighborsOfType} call where the provider has it,
+ * otherwise one {@link KnowledgeGraph.getNeighbors} per node.
+ */
+export async function neighborsOfType(
+  graph: Pick<KnowledgeGraph, 'getNeighbors' | 'getNeighborsOfType'>,
+  nodeIds: readonly string[],
+  type: GraphNodeType,
+): Promise<Map<string, GraphNode[]>> {
+  if (graph.getNeighborsOfType) return graph.getNeighborsOfType(nodeIds, type);
+  const out = new Map<string, GraphNode[]>();
+  for (const id of new Set(nodeIds)) {
+    out.set(id, (await graph.getNeighbors(id)).filter((n) => n.type === type));
+  }
+  return out;
+}
 
 /** Separator between the agent slug and the conversation scope. */
 export const AGENT_SCOPE_SEP = '::';

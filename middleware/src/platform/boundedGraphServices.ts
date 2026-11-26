@@ -9,7 +9,8 @@
  *
  *  - `knowledgeGraph@1`: every method of the contract is classified
  *    ({@link KG_METHOD_ACCESS}; the compiler makes a new method pick one).
- *    Writes of the plugin's own entities and master-data reads pass; turn,
+ *    Entity and fact writes stay in the plugin's declared entity systems
+ *    (ADR-0167); master-data reads and stats pass; turn,
  *    session, neighbour and plan reads go through the turn's boundary and are
  *    refused outside a turn; cross-user methods are kernel-only.
  *  - `processMemory@1`: reads see what the process tools see
@@ -17,6 +18,8 @@
  *  - `memoryStore@1`: the private trees (agents, contexts, transcripts, web
  *    chat copies) are never reachable; shared trees (`core`, `_*`, a plugin's
  *    own top-level tree such as `pairings`) are, in and outside a turn.
+ *  - `topicClustering@1`: kernel-only. Its reads take the viewer as an
+ *    argument and its re-cluster rebuilds every account's topics.
  *
  * Outside a turn there is no boundary, and the bounded form does not invent
  * one. Kernel code that must read the tenant's graph outside a turn (recall,
@@ -31,11 +34,16 @@ import { posix } from 'node:path';
 
 import {
   GraphServiceRefusedError,
+  KgEntityNamespaceError,
   MemoryPathError,
   agentScopePrefix,
+  neighborsOfType,
   scopeBelongsToAgent,
   type EditProcessInput,
+  type ChannelKind,
   type EditProcessResult,
+  type EntityIngest,
+  type FactIngest,
   type GraphNode,
   type KnowledgeGraph,
   type MemoryEntry,
@@ -44,7 +52,9 @@ import {
   type ProcessQueryHit,
   type ProcessRecord,
   type QueryProcessesInput,
+  type TopicClusteringService,
   type TurnSearchHit,
+  TOPIC_CLUSTERING_SERVICE_NAME,
 } from '@omadia/plugin-api';
 import {
   currentGraphNodeViewer,
@@ -89,6 +99,9 @@ export const BOUNDED_GRAPH_SERVICE_NAMES: ReadonlySet<string> = new Set([
   'knowledgeGraph',
   'processMemory',
   'memoryStore',
+  // Topics are content of every member's memory (ADR-0045): `list` takes any
+  // viewer id and `recluster` rebuilds every account's topics. Kernel-only.
+  TOPIC_CLUSTERING_SERVICE_NAME,
 ]);
 
 /** Whether this plugin resolves the raw graph services. */
@@ -100,12 +113,21 @@ export function holdsRawGraphServices(agentId: string, catalog: PluginCatalog): 
  * The form of `service` (registered under `name`) that `pluginId` gets.
  * Names without a bounded form come back unchanged. One wrapper per
  * (plugin, service object), so repeated lookups return the same object.
+ * `entitySystems` is the plugin's `permissions.graph.entity_systems`
+ * (ADR-0167: what its `knowledgeGraph@1` entity and fact writes may name).
  */
-export function boundGraphService<T>(name: string, service: T, pluginId: string): T {
+export function boundGraphService<T>(
+  name: string,
+  service: T,
+  pluginId: string,
+  entitySystems: readonly string[] = [],
+): T {
   if (!BOUNDED_GRAPH_SERVICE_NAMES.has(name) || typeof service !== 'object' || service === null) {
     return service;
   }
-  const key = `${pluginId}\u0000${name}`;
+  // The entity systems are part of the key: a plugin updated in place with
+  // other `entity_systems` must not keep the wrapper of its old manifest.
+  const key = `${pluginId}\u0000${name}\u0000${[...entitySystems].sort().join(',')}`;
   let perService = wrapperCache.get(service);
   if (!perService) {
     perService = new Map();
@@ -115,15 +137,144 @@ export function boundGraphService<T>(name: string, service: T, pluginId: string)
   if (cached !== undefined) return cached as T;
   const wrapped =
     name === 'knowledgeGraph'
-      ? boundKnowledgeGraph(service as unknown as KnowledgeGraph, pluginId)
+      ? boundKnowledgeGraph(service as unknown as KnowledgeGraph, pluginId, entitySystems)
       : name === 'processMemory'
         ? boundProcessMemory(service as unknown as ProcessMemoryService, pluginId)
-        : boundMemoryStore(service as unknown as MemoryStore, pluginId);
+        : name === TOPIC_CLUSTERING_SERVICE_NAME
+          ? boundTopicClustering(pluginId)
+          : boundMemoryStore(service as unknown as MemoryStore, pluginId);
   perService.set(key, wrapped);
   return wrapped as T;
 }
 
 const wrapperCache = new WeakMap<object, Map<string, unknown>>();
+
+// ---------------------------------------------------------------------------
+// Entity writes: the plugin's own entity systems (ADR-0167)
+// ---------------------------------------------------------------------------
+
+/** The system of an entity external id (`<system>:<model>:<id>`). */
+function systemOfEntityId(externalId: string): string {
+  const colon = externalId.indexOf(':');
+  return colon < 0 ? externalId : externalId.slice(0, colon);
+}
+
+/** The node-id namespace of a fact (`factNodeId`). */
+const FACT_ID_PREFIX = 'fact:';
+
+/**
+ * Channel identities are `<channelKind>:<channelUserId>` (`channelIdentityNodeId`),
+ * and a channel user id can itself hold a colon (Teams `29:…`). Keyed by
+ * `ChannelKind`, so a new channel kind must be added here to compile.
+ */
+const CHANNEL_KIND_NAMESPACES: { readonly [K in ChannelKind]: true } = {
+  teams: true,
+  telegram: true,
+  slack: true,
+  discord: true,
+  whatsapp: true,
+  imessage: true,
+  email: true,
+  web: true,
+  api: true,
+};
+
+/**
+ * The node-id namespaces the kernel writes itself (the `*NodeId` helpers in
+ * plugin-api, process ids, the `dataset` entity system). Never an entity
+ * system of a plugin: the providers upsert by id whatever the node type.
+ */
+const KERNEL_NODE_NAMESPACES: ReadonlySet<string> = new Set([
+  'session',
+  'turn',
+  'plan',
+  'planstep',
+  'user',
+  'mk',
+  'excerpt',
+  'inconsistency',
+  'merge',
+  'excerpt-merge',
+  'topic',
+  'run',
+  'agent',
+  'tool',
+  'fact',
+  'process',
+  'dataset',
+  ...Object.keys(CHANNEL_KIND_NAMESPACES),
+]);
+
+/**
+ * ADR-0167 — the check on a plugin's entity and fact writes: an entity's
+ * `system`, and the system prefix of every id a fact mentions, must be one
+ * of the plugin's declared `permissions.graph.entity_systems`. A fact's own
+ * id must be a fact id (`fact:…`): the providers upsert the node by that id
+ * whatever its type, so `odoo:res.partner:42` would write into the partner.
+ * Throws `KgEntityNamespaceError` naming the first system outside them.
+ */
+export function entityWriteGuard(pluginId: string, entitySystems: readonly string[] | 'undeclared') {
+  const allowed = entitySystems === 'undeclared' ? undefined : new Set(entitySystems);
+  const assertSystem = (system: string): void => {
+    // The kernel's own node namespaces are never an entity system: the
+    // providers upsert by id whatever the node type, so `turn` + model/id
+    // would merge `extras` into another user's turn.
+    // A colon in the system would let the node id start with another
+    // namespace (`turn:atlas:` + model + id), so a system is one segment.
+    if (system.includes(':') || KERNEL_NODE_NAMESPACES.has(system)) {
+      throw new KgEntityNamespaceError(pluginId, system);
+    }
+    // ADR-0167 transition: an undeclared writer is held to the kernel check only.
+    if (allowed !== undefined && !allowed.has(system)) throw new KgEntityNamespaceError(pluginId, system);
+  };
+  return {
+    entities(entities: readonly EntityIngest[]): void {
+      for (const entity of entities) assertSystem(entity.system);
+    },
+    facts(facts: readonly FactIngest[]): void {
+      for (const fact of facts) {
+        if (typeof fact.factId !== 'string' || !fact.factId.startsWith(FACT_ID_PREFIX)) {
+          throw new KgEntityNamespaceError(pluginId, systemOfEntityId(String(fact.factId)));
+        }
+        if (allowed === undefined) continue;
+        for (const id of fact.mentionedEntityIds ?? []) assertSystem(systemOfEntityId(id));
+      }
+    },
+  };
+}
+
+/** Plugins already warned about undeclared entity writes (once per process). */
+const undeclaredEntityWriters = new Set<string>();
+
+/**
+ * The bounded `ingestEntities` / `ingestFacts`. A plugin that declares
+ * `entity_systems` writes only there. One that declares none still writes
+ * (ADR-0167: the shipped Odoo and Confluence syncs declare none yet), with a
+ * warning once per plugin, until the strict rule replaces the transition.
+ */
+function boundedEntityWrites(kg: KnowledgeGraph, pluginId: string, entitySystems: readonly string[]) {
+  const declared = entitySystems.length > 0;
+  const guard = entityWriteGuard(pluginId, declared ? entitySystems : 'undeclared');
+  const warnUndeclared = (method: string): void => {
+    if (undeclaredEntityWriters.has(pluginId)) return;
+    undeclaredEntityWriters.add(pluginId);
+    console.warn(
+      `[security-audit] plugin '${pluginId}' writes entities through knowledgeGraph@1.${method} without declaring permissions.graph.entity_systems — allowed during the ADR-0167 transition, refused once it ends`,
+    );
+  };
+  return {
+    async ingestEntities(entities: EntityIngest[]): ReturnType<KnowledgeGraph['ingestEntities']> {
+      guard.entities(entities);
+      if (!declared && entities.length > 0) warnUndeclared('ingestEntities');
+      return kg.ingestEntities(entities);
+    },
+    async ingestFacts(facts: FactIngest[]): ReturnType<KnowledgeGraph['ingestFacts']> {
+      guard.facts(facts);
+      if (!declared && facts.length > 0) warnUndeclared('ingestFacts');
+      return kg.ingestFacts(facts);
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // The turn's boundary
@@ -183,7 +334,13 @@ export function boundTurnSearch<
 
 type TurnReadGraph = Pick<
   KnowledgeGraph,
-  'searchTurns' | 'findEntityCapturedTurns' | 'searchTurnsByEmbedding' | 'getNeighbors' | 'getSession' | 'findEntities'
+  | 'searchTurns'
+  | 'findEntityCapturedTurns'
+  | 'searchTurnsByEmbedding'
+  | 'getNeighbors'
+  | 'getNeighborsOfType'
+  | 'getSession'
+  | 'findEntities'
 >;
 
 /**
@@ -248,11 +405,18 @@ export function boundedTurnReads(kg: () => TurnReadGraph, pluginId: string, capa
       const hits = await graph.findEntities(opts);
       const bound = currentBoundary();
       if (!bound || bound.kind === 'user') return hits;
+      if (hits.length === 0) return hits;
       const viewer = currentGraphNodeViewer();
       const visible = viewer ? graphNodeFilter(graph, viewer) : async () => false;
+      // One neighbour query for every hit; the filter reads each session once.
+      const capturing = await neighborsOfType(
+        graph,
+        hits.map((entity) => entity.id),
+        'Turn',
+      );
       const keep = await Promise.all(
         hits.map(async (entity) => {
-          const turns = (await graph.getNeighbors(entity.id)).filter((n) => n.type === 'Turn');
+          const turns = capturing.get(entity.id) ?? [];
           if (turns.length === 0) return true;
           for (const t of turns) if (await visible(t)) return true;
           return false;
@@ -287,21 +451,25 @@ export function boundedTurnReads(kg: () => TurnReadGraph, pluginId: string, capa
 
 /**
  * How the bounded form treats a method:
- *  - `pass`: the plugin's own entity writes, graph stats.
+ *  - `entity-write`: entity and fact writes, held to the plugin's declared
+ *    entity systems ({@link boundedEntityWrites}, ADR-0167).
+ *  - `pass`: graph stats.
  *  - `entities`: master data; in a context-bound turn only what the boundary
  *    reaches ({@link boundedTurnReads}' `findEntities`).
  *  - `turn-read`: held to the turn's boundary ({@link boundedTurnReads}).
  *  - `plan`: plan reads and writes, inside a turn and its own conversation.
  *  - `own-plans`: plans of the turn's own conversation, in `off` / `enforce`.
  *  - `kernel-only`: across users or agents; refused.
+ *  - `absent`: an optional kernel helper left off the bounded object, so
+ *    `neighborsOfType` falls back to the bounded `getNeighbors`.
  */
-type KgMethodAccess = 'pass' | 'entities' | 'turn-read' | 'plan' | 'own-plans' | 'kernel-only';
+type KgMethodAccess = 'absent' | 'entity-write' | 'pass' | 'entities' | 'turn-read' | 'plan' | 'own-plans' | 'kernel-only';
 
 /** Every method of the contract, classified. A new method must pick one. */
 export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]: KgMethodAccess } =
   Object.freeze({
-    ingestEntities: 'pass',
-    ingestFacts: 'pass',
+    ingestEntities: 'entity-write',
+    ingestFacts: 'entity-write',
     findEntities: 'entities',
     stats: 'pass',
 
@@ -309,6 +477,10 @@ export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]:
     findEntityCapturedTurns: 'turn-read',
     searchTurnsByEmbedding: 'turn-read',
     getNeighbors: 'turn-read',
+    // The batched read the bounded `findEntities` uses. Not on the bounded
+    // object: a plugin walks with `getNeighbors`, which the node filter
+    // bounds, and `neighborsOfType` falls back to it.
+    getNeighborsOfType: 'absent',
     getSession: 'turn-read',
 
     ingestPlan: 'plan',
@@ -393,9 +565,14 @@ type AnyMethod = (...args: unknown[]) => unknown;
  * only: a method the provider has beyond the contract is not reachable, and
  * an optional one the provider lacks stays absent.
  */
-export function boundKnowledgeGraph(kg: KnowledgeGraph, pluginId: string): KnowledgeGraph {
+export function boundKnowledgeGraph(
+  kg: KnowledgeGraph,
+  pluginId: string,
+  entitySystems: readonly string[] = [],
+): KnowledgeGraph {
   const capability = 'knowledgeGraph';
   const reads = boundedTurnReads(() => kg, pluginId, capability);
+  const writes = boundedEntityWrites(kg, pluginId, entitySystems);
   const plans = boundedPlans(kg, pluginId, reads.requireBoundary);
   const target = kg as unknown as Record<string, unknown>;
   const out: Record<string, AnyMethod> = {};
@@ -404,8 +581,13 @@ export function boundKnowledgeGraph(kg: KnowledgeGraph, pluginId: string): Knowl
     if (typeof fn !== 'function') continue;
     const call = (fn as AnyMethod).bind(kg);
     switch (access) {
+      case 'absent':
+        break;
       case 'pass':
         out[method] = call;
+        break;
+      case 'entity-write':
+        out[method] = (writes as unknown as Record<string, AnyMethod>)[method]!;
         break;
       case 'entities':
       case 'turn-read':
@@ -665,4 +847,29 @@ export function boundMemoryStore(store: MemoryStore, pluginId: string): MemorySt
     delete: async (p: string) => store.delete(check(p, 'write')),
     rename: async (from: string, to: string) => store.rename(check(from, 'write'), check(to, 'write')),
   } satisfies MemoryStore);
+}
+
+// ---------------------------------------------------------------------------
+// topicClustering@1
+// ---------------------------------------------------------------------------
+
+/** Every method of the contract; a new one must be added here to exist. */
+const TOPIC_CLUSTERING_METHODS: ReadonlyArray<keyof TopicClusteringService> = [
+  'list',
+  'getWithMembers',
+  'recluster',
+];
+
+/**
+ * The bounded `topicClustering@1`: every method is kernel-only. `list` and
+ * `getWithMembers` take the viewer as an argument, so a plugin could name
+ * any account; `recluster` deletes and rebuilds every account's topics.
+ * The admin topic routes call the raw service.
+ */
+export function boundTopicClustering(pluginId: string): TopicClusteringService {
+  const refuse = (method: string) => (): Promise<never> =>
+    Promise.reject(new GraphServiceRefusedError(pluginId, TOPIC_CLUSTERING_SERVICE_NAME, method, 'kernel-only'));
+  return Object.freeze(
+    Object.fromEntries(TOPIC_CLUSTERING_METHODS.map((m) => [m, refuse(m)])),
+  ) as unknown as TopicClusteringService;
 }

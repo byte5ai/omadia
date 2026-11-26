@@ -285,7 +285,7 @@ describe('agent-reference / KnowledgeGraphAccessor (OB-29-2)', () => {
     );
   });
 
-  it('ingestFacts passes through (no namespace check on facts in v1)', async () => {
+  it('ingestFacts passes facts that mention only the whitelisted systems (ADR-0167)', async () => {
     const calls: FakeKgCalls = { ingestEntities: [], ingestFacts: 0 };
     registry.provide('knowledgeGraph', makeFakeKg(calls));
     const catalog = makeFakeCatalog([
@@ -303,7 +303,7 @@ describe('agent-reference / KnowledgeGraphAccessor (OB-29-2)', () => {
     });
     await ctx.knowledgeGraph!.ingestFacts([
       {
-        factId: 'fact1',
+        factId: 'fact:turn1:subject:mentions:object',
         sourceTurnId: 'turn1',
         subject: 'subject',
         predicate: 'mentions',
@@ -312,6 +312,36 @@ describe('agent-reference / KnowledgeGraphAccessor (OB-29-2)', () => {
       },
     ]);
     assert.equal(calls.ingestFacts, 1);
+  });
+
+  it('ingestFacts throws KgEntityNamespaceError for a fact mentioning another system (ADR-0167)', async () => {
+    const calls: FakeKgCalls = { ingestEntities: [], ingestFacts: 0 };
+    registry.provide('knowledgeGraph', makeFakeKg(calls));
+    const catalog = makeFakeCatalog([makePlugin('caller', ['personal-notes'])]);
+    const ctx = createPluginContext({
+      agentId: 'caller',
+      vault: stubVault,
+      registry: stubInstalledRegistry,
+      catalog,
+      serviceRegistry: registry,
+      nativeToolRegistry: stubNativeToolRegistry,
+      routeRegistry: stubRouteRegistry,
+      jobScheduler: stubJobScheduler,
+    } as Parameters<typeof createPluginContext>[0]);
+    await assert.rejects(
+      ctx.knowledgeGraph!.ingestFacts([
+        {
+          factId: 'fact:turn1:subject:mentions:other',
+          sourceTurnId: 'turn1',
+          subject: 'subject',
+          predicate: 'mentions',
+          object: 'object',
+          mentionedEntityIds: ['personal-notes:Person:john', 'odoo:res.partner:42'],
+        },
+      ]),
+      KgEntityNamespaceError,
+    );
+    assert.equal(calls.ingestFacts, 0);
   });
 
   it('entitySystems exposes the manifest declaration', () => {

@@ -281,6 +281,9 @@ export async function wireConductor(deps: {
   /** #1018 — the peer gate a `say` step re-checks on every utterance. Omit
    *  on hosts without the policy store; the pre-W1 behaviour then applies. */
   peerGate?: ConductorSayDeps['peerGate'];
+  /** ADR-0018 — mutual consultation grants, checked on every discussion
+   *  start path and per discussion utterance. */
+  mutualGrant?: ConductorSayDeps['mutualGrant'];
   /** Per-agent-scoped secret vault (issue #437) — inbound endpoint secrets and outbound
    *  subscription signing secrets live here under the `core:conductor` namespace, never
    *  in a Postgres column or an API response body beyond their one-time creation reply. */
@@ -495,6 +498,7 @@ export async function wireConductor(deps: {
               providers: deps.conversationSendProviders,
               identityFor: agentChannelIdentity,
               ...(deps.peerGate ? { peerGate: deps.peerGate } : {}),
+              ...(deps.mutualGrant ? { mutualGrant: deps.mutualGrant } : {}),
               log,
             }),
           }
@@ -613,6 +617,8 @@ export async function wireConductor(deps: {
     // discussion passes the gate and then goes half-silent.
     identityFor: agentChannelIdentity,
     ...(deps.conversationReservations ? { reservations: deps.conversationReservations } : {}),
+    ...(deps.peerGate ? { peerGate: deps.peerGate } : {}),
+    ...(deps.mutualGrant ? { mutualGrant: deps.mutualGrant } : {}),
     log,
   });
   const ephemeralReaper = new ConductorEphemeralReaper({

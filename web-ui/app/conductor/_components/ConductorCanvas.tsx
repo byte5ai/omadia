@@ -704,6 +704,7 @@ function CanvasInner({
         {/* Canvas */}
         <div className="h-[480px] rounded-lg border border-[color:var(--border)]">
           <ReactFlow
+            className="conductor-canvas"
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}

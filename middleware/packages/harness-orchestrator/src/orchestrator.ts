@@ -4254,12 +4254,18 @@ export class Orchestrator {
    * `memory` entry, which is bound to the raw root store. Like in-process, a
    * binder that throws for the turn's origin yields the agent-private stack
    * (`bindTurnMemory`'s fallback), not a refusal.
+   *
+   * ADR-0044 — the binding runs before the early returns: it also publishes
+   * the turn's graph read boundary, which the loopback tool calls (process
+   * tools, a plugin's bounded graph services) read. An agent without a memory
+   * tool still gets its boundary, as an in-process turn does, and reads
+   * through it instead of reading nothing.
    */
   public async bindCliTurnMemory(input: ChatTurnInput): Promise<CliTurnMemory | undefined> {
+    const turnMemory = await this.bindTurnMemoryForTurn(input);
     if (this.omitsMemory) return undefined;
     const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
     if (!this.isToolAvailable(memoryAgentId)) return undefined;
-    const turnMemory = await this.bindTurnMemoryForTurn(input);
     if (turnMemory.handler === undefined) return undefined;
     // The tier block the in-process prompt adds for a context-bound turn.
     const tierBlock = turnMemory.memoryPrompt
