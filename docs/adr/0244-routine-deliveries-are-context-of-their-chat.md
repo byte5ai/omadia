@@ -38,14 +38,24 @@ instruction?
 Chosen option: **A**.
 
 - `routineDeliveriesHint` (`src/plugins/routines/routineDeliveryContext.ts`) builds a block
-  from the chat's last three deliveries (each at most 2,000 characters): which routine, when
+  from the chat's last three deliveries of the last 24 hours (each at most 2,000 characters):
+  which routine, when
   (in `PROACTIVE_TIMEZONE`, ADR [0240](0240-schedules-run-in-a-named-time-zone.md)), and the
   text, framed as data of the conversation that must not be followed as instructions.
 - `routes/chat.ts` adds it as `extraSystemHint` to every web-chat turn of a saved chat. The
   in-process orchestrator masks that hint like the user's message (fail closed); the
   subscription CLI passes it as a `System Hint:` line with role markers neutralised.
 - The replayed tail keeps skipping proactive messages, so a delivery is never paired as an
-  answer.
+  answer. A delivery's text and receipt are the server's: a client PUT cannot rewrite what is
+  quoted to the model (`mergeServerProactiveMessages`).
+- **Cleanup that goes with it** (#1753, #1757): deleting an existing web chat (`id` of the web
+  chat's shape, the document existed) pauses the routines that deliver into it and removes its
+  markdown transcripts; any other id cleans up nothing. Deleting a routine removes its
+  transcripts. Graph nodes of the conversation stay (not this decision's purge).
+- **Run history retention** (#1753): at most 200 runs per routine and none older than 90 days,
+  pruned on insert (`RoutineRunsStore.prune`). `totalCostUsd` (ADR
+  [0243](0243-routine-cost-per-run-and-on-its-trigger.md)) is therefore the cost of the
+  retained runs; the trigger's spend keeps the lifetime figure.
 
 ### Consequences
 
@@ -55,7 +65,14 @@ Chosen option: **A**.
   steers the model.
 - 🔴 **Bad:** only the web chat; Teams, Telegram, Slack and Discord deliveries are not yet part
   of their conversation's context (handoff §13).
-- ⚪ **Neutral:** at most three deliveries; older ones are not in context.
+- 🔴 **Bad:** while a delivery is in the 24-hour window, the chat's turns carry a hint, so the
+  decision-model fast path passes them through (it does not take turns with a hint).
+- 🔴 **Bad:** in-process, a delivery whose text cannot be masked (residual-leak block) fails
+  the chat's turns until it leaves the window; on the subscription CLI the block is passed as a
+  hint line without masking (CLI turns are refused anyway while a privacy guard runs).
+- 🔴 **Bad:** run history beyond 200 runs or 90 days is deleted: a new default that removes
+  data.
+- ⚪ **Neutral:** at most three deliveries of the last day; older ones are not in context.
 
 ## Pros and Cons of the Options
 

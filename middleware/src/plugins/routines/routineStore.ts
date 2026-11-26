@@ -490,8 +490,10 @@ export class RoutineStore {
   }
 
   /**
-   * #1765 — every routine a user owns, in every tenant: their account is
-   * being deleted. Web and API routines are owned by the omadia user id.
+   * #1765 — every routine an owner id holds, in every tenant: their account
+   * is being deleted. The caller resolves the account to its owner ids
+   * (`accountRoutineOwner.ts`): web routines are owned by the session's
+   * `omadia_user_id`, not by `users.id`.
    */
   async listIdsForUserId(userId: string): Promise<string[]> {
     const result = await this.pool.query<{ id: string }>('SELECT id FROM routines WHERE user_id = $1', [userId]);

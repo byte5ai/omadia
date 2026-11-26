@@ -8,6 +8,7 @@ import {
   ServerMirroredSessionError,
   chatSessionOwnedBy,
   isValidSessionId,
+  isWebChatSessionId,
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from '@omadia/orchestrator';
@@ -383,10 +384,12 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // #1753 / #1757 — only a saved web chat takes its transcripts and
+      // routines with it: an unsaved id, or one of another scope (a routine,
+      // a Teams conversation, a shared bucket), may name someone else's.
+      const existed = exists && isWebChatSessionId(id);
       await store.delete(id);
-      // Nothing of a chat that was never saved: its id may name another
-      // account's transcripts or routines.
-      if (!exists) {
+      if (!existed) {
         res.json({ ok: true, routinesPaused: 0 });
         return;
       }

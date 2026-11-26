@@ -70,7 +70,8 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
   // #1749 — a run that just ended shows up without pressing "Refresh".
   const lastRunAt = routine.lastRunAt;
   useEffect(() => {
-    if (!expanded || runs === null) return;
+    // Only the first page: pages the operator loaded on top are kept.
+    if (!expanded || runs === null || runs.length > HISTORY_LIMIT) return;
     const timer = window.setTimeout(() => void loadRuns(), 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

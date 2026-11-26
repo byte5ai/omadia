@@ -16,17 +16,29 @@ import { formatInTimeZone, UTC_ZONE } from '../../scheduler/zonedCron.js';
 /** How many recent deliveries the next turn sees, and how much of each. */
 export const MAX_DELIVERIES_IN_CONTEXT = 3;
 export const MAX_DELIVERY_CHARS = 2_000;
+/**
+ * ADR 0244 — only deliveries of the last day: older reports are not context
+ * of today's turn, and a chat that once got a delivery would otherwise carry
+ * the block (and lose the fast path, which passes turns with a hint) for good.
+ */
+export const DELIVERY_CONTEXT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The per-turn hint naming the chat's latest routine deliveries (at most
- * {@link MAX_DELIVERIES_IN_CONTEXT}, wherever they sit in the chat: the user
- * may refer back to any recent report), or undefined when it has none.
+ * {@link MAX_DELIVERIES_IN_CONTEXT} of the last day, wherever they sit in the
+ * chat: the user may refer back to any recent report), or undefined.
  */
 export function routineDeliveriesHint(
   messages: readonly ChatMessage[],
   timeZone: string = UTC_ZONE,
+  now: number = Date.now(),
 ): string | undefined {
-  const deliveries = messages.filter((m) => m.proactive !== undefined && m.content.trim() !== '');
+  const deliveries = messages.filter(
+    (m) =>
+      m.proactive !== undefined &&
+      m.content.trim() !== '' &&
+      now - m.proactive.deliveredAt <= DELIVERY_CONTEXT_WINDOW_MS,
+  );
   if (deliveries.length === 0) return undefined;
   const recent = deliveries.slice(-MAX_DELIVERIES_IN_CONTEXT);
   const lines = recent.map((m) => {

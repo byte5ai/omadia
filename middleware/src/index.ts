@@ -674,6 +674,7 @@ import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnSc
 import { agentEndedText, resolveRoutineAgent } from './plugins/routines/routineAgentBinding.js';
 import { WEB_CHAT_DELETED_PAUSE } from './plugins/routines/webChatProactiveSender.js';
 import { purgeSessionTranscripts } from './plugins/routines/sessionTranscripts.js';
+import { routineOwnerIdsForAccount } from './plugins/routines/accountRoutineOwner.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
@@ -6432,10 +6433,25 @@ async function main(): Promise<void> {
         userStore,
         audit: adminAudit,
         // #1765 — a deleted account takes its routines with it.
+        // The account resolves to the person's routine owner ids (their
+        // `omadia_user_id` cluster, when this is their only web login).
         routines: () => {
           const runner = routinesHandle?.runner;
+          const ownerIds = (id: string): Promise<string[]> =>
+            graphPool ? routineOwnerIdsForAccount(graphPool, graphTenantId, id) : Promise.resolve([id]);
           return runner
-            ? { countForUser: (id) => runner.countRoutinesOfUser(id), deleteForUser: (id) => runner.deleteRoutinesOfUser(id) }
+            ? {
+                countForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.countRoutinesOfUser(owner);
+                  return n;
+                },
+                deleteForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.deleteRoutinesOfUser(owner);
+                  return n;
+                },
+              }
             : undefined;
         },
         sessions: sessionRevocation,

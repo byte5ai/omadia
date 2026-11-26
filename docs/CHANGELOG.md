@@ -46,11 +46,14 @@ changelog.
   Shield receipt is stored on the delivery (`ChatMessage.privacyReceipt`, server-written
   only; a client PUT cannot add or change it) and shown like a chat turn's. The routine badge
   names the delivery time, and a visible chat re-reads its deliveries every minute. The
-  deliveries block is framed as data and names times in `PROACTIVE_TIMEZONE` (ADR 0244).
+  deliveries block covers the last 24 hours, is framed as data, names times in
+  `PROACTIVE_TIMEZONE`, and a client PUT cannot rewrite a delivery's text (ADR 0244).
 - **Cleanup** (#1753, #1757, #1765): deleting a user account deletes their routines (audited
   as `routines_deleted`, the admin confirmation names the count, `routine_count` on `GET
-  /api/v1/admin/users/:id`). Closing a chat tab asks first and names the routines that deliver
-  into it; deleting the chat pauses them with the reason and removes the chat's markdown
+  /api/v1/admin/users/:id`). The account resolves to its person's `omadia_user_id` through its
+  `web:<users.id>` identity (`accountRoutineOwner.ts`); a person with another web login keeps
+  the routines. Closing a chat tab asks first and names the routines that deliver
+  into it; deleting an existing web chat pauses them with the reason and removes the chat's markdown
   transcripts (`/memories/sessions/<id>/`, `sessionTranscriptDir`); `GET
   /api/chat/sessions/:id/routines` lists them. Deleting a routine removes its transcripts.
   The run history keeps at most 200 runs per routine and none older than 90 days (pruned on

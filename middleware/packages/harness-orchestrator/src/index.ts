@@ -816,6 +816,7 @@ export {
   chatSessionOwner,
   ServerMirroredSessionError,
   isServerMirroredSession,
+  isWebChatSessionId,
   isValidSessionId,
 } from './chatSessionStore.js';
 export type {

@@ -206,6 +206,15 @@ const SERVER_MESSAGE_ID_PREFIX = 'srv-';
  * waiting for its first turn. Shared by the web client's hydration (same
  * rule, same two halves).
  */
+/**
+ * #1753 / #1757 — whether `id` has the shape the web chat mints (a UUID or
+ * its `id-<base36>-<base36>` fallback). Anything else is another channel's or
+ * the kernel's scope, never a web chat a user can delete.
+ */
+export function isWebChatSessionId(id: string): boolean {
+  return UUID_RE.test(id) || WEB_FALLBACK_ID_RE.test(id);
+}
+
 export function isServerMirroredSession(
   session: Pick<ChatSession, 'id' | 'messages'>,
 ): boolean {
