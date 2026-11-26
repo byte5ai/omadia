@@ -145,7 +145,14 @@ export async function initRoutines(
       if (!ctx) return undefined;
       // The CLI runtime has no orchestrator turn scope, only its dispatcher.
       const agentSlug = turnContext.currentAgentSlug() ?? currentDispatchCaller()?.agentSlug;
-      return agentSlug ? { ...ctx, agentSlug } : ctx;
+      // #1907 — the identity the turn's MCP calls act as (session or channel
+      // identity, never a client header), so the routine can act as its owner.
+      const mcpUserKey = turnContext.current()?.mcpUserKey;
+      return {
+        ...ctx,
+        ...(agentSlug ? { agentSlug } : {}),
+        ...(mcpUserKey ? { mcpUserKey } : {}),
+      };
     },
   });
 

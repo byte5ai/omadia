@@ -19,4 +19,14 @@ describe('channelApi/rateLimiter', () => {
     assert.equal(limiter.tryConsume('key-a', 1), false, 'key-a is over budget');
     assert.equal(limiter.tryConsume('key-b', 1), true, 'key-b has its own bucket');
   });
+
+  it('applies a changed capacity to the next call (#1935)', () => {
+    const limiter = createRateLimiter();
+    assert.equal(limiter.tryConsume('key-c', 1), true);
+    assert.equal(limiter.tryConsume('key-c', 1), false, 'old limit of 1 is used up');
+    assert.equal(limiter.tryConsume('key-c', 3), true, 'raised limit frees the difference');
+    assert.equal(limiter.tryConsume('key-c', 3), true);
+    assert.equal(limiter.tryConsume('key-c', 3), false, 'three calls used in this window');
+    assert.equal(limiter.tryConsume('key-c', 2), false, 'lowered limit refuses at once');
+  });
 });

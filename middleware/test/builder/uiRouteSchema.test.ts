@@ -12,6 +12,7 @@ import {
 
 import {
   parseAgentSpec,
+  uiRouteMissingArgs,
   validateSpecForCodegen,
 } from '../../src/plugins/builder/agentSpec.js';
 
@@ -286,6 +287,33 @@ describe('validateSpecForCodegen — ui_routes cross-checks', () => {
     const found = issues.find((i) => i.code === 'ui_route_data_binding_unknown_tool');
     assert.ok(found, 'expected ui_route_data_binding_unknown_tool issue');
     assert.equal(found?.routeId, 'inbox');
+  });
+
+  it('#1808: names the required input of a bound tool that data_binding.args does not set (no codegen gate)', () => {
+    const tools = [
+      {
+        id: 'get_current_weather',
+        description: 'weather',
+        input: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+      },
+    ];
+    const route = {
+      ...validRouteBase,
+      render_mode: 'library',
+      ui_template: 'kpi-tiles',
+      data_binding: { source: 'tool', tool_id: 'get_current_weather' },
+    };
+    const spec = buildSpec(route, { tools });
+    assert.deepEqual(uiRouteMissingArgs(spec), [
+      { routeId: 'inbox', toolId: 'get_current_weather', missing: ['city'] },
+    ]);
+    // Existing drafts keep building: not a codegen issue.
+    assert.ok(!validateSpecForCodegen(spec).some((i) => i.reason.includes('city')));
+    const withArgs = buildSpec(
+      { ...route, data_binding: { ...route.data_binding, args: { city: 'Berlin' } } },
+      { tools },
+    );
+    assert.deepEqual(uiRouteMissingArgs(withArgs), []);
   });
 
   it('flags library-mode without ui_template', () => {

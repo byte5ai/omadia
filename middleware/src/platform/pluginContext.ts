@@ -1508,6 +1508,8 @@ export function createPluginMcpAccessor(
           // plugin-attributed call resolve as an unknown caller: `unresolved` in
           // the audit trail, no token, and a `per_user` server failing closed.
           ...(current?.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
+          // ADR-0206 — an unattended run stays unattended in `ctx.mcp`.
+          ...(current?.mcpUnattended ? { mcpUnattended: true } : {}),
           mcpCallerKind: 'plugin',
           mcpCallerId: pluginId,
         },

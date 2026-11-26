@@ -101,6 +101,7 @@
     "system.vaultStatus.keySourceEnv": "code",
     "system.platformHealth.eyebrow": "code",
     "chat.decision.stats": "placeholder",
-    "agentAvailability.channelsPlaceholder": "placeholder"
+    "agentAvailability.channelsPlaceholder": "placeholder",
+    "adminMcp.servers.headers.namePlaceholder": "placeholder"
   }
 }

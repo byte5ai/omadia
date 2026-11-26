@@ -18,15 +18,18 @@ class TokenBucket {
   private count = 0;
   private windowStart = Date.now();
 
-  constructor(private readonly capacity: number) {}
-
-  tryConsume(): boolean {
+  /** `capacity` is read on every call, not pinned at creation: an operator
+   *  who changes a limit expects it to apply to the next call (#1935), and the
+   *  refusal message already quotes the current value. Units consumed in the
+   *  current window stay counted, so lowering a limit mid-window refuses at
+   *  once and raising it frees the difference. */
+  tryConsume(capacity: number): boolean {
     const now = Date.now();
     if (now - this.windowStart >= WINDOW_MS) {
       this.count = 0;
       this.windowStart = now;
     }
-    if (this.count >= this.capacity) return false;
+    if (this.count >= capacity) return false;
     this.count++;
     return true;
   }
@@ -44,14 +47,11 @@ export function createRateLimiter(): RateLimiter {
   return {
     tryConsume(keyId, capacityPerMinute) {
       let bucket = buckets.get(keyId);
-      // A key's configured limit can change between calls (revoke + recreate
-      // reuses a fresh id, so this is really "first sight of this id"); pin
-      // the bucket's capacity to what was configured when we first saw it.
       if (!bucket) {
-        bucket = new TokenBucket(capacityPerMinute);
+        bucket = new TokenBucket();
         buckets.set(keyId, bucket);
       }
-      return bucket.tryConsume();
+      return bucket.tryConsume(capacityPerMinute);
     },
   };
 }

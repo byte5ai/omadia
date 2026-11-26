@@ -42,6 +42,7 @@ function makeFakeHandle(opts: {
   draftId: string;
   rev: number;
   agentId?: string;
+  routeCaptures?: PreviewHandle['routeCaptures'];
 }): PreviewHandle {
   return {
     draftId: opts.draftId,
@@ -49,7 +50,7 @@ function makeFakeHandle(opts: {
     rev: opts.rev,
     previewDir: `/tmp/preview-${opts.draftId}`,
     toolkit: { tools: [] },
-    routeCaptures: [],
+    routeCaptures: opts.routeCaptures ?? [],
     close: async () => {},
   };
 }
@@ -185,6 +186,7 @@ async function startHarness(opts: {
     message: string;
   }>;
   codegenIssues?: ReadonlyArray<{ code: string; detail: string }>;
+  fakeHandle?: { agentId: string; routeCaptures: PreviewHandle['routeCaptures'] };
 }): Promise<RouteHarness> {
   const dbPath = path.join(
     opts.tmpDir,
@@ -201,6 +203,7 @@ async function startHarness(opts: {
     return makeFakeHandle({
       draftId: activateOpts.draftId,
       rev: activateOpts.rev,
+      ...(opts.fakeHandle ?? {}),
     });
   };
   const cache = new PreviewCache({
@@ -780,6 +783,68 @@ describe('builder preview routes', () => {
       );
       assert.equal(put.status, 204);
       assert.deepEqual(scheduled, ['alice@example.com/d-sched']);
+    });
+  });
+
+  describe('GET /preview/ui-route/:routeId (#1789)', () => {
+    it('finds the capture under the unscoped slug the generated plugin mounts', async () => {
+      const pageRouter = express.Router();
+      pageRouter.get('/status', (_req, res) => {
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.send('<html><body>weather dashboard</body></html>');
+      });
+      harness = await startHarness({
+        tmpDir: tmp,
+        fakeHandle: {
+          agentId: '@omadia/agent-weather',
+          routeCaptures: [{ prefix: '/p/agent-weather', router: pageRouter, disposed: false }],
+        },
+      });
+      harness.setSession('alice@example.com');
+      const draft = await harness.store.create('alice@example.com', 'Weather');
+      await harness.store.update('alice@example.com', draft.id, {
+        spec: { ...draft.spec, ui_routes: [{ id: 'dashboard', path: '/status' }] } as never,
+      });
+      const refresh = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/refresh`,
+        { method: 'POST' },
+      );
+      assert.equal(refresh.status, 200);
+      const res = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/ui-route/dashboard`,
+      );
+      const text = await res.text();
+      assert.notEqual(res.status, 502, text);
+      assert.match(text, /weather dashboard/);
+    });
+  });
+
+  describe('DELETE /drafts/:id drops the test credentials (#1790)', () => {
+    it('soft delete purges the buffer; permanent delete needs a deleted draft', async () => {
+      harness = await startHarness({ tmpDir: tmp });
+      harness.setSession('alice@example.com');
+      const draft = await harness.store.create('alice@example.com', 'Creds');
+      await harness.buffer.merge('alice@example.com', draft.id, { API_KEY: 'k1' });
+
+      const early = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/permanent`,
+        { method: 'DELETE' },
+      );
+      assert.equal(early.status, 404, 'an active draft is not deleted permanently');
+
+      const del = await fetch(`${harness.baseUrl}/api/v1/builder/drafts/${draft.id}`, {
+        method: 'DELETE',
+      });
+      assert.equal(del.status, 204);
+      assert.equal(harness.buffer.has('alice@example.com', draft.id), false);
+
+      const purge = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/permanent`,
+        { method: 'DELETE' },
+      );
+      assert.equal(purge.status, 204);
+      const deleted = await harness.store.list('alice@example.com', { scope: 'deleted' });
+      assert.equal(deleted.length, 0);
     });
   });
 

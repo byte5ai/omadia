@@ -17,6 +17,7 @@ import {
 import type { ExtensionTemplate } from '@omadia/plugin-api';
 import type { Plugin } from '../../src/api/admin-v1.js';
 import { baseSpec } from './_fixtures.js';
+import { bumpPatchVersion } from '../../src/plugins/builder/cloneFromInstalled.js';
 
 const PLUGIN_ID = 'de.byte5.agent.dynamics';
 const USER = 'op@byte5.de';
@@ -105,6 +106,33 @@ describe('materializeApprovedProposal', () => {
     );
     assert.equal(res.ok, false);
     assert.equal(gate.get(proposalId)?.status, 'install_failed');
+  });
+
+  it('#1786: installs the next patch version, not the installed one', async () => {
+    const { gate, proposalId } = approvedGate();
+    let seenVersion: string | undefined;
+    const pipeline = {
+      run: async (opts: { userEmail: string; draftId: string }): Promise<PipelineRunResult> => {
+        const d = await store.load(opts.userEmail, opts.draftId);
+        seenVersion = d?.spec.version;
+        return (fakePipeline(true) as unknown as { run: () => Promise<PipelineRunResult> }).run();
+      },
+    } as unknown as BuildPipeline;
+    await materializeApprovedProposal(
+      { proposalId, userEmail: USER },
+      { gate, draftStore: store, buildPipeline: pipeline, packageUploadService: fakeUploadService() },
+    );
+    assert.equal(seenVersion, bumpPatchVersion(baseSpec().version));
+  });
+
+  it('#1786: a failed install leaves no orphaned draft', async () => {
+    const { gate, proposalId } = approvedGate();
+    await materializeApprovedProposal(
+      { proposalId, userEmail: USER },
+      { gate, draftStore: store, buildPipeline: fakePipeline(false), packageUploadService: fakeUploadService() },
+    );
+    const drafts = await store.list(USER);
+    assert.equal(drafts.length, 0);
   });
 
   it('materialises a template proposal: persists the extension + reactivates', async () => {

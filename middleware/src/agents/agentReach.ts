@@ -110,8 +110,15 @@ export function declaredSideEffects(manifest: unknown): SideEffect[] {
 export function discoveredMcpTools(discovered: readonly unknown[]): ReachMcpTool[] {
   return discovered.flatMap((tool) => {
     if (!isRecord(tool) || typeof tool['name'] !== 'string') return [];
+    // `McpManager.listTools` persists the hint flat (`readOnlyHint: true`);
+    // the raw `annotations` form is read too for rows written elsewhere.
     const annotations = tool['annotations'];
-    const hint = isRecord(annotations) ? annotations['readOnlyHint'] : undefined;
+    const hint =
+      tool['readOnlyHint'] === true
+        ? true
+        : isRecord(annotations)
+          ? annotations['readOnlyHint']
+          : undefined;
     return [{ name: tool['name'], readOnly: typeof hint === 'boolean' ? hint : undefined }];
   });
 }

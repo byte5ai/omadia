@@ -51,9 +51,14 @@ export interface OperatorSessionCheck {
  * this shipped is still flagged the next time an operator opens the pane.
  */
 export interface BindingWarning {
-  readonly code: 'key_id_unknown' | 'agent_id_unknown';
+  /** #1949 — `key_revoked` / `key_expired` name a key that exists but can no
+   *  longer authenticate; only `key_id_unknown` can be a typo. */
+  readonly code: 'key_id_unknown' | 'key_revoked' | 'key_expired' | 'agent_id_unknown';
   readonly message: string;
 }
+
+/** Whether a vault key record can authenticate, as far as a binding cares. */
+export type BindingKeyState = 'active' | 'revoked' | 'expired';
 
 /** A list/write result with its non-fatal warnings, if any. `warnings` is
  *  omitted rather than empty when the row resolves cleanly, so a green binding
@@ -81,9 +86,11 @@ export interface BindingExistenceCheck {
   /** Slugs of every agent the registry currently knows, or `undefined` when the
    *  registry cannot be read. */
   knownAgentIds(): Promise<ReadonlySet<string> | undefined>;
-  /** Ids of every API-key record in the vault, or `undefined` when the vault
-   *  cannot be read. */
-  knownKeyIds(): Promise<ReadonlySet<string> | undefined>;
+  /** State of every API-key record in the vault by id, or `undefined` when the
+   *  vault cannot be read. An id missing from the map has no record (#1949:
+   *  revoked and expired keys are listed with their state, not dropped, so the
+   *  warning can name the real reason). */
+  keyStates(): Promise<ReadonlyMap<string, BindingKeyState> | undefined>;
 }
 
 export interface PublicMcpBindingsRouterOptions {
@@ -219,6 +226,30 @@ export function createPublicMcpBindingsRouter(
     };
   }
 
+  /** #1949 — the key warning for one binding, or `undefined` for an active key
+   *  or an unreadable vault (`states === undefined` is "cannot tell"). */
+  function keyWarning(
+    states: ReadonlyMap<string, BindingKeyState> | undefined,
+    keyId: string,
+  ): BindingWarning | undefined {
+    if (!states) return undefined;
+    const state = states.get(keyId);
+    if (state === 'active') return undefined;
+    if (state === 'revoked') {
+      return {
+        code: 'key_revoked',
+        message: 'the API key of this binding was revoked — the binding reaches nothing',
+      };
+    }
+    if (state === 'expired') {
+      return {
+        code: 'key_expired',
+        message: 'the API key of this binding has expired — the binding reaches nothing',
+      };
+    }
+    return keyUnknownWarning();
+  }
+
   /**
    * Reads both known-id sets ONCE and returns a per-row annotator.
    *
@@ -233,12 +264,13 @@ export function createPublicMcpBindingsRouter(
   > {
     const { existence } = options;
     const [agents, keys] = existence
-      ? await Promise.all([existence.knownAgentIds(), existence.knownKeyIds()])
+      ? await Promise.all([existence.knownAgentIds(), existence.keyStates()])
       : [undefined, undefined];
     return (row) => {
       const warnings: BindingWarning[] = [];
       if (agents && !agents.has(row.agentId)) warnings.push(agentUnknownWarning(row.agentId));
-      if (keys && !keys.has(row.keyId)) warnings.push(keyUnknownWarning());
+      const keyNote = keyWarning(keys, row.keyId);
+      if (keyNote) warnings.push(keyNote);
       return warnings.length > 0 ? { ...row, warnings } : row;
     };
   }
@@ -284,6 +316,15 @@ export function createPublicMcpBindingsRouter(
     // Same class of silence on the other side: a present-but-non-boolean
     // `enabled` used to be dropped on the floor, and under the old
     // `?? true` default "dropped" meant "activate".
+    const rawReplace = body['replace'];
+    if (rawReplace !== undefined && typeof rawReplace !== 'boolean') {
+      res.status(400).json({
+        error: 'invalid_request',
+        code: 'replace_invalid_type',
+        message: 'replace must be a boolean, or omitted to refuse overwriting an existing binding',
+      });
+      return;
+    }
     const rawEnabled = body['enabled'];
     if (rawEnabled !== undefined && typeof rawEnabled !== 'boolean') {
       res.status(400).json({
@@ -325,7 +366,7 @@ export function createPublicMcpBindingsRouter(
     // tell", never "unknown", so it does NOT reject.
     //
     // Both existence reads run INSIDE the same try as the upsert. The interface
-    // documents `knownAgentIds`/`knownKeyIds` as returning `undefined` rather
+    // documents `knownAgentIds`/`keyStates` as returning `undefined` rather
     // than throwing, but a broken impl that threw here — outside the try — would
     // escape `fail()` and answer with an unsanitized 500 (or hang), leaking the
     // very pg/vault internals `fail()` exists to hide.
@@ -343,6 +384,26 @@ export function createPublicMcpBindingsRouter(
         }
       }
 
+      // #1949 — a key has ONE binding, so saving for a key that already has one
+      // replaces agent, tools and budget. That needs the operator's explicit
+      // `replace: true`; without it the save is a 409 naming what is stored, so
+      // a mistyped or already-bound key id cannot silently wipe a colleague's
+      // binding. Check-then-write is not atomic; two operators racing on the
+      // same key within milliseconds is accepted.
+      if (rawReplace !== true) {
+        const existing = (await store.list()).find((r) => r.keyId === validated.value.keyId);
+        if (existing) {
+          res.status(409).json({
+            error: 'conflict',
+            code: 'binding_exists',
+            message:
+              'this API key already has a public MCP binding; send replace: true to overwrite it',
+            binding: existing,
+          });
+          return;
+        }
+      }
+
       const previous = await priorBinding(store, validated.value.keyId);
       const { binding, created } = await store.upsert(validated.value);
       await auditBinding(req, created ? undefined : previous ?? 'unknown', binding);
@@ -352,8 +413,9 @@ export function createPublicMcpBindingsRouter(
       // does not resolve rather than being left to discover it when the
       // integration reaches zero tools. Checked AFTER the upsert so a vault read
       // failure cannot cost a legitimate save.
-      const keys = existence ? await existence.knownKeyIds() : undefined;
-      const warnings = keys && !keys.has(binding.keyId) ? [keyUnknownWarning()] : [];
+      const keys = existence ? await existence.keyStates() : undefined;
+      const keyNote = keyWarning(keys, binding.keyId);
+      const warnings = keyNote ? [keyNote] : [];
 
       // 201 only for a row that did not exist. "Created" over an existing
       // binding is the operator's only per-request hint that they landed on

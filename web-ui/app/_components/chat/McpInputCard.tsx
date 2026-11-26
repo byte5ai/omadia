@@ -59,8 +59,13 @@ export function McpInputCard({
 }: {
   request: PendingMcpInput;
   disabled: boolean;
-  /** Submits the envelope as a fresh user turn. */
-  onSubmit: (message: string) => void;
+  /**
+   * Submits the envelope as a fresh user turn. `displayText` is what the chat
+   * shows and stores as the user's message (#1953): field names only, never
+   * the values, because a field may be secret. The envelope itself only rides
+   * in the `/api/chat` request.
+   */
+  onSubmit: (message: string, displayText: string) => void;
 }): React.ReactElement {
   const t = useTranslations('chat');
   const [values, setValues] = useState<Record<string, string>>({});
@@ -82,7 +87,13 @@ export function McpInputCard({
       if (value !== undefined && value.length > 0) payload[field.name] = value;
     }
     setSubmitted(true);
-    onSubmit(formatMcpInputReply(request.correlationId, payload));
+    const names = Object.keys(payload);
+    onSubmit(
+      formatMcpInputReply(request.correlationId, payload),
+      names.length > 0
+        ? t('mcpInput.sentLabel', { server: request.serverName, fields: names.join(', ') })
+        : t('mcpInput.sentLabelEmpty', { server: request.serverName }),
+    );
   };
 
   return (

@@ -189,7 +189,7 @@ describe('runRuntimeSmoke — failure modes', () => {
     assert.match(result.results[0]?.errorMessage ?? '', /upstream API/);
   });
 
-  it('marks a Zod-validation throw as status=validation_failed (controlled exit)', async () => {
+  it('ADR-0232 (#1727): a Zod rejection of the input fails the smoke — the handler never ran', async () => {
     const handle = makeHandle([
       makeTool('zod_picky', async () => {
         const err = new Error('expected number, got string');
@@ -205,9 +205,47 @@ describe('runRuntimeSmoke — failure modes', () => {
       previewRuntime: dummyRuntime,
       activate: async () => handle,
     });
-    // ZodError still counts as pass — controlled exit, not a smoke fail.
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'tool_failures');
     assert.equal(result.results[0]?.status, 'validation_failed');
+  });
+
+  it('an upstream 401 on the stub credentials is a controlled exit (auth_rejected)', async () => {
+    const handle = makeHandle([
+      makeTool('calls_api', async () => {
+        const err = new Error('Request failed') as Error & { status: number };
+        err.status = 401;
+        throw err;
+      }),
+    ]);
+    const result = await runRuntimeSmoke({
+      zipBuffer: Buffer.from('x'),
+      spec: validSpec as never,
+      draftId: 'd-1',
+      rev: 1,
+      previewRuntime: dummyRuntime,
+      activate: async () => handle,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.results[0]?.status, 'auth_rejected');
+  });
+
+  it('a handler bug that merely mentions 403 is not an auth rejection', async () => {
+    const handle = makeHandle([
+      makeTool('lookup', async () => {
+        throw new Error('order 403 not found');
+      }),
+    ]);
+    const result = await runRuntimeSmoke({
+      zipBuffer: Buffer.from('x'),
+      spec: validSpec as never,
+      draftId: 'd-1',
+      rev: 1,
+      previewRuntime: dummyRuntime,
+      activate: async () => handle,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.results[0]?.status, 'threw');
   });
 
   it('marks a hanging tool as status=timeout', async () => {

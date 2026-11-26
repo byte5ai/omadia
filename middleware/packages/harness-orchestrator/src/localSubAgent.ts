@@ -588,6 +588,15 @@ export class LocalSubAgent {
   /** #1544 — every tool result this sub-agent's model reads, errors and
    *  bypassed results included, with the turn's masked prompt values masked
    *  again: the inner tool may have run on them. */
+  /** #1921 — run one inner tool call with this sub-agent named on the turn
+   *  context, so the MCP call audit attributes it to the sub-agent. Outside a
+   *  turn there is no scope to extend, and the call runs as before. */
+  private inSubAgentScope<T>(fn: () => Promise<T>): Promise<T> {
+    const current = turnContext.current();
+    if (current === undefined) return fn();
+    return turnContext.run({ ...current, mcpSubAgentName: this.name }, fn);
+  }
+
   private async dispatchRemasked(toolName: string, input: unknown): Promise<SubToolOutcome> {
     const outcome = await this.dispatch(toolName, input);
     const privacy = turnContext.current()?.privacyHandle;
@@ -639,12 +648,14 @@ export class LocalSubAgent {
           ? (replay.value as Awaited<ReturnType<LocalSubAgentTool['handle']>>)
           : await runHandlerAtMostOnce(ledger, () =>
               runWithMcpAuthPromptMint(authPromptMint, () =>
-                // #1544 — the inner tool runs on the user's values; this
-                // sub-agent's model keeps reading the placeholders.
-                tool.handle(
-                  runsOnModelInput(toolName)
-                    ? input
-                    : restorePromptSurrogatesInToolInput(privacy, input),
+                this.inSubAgentScope(() =>
+                  // #1544 — the inner tool runs on the user's values; this
+                  // sub-agent's model keeps reading the placeholders.
+                  tool.handle(
+                    runsOnModelInput(toolName)
+                      ? input
+                      : restorePromptSurrogatesInToolInput(privacy, input),
+                  ),
                 ),
               ),
             );

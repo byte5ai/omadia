@@ -331,6 +331,11 @@ nur Spec-Felder. Operator setzt `data_binding.tool_id` (Quelle aus
 [meta], [url] }`. Codegen baut den Router, ruft das Tool, rendert mit
 `renderListCard` / `renderKpiTiles`.
 
+Das Tool wird bei **jedem** Seitenaufruf mit `data_binding.args` aufgerufen
+(fehlt `args`, mit `{}`). Hat das Tool Pflicht-Eingaben (z. B. `city`), setz
+sie in `data_binding.args` (`{ "city": "Berlin" }`) — sonst kann die Seite nie
+Daten zeigen.
+
 ```
 patch_spec({
   patches: [{ op: 'add', path: '/ui_routes/-', value: {
@@ -440,6 +445,8 @@ viel Overhead ist (kleine statische Pages).
 - `render_mode='library'` + `ui_template='list-card'` → `item_template`
   PFLICHT mit mindestens `title`
 - `data_binding.tool_id` muss in `spec.tools[]` existieren
+- `data_binding.args` soll jede Pflicht-Eingabe (`input.required`) des
+  Tools setzen — `lint_spec` warnt sonst (`ui_route_data_binding_missing_args`)
 
 Beachte: Die **Template-Slots-Checkliste** im Spec-Header zeigt dir die
 erwarteten dynamischen ui-route-Slots als separate Sektion „Dynamic

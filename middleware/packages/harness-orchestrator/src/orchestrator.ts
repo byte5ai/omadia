@@ -6068,6 +6068,9 @@ export class Orchestrator {
         // every call as `unresolved` and then fails closed. See the W4-1 block
         // above for where the value comes from.
         ...(mcpUserKey ? { mcpUserKey } : {}),
+        // ADR-0206 — an unattended entry point (routine, trigger) stays
+        // unattended inside the turn.
+        ...(parent?.mcpUnattended ? { mcpUnattended: true } : {}),
         ...floorFields,
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
@@ -7930,6 +7933,7 @@ export class Orchestrator {
       ...streamFloorFields,
       // W3-A / W4-1 — see the matching `turnContext.run` above.
       ...(mcpUserKey ? { mcpUserKey } : {}),
+      ...(parent?.mcpUnattended ? { mcpUnattended: true } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
       ...(parent?.captureRawToolResult
         ? { captureRawToolResult: parent.captureRawToolResult }
