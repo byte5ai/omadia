@@ -1,7 +1,7 @@
 import { fireEvent, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { MemorableKnowledgeNode } from '../../_lib/api';
+import { ApiError, type MemorableKnowledgeNode } from '../../_lib/api';
 import { renderWithIntl } from '../../_lib/test-utils';
 import MemoriesPage from '../page';
 
@@ -65,5 +65,21 @@ describe('MemoriesPage paging (#1853)', () => {
     expect(
       screen.queryByRole('button', { name: 'Load more' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows a localized headline and the server message, never the transport line', async () => {
+    mockListMemories
+      .mockResolvedValueOnce({ items: [mk(2)], nextCursor: '1' })
+      .mockRejectedValueOnce(
+        new ApiError(503, 'GET memory failed: 503', '{"code":"kg.unavailable","message":"graph offline"}'),
+      );
+
+    renderWithIntl(<MemoriesPage />);
+    expect(await screen.findByText('Cap test entry 2')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('Could not load more memories.')).toBeInTheDocument();
+    expect(screen.getByText('(graph offline)')).toBeInTheDocument();
+    expect(screen.queryByText(/GET memory failed/)).not.toBeInTheDocument();
   });
 });

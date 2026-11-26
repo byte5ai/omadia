@@ -2,6 +2,7 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import {
   DEDUP_THRESHOLD_CONFIG_KEY,
   KG_NEON_ID,
+  RECOMMENDED_DEDUP_THRESHOLDS,
   recommendedDedupThreshold,
 } from './embeddingProviderCatalog.js';
 
@@ -23,6 +24,15 @@ import {
  * disagree, and from then on the value is the operator's and is never touched.
  * A changed compiled-in recommendation also reads as the operator's: unsure
  * means hands off.
+ *
+ * LEGACY VALUES. Builds before the marker wrote the recommendation as a bare
+ * string. A stored value without a marker that equals exactly ONE provider's
+ * current recommendation is read as that provider's recommendation (the same
+ * legacy rule ADR-0193 uses for boot-seeded defaults): an operator who typed
+ * that very number gets the same behaviour they would get from omadia's own
+ * value, and without the rule the old model's threshold stays after a switch on
+ * every install that predates the marker (#1818). A value that matches no
+ * recommendation, or more than one, stays the operator's.
  */
 
 /** Kernel-synthetic KG config key (underscore prefix, like `_privacy_mode`):
@@ -84,8 +94,19 @@ export function describeDedupThreshold(
     if (recommended !== null && String(recommended) === value) {
       return { source: 'recommended', value, recommendedBy: marker };
     }
+    return { source: 'operator', value, recommendedBy: null };
   }
+  const legacy = legacyRecommender(value);
+  if (legacy !== null) return { source: 'recommended', value, recommendedBy: legacy };
   return { source: 'operator', value, recommendedBy: null };
+}
+
+/** The one provider whose current recommendation is exactly `value`, else `null`. */
+function legacyRecommender(value: string): string | null {
+  const matches = Object.entries(RECOMMENDED_DEDUP_THRESHOLDS)
+    .filter(([, recommended]) => String(recommended) === value)
+    .map(([providerId]) => providerId);
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 /** Provenance of the KG's threshold, `null` without a knowledge graph. */

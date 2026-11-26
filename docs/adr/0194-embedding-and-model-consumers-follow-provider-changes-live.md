@@ -59,8 +59,11 @@ enforce the refusal without trusting each adapter.
    class-ref model for longer than one call resolves it at the call, the way
    `decisionModel@1` already was. In orchestrator-extras the context retriever, the
    inconsistency and merge-candidate detectors (and with them the bulk merge services) and
-   the topic detector take an `EmbeddingClientSource` (a client or a resolver,
-   `liveEmbeddingClient.ts`). The topic detector is published whenever an LLM is available
+   the topic detector take an `EmbeddingClientSource` (a client or a resolver, exported by
+   `@omadia/embeddings`). In the orchestrator the `query_knowledge_graph` tool's
+   `search_turns_semantic` and the durable-rules promotion hook take the same resolver, so
+   after an uninstall they answer "embeddings not configured" / promote without a vector
+   instead of calling a withdrawn client. The topic detector is published whenever an LLM is available
    and answers continue-default while no provider is published. `memoryFeatureStatus@1`
    reports the topic detector's state at read time. The recall judge's default model is a
    resolver over `class:fast`; an operator-set `kg_recall_relevance_judge_model` stays
@@ -75,12 +78,15 @@ enforce the refusal without trusting each adapter.
    gated model service (`embeddingClient`, `transcription`, `decisionModel`) is disposed,
    the kernel marks that wrapper withdrawn. Every later model call through a reference
    someone still holds rejects with `ModelServiceWithdrawnError` and never reaches the
-   adapter.
+   adapter. The same holds for a `replace()` registration that wrapped such a service:
+   its dispose restores the previous provider and withdraws the replacement wrapper (only a
+   wrapper the `replace()` itself created; a gated wrapper handed back in stays live).
 
 ### Consequences
 
 - 🟢 **Good:** Reactivate, switch and uninstall take effect for recall, duplicate and
-  contradiction detection, topic detection and the knowledge graph on the next call.
+  contradiction detection, topic detection, the orchestrator's semantic turn search and
+  durable-rule promotion, and the knowledge graph on the next call.
 - 🟢 **Good:** A removed provider gets no further request, whatever the adapter's own
   `close()` does.
 - 🟢 **Good:** The recall judge runs on the same fast model after a restart as after a
@@ -89,6 +95,9 @@ enforce the refusal without trusting each adapter.
 - 🔴 **Bad:** The extras consumers still use the registry's client, not the knowledge-graph
   gate's approved one. While the gate blocks a provider, their vector queries fail inside
   their existing `try/catch` and recall is lexical only, as before.
+- 🔴 **Bad:** A per-caller factory registration (`perCallerService`) is a function, not a
+  gated object, so the kernel cannot mark what it returned as withdrawn. No model service
+  is registered that way today; one that is would rely on its consumers resolving per call.
 - ⚪ **Neutral:** An embed in the knowledge-graph stores that is in flight at the moment of
   a withdrawal can still count one attempt on that node; the backfill re-embeds it within
   the attempt cap.
@@ -115,7 +124,9 @@ enforce the refusal without trusting each adapter.
 
 ## More Information
 
-- Code: `middleware/packages/harness-orchestrator-extras/src/{liveEmbeddingClient,plugin,contextRetriever,inconsistencyDetector,mergeCandidateDetector,topicDetector,recallRelevanceJudge}.ts`,
+- Code: `middleware/packages/harness-embeddings/src/liveEmbeddingClient.ts`,
+  `middleware/packages/harness-orchestrator/src/{plugin,knowledgeGraphTool,durableRulesMemoryStore}.ts`,
+  `middleware/packages/harness-orchestrator-extras/src/{plugin,contextRetriever,inconsistencyDetector,mergeCandidateDetector,topicDetector,recallRelevanceJudge}.ts`,
   `middleware/packages/harness-knowledge-graph-neon/src/{gateReevaluation,embeddingBackfill}.ts`,
   `middleware/src/platform/{modelGatewayServices,serviceRegistry}.ts`.
 - Tests: `middleware/test/embeddingLiveRebind1815.test.ts`.

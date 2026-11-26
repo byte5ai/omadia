@@ -5203,6 +5203,23 @@ migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
 - **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
   von #430 für die Begründung; offener Folge-Task.
 
+### `/api/v1/memory`: Paging und 404 für Nicht-Owner (#1853, 2026-11-26)
+
+`middleware/src/routes/memory.ts` — der HTTP-Vertrag der Memorable-Knowledge-Routen:
+
+- **Liste mit Cursor.** `GET /api/v1/memory?limit=&cursor=` liefert `{ …, nextCursor }`.
+  `limit` 1–500 (Default 50), `cursor` ist opak (der `nextCursor` der vorigen Antwort).
+  Nach einer vollen Seite fragt die Route eine Probe-Zeile ab; `nextCursor` ist `null`,
+  wenn danach nichts mehr kommt — die letzte Seite bietet kein leeres „Mehr laden“.
+  Die Seite `/memories` lädt nach. Getragen von `ListMemorableKnowledgeOptions.offset`
+  (plugin-api 1.99.0), beide KG-Backends sortieren mit Tie-Break auf der Id.
+- **Nicht-Owner bekommen 404.** Owner-Prüfungen (Owner hinzufügen/entfernen, Audit)
+  antworten `404 { code: 'memory.not_found' }` statt früher `403 memory.not_an_owner` —
+  dieselbe Antwort wie für eine unbekannte Id, damit die Route nicht verrät, dass ein
+  Eintrag existiert (ADR-0019 Offenlegung „none“, ADR-0104 Fehler-Envelope). Kein neues ADR.
+- **Audit-Aktion `delete_excerpt`** hat Label und Badge in der Web-UI
+  (`web-ui/app/_lib/memoryAuditLabels.ts`).
+
 ---
 
 ## 8. Skills

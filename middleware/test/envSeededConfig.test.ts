@@ -157,6 +157,29 @@ describe('bootstrapKnowledgeGraphFromEnv — backfill seeds (#1858)', () => {
     );
   });
 
+  it('reconciles the seeds on a boot that self-heals a dual-active knowledge graph', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    for (const id of [NEON, '@omadia/knowledge-graph-inmemory']) {
+      await reg.register({
+        id,
+        installed_version: '1.0.0',
+        installed_at: '2026-11-01T00:00:00Z',
+        status: 'active',
+        config: id === NEON ? { graph_embedding_backfill_batch_size: '20' } : {},
+      });
+    }
+    await bootstrapKnowledgeGraphFromEnv({
+      config,
+      catalog,
+      registry: reg,
+      vault,
+      env: { GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE: '200' },
+      log: () => {},
+    });
+    assert.equal(reg.get('@omadia/knowledge-graph-inmemory'), undefined, 'dual-active healed');
+    assert.equal(reg.get(NEON)?.config?.['graph_embedding_backfill_batch_size'], '200');
+  });
+
   it('logs a set variable that an operator value shadows', async () => {
     const reg = new InMemoryInstalledRegistry();
     await reg.register({

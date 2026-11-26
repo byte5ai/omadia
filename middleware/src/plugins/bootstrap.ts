@@ -962,6 +962,10 @@ export async function bootstrapKnowledgeGraphFromEnv(
     log(
       `[bootstrap] ⚐ knowledge-graph dual-active conflict — removed ${dropId}, kept ${keepId} (neon DSN ${neonUsable ? 'present' : 'absent'})`,
     );
+    // ADR-0193 "every boot" holds on a self-healing boot too.
+    if (deps.registry.has(KNOWLEDGE_GRAPH_NEON_ID)) {
+      await reconcileNeonBackfillSeeds(deps, log);
+    }
     return;
   }
 

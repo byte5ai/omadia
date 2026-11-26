@@ -53,8 +53,14 @@ describe('describeDedupThreshold (#1818)', () => {
     assert.equal(p.source, 'operator');
   });
 
-  it('reads an unmarked value as the operator’s', () => {
-    assert.equal(describeDedupThreshold({ [KEY]: '0.45' }).source, 'operator');
+  it('reads an unmarked value as the operator’s unless it is exactly one provider’s recommendation', () => {
+    assert.equal(describeDedupThreshold({ [KEY]: '0.6' }).source, 'operator');
+    // Legacy: builds before the marker wrote the bare recommendation.
+    assert.deepEqual(describeDedupThreshold({ [KEY]: '0.45' }), {
+      source: 'recommended',
+      value: '0.45',
+      recommendedBy: LOCAL,
+    });
   });
 });
 
@@ -98,6 +104,21 @@ describe('reconcileRecommendedDedupThreshold (#1818)', () => {
   });
 });
 
+describe('legacy unmarked recommendation (#1818, installs before the marker)', () => {
+  it('a switch away from the keyless adapter clears its old bare threshold', async () => {
+    const r = await registryWith({ [KEY]: '0.45' });
+    const out = await reconcileRecommendedDedupThreshold(r, OLLAMA);
+    assert.equal(out.reason, 'cleared');
+    assert.equal(kgConfig(r)[KEY], undefined);
+  });
+
+  it('an uninstall of the keyless adapter releases its old bare threshold', async () => {
+    const r = await registryWith({ [KEY]: '0.45' });
+    assert.equal(await releaseRecommendedDedupThreshold(r, LOCAL), true);
+    assert.equal(kgConfig(r)[KEY], undefined);
+  });
+});
+
 describe('releaseRecommendedDedupThreshold (#1818)', () => {
   it('removes the value recommended for the uninstalled provider', async () => {
     const r = await registryWith({ [KEY]: '0.45', [DEDUP_THRESHOLD_SOURCE_CONFIG_KEY]: LOCAL });
@@ -106,9 +127,9 @@ describe('releaseRecommendedDedupThreshold (#1818)', () => {
   });
 
   it('keeps an operator value and another provider’s recommendation', async () => {
-    const operator = await registryWith({ [KEY]: '0.45' });
+    const operator = await registryWith({ [KEY]: '0.6' });
     assert.equal(await releaseRecommendedDedupThreshold(operator, LOCAL), false);
-    assert.equal(kgConfig(operator)[KEY], '0.45');
+    assert.equal(kgConfig(operator)[KEY], '0.6');
 
     const other = await registryWith({ [KEY]: '0.45', [DEDUP_THRESHOLD_SOURCE_CONFIG_KEY]: LOCAL });
     assert.equal(await releaseRecommendedDedupThreshold(other, OLLAMA), false);

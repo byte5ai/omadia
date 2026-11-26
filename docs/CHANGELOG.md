@@ -166,7 +166,8 @@ Contract: ADR-0230 (Proposed).
   the Store wins; a set variable it overrides is logged as `⚠ … is ignored`. Values the old
   migration wrote unasked (the built-in defaults) count as boot-written. ADR-0193 records
   the rule (`src/plugins/envSeededConfig.ts`); the variables are now in `.env.example` and
-  handoff §10.
+  handoff §10. A boot that self-heals a dual-active knowledge graph reconciles the
+  backfill settings too.
 - **#1853** `/memories` reaches every entry: `GET /api/v1/memory` takes an opaque `cursor`
   and answers `nextCursor` (null on the last page; a full page is followed by a one-row
   probe), backed by the new optional `ListMemorableKnowledgeOptions.offset`
@@ -174,7 +175,9 @@ Contract: ADR-0230 (Proposed).
   are loaded and a "Load more" button. The history labels `delete_excerpt` ("excerpt
   deleted") with a badge. Owner checks on an existing entry of another user now answer 404
   `memory.not_found` like an unknown id (`/:id/audit`, owners, PATCH, DELETE, excerpts)
-  instead of 403 `memory.not_an_owner` (ADR-0019 disclosure "none", ADR-0104).
+  instead of 403 `memory.not_an_owner` (ADR-0019 disclosure "none", ADR-0104). A failed
+  list load shows a localized headline with the server's message as detail, never the
+  client's transport line. Handoff §7 documents the route contract.
 - **#1854** Graph explorer: the owner/audit section of a memory is keyed by the entry, so
   selecting another entry shows its own audit (a new request) and empty owner/reason inputs
   instead of the previous entry's history and typed text.
@@ -189,7 +192,7 @@ Contract: ADR-0230 (Proposed).
   storage-backend card names Postgres and In-Memory instead of a filesystem option that
   does not exist. The local model size is shown in decimal MB (135 MB, it divided by 1024
   twice under an "MB" label), and the adapter's store text says 135 MB instead of 144 MB.
-  i18n literal ceiling lowered to 114; four stale identical-value exceptions removed.
+  i18n literal ceiling lowered (109 after rebasing on main); four stale identical-value exceptions removed.
 
 ### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
 
@@ -210,6 +213,14 @@ Contract: ADR-0230 (Proposed).
 - **#1855** The recall relevance judge resolves `class:fast` per call when
   `kg_recall_relevance_judge_model` is unset, so it uses the discovered fast model after a
   restart as after a reactivation. The boot log reads `recallJudge=on(class:fast per call, now …)`.
+- The orchestrator resolves the client per call too: `query_knowledge_graph`'s
+  `search_turns_semantic` and the durable-rules promotion hook take the same resolver
+  (`EmbeddingClientSource`, now exported by `@omadia/embeddings`). After a switch they
+  embed with the new provider; after an uninstall the tool answers "embeddings not
+  configured" instead of `embedding failed — … withdrawn`.
+- A `replace()` registration of a model service is withdrawn on its dispose as well (only
+  the wrapper that `replace()` created); `docs/security-architecture.md` §4 records the
+  egress rule.
 - Log lines of the extras now read `embed=live, now on|off`.
 
 ### Fixed — embedding provider admin tells the truth and leads somewhere (#1814, #1816, #1818, #1857) (2026-11-26)
@@ -231,8 +242,10 @@ Contract: ADR-0230 (Proposed).
   `/reactivate` does, and removes omadia's value when the target has none; uninstalling a
   provider removes the value recommended for it (install service `onUninstalled`). The page
   shows the provenance (`dedupThresholdProvenance` in `GET /`), switch responses carry
-  `dedupThreshold`. Values written by older builds have no marker and count as the
-  operator's.
+  `dedupThreshold`. A value written by older builds (no marker) that equals exactly one
+  provider's current recommendation is read as that recommendation, so the keyless
+  adapter's old `0.45` is cleared on a switch or uninstall; any other unmarked value stays
+  the operator's.
 - **#1814** The store's blocked-install box links to the admin page of the colliding
   capability (`/admin/embedding-provider`, `/admin/transcription-provider`, otherwise
   `/admin/providers`), and its text names both ways out. Store detail and install endpoint

@@ -5,7 +5,9 @@ import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider'
 import type { EmbeddingClient, EmbeddingProvider } from '@omadia/plugin-api';
 import type { Pool, PoolClient, QueryResult } from 'pg';
 
+import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { startGateRunner } from '@omadia/knowledge-graph-neon/dist/gateReevaluation.js';
+import { KnowledgeGraphTool } from '@omadia/orchestrator';
 
 import { activate } from '../packages/harness-orchestrator-extras/src/plugin.js';
 import type { MemoryFeatureStatus } from '../packages/harness-orchestrator-extras/src/memoryFeatureStatus.js';
@@ -252,5 +254,76 @@ describe('#1817 — a disposed model service refuses calls through a held refere
     registry.provide('embeddingClient', raw, 'p');
     const fresh = registry.get<EmbeddingClient>('embeddingClient');
     assert.deepEqual(await fresh?.embed('x'), [1]);
+  });
+});
+
+describe('#1815 — the orchestrator resolves the embedding client per call', () => {
+  async function graphWithTurn(): Promise<InMemoryKnowledgeGraph> {
+    const g = new InMemoryKnowledgeGraph();
+    await g.ingestTurn({
+      scope: 'talk-a',
+      time: '2026-11-26T09:00:00.000Z',
+      userMessage: 'Wer ist Anna?',
+      assistantAnswer: 'Eine Mitarbeiterin.',
+      entityRefs: [],
+    });
+    return g;
+  }
+
+  it('search_turns_semantic follows reactivate/switch and reports "not configured" after uninstall', async () => {
+    const registry = new ServiceRegistry();
+    const callsA: string[] = [];
+    const callsB: string[] = [];
+    const disposeA = registry.provide('embeddingClient', vectorClient([1, 0], callsA), 'provider-a');
+    const tool = new KnowledgeGraphTool(await graphWithTurn(), () =>
+      registry.get<EmbeddingClient>('embeddingClient'),
+    );
+
+    await tool.handle({ query: 'search_turns_semantic', text: 'first' });
+    assert.deepEqual(callsA, ['first']);
+
+    // Switch: A withdrawn, B published. A held boot reference would now be
+    // refused by the kernel; the resolver reaches B.
+    disposeA();
+    const disposeB = registry.provide('embeddingClient', vectorClient([0, 1], callsB), 'provider-b');
+    const afterSwitch = await tool.handle({ query: 'search_turns_semantic', text: 'second' });
+    assert.doesNotMatch(afterSwitch, /withdrawn|embedding failed/);
+    assert.deepEqual(callsA, ['first'], 'the withdrawn provider sees nothing more');
+    assert.deepEqual(callsB, ['second']);
+
+    // Uninstall: no provider → the plain "not configured" answer, no throw.
+    disposeB();
+    const afterUninstall = await tool.handle({ query: 'search_turns_semantic', text: 'third' });
+    assert.match(afterUninstall, /embeddings not configured/);
+    assert.deepEqual(callsB, ['second']);
+  });
+});
+
+describe('#1817 — a disposed replace() registration refuses calls through a held reference', () => {
+  it('withdraws the replacement and leaves the restored provider usable', async () => {
+    const registry = new ServiceRegistry();
+    const baseCalls: string[] = [];
+    const wrapCalls: string[] = [];
+    registry.provide('embeddingClient', vectorClient([1], baseCalls), 'base');
+    const restore = registry.replace('embeddingClient', vectorClient([2], wrapCalls), 'wrapper');
+    const heldWrapper = registry.get<EmbeddingClient>('embeddingClient');
+    assert.deepEqual(await heldWrapper?.embed('a'), [2]);
+
+    restore();
+
+    await assert.rejects(heldWrapper!.embed('b'), ModelServiceWithdrawnError);
+    assert.deepEqual(wrapCalls, ['a']);
+    const restored = registry.get<EmbeddingClient>('embeddingClient');
+    assert.deepEqual(await restored?.embed('c'), [1], 'the previous provider stays live');
+    assert.deepEqual(baseCalls, ['c']);
+  });
+
+  it('does not withdraw a previous provider handed back in to replace()', async () => {
+    const registry = new ServiceRegistry();
+    registry.provide('embeddingClient', vectorClient([1]), 'base');
+    const current = registry.get<EmbeddingClient>('embeddingClient')!;
+    const restore = registry.replace('embeddingClient', current, 'noop-wrapper');
+    restore();
+    assert.deepEqual(await current.embed('x'), [1]);
   });
 });

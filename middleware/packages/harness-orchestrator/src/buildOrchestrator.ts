@@ -29,7 +29,7 @@ import type {
   DisclosureSeenStore,
   GrantStore,
 } from '@omadia/channel-sdk';
-import type { EmbeddingClient } from '@omadia/embeddings';
+import type { EmbeddingClientSource } from '@omadia/embeddings';
 import type { EffortLevel, LlmProvider, LlmProviderPool } from '@omadia/llm-provider';
 import type { ModelRef, ProfileQualityConfig } from '@omadia/plugin-api';
 import type {
@@ -433,7 +433,8 @@ export interface OrchestratorDeps {
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
   readonly excerptExtractor?: PalaiaExcerptExtractor;
-  readonly embeddingClient?: EmbeddingClient;
+  /** #1815 / ADR-0194 — a fixed client or a per-call resolver. */
+  readonly embeddingClient?: EmbeddingClientSource;
   readonly microsoft365?: Microsoft365Accessor;
   readonly verifierBundle?: VerifierBundle;
   readonly nudgeStateStore?: NudgeStateStore;

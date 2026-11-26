@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import type { EmbeddingClient } from '@omadia/embeddings';
+import {
+  currentEmbeddingClient,
+  type EmbeddingClientSource,
+} from '@omadia/embeddings';
 import {
   scopeBelongsToAgent,
   type KnowledgeGraph,
@@ -171,7 +174,9 @@ export function graphViewAccess(
 export class KnowledgeGraphTool {
   constructor(
     private readonly graph: KnowledgeGraph,
-    private readonly embeddingClient?: EmbeddingClient,
+    /** #1815 / ADR-0194 — resolved per call: the active provider can be
+     *  reactivated, switched or uninstalled while the orchestrator stays up. */
+    private readonly embeddingSource?: EmbeddingClientSource,
   ) {}
 
   private access(view: KnowledgeGraphToolView | undefined): ToolAccess {
@@ -280,7 +285,8 @@ export class KnowledgeGraphTool {
         if (!args.text) {
           return 'Error: search_turns_semantic requires `text`.';
         }
-        if (!this.embeddingClient) {
+        const embeddingClient = currentEmbeddingClient(this.embeddingSource);
+        if (!embeddingClient) {
           return 'Error: embeddings not configured — use `search_turns` for keyword-based search instead.';
         }
         if (access.none) {
@@ -288,7 +294,7 @@ export class KnowledgeGraphTool {
         }
         let vector: number[];
         try {
-          vector = await this.embeddingClient.embed(args.text);
+          vector = await embeddingClient.embed(args.text);
         } catch (err) {
           return `Error: embedding failed — ${err instanceof Error ? err.message : String(err)}. Retry with \`search_turns\` for FTS.`;
         }

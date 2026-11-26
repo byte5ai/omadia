@@ -215,6 +215,12 @@ export class ServiceRegistry {
       // later `replace` already shadowed us, our restore is a no-op.
       if (this.providers.get(name) !== impl) return false;
       this.providers.set(name, previous);
+      // #1817 / ADR-0194 — like provide(): a consumer still holding this
+      // replacement must not reach its adapter after the dispose. Only a
+      // wrapper this call created is withdrawn; a raw impl that already was
+      // a gated wrapper (e.g. the previous provider handed back in) belongs
+      // to another registration and stays live.
+      if (impl !== rawImpl) withdrawModelService(impl);
       return true;
     };
     return this.track(owner, name, dispose);
