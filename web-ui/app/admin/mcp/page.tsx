@@ -2129,6 +2129,10 @@ function BindingsPane(): React.ReactElement {
   // succeeds even when the key/agent does not resolve, so this is the operator's
   // immediate signal that the row they just created reaches nothing.
   const [savedWarnings, setSavedWarnings] = useState<PublicMcpKeyBindingWarning[]>([]);
+  // #1949 — the binding a save would overwrite (server 409 `binding_exists`),
+  // shown in a confirm dialog; and whether the last save replaced one.
+  const [confirmReplace, setConfirmReplace] = useState<PublicMcpKeyBinding | null>(null);
+  const [savedReplaced, setSavedReplaced] = useState(false);
 
   const [keyId, setKeyId] = useState('');
   const [agentId, setAgentId] = useState('');
@@ -2154,10 +2158,11 @@ function BindingsPane(): React.ReactElement {
       .catch(() => setOrchestrators([]));
   }, [refresh]);
 
-  async function save(): Promise<void> {
+  async function save(replace = false): Promise<void> {
     setBusy('save');
     setError(null);
     setSavedWarnings([]);
+    setSavedReplaced(false);
     try {
       const { binding } = await upsertPublicMcpKeyBinding({
         keyId: keyId.trim(),
@@ -2165,7 +2170,9 @@ function BindingsPane(): React.ReactElement {
         readTools: parseToolList(readTools),
         writeTools: parseToolList(writeTools),
         writeRateLimitPerMinute: Number(writeRate),
+        ...(replace ? { replace: true } : {}),
       });
+      setSavedReplaced(replace);
       // A typo'd key still saves (warning, not rejection) — surface it now so it
       // is not mistaken for a working binding. A typo'd agent never reaches here:
       // the server 400s and we land in `catch` above.
@@ -2175,7 +2182,13 @@ function BindingsPane(): React.ReactElement {
       setWriteTools('');
       await refresh();
     } catch (err) {
-      setError(errText(err));
+      const existing = parseBindingExists(err);
+      if (existing) {
+        // Keep the form as typed: the operator decides in the dialog.
+        setConfirmReplace(existing);
+        return;
+      }
+      setError(bindingErrorText(err));
     } finally {
       setBusy(null);
     }
@@ -2225,20 +2238,48 @@ function BindingsPane(): React.ReactElement {
   // The key has no client-side lister at all. So the authoritative existence
   // check lives on the server (agent → 400, key → warning); mirroring a weaker
   // copy of it here would only drift.
-  const canSave = keyId.trim().length > 0 && agentId.trim().length > 0;
+  // #1935 — the write budget must be a whole number in 0…600. An empty field
+  // used to be sent as `Number('') === 0`, silently blocking every write.
+  const writeRateValue = parseWriteRate(writeRate);
+  const writeRateInvalid = writeRateValue === undefined;
+  const writeRateBlocksWrites =
+    writeRateValue === 0 && parseToolList(writeTools).length > 0;
+  const canSave = keyId.trim().length > 0 && agentId.trim().length > 0 && !writeRateInvalid;
 
   // Rendered from the stable `code`, never the server's English `message`, so
   // the note follows the operator's locale. See `PublicMcpKeyBindingWarning`.
-  const warningText = (code: PublicMcpKeyBindingWarning['code']): string =>
-    code === 'key_id_unknown'
-      ? t('bindings.warnings.keyUnknown')
-      : t('bindings.warnings.agentUnknown');
+  const warningText = (code: PublicMcpKeyBindingWarning['code']): string => {
+    if (code === 'key_id_unknown') return t('bindings.warnings.keyUnknown');
+    if (code === 'key_revoked') return t('bindings.warnings.keyRevoked');
+    if (code === 'key_expired') return t('bindings.warnings.keyExpired');
+    return t('bindings.warnings.agentUnknown');
+  };
+
+  // Localized text for the save errors the bindings route answers with a code.
+  const bindingErrorText = (err: unknown): string => {
+    const code = err instanceof ApiError ? err.code : null;
+    if (code === 'write_tool_name_invalid') {
+      return t('bindings.errors.writeToolNameInvalid', { detail: errText(err) });
+    }
+    if (code === 'write_rate_limit_out_of_range' || code === 'write_rate_limit_invalid_type') {
+      return t('bindings.writeRateInvalid');
+    }
+    return errText(err);
+  };
+
+  // #1949 — "Active" only for a binding that can actually be used: enabled AND
+  // its key can still authenticate. A dead key gets its own badge.
+  const keyIsDead = (b: PublicMcpKeyBinding): boolean =>
+    (b.warnings ?? []).some((w) => w.code !== 'agent_id_unknown');
 
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.intro')}</p>
       <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.keyIdHint')}</p>
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+      {savedReplaced ? (
+        <div className="text-xs text-[color:var(--fg-muted)]">{t('bindings.replaced')}</div>
+      ) : null}
       {savedWarnings.length > 0 ? (
         <div className="flex flex-col gap-0.5 rounded-md border border-[color:var(--warning)] bg-[color:var(--warning)]/[0.06] px-3 py-2">
           {savedWarnings.map((w) => (
@@ -2307,9 +2348,12 @@ function BindingsPane(): React.ReactElement {
           <input
             type="number"
             min={0}
-            max={600}
+            max={MAX_BINDING_WRITE_RATE}
+            step={1}
+            required
             value={writeRate}
             onChange={(e) => setWriteRate(e.target.value)}
+            aria-invalid={writeRateInvalid}
             className={inputCls}
           />
         </label>
@@ -2323,6 +2367,12 @@ function BindingsPane(): React.ReactElement {
           {t('bindings.save')}
         </Button>
       </div>
+      {writeRateInvalid ? (
+        <p className="text-xs text-[color:var(--danger)]">{t('bindings.writeRateInvalid')}</p>
+      ) : null}
+      {writeRateBlocksWrites ? (
+        <p className="text-xs text-[color:var(--warning)]">{t('bindings.writeRateZero')}</p>
+      ) : null}
       <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.writeToolsHint')}</p>
 
       {!bindings ? (
@@ -2346,12 +2396,18 @@ function BindingsPane(): React.ReactElement {
             </div>
             <span
               className={
-                b.enabled
-                  ? 'rounded-md border border-[color:var(--border)] px-2 py-0.5 text-[10px] text-[color:var(--success)]'
-                  : 'rounded-md border border-[color:var(--danger-edge)] px-2 py-0.5 text-[10px] text-[color:var(--danger)]'
+                !b.enabled
+                  ? 'rounded-md border border-[color:var(--danger-edge)] px-2 py-0.5 text-[10px] text-[color:var(--danger)]'
+                  : keyIsDead(b)
+                    ? 'rounded-md border border-[color:var(--warning)] px-2 py-0.5 text-[10px] text-[color:var(--warning)]'
+                    : 'rounded-md border border-[color:var(--border)] px-2 py-0.5 text-[10px] text-[color:var(--success)]'
               }
             >
-              {b.enabled ? t('bindings.enabled') : t('bindings.parked')}
+              {!b.enabled
+                ? t('bindings.parked')
+                : keyIsDead(b)
+                  ? t('bindings.keyInactive')
+                  : t('bindings.enabled')}
             </span>
           </div>
           {b.warnings && b.warnings.length > 0 ? (
@@ -2426,6 +2482,32 @@ function BindingsPane(): React.ReactElement {
         }}
       />
 
+      {/* #1949 — a key has one binding; saving over it replaces agent, tools
+          and budget, so that is confirmed with what would be lost. */}
+      <ConfirmDialog
+        open={confirmReplace !== null}
+        title={t('bindings.replaceTitle')}
+        body={
+          confirmReplace
+            ? t('bindings.replaceBody', {
+                keyId: confirmReplace.keyId,
+                agent: confirmReplace.agentId,
+                tools:
+                  [...confirmReplace.readTools, ...confirmReplace.writeTools].join(', ') ||
+                  t('bindings.none'),
+              })
+            : undefined
+        }
+        confirmLabel={t('bindings.replaceConfirm')}
+        cancelLabel={t('cancel')}
+        tone="danger"
+        onCancel={() => setConfirmReplace(null)}
+        onConfirm={() => {
+          setConfirmReplace(null);
+          void save(true);
+        }}
+      />
+
       {/* Un-parking hands a third-party key its whole allowlist back, so it is
           confirmed exactly like the revoke that parked it. */}
       <ConfirmDialog
@@ -2450,6 +2532,30 @@ function BindingsPane(): React.ReactElement {
       />
     </div>
   );
+}
+
+/** The binding form's write budget: a whole number in 0…600, else `undefined`. */
+function parseWriteRate(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const n = Number(trimmed);
+  return n <= MAX_BINDING_WRITE_RATE ? n : undefined;
+}
+
+/** Mirrors `MAX_WRITE_RATE_LIMIT_PER_MINUTE` (migration 0033's CHECK). */
+const MAX_BINDING_WRITE_RATE = 600;
+
+/** #1949 — the stored binding from a 409 `binding_exists`, or `null`. */
+function parseBindingExists(err: unknown): PublicMcpKeyBinding | null {
+  if (!(err instanceof ApiError) || err.status !== 409 || err.code !== 'binding_exists') {
+    return null;
+  }
+  try {
+    const body = JSON.parse(err.body) as { binding?: PublicMcpKeyBinding };
+    return body.binding ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Comma- or newline-separated, trimmed, blanks dropped. The server rejects an

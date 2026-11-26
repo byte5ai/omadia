@@ -5302,8 +5302,20 @@
       "restoreBody": "The key {keyId} immediately regains everything on this row: {tools}.",
       "restoreConfirm": "Restore",
       "warnings": {
-        "keyUnknown": "No API key with this id exists yet. The binding was saved, but it reaches nothing until such a key is created — double-check the id for a typo.",
-        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent."
+        "keyUnknown": "No API key with this id exists. The binding reaches nothing until such a key is created — check the id for a typo.",
+        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent.",
+        "keyRevoked": "The API key of this binding was revoked, so the binding reaches nothing.",
+        "keyExpired": "The API key of this binding has expired, so the binding reaches nothing."
+      },
+      "keyInactive": "Key inactive",
+      "replaced": "The existing binding of this key was replaced.",
+      "replaceTitle": "Replace the existing binding?",
+      "replaceBody": "The key {keyId} is already bound to {agent} with the tools {tools}. Saving replaces agent, tools and write budget of that binding.",
+      "replaceConfirm": "Replace binding",
+      "writeRateInvalid": "Enter a whole number from 0 to 600 for the write budget.",
+      "writeRateZero": "A write budget of 0 blocks every call to the write tools.",
+      "errors": {
+        "writeToolNameInvalid": "A write tool name can only contain letters, digits, “_” and “-” (at most 64 characters), otherwise it can never be granted as a write scope. ({detail})"
       }
     },
     "plugins": {
@@ -5667,7 +5679,7 @@
         "plugin": "Plugin scope"
       },
       "mcpWriteToolsHint": "Comma-separated tool names. Each name grants the scope {prefix}name for exactly that tool.",
-      "mcpWriteToolsInvalid": "Tool names may contain only lowercase letters, digits, “_” and “-”, starting with a letter.",
+      "mcpWriteToolsInvalid": "Tool names may contain only letters, digits, “_” and “-” (at most 64 characters).",
       "expiryInvalid": "The expiry date must lie in the future.",
       "scopesUnavailable": "The scope list could not be loaded, so only chat:write is offered."
     },

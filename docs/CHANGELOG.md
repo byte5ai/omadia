@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — public MCP endpoint: write limits, usage log, tool errors, binding writes (#1935–#1938, #1940, #1949, #1952) (2026-11-26)
+
+- **#1935** A changed write limit applies on the next call: `createRateLimiter` reads the
+  capacity per call instead of pinning it on first sight. The bindings form refuses an empty
+  or out-of-range write budget and warns that `0` blocks every write.
+- **#1936** Every authenticated `POST /api/v1/mcp` writes one entry to the key's usage log
+  (`publicMcpUsage.ts`; outcome `ok`, `error`, `forbidden`, `rate_limited`), so an MCP-only key
+  shows "last used" on `/admin/api-keys`.
+- **#1937** A tool that reports an error (MCP `isError`, upstream JSON-RPC error, missing OAuth
+  connection) is answered as an `isError` result with a generic text and logged as
+  "tool reported an error", not as "privacy masking did not run". ADR-0212 (Proposed)
+  supersedes that bullet of ADR-0142. `ToolDispatchService` now flags guarded control-flow
+  results `isError` (the loopback MCP server forwards the flag).
+- **#1938** A tool listed under a binding's write tools gets the idempotency replay too
+  (`ToolDispatchOptions.treatAsWrite`).
+- **#1940** `mcp:write:<tool>` accepts `[A-Za-z0-9_-]{1,64}` (upper case kept, as
+  `mcpNativeToolName` produces it); a binding refuses write tools outside that grammar
+  (`write_tool_name_invalid`).
+- **#1949** Saving over an existing binding needs `replace: true` (409 `binding_exists`
+  otherwise; the pane asks first). Revoked and expired keys get their own warnings
+  (`key_revoked`, `key_expired`) and no "Active" badge.
+- **#1952** `/api/v1/mcp/` reaches the endpoint, `serverInfo.version` is the build version,
+  README status codes corrected, `PUBLIC_MCP_*` in `.env.example` and handoff §10.
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
 
 The auto-rebuild scheduler and the preview routes now share one build-and-warm

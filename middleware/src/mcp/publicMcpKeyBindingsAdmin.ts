@@ -36,6 +36,8 @@
 
 import type { Pool } from 'pg';
 
+import { isValidMcpWriteToolName } from '@omadia/api-key-auth';
+
 import { normalizeBindingRow } from './publicMcpKeyBindings.js';
 
 /** The schema's `CHECK (write_rate_limit_per_minute BETWEEN 0 AND 600)`,
@@ -167,6 +169,22 @@ export function validateBindingInput(input: PublicMcpKeyBindingInput): BindingVa
         message: `writeRateLimitPerMinute must be an integer between 0 and ${String(
           MAX_WRITE_RATE_LIMIT_PER_MINUTE,
         )}`,
+      },
+    };
+  }
+
+  // #1940 — a write tool is reachable only with `mcp:write:<tool>`, and a name
+  // outside that scope grammar can never be granted: saving it would store a
+  // write tool nobody can call. Refused here, naming the offenders.
+  const ungrantable = input.writeTools.filter(
+    (name) => typeof name === 'string' && !isValidMcpWriteToolName(name),
+  );
+  if (ungrantable.length > 0) {
+    return {
+      ok: false,
+      error: {
+        code: 'write_tool_name_invalid',
+        message: `write tools must match [A-Za-z0-9_-]{1,64} to be grantable as mcp:write:<tool>: ${ungrantable.join(', ')}`,
       },
     };
   }

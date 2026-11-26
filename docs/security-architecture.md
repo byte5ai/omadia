@@ -2014,7 +2014,7 @@ came in:
 | Entry point | Handle a sub-agent's model loop runs under | Tool errors on any model wire |
 |---|---|---|
 | Chat turn (`Orchestrator`, privacy provider installed) | The turn's handle, inherited through `turnContext` | Withheld or redacted at every seam, receipted |
-| Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a refusal for a returned `Error:` text |
+| Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a generic `isError` result without the tool's text for a returned `Error:` text (ADR-0212) |
 | Loopback MCP for the subscription CLI | None (§3a, #1087) | Raw — see Residuals |
 | Any path without a privacy provider | None | Raw (parity) |
 

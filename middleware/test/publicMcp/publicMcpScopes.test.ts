@@ -47,8 +47,16 @@ describe('MCP scopes — shape', () => {
     assert.equal(isValidScope('odoo:write:invoice'), false);
     assert.equal(isValidScope('mcp:read:thing'), false);
     assert.equal(isValidScope('mcp:write:'), false);
-    assert.equal(isValidScope('mcp:write:Create_Lead'), false);
-    assert.equal(isValidScope('mcp:write:1tool'), false);
+    assert.equal(isValidScope('mcp:write:bad.tool'), false);
+    assert.equal(isValidScope(`mcp:write:${'a'.repeat(65)}`), false);
+  });
+
+  // #1940 — the tool segment follows the tool-name grammar, upper case kept,
+  // so an external MCP tool such as `mcp__crm__createLead` can be granted.
+  it('admits upper case and a leading digit in the tool segment', () => {
+    assert.equal(isValidScope('mcp:write:mcp__crm__createLead'), true);
+    assert.equal(isValidScope('mcp:write:Create_Lead'), true);
+    assert.equal(isValidScope('mcp:write:1tool'), true);
   });
 
   /**
@@ -173,6 +181,6 @@ describe('MCP scopes — persisted-record normalization', () => {
       [...assertValidScopes([MCP_LIST_SCOPE, MCP_INVOKE_SCOPE, 'mcp:write:create_lead'])].sort(),
       ['mcp:invoke', 'mcp:list', 'mcp:write:create_lead'],
     );
-    assert.throws(() => assertValidScopes(['mcp:write:Create_Lead']), /invalid API-key scope/);
+    assert.throws(() => assertValidScopes(['mcp:write:Create Lead']), /invalid API-key scope/);
   });
 });

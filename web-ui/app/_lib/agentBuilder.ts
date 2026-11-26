@@ -1266,7 +1266,9 @@ export async function exportSkill(id: string): Promise<string> {
  *  stable, locale-independent discriminator the pane renders from; `message` is
  *  the server's English fallback, for API consumers and logs. */
 export interface PublicMcpKeyBindingWarning {
-  code: 'key_id_unknown' | 'agent_id_unknown';
+  /** #1949 — `key_revoked`/`key_expired`: the key exists but cannot
+   *  authenticate; only `key_id_unknown` can be a typo. */
+  code: 'key_id_unknown' | 'key_revoked' | 'key_expired' | 'agent_id_unknown';
   message: string;
 }
 
@@ -1298,6 +1300,9 @@ export interface UpsertPublicMcpKeyBindingInput {
    *  RE-ARMS a revoked key, so this pane never sends it implicitly — un-parking
    *  goes through `restorePublicMcpKeyBinding` instead. */
   enabled?: boolean;
+  /** #1949 — overwrite an existing binding of this key. Without it the server
+   *  answers 409 `binding_exists` with the stored binding. */
+  replace?: boolean;
 }
 
 export async function listPublicMcpKeyBindings(): Promise<PublicMcpKeyBindingsResponse> {

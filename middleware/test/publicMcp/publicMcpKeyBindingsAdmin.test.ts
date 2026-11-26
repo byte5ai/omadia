@@ -357,8 +357,8 @@ function existenceOf(
     async knownAgentIds() {
       return agents ? new Set(agents) : undefined;
     },
-    async knownKeyIds() {
-      return keys ? new Set(keys) : undefined;
+    async keyStates() {
+      return keys ? new Map(keys.map((k) => [k, 'active' as const])) : undefined;
     },
   };
 }
@@ -624,7 +624,11 @@ describe('a revoked binding survives an upsert that omits `enabled`', () => {
 
       assert.equal((await fetch(`${url}/key-1/revoke`, { method: 'POST' })).status, 200);
 
-      const resaved = await postBinding(url, { ...VALID_INPUT, writeTools: ['create_lead'] });
+      const resaved = await postBinding(url, {
+        ...VALID_INPUT,
+        writeTools: ['create_lead'],
+        replace: true,
+      });
       assert.equal(
         resaved.status,
         200,
@@ -646,7 +650,7 @@ describe('a revoked binding survives an upsert that omits `enabled`', () => {
       await postBinding(url, VALID_INPUT);
       await fetch(`${url}/key-1/revoke`, { method: 'POST' });
 
-      const res = await postBinding(url, { ...VALID_INPUT, enabled: true });
+      const res = await postBinding(url, { ...VALID_INPUT, enabled: true, replace: true });
       assert.equal(res.status, 200);
       assert.equal(((await res.json()) as { binding: { enabled: boolean } }).binding.enabled, true);
     });
@@ -997,5 +1001,90 @@ describe('the writer sets updated_at explicitly (migration 0033 has no trigger)'
     await store.upsert(VALID_INPUT);
     assert.equal(await store.remove('key-1'), true);
     assert.equal(await store.remove('key-1'), false);
+  });
+});
+
+// ── #1949: replace needs consent; dead keys are named, not called typos ─────
+
+describe('publicMcpBindingsRouter — #1949 replace and key state', () => {
+  const auth = alwaysValidOperatorAuth();
+
+  it('POST over an existing binding without replace → 409 binding_exists, row untouched', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter({ store, operatorAuth: auth }, async (url) => {
+      assert.equal((await postBinding(url, VALID_INPUT)).status, 201);
+      const res = await postBinding(url, { ...VALID_INPUT, readTools: ['other_tool'] });
+      assert.equal(res.status, 409);
+      const body = (await res.json()) as { code: string; binding: { readTools: string[] } };
+      assert.equal(body.code, 'binding_exists');
+      assert.deepEqual(body.binding.readTools, [...VALID_INPUT.readTools]);
+      const [row] = await store.list();
+      assert.deepEqual(row?.readTools, [...VALID_INPUT.readTools], 'nothing was overwritten');
+    });
+  });
+
+  it('POST with replace: true overwrites and answers 200', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter({ store, operatorAuth: auth }, async (url) => {
+      await postBinding(url, VALID_INPUT);
+      const res = await postBinding(url, { ...VALID_INPUT, readTools: ['other_tool'], replace: true });
+      assert.equal(res.status, 200);
+      const [row] = await store.list();
+      assert.deepEqual(row?.readTools, ['other_tool']);
+    });
+  });
+
+  it('a non-boolean replace is a 400', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter({ store, operatorAuth: auth }, async (url) => {
+      const res = await postBinding(url, { ...VALID_INPUT, replace: 'yes' });
+      assert.equal(res.status, 400);
+      assert.equal(((await res.json()) as { code: string }).code, 'replace_invalid_type');
+    });
+  });
+
+  it('revoked and expired keys get their own warning code, unknown keys keep key_id_unknown', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    const existence: BindingExistenceCheck = {
+      async knownAgentIds() {
+        return new Set(['sales']);
+      },
+      async keyStates() {
+        return new Map([
+          ['key-revoked', 'revoked' as const],
+          ['key-expired', 'expired' as const],
+          ['key-live', 'active' as const],
+        ]);
+      },
+    };
+    await store.upsert({ ...VALID_INPUT, keyId: 'key-revoked' });
+    await store.upsert({ ...VALID_INPUT, keyId: 'key-expired' });
+    await store.upsert({ ...VALID_INPUT, keyId: 'key-live' });
+    await store.upsert({ ...VALID_INPUT, keyId: 'key-gone' });
+    await withRouter({ store, operatorAuth: auth, existence }, async (url) => {
+      const { bindings } = (await (await fetch(url)).json()) as {
+        bindings: { keyId: string; warnings?: { code: string }[] }[];
+      };
+      const codes = Object.fromEntries(
+        bindings.map((b) => [b.keyId, (b.warnings ?? []).map((w) => w.code)]),
+      );
+      assert.deepEqual(codes['key-revoked'], ['key_revoked']);
+      assert.deepEqual(codes['key-expired'], ['key_expired']);
+      assert.deepEqual(codes['key-live'], []);
+      assert.deepEqual(codes['key-gone'], ['key_id_unknown']);
+    });
+  });
+});
+
+describe('validateBindingInput — #1940 write tool grammar', () => {
+  it('accepts upper case in a write tool name', () => {
+    const result = validateBindingInput({ ...VALID_INPUT, writeTools: ['mcp__crm__createLead'] });
+    assert.equal(result.ok, true);
+  });
+
+  it('refuses a write tool that can never be granted as mcp:write:<tool>', () => {
+    const result = validateBindingInput({ ...VALID_INPUT, writeTools: ['bad.tool name'] });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? '' : result.error.code, 'write_tool_name_invalid');
   });
 });

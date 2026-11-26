@@ -5305,6 +5305,13 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 | `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
 
+### Öffentlicher MCP-Endpunkt (#542, #1952, ADR-0142/0143)
+
+| Variable | Wirkung |
+|---|---|
+| `PUBLIC_MCP_ENABLED` | `true`/`false`, Default `false`. Mountet `POST /api/v1/mcp` (auch mit einem abschließenden `/`). Aus: keine Route. `serverInfo.version` ist die Build-Version (`OMADIA_VERSION`, sonst `unknown`). Jede authentifizierte Anfrage landet im Usage-Log des Keys (`/admin/api-keys`, #1936). |
+| `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING` | `true`/`false`, Default `false`. Ohne Privacy-Provider lehnt `tools/call` sonst jeden Aufruf ab. Nur für Installationen, deren freigegebene Tools nachweislich keine Personendaten tragen. |
+
 Die Outbound-Regel für operator-konfigurierte MCP-Ziele (Registry-URL, `http`-/`sse`-Endpoint) hat keine Env-Variable: Link-Local- und Cloud-Metadata-Ziele werden immer abgewiesen (400 bzw. 502 mit `code: blocked_host`), private und Loopback-Adressen bleiben erlaubt.
 
 ### Test-Schalter (nicht von der Middleware gelesen)

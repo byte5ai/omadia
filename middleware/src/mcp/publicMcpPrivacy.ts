@@ -49,7 +49,9 @@
  * (class name, sanitised code, the request id as log ref — `origin:
  * 'dispatcher'`, so it is served as the error it is). A returned `Error:` text
  * is never served: the gate answers tool-error redaction with `withheld`, and
- * the result is refused like any other unmasked one.
+ * `PublicMcpServer` answers the call with a generic `isError` result that
+ * names only the tool (ADR-0212, #1937), dropping whatever text the
+ * dispatcher produced.
  *
  * Model calls INSIDE a tool: a domain tool wraps a sub-agent with its own model
  * loop. `ToolDispatchService` runs the handler with `handle.forNestedCalls()` as
@@ -160,8 +162,9 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
 
     /**
      * Pinned to `withheld`. For the call's own result: a redacted text still
-     * would not set `didMask`, so `assertMaskingCrossed` would discard it
-     * anyway; answering `withheld` makes that fail-closed outcome explicit and
+     * would not set `didMask`, and `PublicMcpServer` replaces a tool error's
+     * text with its generic answer anyway (ADR-0212); answering `withheld` makes
+     * that explicit and
      * spends no detector — or C1 sidecar call — on text that is never served.
      * For a sub-agent's inner tool error: the sub-agent model gets the
      * withheld notice instead of a redacted hint, and no per-turn detector

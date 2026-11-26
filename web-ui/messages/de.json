@@ -5302,8 +5302,20 @@
       "restoreBody": "Der Key {keyId} erhält sofort alles zurück, was auf dieser Zeile steht: {tools}.",
       "restoreConfirm": "Wiederherstellen",
       "warnings": {
-        "keyUnknown": "Es existiert noch kein API-Key mit dieser ID. Das Binding wurde gespeichert, erreicht aber nichts, solange kein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
-        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten."
+        "keyUnknown": "Es gibt keinen API-Key mit dieser ID. Das Binding erreicht nichts, bis ein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
+        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten.",
+        "keyRevoked": "Der API-Key dieses Bindings wurde widerrufen, daher erreicht das Binding nichts.",
+        "keyExpired": "Der API-Key dieses Bindings ist abgelaufen, daher erreicht das Binding nichts."
+      },
+      "keyInactive": "Key inaktiv",
+      "replaced": "Das bisherige Binding dieses Keys wurde ersetzt.",
+      "replaceTitle": "Bestehendes Binding ersetzen?",
+      "replaceBody": "Der Key {keyId} ist bereits an {agent} gebunden, mit den Tools {tools}. Speichern ersetzt Agent, Tools und Schreib-Budget dieses Bindings.",
+      "replaceConfirm": "Binding ersetzen",
+      "writeRateInvalid": "Gib für das Schreib-Budget eine ganze Zahl von 0 bis 600 ein.",
+      "writeRateZero": "Ein Schreib-Budget von 0 blockiert jeden Aufruf der Schreib-Tools.",
+      "errors": {
+        "writeToolNameInvalid": "Ein Schreib-Tool-Name darf nur Buchstaben, Ziffern, „_“ und „-“ enthalten (höchstens 64 Zeichen), sonst lässt er sich nie als Schreib-Scope vergeben. ({detail})"
       }
     },
     "plugins": {
@@ -5667,7 +5679,7 @@
         "plugin": "Plugin-Scope"
       },
       "mcpWriteToolsHint": "Tool-Namen, durch Kommas getrennt. Jeder Name gewährt den Scope {prefix}name für genau dieses Tool.",
-      "mcpWriteToolsInvalid": "Tool-Namen dürfen nur Kleinbuchstaben, Ziffern, „_“ und „-“ enthalten und müssen mit einem Buchstaben beginnen.",
+      "mcpWriteToolsInvalid": "Tool-Namen dürfen nur Buchstaben, Ziffern, „_“ und „-“ enthalten (höchstens 64 Zeichen).",
       "expiryInvalid": "Das Ablaufdatum muss in der Zukunft liegen.",
       "scopesUnavailable": "Die Scope-Liste konnte nicht geladen werden, daher wird nur chat:write angeboten."
     },
