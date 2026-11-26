@@ -31,6 +31,7 @@ import { config, registrySeedFromEnv } from './config.js';
 import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
+import type { AttachmentBindingStore } from '@omadia/orchestrator';
 import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
 import { adminTokenThrottleWarnings, createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
 import { parseClientAddressPolicy } from './auth/clientAddress.js';
@@ -572,7 +573,10 @@ import {
   createLateBoundAttachmentBindingStore,
   createLateBoundGrantStore,
 } from './audience/lateBoundGrantStore.js';
-import { PostgresAttachmentBindingStore } from './audience/postgresAttachmentBindingStore.js';
+import {
+  InMemoryAttachmentBindingStore,
+  PostgresAttachmentBindingStore,
+} from './audience/postgresAttachmentBindingStore.js';
 import { PostgresGrantStore } from './audience/postgresGrantStore.js';
 import { createAudienceGrantRouter } from './audience/routes.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
@@ -1624,7 +1628,18 @@ async function main(): Promise<void> {
   // Nothing is published when the operator switched the floor off, and that
   // absence is what keeps the three guards inert ("not enforced ≠ closed").
   let audienceGrantStoreRef: PostgresGrantStore | undefined;
-  let attachmentBindingStoreRef: PostgresAttachmentBindingStore | undefined;
+  // #575 pins each attachment handle to the room that minted it. Since #1960
+  // (ADR-0178) this is chat isolation, not an audience rule: it applies with
+  // the floor on or off, and a read needs a binding written when a channel
+  // adapter stated the upload. Postgres keeps the pins; without it they live
+  // in memory for the process lifetime (dev / single-instance desktop).
+  let attachmentBindingStoreRef: AttachmentBindingStore | undefined = config.DATABASE_URL
+    ? undefined
+    : new InMemoryAttachmentBindingStore();
+  serviceRegistry.provide(
+    'attachmentBindings',
+    createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
+  );
   if (config.AUDIENCE_FLOOR_ENABLED) {
     const storedGrants = config.DATABASE_URL
       ? createLateBoundGrantStore(() => audienceGrantStoreRef)
@@ -1640,14 +1655,6 @@ async function main(): Promise<void> {
       );
     }
     serviceRegistry.provide('audienceGrants', audienceGrants);
-    // #575 — pins each attachment handle to the room that minted it. Same flag,
-    // because it is the same policy; it needs Postgres to remember the pins.
-    if (config.DATABASE_URL) {
-      serviceRegistry.provide(
-        'attachmentBindings',
-        createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
-      );
-    }
     console.log(
       `[middleware] audience floor ENABLED (baseline=${config.AUDIENCE_BASELINE_GRANTS}, grants=${
         config.DATABASE_URL ? 'Postgres' : 'baseline only'
@@ -2754,9 +2761,11 @@ async function main(): Promise<void> {
     }
     if (graphPool && audienceGrantStore) {
       audienceGrantStoreRef = audienceGrantStore;
-      attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
     }
   }
+  attachmentBindingStoreRef = graphPool
+    ? new PostgresAttachmentBindingStore(graphPool)
+    : (attachmentBindingStoreRef ?? new InMemoryAttachmentBindingStore());
 
   /**
    * Team display-name lookup, feature-detected per call against whatever

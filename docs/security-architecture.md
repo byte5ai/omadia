@@ -1389,6 +1389,19 @@ only its own key layout (`documents/<tenant>/<sha256>/<file>` vs
 `<tenant>/<sha256>.png`). Revoking one route's public-path grant therefore ends
 session-less access to that plugin's objects; the other route does not serve them.
 
+## 5-1. Stored attachments: stated by the adapter, bound at upload (#1960, #1962, ADR-0178)
+
+A storage key is a string; anyone who saw a download link knows one. So the kernel reads a key
+only when a **channel adapter** stated it as an upload in the turn it arrived
+(`ChatTurnInput.storedAttachments`, never text parsed from the message) and only in that
+conversation: the ingest binds each stated key to the turn's room first (first binding wins), and
+`readByStorageKey` refuses every key not bound to the current room with the ordinary "not found".
+Office reports and diagrams are never bound, so they are reachable only through their signed
+links, never through `read_attachment`; that keeps the tool's intern exemption ("the user's own
+upload") true. The binding store is always published (Postgres, else in-memory), independent of
+the audience floor. Migration `0114` removed bindings that the old bind-on-first-read had created
+for generated outputs.
+
 ## 5a. Office exports: formula cells carry no caller-supplied value
 
 `create_xlsx` (`@omadia/plugin-office`) writes descriptor formulas into the

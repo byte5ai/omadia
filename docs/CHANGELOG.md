@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
+
+- `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the
+  only source of storage keys the turn ingests. The `[attachments-info]` text parser
+  (`attachmentsInfo.ts`) is gone: a block typed into a message reads nothing, on any channel.
+- Each stated upload is bound to the turn's conversation before it is read
+  (`AttachmentReader.bindToCurrentConversation`). A read no longer binds; `read_attachment` and the
+  ingest serve only keys bound to the current conversation and answer "not found" otherwise
+  (unbound keys, Office/Diagrams output, other chats, `http-default`).
+- The `attachmentBindings` store is published with the audience floor on or off (Postgres, else
+  in-memory).
+- **Migration `0114_attachment_bindings_drop_generated_outputs`** deletes bindings for the Office
+  (`documents/<tenant>/<sha256>/<file>`) and Diagrams (`<tenant>/<sha256>.png`) layouts, which only
+  a foreign first read could have created.
+- Needs the omadia-channel-teams release after 0.45.1 (sets `storedAttachments`); older Teams versions get no
+  auto-ingest of uploads until updated.
+
 ### Security — Office and Diagrams outputs stay with their turn; signed links are route-bound (#1961, #1979, ADR-0176, ADR-0177) (2026-11-26)
 
 - `create_xlsx` / `create_docx` files and `render_diagram` images are filed under the id of

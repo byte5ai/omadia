@@ -19,6 +19,7 @@ import {
   Orchestrator,
 } from '@omadia/orchestrator';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
+import { statedUploads } from './_helpers/statedUploads.js';
 
 const providerCapabilities = {
   tools: true,
@@ -104,7 +105,7 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
     });
 
     await orch.runTurn({
-      userMessage: CSV_MANIFEST,
+      userMessage: CSV_MANIFEST, storedAttachments: statedUploads(CSV_MANIFEST),
       sessionScope: 'sess-1',
       userId: 'aad-oid-123', // raw channel-native id, as the real dispatcher sets it
       channelIdentity: { channelKind: 'teams', channelUserId: 'aad-oid-123' },
@@ -127,7 +128,7 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
     const orch = new Orchestrator(options(requests, graph));
 
     await orch.runTurn({
-      userMessage: CSV_MANIFEST,
+      userMessage: CSV_MANIFEST, storedAttachments: statedUploads(CSV_MANIFEST),
       sessionScope: 'sess-1',
       userId: 'a1b2c3d4-0000-0000-0000-000000000001', // already-canonical uuid, e.g. from req.session.omadia_user_id
     });
@@ -152,7 +153,7 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
     const orch = new Orchestrator(options(requests, graph));
 
     await orch.runTurn({
-      userMessage: CSV_MANIFEST,
+      userMessage: CSV_MANIFEST, storedAttachments: statedUploads(CSV_MANIFEST),
       sessionScope: 'sess-1',
       userId: 'a1b2c3d4-0000-0000-0000-000000000002',
     });
@@ -181,7 +182,7 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
     const graph = new InMemoryKnowledgeGraph();
     const orch = new Orchestrator(options(requests, graph));
 
-    await orch.runTurn({ userMessage: CSV_MANIFEST, sessionScope: 'sess-1' });
+    await orch.runTurn({ userMessage: CSV_MANIFEST, storedAttachments: statedUploads(CSV_MANIFEST), sessionScope: 'sess-1' });
 
     const stats = await graph.stats();
     assert.equal(stats.byNodeType['PluginEntity'] ?? 0, 0, 'no Dataset node should have been created');
