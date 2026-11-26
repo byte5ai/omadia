@@ -172,6 +172,7 @@ export type {
   ChatStreamObserver,
   ChatTurnInput,
   ChatTurnAttachment,
+  StoredTurnAttachment,
   ChatTurnResult,
   VerifierResultSummary,
   VerifierSummaryReason,

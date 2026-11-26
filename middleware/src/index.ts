@@ -31,6 +31,7 @@ import { config, registrySeedFromEnv } from './config.js';
 import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
+import type { AttachmentBindingStore } from '@omadia/orchestrator';
 import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
 import { adminTokenThrottleWarnings, createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
 import { parseClientAddressPolicy } from './auth/clientAddress.js';
@@ -285,6 +286,7 @@ import { PreviewRuntime } from './plugins/builder/previewRuntime.js';
 import { PreviewCache } from './plugins/builder/previewCache.js';
 import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
+import { warmPreview } from './plugins/builder/previewWarmBuild.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
 import { PreviewDraftAgents } from './plugins/builder/previewDraftAgents.js';
 import {
@@ -352,6 +354,7 @@ import {
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 import {
+  createOptionalSession,
   createRequireAuth,
   createSessionGate,
   evaluateSessionToken,
@@ -404,7 +407,7 @@ import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
 } from './auth/platformSettings.js';
-import { initSetupToken, PgSetupTokenStore } from './auth/setupToken.js';
+import { initSetupToken, isDesktopLoopbackKernel, PgSetupTokenStore } from './auth/setupToken.js';
 import {
   describeTrustedProxies,
   parseTrustedProxies,
@@ -571,7 +574,10 @@ import {
   createLateBoundAttachmentBindingStore,
   createLateBoundGrantStore,
 } from './audience/lateBoundGrantStore.js';
-import { PostgresAttachmentBindingStore } from './audience/postgresAttachmentBindingStore.js';
+import {
+  InMemoryAttachmentBindingStore,
+  PostgresAttachmentBindingStore,
+} from './audience/postgresAttachmentBindingStore.js';
 import { PostgresGrantStore } from './audience/postgresGrantStore.js';
 import { createAudienceGrantRouter } from './audience/routes.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
@@ -1624,7 +1630,18 @@ async function main(): Promise<void> {
   // Nothing is published when the operator switched the floor off, and that
   // absence is what keeps the three guards inert ("not enforced ≠ closed").
   let audienceGrantStoreRef: PostgresGrantStore | undefined;
-  let attachmentBindingStoreRef: PostgresAttachmentBindingStore | undefined;
+  // #575 pins each attachment handle to the room that minted it. Since #1960
+  // (ADR-0178) this is chat isolation, not an audience rule: it applies with
+  // the floor on or off, and a read needs a binding written when a channel
+  // adapter stated the upload. Postgres keeps the pins; without it they live
+  // in memory for the process lifetime (dev / single-instance desktop).
+  let attachmentBindingStoreRef: AttachmentBindingStore | undefined = config.DATABASE_URL
+    ? undefined
+    : new InMemoryAttachmentBindingStore();
+  serviceRegistry.provide(
+    'attachmentBindings',
+    createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
+  );
   if (config.AUDIENCE_FLOOR_ENABLED) {
     const storedGrants = config.DATABASE_URL
       ? createLateBoundGrantStore(() => audienceGrantStoreRef)
@@ -1640,14 +1657,6 @@ async function main(): Promise<void> {
       );
     }
     serviceRegistry.provide('audienceGrants', audienceGrants);
-    // #575 — pins each attachment handle to the room that minted it. Same flag,
-    // because it is the same policy; it needs Postgres to remember the pins.
-    if (config.DATABASE_URL) {
-      serviceRegistry.provide(
-        'attachmentBindings',
-        createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
-      );
-    }
     console.log(
       `[middleware] audience floor ENABLED (baseline=${config.AUDIENCE_BASELINE_GRANTS}, grants=${
         config.DATABASE_URL ? 'Postgres' : 'baseline only'
@@ -2754,9 +2763,11 @@ async function main(): Promise<void> {
     }
     if (graphPool && audienceGrantStore) {
       audienceGrantStoreRef = audienceGrantStore;
-      attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
     }
   }
+  attachmentBindingStoreRef = graphPool
+    ? new PostgresAttachmentBindingStore(graphPool)
+    : (attachmentBindingStoreRef ?? new InMemoryAttachmentBindingStore());
 
   /**
    * Team display-name lookup, feature-detected per call against whatever
@@ -3414,14 +3425,22 @@ async function main(): Promise<void> {
                 // the raw <pre>; the block is stripped from the UI output.
                 const authBlock = (needsClient: boolean): string =>
                   `\n<mcp-auth-required serverId="${xmlAttr(server.id)}" server="${xmlAttr(server.name)}"${desc.issuerHost ? ` host="${xmlAttr(desc.issuerHost)}"` : ''} needsClient="${needsClient ? 'true' : 'false'}"></mcp-auth-required>`;
-                try {
-                  const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
-                  return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect (this opens the provider's login), then retry: ${authorizeUrl}${authBlock(false)}`;
-                } catch {
+                // #1908 (ADR-0175): no flow is started here and no authorize
+                // URL goes into the text. That URL carried a live `state`, and
+                // the text reaches the model, run contexts and group channels:
+                // whoever opened it could connect their provider account under
+                // this user. The Connect card starts the flow from the user's
+                // own session instead.
+                // Same rule as the auth-status route: only an issuer with no
+                // broker AND no stored client needs the one-time setup.
+                const storedClient =
+                  desc.issuer !== null ? await mcpAuditStore.getMcpOAuthClient(desc.issuer) : undefined;
+                if (!desc.brokered && desc.issuer !== null && storedClient === undefined) {
                   // Delegating server with no registered client yet — point
                   // the user at the one-time setup instead of a raw error.
                   return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
                 }
+                return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect in the chat (this opens the provider's login), then retry.${authBlock(false)}`;
               },
               // Vault-resolved config: secret headers (http) + env (stdio).
               ...(mcpConfigService
@@ -5025,6 +5044,11 @@ async function main(): Promise<void> {
   // after the operator-agents router. 503s without a graphPool (in-memory KG
   // backend). Writes route through ConfigStore/AgentGraphStore → notify →
   // registry.reload(), and we reload inline so the response reflects the diff.
+  //
+  // #1908 (ADR-0175): the MCP OAuth callback is a public path, so `requireAuth`
+  // waves it through without reading the cookie. Attach the session best-effort
+  // so the callback can refuse a completer other than the flow's starter.
+  app.use('/api/v1/operator/mcp-oauth/callback', createOptionalSession(sessionDeps));
   app.use(
     '/api/v1/operator',
     requireAuth,
@@ -5096,7 +5120,18 @@ async function main(): Promise<void> {
           serversHint: e.plugin.permissions_summary.mcp_servers_hint ?? [],
         })),
       // Generic MCP OAuth (epic #459 W9) — begin/callback/manual-client routes.
-      ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
+      ...(mcpOAuthService
+        ? {
+            mcpOAuth: mcpOAuthService,
+            mcpOAuthUserKey,
+            // #1908 (ADR-0175) — desktop only: the OS browser that finishes the
+            // flow has no session; the loopback kernel's caller is its user.
+            mcpOAuthSessionlessCallback: isDesktopLoopbackKernel({
+              desktopEmbedded: config.OMADIA_DESKTOP_EMBEDDED,
+              host: config.HOST,
+            }),
+          }
+        : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
       // Issue #1342 — stdio switch + durable trace of saved stdio servers.
@@ -7314,115 +7349,27 @@ async function main(): Promise<void> {
       previewCache.invalidate(userEmail, draftId);
     },
     rebuild: async (userEmail, draftId) => {
-      // B.6-6: emit build-status events on the spec bus so the Workspace
-      // header surfaces a live indicator for out-of-band rebuilds (PATCH
-      // /spec without a chat turn). The PreviewChatPane already gets
-      // build_status via PreviewStreamEvent during in-band turns; this
-      // bus path covers the rebuild-while-not-chatting case.
-      builderSpecBus.emit(draftId, { type: 'build_status', phase: 'building' });
-      try {
-        const handle = await previewCache.ensureWarm({
-          userEmail,
-          draftId,
-          build: async () => {
-            const result = await builderBuildPipeline.run({ userEmail, draftId });
-            if (!result.buildResult.ok) {
-              // Log stdout/stderr tails so we can diagnose `reason=unknown`
-              // failures from middleware.log instead of having to surface
-              // them through the SSE wire (B.6-12.1 diag).
-              console.log(
-                `[builder] auto-rebuild failed reason=${result.buildResult.reason} ` +
-                  `exit=${String(result.buildResult.exitCode)} ` +
-                  `errors=${String(result.buildResult.errors.length)} ` +
-                  `draft=${draftId}`,
-              );
-              if (result.buildResult.stdoutTail) {
-                console.log(
-                  `[builder] stdout-tail draft=${draftId}:\n${result.buildResult.stdoutTail}`,
-                );
-              }
-              if (result.buildResult.stderrTail) {
-                console.log(
-                  `[builder] stderr-tail draft=${draftId}:\n${result.buildResult.stderrTail}`,
-                );
-              }
-              builderSpecBus.emit(draftId, {
-                type: 'build_status',
-                phase: 'failed',
-                reason: result.buildResult.reason,
-                errorCount: result.buildResult.errors.length,
-                // Cap to 50 — SSE frame budget. Editor only needs enough
-                // to highlight the visible failures; the full list is
-                // available via the Preview-pane error view.
-                errors: result.buildResult.errors.slice(0, 50).map((e) => ({
-                  file: e.path,
-                  line: e.line,
-                  column: e.col,
-                  code: e.code,
-                  message: e.message,
-                })),
-              });
-              throw new Error(
-                `[builder] auto-rebuild failed for ${userEmail}/${draftId}: ${result.buildResult.reason}`,
-              );
-            }
-            // In vault-backed mode this lazy-loads any secrets persisted in
-            // a previous middleware run. No-op when the buffer is heap-only.
-            await previewSecretBuffer.warm(userEmail, draftId);
-            builderSpecBus.emit(draftId, {
-              type: 'build_status',
-              phase: 'ok',
-              buildN: result.buildN,
-            });
-            // Split buffer by field-type — same pattern as
-            // builderPreview.ensureWarmHandle. Pre-fix this used
-            // draft.slots as configValues (slots are code chunks, not
-            // config) so ctx.config.require('foo') always threw.
-            const allBufferValues = previewSecretBuffer.get(userEmail, draftId);
-            const setupFields = (result.draft.spec.setup_fields ?? []) as ReadonlyArray<unknown>;
-            const fieldByKey = new Map<string, string>();
-            for (const raw of setupFields) {
-              if (!raw || typeof raw !== 'object') continue;
-              const f = raw as { key?: unknown; type?: unknown };
-              if (typeof f.key !== 'string') continue;
-              fieldByKey.set(f.key, typeof f.type === 'string' ? f.type : 'string');
-            }
-            const splitConfigValues: Record<string, unknown> = {};
-            const splitSecretValues: Record<string, string> = {};
-            for (const [k, v] of Object.entries(allBufferValues)) {
-              const t = fieldByKey.get(k);
-              if (t === undefined) continue;
-              if (t === 'secret' || t === 'oauth') splitSecretValues[k] = v;
-              else splitConfigValues[k] = v;
-            }
-            return {
-              zipBuffer: result.buildResult.zip,
-              rev: result.buildN,
-              configValues: splitConfigValues,
-              secretValues: splitSecretValues,
-            };
-          },
-        });
-        // B.9-3: fire-and-forget runtime smoke after the auto-rebuild
-        // scheduler's path. Dedup'd per (draftId, rev) inside the
-        // orchestrator — no-op when the cache returned an unchanged handle.
-        builderRuntimeSmokeOrchestrator.attemptSmoke({
-          handle,
-          userEmail,
-          draftId,
-        });
-      } catch (err) {
-        // If `build:` was never invoked (cache short-circuited or something
-        // upstream threw), make sure we don't leave the UI stuck on
-        // "building". Re-emitting `failed` is safe — clients always treat
-        // the latest event as authoritative.
-        builderSpecBus.emit(draftId, {
-          type: 'build_status',
-          phase: 'failed',
-          reason: err instanceof Error ? err.message : String(err),
-        });
-        throw err;
-      }
+      // B.6-6: out-of-band rebuilds (PATCH /spec without a chat turn) report
+      // their build status on the spec bus. `warmPreview` emits every
+      // `build_status` exactly once (#1731/#1733/#1807/#1809); a thrown
+      // error here is already reported and only logged by the scheduler.
+      const handle = await warmPreview(
+        {
+          previewCache,
+          buildPipeline: builderBuildPipeline,
+          previewSecretBuffer,
+          bus: builderSpecBus,
+          logTag: 'auto-rebuild',
+        },
+        { userEmail, draftId },
+      );
+      // B.9-3: fire-and-forget runtime smoke. Dedup'd per (draftId, rev)
+      // inside the orchestrator — no-op on an unchanged handle.
+      builderRuntimeSmokeOrchestrator.attemptSmoke({
+        handle,
+        userEmail,
+        draftId,
+      });
     },
   });
 
@@ -8028,6 +7975,10 @@ async function main(): Promise<void> {
     operatorAuth,
     eventCatalogRegistry,
     resolver: channelPluginResolver,
+    // omadia#838 — channels that declare `permissions.sql` get the grant
+    // check and kernel-run migrations of ADR-0050, like the tool runtime.
+    sqlGrantStore,
+    packagePathOf: (agentId) => channelPluginResolver.packagePathOf(agentId),
     coreApi: channelCoreApi,
     routes: routeRegistry,
     webSockets: webSocketRegistry,

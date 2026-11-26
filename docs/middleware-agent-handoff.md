@@ -4863,6 +4863,28 @@ Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test
 `test/builder/builderChatRoutes.test.ts` (§ #2214), Web-UI
 `BuilderChatPane.stop.test.tsx`.
 
+### Security-Fasttrack W00 (Welle 5, 2026-11-26; ADR 0175–0178)
+
+- **MCP-OAuth-Callback (#1908, ADR-0175).** `completeAuthorization(state, code, iss,
+  completingUserKeyFor)` speichert nur, wenn die abschließende Session auf den Starter des Flows
+  abbildet; sonst `McpOAuthCompleterMismatchError` (403, nichts gespeichert). Der Callback bleibt
+  Public Path; `createOptionalSession` (`auth/requireAuth.ts`) hängt eine gültige Session an, ohne
+  selbst 401 zu antworten. Ausnahme nur Desktop-Kernel (`isDesktopLoopbackKernel` →
+  `mcpOAuthSessionlessCallback`). Der Auth-Failure-Hook in `index.ts` startet keinen Flow mehr und
+  schreibt keine Authorize-URL in den Modelltext.
+- **Tool-Ausgaben pro Turn (#1961, ADR-0177).** `PerTurnBuffer` (`@omadia/diagrams`); Office
+  und Diagrams legen Ausgaben unter der Turn-ID ab, der Sink (im Turn-Kontext aufgerufen) leert
+  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`.
+- **Signierte Links routengebunden (#1979, ADR-0176).** HMAC über `<route prefix><key>.<exp>`,
+  Router prüfen ihr Key-Layout.
+- **Attachments (#1960/#1962, ADR-0178).** `ChatTurnInput.storedAttachments`
+  (`StoredTurnAttachment`, channel-sdk 0.3.16) ist die einzige Quelle für Storage-Keys; der
+  `[attachments-info]`-Parser ist entfernt. Ingest bindet jeden Key an den Raum des Turns
+  (`AttachmentReader.bindToCurrentConversation`), Lesen braucht eine Bindung an den aktuellen
+  Raum. Store `attachmentBindings` immer publiziert (Postgres, sonst In-Memory). CLI-Agents
+  tragen `sessionScope` in den Loopback-Scope und binden ebenso. Migration `0114` löscht
+  Bindungen für Office-/Diagram-Keys. Teams setzt das Feld ab dem Release nach 0.45.1.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -6056,7 +6078,7 @@ Abdeckungslücke) offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
 
 **Stiller Turn (#1896).** Antwortet der Agent mit `NO_REPLY`, endet der Stream
 mit `done { answer: '', silent: true }` (`suppressNoReplyStream`,
-`@omadia/channel-sdk` 0.3.16, auf `/api/chat/stream` und der Public-API-Route).
+`@omadia/channel-sdk` 0.3.17, auf `/api/chat/stream` und der Public-API-Route).
 Deltas werden zurückgehalten, solange der Text noch das Sentinel werden kann;
 schon gezeigter Text (Form „Erklärung\nNO_REPLY“) wird per `text_retract`
 zurückgenommen. Die Web-UI zeigt für einen stillen Turn keine Blase; der
@@ -8557,6 +8579,11 @@ und dann alle drei Erzeuger gemeinsam umstellen, damit jeder Weg dieselbe
 Antwort gibt.
 
 ---
+
+- **W00-Folgepunkte (2026-11-26):** (1) CLI-Agents leeren keine Attachment-Sinks — Office-/
+  Diagram-Ausgaben eines CLI-Turns werden nicht ausgeliefert (ADR-0177). (2) Per-User-MCP-Connect
+  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) Teams: Uploads
+  einer Nachricht, die die Themenwechsel-Karte auslöst, werden nach dem Klick nicht ingestiert.
 
 ## 14. Commands (vom `middleware/`-Dir aus)
 
@@ -11424,15 +11451,15 @@ Ersetzt den Platzhalter aus #2007.
 
 ## Welle 5 · W15-17: Kanal-Seams, Antwortsprache, Fast-Lane-Übergabe (2026-11-26)
 
-- **`CoreApi.readAttachment(url)`** (channel-sdk 0.3.16, ADR-0222): optional,
+- **`CoreApi.readAttachment(url)`** (channel-sdk 0.3.17, ADR-0222): optional,
   feature-detected. Liest die Bytes eines ausgehenden Anhangs in-process
   (`src/channels/attachmentByteReader.ts`: Loopback-GET nur unter einem vom
   Operator freigegebenen Public-Path, ohne Credentials und Redirects, 15 s,
   25 MiB). Ergebnis `AttachmentReadResult`; `not_kernel_attachment` heißt: die
   URL nehmen. Telegram lädt damit Dateien hoch statt eine `localhost`-URL zu
   übergeben (Plugin-Release in omadia-channel-telegram).
-- **`suppressNoReplyStream`** (channel-sdk 0.3.16): siehe §11 „Stiller Turn“.
-- **`stripKnownAiDisclosureLines`** (channel-sdk 0.3.16, #2003): entfernt jede
+- **`suppressNoReplyStream`** (channel-sdk 0.3.17): siehe §11 „Stiller Turn“.
+- **`stripKnownAiDisclosureLines`** (channel-sdk 0.3.17, #2003): entfernt jede
   bekannte KI-Kennzeichnungszeile aus wiederholten Antworten, bevor sie an das
   Modell gehen (`maskPriorTurnsForWire`, `cliChatAgent.maskHistory`).
 - **`turnChannelKind`** (`@omadia/orchestrator`, #1994): Kanalart eines Turns =

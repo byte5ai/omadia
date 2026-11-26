@@ -2569,6 +2569,10 @@ export async function getPreviewStatus(draftId: string): Promise<{
   agentId?: string;
   errorCount?: number;
   reason?: string;
+  /** #1792 — `false` when the last build is green but the preview is cold. */
+  warm?: boolean;
+  /** #1809 — the green build waits for a test credential for this key. */
+  missingSetupKey?: string;
 }> {
   return getJson<{
     phase: 'idle' | 'ok' | 'failed';
@@ -2576,6 +2580,8 @@ export async function getPreviewStatus(draftId: string): Promise<{
     agentId?: string;
     errorCount?: number;
     reason?: string;
+    warm?: boolean;
+    missingSetupKey?: string;
   }>(`/v1/builder/drafts/${encodeURIComponent(draftId)}/preview/status`);
 }
 

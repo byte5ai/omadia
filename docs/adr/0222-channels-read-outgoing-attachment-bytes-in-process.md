@@ -45,7 +45,7 @@ How does a channel get the bytes of an attachment the kernel produced?
 Chosen option: **A**, because it reaches exactly what an anonymous internet client could reach
 through the public URL — nothing more — and needs no knowledge of the stores behind each route.
 
-- **Contract** (`@omadia/channel-sdk` 0.3.16): optional `CoreApi.readAttachment(url):
+- **Contract** (`@omadia/channel-sdk` 0.3.17): optional `CoreApi.readAttachment(url):
   Promise<AttachmentReadResult>`; result `{ ok: true, bytes, mediaType?, fileName? }` or
   `{ ok: false, reason: 'not_kernel_attachment' | 'not_found' | 'too_large' | 'failed' }`. Never
   throws. Channels feature-detect it; `not_kernel_attachment` means "use the URL".

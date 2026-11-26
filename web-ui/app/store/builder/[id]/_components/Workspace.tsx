@@ -444,7 +444,13 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       .then((res) => {
         if (!alive) return;
         if (res.phase === 'ok' && res.buildN !== undefined) {
-          setBuildStatus({ phase: 'ok', buildN: res.buildN });
+          setBuildStatus({
+            phase: 'ok',
+            buildN: res.buildN,
+            ...(res.missingSetupKey !== undefined
+              ? { missingSetupKey: res.missingSetupKey }
+              : {}),
+          });
         } else if (res.phase === 'failed') {
           setBuildStatus({
             phase: 'failed',
@@ -538,6 +544,9 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         if (ev.errorCount !== undefined) snap.errorCount = ev.errorCount;
         if (ev.reason !== undefined) snap.reason = ev.reason;
         if (ev.errors !== undefined) snap.errors = ev.errors;
+        if (ev.missingSetupKey !== undefined) {
+          snap.missingSetupKey = ev.missingSetupKey;
+        }
         setBuildStatus(snap);
         // Clear the transient auto-fix-running pill once a new build
         // event fires — either the auto-fix turn produced an ok build
@@ -635,9 +644,18 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   ).length;
 
   const declaredSetupFields = draft.spec.setup_fields ?? [];
-  const missingRequiredCredentials = declaredSetupFields.filter(
-    (f) => f.required && !bufferedSecretKeys.includes(f.key),
-  ).length;
+  // #1809 — a draft can read a setup value at startup that the spec does
+  // not mark required; the preview then waits for it (`missingSetupKey`).
+  // Count it as a missing credential, not as a failed build.
+  const missingRequiredCredentials = Math.max(
+    declaredSetupFields.filter(
+      (f) => f.required && !bufferedSecretKeys.includes(f.key),
+    ).length,
+    buildStatus.missingSetupKey !== undefined &&
+      !bufferedSecretKeys.includes(buildStatus.missingSetupKey)
+      ? 1
+      : 0,
+  );
 
   // Editor pane aggregates its tabs' warnings — collapsed-rail + header
   // chip should fire if ANY tab has missing items.
@@ -1945,7 +1963,11 @@ function BuildStatusStrip({
       : buildStatus.phase === 'building'
         ? 'building'
         : buildStatus.phase === 'ok'
-          ? `ok${buildStatus.buildN !== undefined ? ` #${String(buildStatus.buildN)}` : ''}`
+          ? `ok${buildStatus.buildN !== undefined ? ` #${String(buildStatus.buildN)}` : ''}${
+              buildStatus.missingSetupKey !== undefined
+                ? ` · ${tw('buildWaitingForCredential', { key: buildStatus.missingSetupKey })}`
+                : ''
+            }`
           : `failed${buildStatus.errorCount ? ` (${String(buildStatus.errorCount)} err)` : ''}`;
 
   const errors = buildStatus.errors ?? [];

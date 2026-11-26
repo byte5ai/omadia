@@ -739,6 +739,50 @@ describe('builder preview routes', () => {
     });
   });
 
+  describe('GET /preview/status · cold cache after a green build (#1792)', () => {
+    it('reports ok instead of idle when the last build succeeded', async () => {
+      harness = await startHarness({ tmpDir: tmp });
+      harness.setSession('alice@example.com');
+      const draft = await harness.store.create('alice@example.com', 'Good');
+      const refresh = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/refresh`,
+        { method: 'POST' },
+      );
+      assert.equal(refresh.status, 200);
+      // Saving a test credential makes the warm preview stale.
+      harness.cache.invalidate('alice@example.com', draft.id);
+      const res = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/status`,
+      );
+      const body = (await res.json()) as { phase: string; warm?: boolean };
+      assert.equal(body.phase, 'ok');
+      assert.equal(body.warm, false);
+    });
+  });
+
+  describe('PUT /preview/secrets schedules a rebuild (#1792)', () => {
+    it('arms the rebuild scheduler instead of only invalidating', async () => {
+      harness = await startHarness({ tmpDir: tmp });
+      harness.setSession('alice@example.com');
+      const scheduled: string[] = [];
+      const original = harness.scheduler.schedule.bind(harness.scheduler);
+      harness.scheduler.schedule = (u: string, d: string): void => {
+        scheduled.push(`${u}/${d}`);
+        original(u, d);
+      };
+      const put = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/d-sched/preview/secrets`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ values: { API_KEY: 'k1' } }),
+        },
+      );
+      assert.equal(put.status, 204);
+      assert.deepEqual(scheduled, ['alice@example.com/d-sched']);
+    });
+  });
+
   describe('PUT/DELETE /preview/secrets', () => {
     it('stores secrets in the buffer and clears them on DELETE', async () => {
       harness = await startHarness({ tmpDir: tmp });

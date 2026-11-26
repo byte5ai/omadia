@@ -419,6 +419,65 @@ const FLOW_BASE = {
   issRequired: false,
 };
 
+/** The completing session maps to the user who started FLOW_BASE. */
+const AS_USER_A = async (): Promise<string | null> => 'user-a';
+
+describe('#1908 — the callback completes only for the user who started the flow', () => {
+  const exchangeClient = (calls: { n: number }) =>
+    ({
+      exchangeCode: async () => {
+        calls.n += 1;
+        return { accessToken: 'AT', refreshToken: null, expiresInSec: null, scope: null };
+      },
+    }) as never;
+
+  for (const [label, completer] of [
+    ['another user', async () => 'user-b'],
+    ['a browser without a session', async () => null],
+  ] as const) {
+    it(`refuses ${label}: no code exchange, nothing stored, flow consumed`, async () => {
+      const { McpOAuthService, McpOAuthCompleterMismatchError } = await import(
+        '../src/services/mcpOAuthService.js'
+      );
+      const { graph, tokenWrites } = fakeGraph({ flow: FLOW_BASE });
+      const calls = { n: 0 };
+      const seen: string[] = [];
+      const svc = new McpOAuthService({
+        graph,
+        vault: { get: async () => undefined, set: async () => {} } as never,
+        redirectUri: 'https://host/cb',
+        client: exchangeClient(calls),
+      });
+      await assert.rejects(
+        () =>
+          svc.completeAuthorization('ST', 'CODE', null, async (flow) => {
+            seen.push(`${flow.serverId}/${flow.userKey}`);
+            return completer();
+          }),
+        McpOAuthCompleterMismatchError,
+      );
+      assert.deepEqual(seen, ['srv-1/user-a'], 'the completer is resolved for the flow-bound server');
+      assert.equal(calls.n, 0, 'the code is never exchanged');
+      assert.equal(tokenWrites.length, 0, 'no token is stored under the starter');
+    });
+  }
+
+  it('stores the token when the starter completes the flow', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph, tokenWrites } = fakeGraph({ flow: FLOW_BASE });
+    const calls = { n: 0 };
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      client: exchangeClient(calls),
+    });
+    await svc.completeAuthorization('ST', 'CODE', null, AS_USER_A);
+    assert.equal(calls.n, 1);
+    assert.equal(tokenWrites.length, 1);
+  });
+});
+
 describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
   it('parses authorization_response_iss_parameter_supported from AS metadata', async () => {
     const fetchImpl = jsonResponder({
@@ -497,7 +556,7 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
       redirectUri: 'https://host/cb',
       client,
     });
-    const out = await svc.completeAuthorization('ST', 'CODE', 'https://as.example');
+    const out = await svc.completeAuthorization('ST', 'CODE', 'https://as.example', AS_USER_A);
     assert.equal(out.serverId, 'srv-1');
     assert.equal(tokenWrites.length, 1, 'a valid callback stores exactly one token');
     // AC3: the token is bound to the issuer that minted it.
@@ -521,7 +580,7 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
       redirectUri: 'https://host/cb',
       client,
     });
-    await svc.completeAuthorization('ST', 'CODE', 'https://as.example/');
+    await svc.completeAuthorization('ST', 'CODE', 'https://as.example/', AS_USER_A);
     assert.equal(tokenWrites.length, 1);
   });
 
@@ -550,7 +609,7 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
       client,
     });
     await assert.rejects(
-      () => svc.completeAuthorization('ST', 'CODE', 'https://evil.example'),
+      () => svc.completeAuthorization('ST', 'CODE', 'https://evil.example', AS_USER_A),
       (err: unknown) => err instanceof McpOAuthIssuerMismatchError,
     );
     // The whole point: hard rejection BEFORE the exchange, so no code leaves
@@ -579,7 +638,7 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
       client,
     });
     await assert.rejects(
-      () => svc.completeAuthorization('ST', 'CODE', null),
+      () => svc.completeAuthorization('ST', 'CODE', null, AS_USER_A),
       (err: unknown) =>
         err instanceof McpOAuthIssuerMismatchError && err.received === null,
     );
@@ -604,7 +663,7 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
       redirectUri: 'https://host/cb',
       client,
     });
-    await svc.completeAuthorization('ST', 'CODE', null);
+    await svc.completeAuthorization('ST', 'CODE', null, AS_USER_A);
     assert.equal(tokenWrites.length, 1, 'pre-RFC-9207 providers keep working');
   });
 
@@ -625,7 +684,7 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
       redirectUri: 'https://host/cb',
       client,
     });
-    await svc.completeAuthorization('ST', 'CODE', '   ');
+    await svc.completeAuthorization('ST', 'CODE', '   ', AS_USER_A);
     assert.equal(tokenWrites.length, 1);
   });
 });
@@ -1736,7 +1795,7 @@ describe('RFC 8707 resource indicator on token requests', () => {
     assert.equal(storedFlow?.['resource'], RESOURCE, 'the flow remembers the resource');
 
     // Callback: the code exchange must not be refused as invalid_target.
-    await svc.completeAuthorization(u.searchParams.get('state') ?? '', 'CODE');
+    await svc.completeAuthorization(u.searchParams.get('state') ?? '', 'CODE', null, AS_USER_A);
     assert.equal(tokenWrites.length, 1);
 
     // Refresh: expired token, so the service refreshes against the same resource.
@@ -1757,7 +1816,7 @@ describe('RFC 8707 resource indicator on token requests', () => {
       redirectUri: 'https://host/cb',
       client: new McpOAuthClient({ fetchImpl }),
     });
-    await svc.completeAuthorization('ST', 'CODE');
+    await svc.completeAuthorization('ST', 'CODE', null, AS_USER_A);
     assert.equal(tokenWrites.length, 1);
     assert.equal(bodies[0]?.has('resource'), false);
   });

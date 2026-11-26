@@ -18,6 +18,7 @@
 
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { after, before, describe, it } from 'node:test';
 
 import { Pool } from 'pg';
@@ -100,5 +101,48 @@ describe('#575 PostgresAttachmentBindingStore', { skip: !pgAvailable }, () => {
       [raced],
     );
     assert.equal(count.rows[0]?.n, '1');
+  });
+});
+
+describe('#1960 migration 0114 drops bindings of generated outputs', { skip: !pgAvailable }, () => {
+  let pool: Pool;
+  const mark = randomUUID().replace(/-/g, '').slice(0, 8);
+  const sha = mark.padEnd(64, 'a');
+  const officeKey = `documents/t${mark}/${sha}/report.docx`;
+  const diagramKey = `t${mark}/${sha}.png`;
+  const uploadKey = `teams-attachments/t${mark}/c/1-notes.pdf`;
+
+  before(async () => {
+    pool = new Pool({ connectionString: PG_URL, max: 2 });
+    await pool.query(SCHEMA);
+  });
+
+  after(async () => {
+    await pool.query(`DELETE FROM attachment_scope_bindings WHERE storage_key LIKE $1`, [
+      `%${mark}%`,
+    ]);
+    await pool.end();
+  });
+
+  it('removes Office and Diagrams rows and keeps uploads', async () => {
+    for (const key of [officeKey, diagramKey, uploadKey]) {
+      await pool.query(
+        `INSERT INTO attachment_scope_bindings (storage_key, scope_kind, scope_ref) VALUES ($1, 'conversation', 'x')`,
+        [key],
+      );
+    }
+    const sql = readFileSync(
+      new URL('../migrations/0114_attachment_bindings_drop_generated_outputs.sql', import.meta.url),
+      'utf8',
+    );
+    await pool.query(sql);
+    const { rows } = await pool.query<{ storage_key: string }>(
+      `SELECT storage_key FROM attachment_scope_bindings WHERE storage_key LIKE $1 ORDER BY storage_key`,
+      [`%${mark}%`],
+    );
+    assert.deepEqual(
+      rows.map((r) => r.storage_key),
+      [uploadKey],
+    );
   });
 });
