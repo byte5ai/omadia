@@ -8,7 +8,12 @@ import { appendLimitSignalNote, isUnknownOutcomeToolErrorNotice } from '@omadia/
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js';
 import { throwIfAskAborted, type AskObserver, type AskOptions } from './tools/domainQueryTool.js';
-import { fieldExemptModelCopy, internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  fieldExemptModelCopy,
+  internFailedNotice,
+  isInternExemptCall,
+  runsOnModelInput,
+} from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -638,7 +643,7 @@ export class LocalSubAgent {
                 // #1544 — the inner tool runs on the user's values; this
                 // sub-agent's model keeps reading the placeholders.
                 tool.handle(
-                  isInternExemptTool(toolName)
+                  runsOnModelInput(toolName)
                     ? input
                     : restorePromptSurrogatesInToolInput(privacy, input),
                 ),
@@ -704,7 +709,7 @@ export class LocalSubAgent {
       // first so it wins over every other branch. The exemption covers the
       // normal result only: an exempt tool's `Error:` text takes the same
       // redaction as below, like on the orchestrator's dispatch.
-      if (isInternExemptTool(toolName)) {
+      if (isInternExemptCall(toolName, input)) {
         if (isGuardedControlFlowResult(result, authPromptMint)) {
           return {
             output: await guardControlFlowResult({

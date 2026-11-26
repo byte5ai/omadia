@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0195](0195-cli-path-runs-under-the-privacy-shield.md) (the CLI path is masked instead of refused under a privacy guard)
 
 - **Date:** 2026-11-25
 - **Deciders:** Owner (byte5), from the ADR-coverage audit of 2026-11-25

@@ -7,6 +7,8 @@ import type { WorkflowGraph } from '@omadia/conductor-core';
 import { applyGraphPatches, emptyGraph } from '../src/conductor/graphPatch.js';
 import { ConductorBuilderAgent, ConductorBuilderUnavailableError, parseTurnResponse } from '../src/conductor/builderAgent.js';
 import { userTemplateVisible } from '../src/conductor/templateCatalog.js';
+import { CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE } from '../packages/harness-orchestrator/src/cliChatAgent.js';
+import { PROMPT_MASK_BLOCKED_ANSWER } from '../packages/harness-orchestrator/src/orchestrator.js';
 import type { TemplateSummary } from '../src/conductor/templateCatalog.js';
 
 // Conductor US7 — conversational builder: pure patch algebra + the stateless turn (graph,message)→(graph,reply).
@@ -321,6 +323,19 @@ describe('ConductorBuilderAgent.runTurn', () => {
     assert.equal(res.validation.ok, true);
     assert.equal(res.reply, 'fixed');
     assert.equal(res.graph.steps.length, 1);
+  });
+
+  it('#2241 — maps a CLI privacy refusal of the default agent to ConductorBuilderUnavailableError', async () => {
+    const { registry, calls } = stubRegistry([CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE]);
+    const agent = new ConductorBuilderAgent({ getRegistry: () => registry });
+    await assert.rejects(() => agent.runTurn({ message: 'hi' }), ConductorBuilderUnavailableError);
+    assert.equal(calls(), 1);
+  });
+
+  it('#2241 — and a blocked prompt-mask notice the same way', async () => {
+    const { registry } = stubRegistry([PROMPT_MASK_BLOCKED_ANSWER]);
+    const agent = new ConductorBuilderAgent({ getRegistry: () => registry });
+    await assert.rejects(() => agent.runTurn({ message: 'hi' }), ConductorBuilderUnavailableError);
   });
 
   it('throws ConductorBuilderUnavailableError when no registry is present', async () => {

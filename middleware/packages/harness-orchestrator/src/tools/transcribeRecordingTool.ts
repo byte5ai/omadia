@@ -24,9 +24,12 @@ export const TRANSCRIBE_RECORDING_TOOL_NAME = 'transcribe_recording';
  * availability. Live and batch paths converge in memory by construction.
  *
  * PRIVACY. The transcript this tool returns is a tool result, so it rides the
- * orchestrator's per-turn privacy handle (the choke point wrapped around
- * every LLM call site) before any model reads it — the same treatment every
- * untrusted external input gets. Producing the transcript sends the raw audio
+ * orchestrator's per-turn privacy handle before any model reads it. A
+ * transcript of a recording the user uploaded in THIS turn is prompt-masked
+ * (PII spans replaced by the turn's surrogates, the rest readable) like an
+ * ingested attachment; a transcript of any other storage key is interned to a
+ * digest like every untrusted tool result (ADR-0198,
+ * `isPromptMaskedUploadCall`). Producing the transcript sends the raw audio
  * to the configured external provider; that egress is the provider plugin's
  * operator-consented integration, declared in its manifest and admin panel.
  *
@@ -214,8 +217,8 @@ export class TranscribeRecordingTool {
         assistantAnswer: `_(Transkript-Ingest via ${transcript.provider}, Quelle: ${storageKey})_`,
         ...(segment.speaker !== undefined ? { speaker: segment.speaker } : {}),
         ...(userId !== undefined ? { userId } : {}),
-        // #1536 — raw speech of everyone in the recording, which no shield
-        // ever masked (the model saw it only as an interned tool result).
+        // #1536 — raw speech of everyone in the recording, stored unmasked
+        // (the model saw it prompt-masked or as an interned tool result).
         // Recall masks only detector-visible spans, so under a shield these
         // utterances stay out of cross-session recall like any unprotected
         // turn. The session's own tail keeps them.

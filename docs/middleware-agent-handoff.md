@@ -1966,10 +1966,25 @@ unlesbar (`[verschlüsselt — Schlüssel nicht verfügbar]`). Der v4-Shape-Clas
 läuft seitdem mit den **Identitäts**-Typen des C0-Baseline (E-Mail, IBAN,
 Telefon, Adresse, ID-Nummer — nicht `date`/`amount`) als `detector`-Booster
 (Telefonnummern-Spalte wäre sonst ein safe `id`-Handle; Datums-/Betragsspalten
-bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: die
-`query_rows`-DSL (`eq`/`contains`/`group_by`) arbeitet auf verschlüsselten
-Spalten über Ciphertext (jede Zelle unterschiedlich, frischer IV) — Filtern
-nach E-Mail funktioniert dort nicht; dafür sind die `__k_*`-Link-Keys da.
+bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: jede
+Zelle hat einen frischen IV, gespeicherte Werte einer verschlüsselten Spalte
+sind also nie vergleichbar. Seit #1849 lehnen beide Graph-Backends Filter und
+`group_by` auf einer Spalte mit mindestens einer `enc1:`-Zelle ab
+(`assertNoEncryptedQueryColumns`, Code `encrypted_column`) statt still 0
+Treffer bzw. eine Gruppe pro Zeile mit Ciphertext-Key zu liefern; das Modell
+liest die Zeilen ungefiltert und arbeitet mit den `v4_*`-Verben weiter.
+`group_by` braucht ein `aggregate`, `limit`/`offset` blättern durch die Gruppen,
+`totalGroups` nennt ihre Zahl (#1844, plugin-api 1.101.0).
+
+**Import (#1845/#1847/#1867):** CSV-Trennzeichen (`,` `;` Tab) wird erkannt,
+Nicht-UTF-8 als Windows-1252 dekodiert, doppelte Spaltennamen werden zu
+`a`, `a_2` (`datasetCsvDialect.ts`); Parser-Fehler haben Codes
+(`dataset.csv_unreadable` …), die die Admin-UI übersetzt. Datumszellen werden
+als ISO-8601 gespeichert (`datasetDates.ts`), Ziffernfolgen über 15 Stellen
+bleiben `string`. Maskiert wird die ganze Tabelle in einem linearen Durchlauf
+(`maskTableCells` im privacy-guard, ein Surrogat pro Wert und Tabelle), mit
+Event-Loop-Yields. Die web-ui puffert Request-Bodies bis 26 MiB
+(`proxyClientMaxBodySize`, `app/_lib/proxyBodyLimit.ts`, #1846).
 Schlägt das Internieren einer `query_dataset`-Seite fehl, hält der
 Orchestrator die Zeilen **zurück**, weil sie Klartext tragen. Seit #1267 gilt
 das für jedes Tool an jeder Naht (`internFailedNotice`, Abschnitt
@@ -4981,8 +4996,12 @@ spätere Migrationen trivial.
   Für Agents nur lesbar (#1827, Deny-Prefix in `ScopedMemoryStore`): jede
   Datei hier wirkt für alle Agents und Accounts, darum entstehen Regeln nur
   über den Repo-Seed. Der `DurableRulesMemoryStore`-Hook feuert damit aus dem
-  Chat nicht mehr; Seed-Regeln erreichen den Durable-Tier über
-  `scripts/backfill-durable-rules.ts`.
+  Chat nicht mehr. Seit ADR-0185 (#1831) gleicht `runDurableRulesSync`
+  (`src/services/durableRulesSync.ts`) die Regel-Einträge beim Boot und nach
+  einem Purge `axis:'all'` mit den Dateien ab: exakter Pfad-Match, geänderte
+  Datei → Text + Embedding aktualisiert, gelöschte Datei → Eintrag gelöscht
+  (Audit-Actor Nil-UUID). `scripts/backfill-durable-rules.ts` bleibt für den
+  manuellen Lauf.
 - `/memories/customers/<name>.md` — stabile Fakten pro Kunde.
 - `/memories/observations/YYYY-QX.md` — Zeitstempelbezogen.
 - `/memories/sessions/<scope>/YYYY-MM-DD.md` — Transkripte, *geschrieben
@@ -5373,7 +5392,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus). Fail-closed (#1535): Läuft kein `privacy.redact@1`-Provider, wird jeder Chat-Turn mit einer Absage beantwortet statt ungeschützt zu laufen (`PrivacyShieldRequiredError`); Turns auf dem Abo-CLI-Provider (`claude-cli`), der keinen Shield hat, werden immer abgelehnt. Instanz, Admin-UI und Store laufen weiter, damit der Guard repariert werden kann. |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus). Fail-closed (#1535): Läuft kein `privacy.redact@1`-Provider, wird jeder Chat-Turn mit einer Absage beantwortet statt ungeschützt zu laufen (`PrivacyShieldRequiredError`); Turns auf dem Abo-CLI-Provider (`claude-cli`) laufen seit ADR-0195 mit eigenem Privacy-Handle und werden nur abgelehnt, wenn keins gebaut werden kann (kein Guard aktiv). Instanz, Admin-UI und Store laufen weiter, damit der Guard repariert werden kann. |
 
 **Sichtbarkeit (#1508, #1507).** `GET /api/v1/admin/runtime/privacy-posture`
 (hinter `requireAuth`, nicht in `/health`) liefert
@@ -7066,10 +7085,9 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   über die Platzhalter-Map des Turns (Restore in der Antwort), als eigener
   Egress des Turns gebucht; `blocked` lässt den Turn scheitern. Wiederholte
   User-Nachrichten folgen weiter dem Flag. Offen: Ein Provider ohne
-  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an), und
-  der Abo-CLI-Replay (`CliChatAgent.maskHistory`, heute ohne Handle und damit
-  inert) maskiert Antworten noch über `maskUserPrompt`; beim Einbau eines
-  Handles dort (#1087) dieselbe Regel übernehmen.
+  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an). Der
+  Abo-CLI-Replay (`CliChatAgent.maskHistory`) hat seit ADR-0195 ein Handle und
+  maskiert Antworten über `maskReplayedAnswer` nach derselben Regel.
 - **Plugin-Permissions sind keine Sandbox.** Die Manifest-`permissions`
   schalten nur die `PluginContext`-Accessoren frei. Ein Plugin läuft als
   vertrauenswürdiges JavaScript im Middleware-Prozess und erreicht globales
@@ -7349,7 +7367,9 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   und die Naht lässt sie heute unverändert durch. Ausnahme: Die Schema-Absage
   für ein Steuerzeichen (`… control character U+0001 …`) kommt als
   `U[masked:phone]` beim Modell an, weil C0 `+0001` als Telefonnummer liest.
-- **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Abo-CLI-Pfad** läuft seit ADR-0195 (#2239) mit eigenem Privacy-Handle; die
+  Builder-/Preview-Sub-Agents laufen als Operator-Jobs außerhalb des Shields
+  (ADR-0196).
 - **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
   Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
   `Error:`-Texte nur als Withheld-Notice und kann sich nicht am Hinweis
@@ -7686,6 +7706,9 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
 Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 
+- **Alt-Chats ohne Owner zuordnen (ADR-0184):** `POST /api/v1/admin/chats/assign-orphans`
+  `{ userId: <users.id>, dryRun? }` stempelt allen besitzerlosen Chats die `providerUserId` des
+  Kontos (= Session-`sub`); erst Dry-run, Audit-Zeile `chat.assign_orphans` vor der Änderung.
 - ~~**Per-User-Ownership der Chat-Sessions.**~~ Erledigt mit #1762 (ADR-0180): der Server
   stempelt `ownerUserId` (Session-`sub`) beim ersten PUT, alle Routen unter
   `/api/chat/sessions` und Chat-Turns/Steer mit fremder `sessionId` antworten 404. Eine
@@ -9086,6 +9109,21 @@ derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditAc
 `reseed:true` (nur `axis:'all'`) setzt nur die Einträge des gebündelten Seed-Verzeichnisses
 (`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
 Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
+
+Achse `user` seit ADR-0186 (#1840/#1842/#1843): `resolveUserSelector` (`services/memoryPurgeUser.ts`)
+liest omadia-User-ID, Konto-ID (`web:<users.id>`) oder `<kanal>~<id>`; geteilte
+`MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.100.0),
+dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migration 0038) und
+`User`/`ChannelIdentity`-Knoten. Response-Felder zusätzlich `kgDeownedCount|kgExcerptCount|
+datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
+`omadiaUserId`.
+
+**Ohne Eigentümer** (`GET|DELETE /api/v1/admin/memory/ownerless[/:id]`, ADR-0185, #1829/#1831,
+gleiches Gate): listet `MemorableKnowledge` mit leerem `acl_owners` (Scratch-Reaper, Regeln) und
+löscht einen Eintrag einzeln — `admin_audit` `memory.ownerless_delete` vorher (Fehler → 500,
+nichts gelöscht), `memory_acl_audit` `delete` mit der `omadia_user_id` des Operators. Ein Eintrag
+mit Eigentümer → `409 memory.has_owners`. UI: Danger Zone, Abschnitt „Erinnerungen ohne
+Eigentümer“. Der Scratch-Reaper liest Plugin-Storage (`…/<slug>/plugins/`) nicht mehr.
 
 **Promote** (`POST|GET /api/v1/admin/memory/promotions/:slug`, gleiches `requireAuth`-Gate
 und gleicher Prefix wie Purge): kopiert/verschiebt Files und Subtrees zwischen den Tiers

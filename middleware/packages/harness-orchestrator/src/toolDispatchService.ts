@@ -11,7 +11,7 @@
  * closed and what is still deliberately orchestrator-only.
  */
 
-import { fieldExemptModelCopy, internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import { fieldExemptModelCopy, internFailedNotice, isInternExemptCall } from './privacyInternPolicy.js';
 import {
   isNativeToolResult,
   isUnknownOutcomeToolErrorNotice,
@@ -507,7 +507,7 @@ export class ToolDispatchService {
       if (isUnknownOutcomeToolErrorNotice(text)) ledger?.noteUnknownOutcome(name, input);
     }
     try {
-      return await this.afterDispatch(name, text, authPromptMint, options, replay !== undefined);
+      return await this.afterDispatch(name, input, text, authPromptMint, options, replay !== undefined);
     } catch (error) {
       return this.thrownResult(name, error, options);
     }
@@ -526,6 +526,8 @@ export class ToolDispatchService {
    */
   private async afterDispatch(
     name: string,
+    /** The call's input — a per-operation exemption reads it (ADR-0197). */
+    input: unknown,
     result: string,
     /** The connect prompts the MCP manager produced in this dispatch. */
     authPromptMint: McpAuthPromptMint,
@@ -554,7 +556,7 @@ export class ToolDispatchService {
     // auditable allowlist the orchestrator uses.
     // The exemption covers the normal result only: an exempt tool's `Error:`
     // text takes the same redaction as below.
-    if (isInternExemptTool(name)) {
+    if (isInternExemptCall(name, input)) {
       if (isGuardedControlFlowResult(result, authPromptMint)) {
         return fromTool(
           await guardControlFlowResult({

@@ -302,6 +302,27 @@ export interface KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<void>;
   /**
+   * ADR-0185 (#1829, #1831) — MemorableKnowledge with an empty `acl_owners`:
+   * entries the system created (scratch reaper, seeded rules). Nobody passes
+   * the owner gate of {@link deleteMemory}, so an operator lists them here,
+   * newest first. Optional (1.100.0): a provider without it has no operator
+   * view of them.
+   */
+  listOwnerlessMemorableKnowledge?(
+    opts?: ListOwnerlessMemorableKnowledgeOptions,
+  ): Promise<GraphNode[]>;
+  /**
+   * ADR-0185 — operator delete of ONE owner-less MemorableKnowledge (and its
+   * excerpts), with an ACL audit row naming the operator. Authorisation is
+   * the caller's (an operator route). Throws `memory_not_found`, and
+   * `has_owners` when the entry has an owner: owned memory stays with its
+   * owners and goes through {@link deleteMemory}.
+   */
+  deleteOwnerlessMemory?(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void>;
+  /**
    * Danger-Zone purge — count the MemorableKnowledge nodes that
    * {@link purgeMemorableKnowledge} WOULD delete for the same filter.
    * Read-only; used by the admin dry-run preview. Never throws on an
@@ -309,7 +330,7 @@ export interface KnowledgeGraph {
    */
   countMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ count: number }>;
+  ): Promise<MemorableKnowledgeCount>;
   /**
    * Danger-Zone purge — hard-delete every MemorableKnowledge node
    * matching `filter` (and its incident edges) in ONE transaction.
@@ -328,7 +349,26 @@ export interface KnowledgeGraph {
    */
   purgeMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ deletedNodes: number }>;
+  ): Promise<MemorableKnowledgePurgeResult>;
+  /**
+   * #1840 / #1843 (1.100.0) — the omadia user id (cluster root) a channel
+   * identity belongs to, e.g. `('web', <users.id>)` for an account or
+   * `('telegram', <telegram user id>)` for a channel-only user. `null` when
+   * no such identity exists. Optional.
+   */
+  findOmadiaUserIdByChannelIdentity?(
+    channelKind: ChannelKind,
+    channelUserId: string,
+  ): Promise<string | null>;
+  /**
+   * #1843 (1.100.0) — the person's identity nodes: the `User` cluster root
+   * and every `ChannelIdentity` linked to it (they carry display name and
+   * e-mail). `count` 0 means no cluster with this id. Optional.
+   */
+  countUserIdentity?(omadiaUserId: string): Promise<{ count: number }>;
+  /** #1843 — delete those identity nodes and their edges. A later login
+   *  creates a new cluster with a new id. */
+  purgeUserIdentity?(omadiaUserId: string): Promise<{ deletedNodes: number }>;
   /**
    * Danger-Zone purge (#1334) — count the conversation-history nodes that
    * {@link purgeConversationHistory} WOULD delete for the same filter.
@@ -1630,6 +1670,16 @@ export interface AclAuditEntry {
 
 /** Args every owner-mutating call shares. Actor must already be in
  *  `acl_owners` of the target MK. */
+/** ADR-0185 — the actor id a system write records in `memory_acl_audit`
+ *  (a NOT NULL uuid column): the nil UUID. No omadia user ever has it. */
+export const SYSTEM_ACTOR_OMADIA_USER_ID = '00000000-0000-0000-0000-000000000000';
+
+/** Options of {@link KnowledgeGraph.listOwnerlessMemorableKnowledge}. */
+export interface ListOwnerlessMemorableKnowledgeOptions {
+  /** Default 100, at most 500. */
+  limit?: number;
+}
+
 export interface AclMutationOptions {
   actorOmadiaUserId: string;
   /** Optional ChannelIdentity external_id, e.g. `web:<users.uuid>` —
@@ -1651,8 +1701,36 @@ export interface MemorableKnowledgePurgeFilter {
   tenantId: string;
   /** Restrict to MK whose `properties->>'origin_agent'` equals this slug. */
   originAgent?: string;
-  /** Restrict to MK whose `properties->'acl_owners'` contains this user id. */
+  /**
+   * Restrict to MK whose `properties->'acl_owners'` contains this user id.
+   * #1842 (1.100.0): erases that OWNER, not every entry they share. An entry
+   * they own alone is deleted; an entry with other owners stays and only
+   * loses them as owner (one `memory_acl_audit` `shrink` row each).
+   */
   aclOwner?: string;
+  /** Actor of the `shrink` audit rows an `aclOwner` purge writes. Default:
+   *  the nil UUID (system). */
+  actorOmadiaUserId?: string;
+}
+
+/** {@link KnowledgeGraph.countMemorableKnowledge} result. */
+export interface MemorableKnowledgeCount {
+  /** Entries a purge of the same filter deletes. */
+  count: number;
+  /** #1842 — entries that only lose the `aclOwner` (shared with others). */
+  deowned?: number;
+  /** #1842 — `PalaiaExcerpt` nodes deleted with the counted entries. */
+  excerpts?: number;
+}
+
+/** {@link KnowledgeGraph.purgeMemorableKnowledge} result. */
+export interface MemorableKnowledgePurgeResult {
+  /** MemorableKnowledge nodes deleted. */
+  deletedNodes: number;
+  /** #1842 — entries that lost the `aclOwner` and stay for their other owners. */
+  deownedNodes?: number;
+  /** #1842 — `PalaiaExcerpt` nodes deleted with them. */
+  deletedExcerpts?: number;
 }
 
 /**
@@ -2746,10 +2824,13 @@ export interface DatasetAggregate {
 export interface DatasetQueryOptions {
   filters?: DatasetFilter[];
   /** Group the aggregate by this column instead of collapsing to one row.
-   *  Ignored when `aggregate` is omitted. */
+   *  Requires `aggregate` — a `groupBy` without one is refused
+   *  (`group_by_requires_aggregate`, #1844) instead of silently dropped. */
   groupBy?: string;
   aggregate?: DatasetAggregate;
-  /** Row cap when no `aggregate` is requested. Clamped to [1, 200] server-side.
+  /** Page size: rows without `aggregate`, groups with `aggregate` +
+   *  `groupBy` (#1844 — groups used to be capped at a fixed 200 that
+   *  `limit`/`offset` could not page past). Clamped to [1, 200] server-side.
    *  Default 50. */
   limit?: number;
   offset?: number;
@@ -2758,8 +2839,14 @@ export interface DatasetQueryOptions {
 export interface DatasetQueryResult {
   /** Raw matching rows — populated only when `aggregate` was omitted. */
   rows?: Array<Record<string, unknown>>;
-  /** One entry per group — populated only when `aggregate` + `groupBy` were both set. */
+  /** One entry per group — populated only when `aggregate` + `groupBy` were
+   *  both set. One page of groups, ordered by value (desc, nulls last), then
+   *  key; `limit`/`offset` page through them. */
   groups?: Array<{ key: unknown; value: number | null }>;
+  /** Total number of groups before `limit`/`offset` — set with `groups`, so
+   *  a caller can tell a complete list from a page (#1844). Optional: a
+   *  backend that predates it omits it. */
+  totalGroups?: number;
   /** Single scalar — populated only when `aggregate` was set without `groupBy`. */
   aggregateValue?: number | null;
   /**
@@ -2850,6 +2937,12 @@ export function validateDatasetQueryOptions(
       `groupBy references unknown column '${opts.groupBy}'`,
     );
   }
+  if (opts?.groupBy !== undefined && opts.aggregate === undefined) {
+    throw new DatasetQueryValidationError(
+      'group_by_requires_aggregate',
+      `groupBy '${opts.groupBy}' needs an aggregate (e.g. { fn: 'count' }) — without one there is nothing to group`,
+    );
+  }
   if (opts?.aggregate) {
     if (opts.aggregate.fn !== 'count') {
       if (opts.aggregate.column === undefined) {
@@ -2890,4 +2983,45 @@ export function validateDatasetQueryOptions(
     limit,
     offset,
   };
+}
+
+/**
+ * Prefix of a dataset cell the import stored encrypted (ADR 0098,
+ * `datasetCellCrypto.ts`): `enc1:<base64url(iv ‖ tag ‖ ciphertext)>`.
+ */
+export const ENCRYPTED_DATASET_CELL_PREFIX = 'enc1:';
+
+/** Whether a stored dataset cell is an encrypted one. */
+export function isEncryptedDatasetCell(value: unknown): boolean {
+  return typeof value === 'string' && value.startsWith(ENCRYPTED_DATASET_CELL_PREFIX);
+}
+
+/** The columns a normalized query compares by stored value: every filter
+ *  column plus `groupBy`. Deduplicated, in query order. */
+export function datasetQueryValueColumns(query: NormalizedDatasetQuery): string[] {
+  const columns = query.filters.map((f) => f.column);
+  if (query.groupBy !== undefined) columns.push(query.groupBy);
+  return [...new Set(columns)];
+}
+
+/**
+ * #1849 — refuse a filter or `groupBy` on a column that holds encrypted
+ * cells. Every cell has its own IV, so the stored ciphertext never equals the
+ * plaintext the caller sends nor another cell's ciphertext: `eq`/`contains`
+ * silently matched nothing and `groupBy` returned one group per row keyed by
+ * ciphertext. Same rule as the `__k_*` filter refusal (ADR 0098): an
+ * explicit error instead of a confidently wrong answer. Both backends call
+ * this with the columns of the dataset that hold at least one `enc1:` cell.
+ */
+export function assertNoEncryptedQueryColumns(
+  query: NormalizedDatasetQuery,
+  encryptedColumns: ReadonlySet<string>,
+): void {
+  const hit = datasetQueryValueColumns(query).find((c) => encryptedColumns.has(c));
+  if (hit === undefined) return;
+  const use = query.groupBy === hit ? 'group by' : 'filter on';
+  throw new DatasetQueryValidationError(
+    'encrypted_column',
+    `cannot ${use} column '${hit}': it holds cells the privacy scan flagged at import, stored encrypted, so stored values never match. Read the rows without this ${query.groupBy === hit ? 'grouping' : 'filter'} instead.`,
+  );
 }

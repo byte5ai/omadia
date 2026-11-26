@@ -2,9 +2,16 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import {
+  INTERN_EXEMPT_OPERATIONS,
   INTERN_EXEMPT_TOOLS,
+  PROMPT_MASKED_UPLOAD_TOOLS,
+  isInternExemptCall,
   isInternExemptTool,
+  isPromptMaskedUploadCall,
+  runsOnModelInput,
 } from '@omadia/orchestrator/dist/privacyInternPolicy.js';
+
+import { isPubliclyServableTool } from '../src/mcp/publicMcpPrivacy.js';
 
 /**
  * Guards the Privacy Shield interning boundary. The agent's own
@@ -25,6 +32,10 @@ describe('privacyInternPolicy', () => {
     // #268 — user-uploaded attachment the agent was asked to read; not a
     // specialist-agent PII source.
     'read_attachment',
+    // #1967 — the agent's own produced files: metadata only, no cell value.
+    'render_diagram',
+    'create_xlsx',
+    'create_docx',
   ];
 
   const GUARDED = [
@@ -45,6 +56,9 @@ describe('privacyInternPolicy', () => {
     // first-party tools and MUST stay interned via `internToolResultV4`.
     'mcp__strava__get_activities',
     'mcp__confluence__search_pages',
+    // Only some operations are exempt (ADR-0197) / prompt-masked (ADR-0198).
+    'query_dataset',
+    'transcribe_recording',
   ];
 
   it('exempts exactly the agent self/infra tools', () => {
@@ -70,6 +84,105 @@ describe('privacyInternPolicy', () => {
   it('is case-sensitive and does not exempt unknown tools', () => {
     assert.equal(isInternExemptTool('Memory'), false);
     assert.equal(isInternExemptTool('totally_unknown_tool'), false);
+  });
+
+  it('runs file producers on restored values, scaffolding on the model input', () => {
+    for (const name of ['render_diagram', 'create_xlsx', 'create_docx']) {
+      assert.equal(runsOnModelInput(name), false, `${name} must get the restored input`);
+    }
+    for (const name of ['memory', 'read_attachment', 'write_process']) {
+      assert.equal(runsOnModelInput(name), true, `${name} keeps the model input`);
+    }
+    assert.equal(runsOnModelInput('dynamics_query'), false);
+  });
+
+  describe('per-operation exemptions (ADR-0197, #1866)', () => {
+    it('exempts query_dataset metadata operations, never query_rows', () => {
+      assert.equal(isInternExemptCall('query_dataset', { query: 'list_datasets' }), true);
+      assert.equal(
+        isInternExemptCall('query_dataset', { query: 'get_schema', dataset_id: 'x' }),
+        true,
+      );
+      assert.equal(
+        isInternExemptCall('query_dataset', { query: 'query_rows', dataset_id: 'x' }),
+        false,
+      );
+    });
+
+    it('fails closed on a missing or malformed operation', () => {
+      for (const input of [undefined, null, 'list_datasets', {}, { query: 7 }, { query: 'LIST_DATASETS' }]) {
+        assert.equal(isInternExemptCall('query_dataset', input), false, JSON.stringify(input));
+      }
+    });
+
+    it('does not grant an operation of one tool to another', () => {
+      assert.equal(isInternExemptCall('dynamics_query', { query: 'list_datasets' }), false);
+    });
+
+    it('keeps whole-tool exemptions independent of the input', () => {
+      assert.equal(isInternExemptCall('memory', undefined), true);
+      assert.equal(isInternExemptCall('render_diagram', { kind: 'mermaid' }), true);
+    });
+
+    it('lists exactly the documented operations (no drift)', () => {
+      assert.deepEqual(
+        [...INTERN_EXEMPT_OPERATIONS].map(([tool, rule]) => [tool, rule.field, [...rule.operations].sort()]),
+        [['query_dataset', 'query', ['get_schema', 'list_datasets']]],
+      );
+    });
+  });
+
+  describe('prompt-masked uploads (ADR-0198, #1985)', () => {
+    const keys = new Set(['uploads/turn/rec-1.wav']);
+
+    it('prompt-masks a transcript of an upload from this turn', () => {
+      assert.equal(
+        isPromptMaskedUploadCall('transcribe_recording', { storage_key: 'uploads/turn/rec-1.wav' }, keys),
+        true,
+      );
+    });
+
+    it('keeps a transcript of any other stored file interned (#1960)', () => {
+      assert.equal(
+        isPromptMaskedUploadCall('transcribe_recording', { storage_key: 'uploads/other/chat.wav' }, keys),
+        false,
+      );
+      assert.equal(
+        isPromptMaskedUploadCall('transcribe_recording', { storage_key: 'uploads/turn/rec-1.wav' }, undefined),
+        false,
+      );
+      assert.equal(isPromptMaskedUploadCall('transcribe_recording', {}, keys), false);
+    });
+
+    it('applies to the listed tools only', () => {
+      assert.deepEqual([...PROMPT_MASKED_UPLOAD_TOOLS], [['transcribe_recording', 'storage_key']]);
+      assert.equal(
+        isPromptMaskedUploadCall('read_attachment', { storage_key: 'uploads/turn/rec-1.wav' }, keys),
+        false,
+      );
+    });
+  });
+
+  describe('public MCP servability', () => {
+    it('never serves intern-exempt tools or tools with exempt operations', () => {
+      // The file producers included: their result is not interned, so the
+      // public gate's masking check would refuse every call.
+      for (const name of [
+        'memory',
+        'read_attachment',
+        'query_processes',
+        'query_dataset',
+        'render_diagram',
+        'create_xlsx',
+        'create_docx',
+      ]) {
+        assert.equal(isPubliclyServableTool(name), false, `${name} must not be public`);
+      }
+    });
+
+    it('keeps guarded tools servable', () => {
+      assert.equal(isPubliclyServableTool('dynamics_query'), true);
+    });
   });
 });
 

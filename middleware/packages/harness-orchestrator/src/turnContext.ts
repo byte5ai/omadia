@@ -354,6 +354,13 @@ export interface TurnContextValue {
    */
   wireView?: { userMessage?: string; answer?: string };
   /**
+   * ADR-0198 — storage keys of the files the user uploaded in THIS turn (the
+   * adapter-stated `storedAttachments`, ADR-0178). A tool that reads one of them returns
+   * the user's own upload, so its text may be prompt-masked instead of
+   * interned (`isPromptMaskedUploadCall`). Absent ⇒ no upload counts as own.
+   */
+  turnUploadKeys?: ReadonlySet<string>;
+  /**
    * #1543 — the provenance notes of this turn's Privacy Shield renders
    * (`PrivacyV4ToolResult.renderProvenance`): source tool, verb chain, row
    * counts, column labels — never a value. Appended to the persisted answer

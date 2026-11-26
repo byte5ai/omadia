@@ -8,6 +8,56 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.101.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`DatasetQueryResult.totalGroups?`**: the number of groups before
+  `limit`/`offset` when `groupBy` is set (#1844). Both bundled providers set it.
+- **`ENCRYPTED_DATASET_CELL_PREFIX`**, **`isEncryptedDatasetCell(value)`**,
+  **`datasetQueryValueColumns(query)`** and
+  **`assertNoEncryptedQueryColumns(query, encryptedColumns)`** (#1849): the
+  shared refusal of a filter or `groupBy` on a column that holds encrypted
+  (`enc1:`) cells — `DatasetQueryValidationError` code `encrypted_column`.
+
+### Changed (behaviour)
+
+- `validateDatasetQueryOptions` refuses `groupBy` without `aggregate`
+  (`group_by_requires_aggregate`) instead of the providers silently dropping
+  the grouping (#1844).
+- With `groupBy`, `limit`/`offset` page through the groups (ordered by value
+  descending, nulls last, then key). Both providers used to return a fixed
+  first 200 groups whatever `limit`/`offset` said.
+
+## 1.100.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`KnowledgeGraph.listOwnerlessMemorableKnowledge?(opts)`** and
+  **`KnowledgeGraph.deleteOwnerlessMemory?(id, actor)`** (optional, ADR-0185):
+  the operator view of memorable knowledge with an empty `acl_owners` (scratch
+  reaper, seeded rules), which no owner gate lets anyone delete. The delete
+  writes an ACL audit row and refuses an entry that has an owner
+  (`has_owners`). Both bundled providers implement them; the bounded
+  `knowledgeGraph@1` classifies them `kernel-only`.
+- **`ListOwnerlessMemorableKnowledgeOptions`**, **`SYSTEM_ACTOR_OMADIA_USER_ID`** (nil UUID).
+- **`KnowledgeGraph.findOmadiaUserIdByChannelIdentity?`**, **`countUserIdentity?`**,
+  **`purgeUserIdentity?`** (optional, ADR-0186): resolve a channel identity to its person,
+  count/delete the `User` cluster root and its `ChannelIdentity` nodes.
+- **`ProcessMemoryService.countByCreator?` / `purgeByCreator?`** and
+  **`WriteProcessInput.createdByOmadiaUserId`** (#1843).
+- **`MemorableKnowledgeCount`** / **`MemorableKnowledgePurgeResult`**: the count and purge
+  results gain optional `deowned` / `excerpts` and `deownedNodes` / `deletedExcerpts`.
+  `MemorableKnowledgePurgeFilter.actorOmadiaUserId?`.
+
+### Changed (behaviour)
+
+- `MemorableKnowledgePurgeFilter.aclOwner` erases the owner (#1842): an entry with other
+  owners is de-owned (ACL audit `shrink`), only entries the person owns alone are deleted.
 ## 1.99.0 — 2026-11-26
 
 No type change; the documented behaviour of three methods changes (#1821, #1823).

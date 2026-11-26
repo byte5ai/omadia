@@ -29,7 +29,7 @@
  *     Closed by pinning `checkBypass` to `undefined`: a bypass does not extend
  *     to this endpoint, ever, and cannot be configured to.
  *
- *  3. **Intern-exempt tools.** `isInternExemptTool` hands `memory`,
+ *  3. **Intern-exempt tools.** `isInternExemptCall` hands `memory`,
  *     `read_attachment`, `query_processes`, `ask_user_choice` and friends over
  *     IN CLEAR, by design — masking them blinds the agent to its own state. That
  *     reasoning is about the AGENT reading its own scaffolding; it does not
@@ -62,7 +62,7 @@
  */
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
-import { hasInternFieldExemption, isInternExemptTool } from '@omadia/orchestrator';
+import { INTERN_EXEMPT_OPERATIONS, hasInternFieldExemption, isInternExemptTool } from '@omadia/orchestrator';
 import { describeThrownError } from '@omadia/plugin-api';
 
 /**
@@ -228,9 +228,16 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
  * Enforced as a hard filter rather than a warning, because the alternative is a
  * log line nobody reads guarding a data leak. An operator who lists one gets the
  * warning AND the tool stays unreachable.
+ *
+ * Every intern-exempt tool is covered, plus every tool with exempt OPERATIONS
+ * (ADR-0197 — `query_dataset` lists the user's datasets in clear). That
+ * includes the exempt file/image producers (`render_diagram`, `create_xlsx`,
+ * `create_docx`, #1967): their result is not interned, so the public gate
+ * would see no masking and `assertMaskingCrossed` would discard every call —
+ * listing them would only advertise tools that always fail.
  */
 export function isPubliclyServableTool(name: string): boolean {
   // #1768 / ADR 0241 — a field-exempt tool hands its operational state over in
   // clear too: the same reasoning, the same closed door (ADR 0142).
-  return !isInternExemptTool(name) && !hasInternFieldExemption(name);
+  return !isInternExemptTool(name) && !INTERN_EXEMPT_OPERATIONS.has(name) && !hasInternFieldExemption(name);
 }

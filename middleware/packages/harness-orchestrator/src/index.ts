@@ -470,6 +470,8 @@ export {
   MODEL_REFUSAL_NOTICE,
   localizeRefusalNotice,
   finalAnswerText,
+  // #2241 — the prompt-mask refusal delivered as answer text.
+  isPromptMaskBlockedNotice,
 } from './orchestrator.js';
 // #1500 — answer text across tool-loop iterations, preamble dropped.
 export { AnswerTextAccumulator } from './answerTextAccumulator.js';
@@ -610,11 +612,16 @@ export type { PrivacyTurnHandle, PromptMaskOptions } from './privacyHandle.js';
 // answer-verifier wrapper (see privacyEgress.ts).
 export type { PrivacyEgressContinuation } from './privacyEgress.js';
 export {
+  INTERN_EXEMPT_OPERATIONS,
   INTERN_EXEMPT_TOOLS,
   INTERN_FIELD_EXEMPT_TOOLS,
+  PROMPT_MASKED_UPLOAD_TOOLS,
   fieldExemptModelCopy,
   hasInternFieldExemption,
+  isInternExemptCall,
   isInternExemptTool,
+  isPromptMaskedUploadCall,
+  runsOnModelInput,
 } from './privacyInternPolicy.js';
 // Tool errors on their way to a model: the one helper every dispatch seam
 // routes a thrown exception or a returned `Error:` text through. The MCP
@@ -687,6 +694,13 @@ export type {
   CliUsage,
 } from './cliChatAgent.js';
 export { resolveCliSpawnTimeoutMs, CLI_SPAWN_TIMEOUT_ENV_KEY } from './cliChatAgent.js';
+/** #2241 — a CLI privacy refusal delivered as answer text. */
+export { isCliPrivacyRefusal } from './cliChatAgent.js';
+export type {
+  CliTurnPrivacy,
+  CliReleasedAnswer,
+  CliPrivacyReceiptFields,
+} from './cliTurnPrivacy.js';
 /** #1085 — the binary name the kernel's `resolveCliBin` is asked to resolve. */
 export { DEFAULT_CLI_BINARY } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
@@ -709,6 +723,7 @@ export { WEB_ACCOUNT_CHANNEL_TYPE, isWebAccountTurn, webAccountOrigin } from './
 export {
   currentProcessBoundary,
   currentProcessReadFilter,
+  creatorOfCurrentTurn,
   processWriteScope,
   type ProcessBoundary,
 } from './tools/processMemoryTool.js';

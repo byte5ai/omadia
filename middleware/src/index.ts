@@ -36,6 +36,8 @@ import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMou
 import { adminTokenThrottleWarnings, createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
 import { parseClientAddressPolicy } from './auth/clientAddress.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
+import { createMemoryOwnerlessRouter } from './routes/memoryOwnerless.js';
+import { runDurableRulesSync } from './services/durableRulesSync.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
 import { createUpdateAuditStore } from './update/auditStore.js';
@@ -417,6 +419,7 @@ import {
 } from './http/requestTrust.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuditRouter } from './routes/adminAudit.js';
+import { createAdminChatsRouter } from './routes/adminChats.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
 import {
@@ -4454,6 +4457,22 @@ async function main(): Promise<void> {
   // surface, consistent with the other /api/v1/admin/* routers the admin
   // UI calls (NOT the machine ADMIN_TOKEN surface). `requireAuth` gates
   // the router; type-to-confirm is enforced per-route.
+  // #1831 (ADR-0185) — the rule entries follow the seeded `_rules/` files.
+  // Runs once at boot (the memory plugin seeded during activation) and after
+  // a purge that removed memorable knowledge. Needs the Postgres graph: the
+  // rule entries are matched by SQL.
+  const syncDurableRules = graphPool
+    ? () =>
+        runDurableRulesSync({
+          store: memoryStore,
+          kg: knowledgeGraph,
+          pool: graphPool,
+          tenantId: graphTenantId,
+          embeddingClient: () => serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+        })
+    : undefined;
+  if (syncDurableRules) void syncDurableRules();
+
   app.use(
     '/api/v1/admin/memory/purge',
     requireAuth,
@@ -4463,6 +4482,19 @@ async function main(): Promise<void> {
       ...(graphPool ? { graphPool } : {}),
       seedDir: config.MEMORY_SEED_DIR,
       tenantId: graphTenantId,
+      ...(syncDurableRules ? { syncDurableRules } : {}),
+      processMemory: () => serviceRegistry.get<ProcessMemoryService>('processMemory'),
+    }),
+  );
+
+  // ADR-0185 (#1829, #1831) — list and delete memorable knowledge without an
+  // owner. Same gate as the purge: a signed-in operator, audited.
+  app.use(
+    '/api/v1/admin/memory/ownerless',
+    requireAuth,
+    createMemoryOwnerlessRouter({
+      knowledgeGraph,
+      ...(graphPool ? { adminAudit: new AdminAuditLog(graphPool) } : {}),
     }),
   );
   console.log(
@@ -6284,6 +6316,7 @@ async function main(): Promise<void> {
     );
     console.log('[middleware] admin auth endpoints ready at /api/v1/auth');
 
+    const findWebIdentity = knowledgeGraph.findOmadiaUserIdByChannelIdentity?.bind(knowledgeGraph);
     app.use(
       '/api/v1/admin/users',
       requireAuth,
@@ -6293,10 +6326,23 @@ async function main(): Promise<void> {
         sessions: sessionRevocation,
         loginLimiter: loginGuard.limiter,
         loginDevices: loginGuard.devices,
+        ...(findWebIdentity
+          ? { findOmadiaUserId: (usersId: string) => findWebIdentity('web', usersId) }
+          : {}),
       }),
     );
     // #1315 — the read side of the audit trail (admin UI: /admin/audit).
     app.use('/api/v1/admin/audit', requireAuth, createAdminAuditRouter({ audit: adminAudit }));
+    // #1762 follow-up (ADR-0184) — give owner-less legacy web chats to one account.
+    app.use(
+      '/api/v1/admin/chats',
+      requireAuth,
+      createAdminChatsRouter({
+        getStore: getChatSessionStore,
+        findUser: (id) => userStore.findById(id),
+        audit: adminAudit,
+      }),
+    );
     app.use(
       '/api/v1/admin/auth',
       requireAuth,
