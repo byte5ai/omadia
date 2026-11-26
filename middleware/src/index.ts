@@ -32,7 +32,7 @@ import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
-import { createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
+import { adminTokenThrottleWarnings, createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
 import { parseClientAddressPolicy } from './auth/clientAddress.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
@@ -4135,6 +4135,12 @@ async function main(): Promise<void> {
     })
   ) {
     console.log(`[middleware] admin token endpoints enabled at ${ADMIN_TOKEN_PATH} (bearer, before the session gate)`);
+    for (const warning of adminTokenThrottleWarnings(
+      config.ADMIN_TOKEN,
+      parseClientAddressPolicy(config.AUTH_LOGIN_CLIENT_ADDRESS),
+    )) {
+      console.warn(warning);
+    }
   } else {
     console.log('[middleware] admin endpoints DISABLED (ADMIN_TOKEN not set)');
   }

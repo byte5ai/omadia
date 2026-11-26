@@ -6,6 +6,7 @@ import {
   Table,
   TableCell,
   TableRow,
+  Tab,
   TextRun,
   WidthType,
 } from 'docx';
@@ -33,15 +34,26 @@ const HEADING_BY_LEVEL: Record<number, (typeof HeadingLevel)[keyof typeof Headin
 
 const LINE_BREAK = /\r\n|\r|\n/;
 
+const TAB = '\t';
+
+/** One line's content: text pieces with a `<w:tab/>` where the line had a tab. */
+function lineChildren(line: string): Array<string | Tab> {
+  return line.split(TAB).flatMap((piece, index) => (index > 0 ? [new Tab(), piece] : [piece]));
+}
+
 /**
- * The runs for one text field. Word ignores a raw newline inside `<w:t>` and
- * shows it as a space, so every line after the first becomes its own run that
- * starts with a `<w:br/>` (#1982).
+ * The runs for one text field. Word ignores a raw newline or tab inside
+ * `<w:t>` and shows it as a space, so every line after the first becomes its
+ * own run that starts with a `<w:br/>`, and a tab becomes a `<w:tab/>`
+ * (#1982).
  */
 function textRuns(text: string, style: { bold?: boolean } = {}): TextRun[] {
   return text
     .split(LINE_BREAK)
-    .map((line, index) => new TextRun({ ...style, text: line, ...(index > 0 ? { break: 1 } : {}) }));
+    .map(
+      (line, index) =>
+        new TextRun({ ...style, children: lineChildren(line), ...(index > 0 ? { break: 1 } : {}) }),
+    );
 }
 
 function blockToChildren(block: DocxBlock): Array<Paragraph | Table> {
