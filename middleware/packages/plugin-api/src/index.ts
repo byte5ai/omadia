@@ -229,3 +229,7 @@ export * from './agentDirectory.js';
 // #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
 // agent batch triggers, not as free-running plugin intervals.
 export * from './batchJobs.js';
+
+// #1822 — content terms + OR tsquery for full-text recall, shared by both
+// knowledge-graph backends so the lexical leg matches the same turns.
+export * from './recallQuery.js';

@@ -1550,7 +1550,7 @@ export class ContextRetriever {
   private async loadFtsHits(input: ContextBuildInput): Promise<TurnSearchHit[]> {
     // Vector search first when we have an embedding client + the backend
     // supports it. Semantic recall catches paraphrases ("kredite" ↔ "darlehen")
-    // that plainto_tsquery misses. Empty result → fall through to FTS as a
+    // that the lexical query misses. Empty result → fall through to FTS as a
     // lexical safety net (good for specific ids / names).
     if (this.embeddingClient) {
       try {
@@ -1558,10 +1558,10 @@ export class ContextRetriever {
         if (vector.length > 0) {
           const hits = await this.graph.searchTurnsByEmbedding({
             queryEmbedding: vector,
-            // OB-72: pass the user message verbatim as the FTS leg.
-            // `plainto_tsquery('simple', …)` accepts arbitrary punctuation,
-            // so no extra tokenisation needed. When the backend gets a
-            // non-empty ftsQuery it switches to hybrid scoring.
+            // OB-72: pass the user message verbatim as the FTS leg. The
+            // backend turns it into an OR query over its content terms
+            // (buildRecallTsQuery, #1822); a message without one stays
+            // pure cosine.
             ftsQuery: input.userMessage,
             ...(input.userId ? { userId: input.userId } : {}),
             ...(input.sessionScope ? { excludeScope: input.sessionScope } : {}),

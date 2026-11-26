@@ -1281,6 +1281,7 @@ export * from './modelPassthrough.js';
 export * from './agentEnvelope.js';
 export * from './agentDirectory.js';
 export * from './batchJobs.js';
+export * from './recallQuery.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -3504,6 +3505,11 @@ code: string;
 message: string;
 };
 export {};
+
+// ===== recallQuery.d.ts =====
+export declare const RECALL_QUERY_MAX_TERMS = 16;
+export declare function extractRecallSearchTerms(message: string): string[];
+export declare function buildRecallTsQuery(message: string): string | null;
 
 // ===== responseGuard.d.ts =====
 export declare const RESPONSE_GUARD_SERVICE_NAME = "responseGuard";

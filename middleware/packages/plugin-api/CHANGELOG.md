@@ -24,6 +24,9 @@ Additive.
   discarded or merged away, or the turn proved unpromotable.
 - **`BulkPromotePhaseResult.skipped?`**: turns the run left alone on purpose
   (retired, no person owner, missing excerpt, narration), apart from `failed`.
+- **`extractRecallSearchTerms` / `buildRecallTsQuery` / `RECALL_QUERY_MAX_TERMS`**
+  (#1822): the content terms of a message and an OR `tsquery` over them for
+  full-text recall; `null` when the message has no content term.
 
 ### Changed (behaviour)
 
@@ -31,6 +34,10 @@ Additive.
   dismisses its open contradiction and duplicate pairs (`closed_reason:
   'memory_deleted'`); `resolveInconsistency` / `resolveMergeCandidate` refuse a
   resolution that keeps a deleted side (`keeper_missing`).
+- `searchTurns`, the lexical leg of `searchTurnsByEmbedding` and process recall
+  on both bundled providers OR-match the message's content terms
+  (`buildRecallTsQuery`) instead of requiring every word; a message without a
+  content term has no lexical leg (#1822).
 
 ## 1.98.0 — 2026-11-25
 

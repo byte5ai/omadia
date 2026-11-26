@@ -115,6 +115,7 @@ import {
   normalizeDatasetUuid,
   PROMOTION_RETIRED_PROP,
   SYSTEM_AUDIT_ACTOR_UUID,
+  buildRecallTsQuery,
 } from '@omadia/plugin-api';
 import {
   GRAPH_EDGE_TYPES,
@@ -1974,8 +1975,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   }
 
   async searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]> {
-    const query = opts.query.trim();
-    if (query.length === 0) return [];
+    // #1822 — an OR query over the message's content terms, not every word.
+    const query = buildRecallTsQuery(opts.query);
+    if (query === null) return [];
     const audienceOwners = audienceFilter(opts.audienceOwners);
     if (audienceOwners === EMPTY_AUDIENCE) return [];
 
@@ -1987,9 +1989,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       ? Array.from(opts.excludeTurnIds)
       : null;
 
-    // plainto_tsquery keeps Postgres happy with arbitrary user input
-    // (including punctuation and German compound words). 'simple' config
-    // matches the index expression from migration 0004.
+    // The query holds only letter/digit terms joined by `|`
+    // (buildRecallTsQuery), so to_tsquery cannot fail on user input. 'simple'
+    // config matches the index expression from migration 0004.
     const result = await this.pool.query<{
       external_id: string;
       scope: string;
@@ -2011,7 +2013,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
             coalesce(properties->>'userMessage', '') || ' ' ||
             coalesce(properties->>'assistantAnswer', '')
           ),
-          plainto_tsquery('simple', $3)
+          to_tsquery('simple', $3)
         ) AS rank
       FROM graph_nodes
       WHERE tenant_id = $1
@@ -2037,7 +2039,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           'simple',
           coalesce(properties->>'userMessage', '') || ' ' ||
           coalesce(properties->>'assistantAnswer', '')
-        ) @@ plainto_tsquery('simple', $3)
+        ) @@ to_tsquery('simple', $3)
       ORDER BY rank DESC, (properties->>'time') DESC
       LIMIT $6
       `,
@@ -2094,8 +2096,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     // OB-72 hybrid retrieval. ftsQuery=null/empty → pure-cosine path
     // (backwards-compat); otherwise switch to BM25 + cosine + recency +
     // type-weight scoring in a single SQL.
-    const ftsQuery = opts.ftsQuery?.trim();
-    const ftsActive = ftsQuery !== undefined && ftsQuery.length > 0;
+    // #1822 — OR query over content terms; a message without one has no
+    // lexical leg (pure cosine).
+    const ftsQuery =
+      opts.ftsQuery !== undefined ? buildRecallTsQuery(opts.ftsQuery) : null;
+    const ftsActive = ftsQuery !== null;
     const recallMinScore = Math.max(0, Math.min(opts.recallMinScore ?? 0, 1));
     const recallRecencyBoost = Math.max(0, opts.recallRecencyBoost ?? 0.05);
     const includeCold = opts.includeCold === true;
@@ -2162,7 +2167,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
                   coalesce(properties->>'userMessage','') || ' ' ||
                   coalesce(properties->>'assistantAnswer','')
                 ),
-                plainto_tsquery('simple', $6)
+                to_tsquery('simple', $6)
               ),
               0
             )
@@ -2196,7 +2201,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
                 'simple',
                 coalesce(properties->>'userMessage','') || ' ' ||
                 coalesce(properties->>'assistantAnswer','')
-              ) @@ plainto_tsquery('simple', $6)
+              ) @@ to_tsquery('simple', $6)
             )
           )
       ),

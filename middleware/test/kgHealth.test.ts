@@ -53,6 +53,8 @@ describe('buildKgHealth', () => {
     assert.equal(h.durableTier, false);
     assert.equal(h.processReuse, false);
     assert.ok(h.warnings.some((w) => w.includes('embeddings disabled')));
+    // #1822 — the warning says what that means for recall.
+    assert.ok(h.warnings.some((w) => w.includes('keyword-only')));
   });
 
   it('inmemory backend → volatile warning + no process-reuse even with embeddings', async () => {

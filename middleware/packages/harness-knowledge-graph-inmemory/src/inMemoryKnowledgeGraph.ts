@@ -110,6 +110,7 @@ import {
   type TurnSearchHit,
   PROMOTION_RETIRED_PROP,
   SYSTEM_AUDIT_ACTOR_UUID,
+  extractRecallSearchTerms,
 } from '@omadia/plugin-api';
 
 /**
@@ -250,6 +251,16 @@ function computeDatasetAggregate(
  * tests, and the first round of UI work. Swap for an embedded or remote
  * store once the data model stabilises.
  */
+
+/**
+ * How many recall terms occur as whole tokens in `text`, the way the `simple`
+ * tsvector of the Neon backend sees it (#1822).
+ */
+function countRecallTermMatches(text: string, terms: readonly string[]): number {
+  const tokens = new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+  return terms.filter((term) => tokens.has(term)).length;
+}
+
 export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   private readonly nodes = new Map<string, GraphNode>();
   /** `from|type|to` → edge. Dedupes multi-ingest of the same turn. */
@@ -774,9 +785,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   }
 
   async searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]> {
-    const query = opts.query.trim().toLowerCase();
-    if (query.length === 0) return [];
-    const tokens = query.split(/\s+/).filter((t) => t.length >= 2);
+    // #1822 — the content terms of the message, OR-matched like the Neon
+    // backend's tsquery (buildRecallTsQuery).
+    const tokens = extractRecallSearchTerms(opts.query);
     if (tokens.length === 0) return [];
 
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
@@ -800,10 +811,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         String(node.props['userMessage'] ?? '') +
         ' ' +
         String(node.props['assistantAnswer'] ?? '')
-      ).toLowerCase();
-
-      let matches = 0;
-      for (const tok of tokens) if (haystack.includes(tok)) matches++;
+      );
+      const matches = countRecallTermMatches(haystack, tokens);
       if (matches === 0) continue;
 
       scored.push({
@@ -853,7 +862,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     };
     const excludeTurnIds = new Set(opts.excludeTurnIds ?? []);
 
-    const tokens = ftsQuery.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
+    const tokens = extractRecallSearchTerms(ftsQuery);
     if (tokens.length === 0) return [];
 
     const now = Date.now();
@@ -879,9 +888,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         String(node.props['userMessage'] ?? '') +
         ' ' +
         String(node.props['assistantAnswer'] ?? '')
-      ).toLowerCase();
-      let matches = 0;
-      for (const tok of tokens) if (haystack.includes(tok)) matches++;
+      );
+      const matches = countRecallTermMatches(haystack, tokens);
       if (matches === 0) continue;
       const bm25Norm = matches / tokens.length; // already in [0,1]
 

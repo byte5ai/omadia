@@ -213,6 +213,19 @@ Contract: ADR-0230 (Proposed).
   tokens; a failed or unparseable verdict leaves the entry unchecked so the next bulk
   sweep retries.
 
+### Fixed — recall quality (2026-11-26)
+
+- **Full-text recall matches content words, not every word (#1822).** Without
+  embeddings, turn recall (`searchTurns`), the lexical leg of hybrid turn search and
+  process recall built `plainto_tsquery(<whole message>)`, which ANDs every word, so a
+  question only found a stored fact when the turn contained "wann", "der" and "seine"
+  too. Both graph backends now OR-match the message's content terms (plugin-api
+  `buildRecallTsQuery`: lowercase letter/digit runs split like the `simple` parser,
+  German/English function words dropped, max 16), ranked by `ts_rank_cd`. A message
+  without a content term ("ok") has no lexical leg and recalls nothing. The `/health`
+  warning without embeddings now says that recall is keyword-only and misses
+  paraphrases.
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`
