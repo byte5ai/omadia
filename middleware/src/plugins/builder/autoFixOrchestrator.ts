@@ -265,21 +265,37 @@ export class AutoFixOrchestrator {
       return;
     }
 
-    // Per-(buildN,kind) dedup.
+    // Per-(buildN,kind) dedup: a repeated event for the same build fires
+    // once. #1731 — only a real build number dedups; a failure without one
+    // (spec / codegen stage) must not collapse onto a shared key. The key
+    // is released again on every early return below that did not fire, so
+    // a failure while Auto-Fix is off does not block a later trigger.
     let kindSet = state.triggeredByKind.get(kind);
     if (!kindSet) {
       kindSet = new Set();
       state.triggeredByKind.set(kind, kindSet);
     }
-    if (kindSet.has(buildN)) return;
-    kindSet.add(buildN);
+    const dedupKey = ev.buildN;
+    if (dedupKey !== undefined) {
+      if (kindSet.has(dedupKey)) {
+        this.log('autoFix: skip trigger — already handled', { draftId, kind, buildN });
+        return;
+      }
+      kindSet.add(dedupKey);
+    }
+    const release = (): void => {
+      if (dedupKey !== undefined) kindSet.delete(dedupKey);
+    };
 
     // Need an up-to-date spec to read the toggle and guard against an
     // operator flipping it off mid-build. parseAgentSpec applies the
     // schema default so legacy drafts without builder_settings parse
     // cleanly (auto_fix_enabled: false).
     const draft = await this.draftStore.load(state.userEmail, draftId);
-    if (!draft) return;
+    if (!draft) {
+      release();
+      return;
+    }
     let parsedSpec: ReturnType<typeof parseAgentSpec>;
     try {
       parsedSpec = parseAgentSpec(draft.spec);
@@ -287,9 +303,13 @@ export class AutoFixOrchestrator {
       // Spec is mid-construction and not yet Zod-valid. AutoFix only
       // makes sense for specs that compile, so we wait for the
       // operator to clean up enough to pass parseAgentSpec.
+      release();
       return;
     }
-    if (!parsedSpec.builder_settings.auto_fix_enabled) return;
+    if (!parsedSpec.builder_settings.auto_fix_enabled) {
+      release();
+      return;
+    }
 
     // #2214 — a turn already runs on the draft (an operator turn): skip
     // before counting the fingerprint, so a skipped trigger does not use up
@@ -297,7 +317,7 @@ export class AutoFixOrchestrator {
     const running = this.turnLock?.running(draftId);
     if (running) {
       this.log('autoFix: skipped, turn already running on draft', draftId, running.turnId);
-      kindSet.delete(buildN);
+      release();
       return;
     }
 
@@ -357,6 +377,7 @@ export class AutoFixOrchestrator {
         draftId,
         acquired.running.turnId,
       );
+      release();
       return;
     }
     const lease = acquired?.lease;

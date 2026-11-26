@@ -4,6 +4,36 @@ import { useEffect, useRef } from 'react';
 
 import type { SpecBusEvent } from '../../../../_lib/builderTypes';
 
+/**
+ * Every named event the spec bus sends (`event: <type>` in
+ * `builderEvents.ts`). `EventSource` delivers a named event only to a
+ * listener registered for that name, so a type missing here never reaches
+ * the workspace (#1730: smoke strip, Auto-Fix indicator and "agent stuck"
+ * banner never appeared). The `satisfies` + exhaustiveness check below fail
+ * the build when `SpecBusEvent` grows a type that is not listed.
+ */
+export const SPEC_BUS_EVENT_TYPES = [
+  'spec_patch',
+  'slot_patch',
+  'lint_result',
+  'build_status',
+  'agent_stuck',
+  'runtime_smoke_status',
+  'auto_fix_status',
+  'user_choice_required',
+  'user_choice_resolved',
+  'issue_report_pending',
+] as const satisfies ReadonlyArray<SpecBusEvent['type']>;
+
+type UnlistedSpecBusEventType = Exclude<
+  SpecBusEvent['type'],
+  (typeof SPEC_BUS_EVENT_TYPES)[number]
+>;
+const assertAllSpecBusEventTypesListed: [UnlistedSpecBusEventType] extends [never]
+  ? true
+  : never = true;
+void assertAllSpecBusEventTypesListed;
+
 interface UseSpecEventsOptions {
   /** Disable the subscription entirely (e.g. while a tab is hidden). */
   enabled?: boolean;
@@ -62,64 +92,26 @@ export function useSpecEvents(
       handlerRef.current?.(ev);
     };
 
-    const onSpecPatch = (e: MessageEvent<string>): void => {
+    const onEvent = (e: MessageEvent<string>): void => {
       try {
         dispatch(JSON.parse(e.data) as SpecBusEvent);
       } catch {
         // ignore malformed
       }
     };
-    const onSlotPatch = onSpecPatch;
-    const onLint = onSpecPatch;
 
     source.addEventListener('open', onOpen);
     source.addEventListener('error', onError);
-    source.addEventListener('spec_patch', onSpecPatch as EventListener);
-    source.addEventListener('slot_patch', onSlotPatch as EventListener);
-    source.addEventListener('lint_result', onLint as EventListener);
-    // B.6-6 — out-of-band rebuild status. Same JSON envelope, just a
-    // different event name so callers can route it to the build-status
-    // surface without poking at the union discriminator twice.
-    source.addEventListener('build_status', onSpecPatch as EventListener);
-    // Smart-Card clarification (ask_user_choice): the SpecEventBus
-    // emits `user_choice_required` when the builder agent needs a
-    // pick, and `user_choice_resolved` once any tab has answered (so
-    // multi-tab clients can dismiss the card everywhere). Both arrive
-    // as the same JSON envelope as every other bus event.
-    source.addEventListener(
-      'user_choice_required',
-      onSpecPatch as EventListener,
-    );
-    source.addEventListener(
-      'user_choice_resolved',
-      onSpecPatch as EventListener,
-    );
-    // Issue #206 — native core-bug reporting. `issue_report_pending` asks the
-    // operator to confirm a (sanitized) issue body before it is filed.
-    source.addEventListener(
-      'issue_report_pending',
-      onSpecPatch as EventListener,
-    );
+    for (const type of SPEC_BUS_EVENT_TYPES) {
+      source.addEventListener(type, onEvent as EventListener);
+    }
 
     return () => {
       source.removeEventListener('open', onOpen);
       source.removeEventListener('error', onError);
-      source.removeEventListener('spec_patch', onSpecPatch as EventListener);
-      source.removeEventListener('slot_patch', onSlotPatch as EventListener);
-      source.removeEventListener('lint_result', onLint as EventListener);
-      source.removeEventListener('build_status', onSpecPatch as EventListener);
-      source.removeEventListener(
-        'user_choice_required',
-        onSpecPatch as EventListener,
-      );
-      source.removeEventListener(
-        'user_choice_resolved',
-        onSpecPatch as EventListener,
-      );
-      source.removeEventListener(
-        'issue_report_pending',
-        onSpecPatch as EventListener,
-      );
+      for (const type of SPEC_BUS_EVENT_TYPES) {
+        source.removeEventListener(type, onEvent as EventListener);
+      }
       source.close();
       onStatusRef.current?.('closed');
     };
