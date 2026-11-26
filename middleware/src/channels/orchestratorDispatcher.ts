@@ -29,12 +29,22 @@ import { runGeneratorInExecutionContext, type ModelExecutionContext } from '@oma
  * cannot throw and that `channelType`/`container` cannot be smuggled through
  * as non-strings.
  */
-function readTurnOrigin(raw: unknown): TurnOrigin | undefined {
+function readTurnOrigin(raw: unknown, channelId: string): TurnOrigin | undefined {
   if (raw === null || typeof raw !== 'object') return undefined;
   const candidate = raw as Record<string, unknown>;
 
   const channelType = candidate['channelType'];
   if (typeof channelType !== 'string' || channelType.trim().length === 0) {
+    return undefined;
+  }
+  // #1774 / #1826 (ADR-0182) — reserved origin types. `http` is the kernel's
+  // own web account room (`webAccountOrigin`), whose user id counts as
+  // canonical without an identity lookup: no channel plugin may state it.
+  // `api` names an API key's room and only the Public API channel states it.
+  if (!mayStateOriginType(channelType, channelId)) {
+    console.warn(
+      `[security-audit] orchestratorDispatcher: channel ${channelId} stated the reserved origin type '${channelType}' — turn runs context-free`,
+    );
     return undefined;
   }
   const scope = candidate['scope'];
@@ -71,6 +81,16 @@ function readTurnOrigin(raw: unknown): TurnOrigin | undefined {
     // #2043 — only the two known values pass; anything else stays "unknown".
     ...(rawType === 'group' || rawType === 'direct' ? { conversationType: rawType } : {}),
   };
+}
+
+/** The Public API channel plugin, the one channel that may state an `api` origin. */
+const PUBLIC_API_CHANNEL_ID = '@omadia/channel-api';
+
+function mayStateOriginType(channelType: string, channelId: string): boolean {
+  const type = channelType.trim().toLowerCase();
+  if (type === 'http') return false;
+  if (type === 'api') return channelId === PUBLIC_API_CHANNEL_ID;
+  return true;
 }
 
 /**
@@ -284,7 +304,7 @@ export function createOrchestratorDispatcher(
       let handedTurn: ModelExecutionContext | undefined;
       /** the turn is answered by a notice or by the channel's own service, not by a model of an agent */
       let modelFree = false;
-      const origin = readTurnOrigin(input.metadata?.['origin']);
+      const origin = readTurnOrigin(input.metadata?.['origin'], input.channelId);
       const canvas = readCanvasTurn(input);
 
       // (0) #2059 Explicit addressing. A turn that names an agent goes to

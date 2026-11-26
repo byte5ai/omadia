@@ -280,6 +280,33 @@ setup:
       help:
         en: "Maximum number of processes and threads per sandbox and app container (`docker run --pids-limit`), an integer from 1 to 4194304; catches fork bombs. Empty, 0, invalid or out of range = OMADIA_SANDBOX_PIDS_LIMIT, then default 256. No \"unlimited\"."
         de: "Höchstzahl an Prozessen und Threads je Sandbox- und App-Container (`docker run --pids-limit`), ganze Zahl von 1 bis 4194304; fängt Fork-Bomben ab. Leer, 0, ungültig oder außerhalb des Bereichs = OMADIA_SANDBOX_PIDS_LIMIT, danach Default 256. Kein „unbegrenzt“."
+    # Antwortsprache (#1992, ADR-0220) — der Agent antwortet in der Sprache der
+    # Nutzernachricht; dieses Feld ist nur die Rückfallsprache.
+    - key: "answer_language"
+      label:
+        en: "Fallback answer language"
+        de: "Rückfall-Antwortsprache"
+      type: "enum"
+      required: false
+      default: "de"
+      help:
+        en: "The agent answers in the language of the user's message. This language applies only when a message shows none (a name, a number, a link) and there is no earlier conversation. Default: German."
+        de: "Der Agent antwortet in der Sprache der Nutzernachricht. Diese Sprache gilt nur, wenn eine Nachricht keine erkennen lässt (ein Name, eine Zahl, ein Link) und es noch kein Gespräch gibt. Standard: Deutsch."
+      enum:
+        - value: "de"
+          label: { en: "German", de: "Deutsch" }
+        - value: "en"
+          label: { en: "English", de: "Englisch" }
+        - value: "fr"
+          label: { en: "French", de: "Französisch" }
+        - value: "es"
+          label: { en: "Spanish", de: "Spanisch" }
+        - value: "it"
+          label: { en: "Italian", de: "Italienisch" }
+        - value: "nl"
+          label: { en: "Dutch", de: "Niederländisch" }
+        - value: "pl"
+          label: { en: "Polish", de: "Polnisch" }
     # Antwortumfang — ein Prompt-Vertrag (was die Antwort enthält und weglässt),
     # KEIN Token-Limit: `orchestrator_max_tokens` ist nach unten begrenzt und
     # würde ohnehin mitten im Satz abschneiden. `standard` erzeugt keinen

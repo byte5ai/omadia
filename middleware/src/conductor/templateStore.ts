@@ -67,7 +67,10 @@ export interface ConductorTemplateStore {
   get(id: string): Promise<TemplateRecord | undefined>;
   list(): Promise<TemplateRecord[]>;
   delete(id: string): Promise<boolean>;
-  setStatus(id: string, status: TemplateStatus, reviewedBy?: string): Promise<TemplateRecord | undefined>;
+  setStatus(
+    id: string, status: TemplateStatus, reviewedBy?: string,
+    expected?: { status: TemplateStatus; version: number },
+  ): Promise<TemplateRecord | undefined>;
   listVersions(id: string): Promise<Array<{ version: number; createdAt: string }>>;
   getVersion(id: string, version: number): Promise<TemplateManifest | undefined>;
   /** Append-only anonymous telemetry — one row per instantiation. */
@@ -165,7 +168,9 @@ export function createTemplateStore(pool: Pool, log: (msg: string) => void = () 
           [id, next, stored],
         );
         await client.query(
-          'UPDATE conductor_templates SET latest_version = $2, updated_at = now() WHERE id = $1',
+          `UPDATE conductor_templates
+              SET latest_version = $2, status = 'private', reviewed_by = NULL, updated_at = now()
+            WHERE id = $1`,
           [id, next],
         );
         await client.query('COMMIT');
@@ -193,16 +198,21 @@ export function createTemplateStore(pool: Pool, log: (msg: string) => void = () 
       return (r.rowCount ?? 0) > 0;
     },
 
-    async setStatus(id, status, reviewedBy) {
-      const r = await pool.query<{ id: string }>(
-        `UPDATE conductor_templates
-            SET status = $2, reviewed_by = COALESCE($3, reviewed_by), updated_at = now()
-          WHERE id = $1
-        RETURNING id`,
-        [id, status, reviewedBy ?? null],
+    async setStatus(id, status, reviewedBy, expected) {
+      const r = await pool.query<TemplateRow>(
+        `WITH changed AS (
+           UPDATE conductor_templates
+              SET status = $2, reviewed_by = $3, updated_at = now()
+            WHERE id = $1 AND ($4::text IS NULL OR (status = $4 AND latest_version = $5))
+          RETURNING *
+         )
+         SELECT t.id, t.status, t.created_by, t.reviewed_by, t.latest_version,
+                t.created_at, t.updated_at, v.manifest
+           FROM changed t
+           JOIN conductor_template_versions v ON v.template_id = t.id AND v.version = t.latest_version`,
+        [id, status, reviewedBy ?? null, expected?.status ?? null, expected?.version ?? null],
       );
-      if (!r.rows[0]) return undefined;
-      return this.get(id);
+      return r.rows[0] ? toRecord(r.rows[0]) : undefined;
     },
 
     async listVersions(id) {

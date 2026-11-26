@@ -15,7 +15,22 @@ import type {
   McpServerRow,
 } from '@omadia/orchestrator';
 
-import { parseMcpActionId } from './mcpActionId.js';
+import { mcpActionId, parseMcpActionId } from './mcpActionId.js';
+
+interface ActionMetadata {
+  id: string;
+  requiredInputs?: readonly string[];
+}
+
+export interface McpActionEntry extends ActionMetadata {
+  serverName: string;
+}
+
+export type ActionCatalogEntry = string | (ActionMetadata & { serverName?: string });
+
+export function actionCatalogId(entry: ActionCatalogEntry): string {
+  return typeof entry === 'string' ? entry : entry.id;
+}
 
 /** The one McpManager method we depend on. */
 export interface McpCallSurface {
@@ -91,21 +106,27 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * `discoveredTools: unknown[]` — only entries with a non-empty string `name`
  * count. Sorted for stable catalogs.
  */
-export function mcpActionIds(
+export function listMcpActions(
   servers: readonly McpServerRow[],
   dispatchDenial: (serverId: string, toolName: string) => string | null = () => null,
-): string[] {
-  const out: string[] = [];
+): McpActionEntry[] {
+  const out: McpActionEntry[] = [];
   for (const server of servers) {
     if (server.status !== 'enabled' || server.delegation !== 'service') continue;
     for (const tool of server.discoveredTools) {
       const name = isRecord(tool) && typeof tool.name === 'string' ? tool.name.trim() : '';
-      if (name.length === 0) continue;
+      if (!isRecord(tool) || name.length === 0) continue;
       // Catalog == what the invoker would run: a verdict-blocked or unscanned tool is reported
       // missing by the builder instead of failing at run time.
       if (dispatchDenial(server.id, name) !== null) continue;
-      out.push(`mcp:${server.id}:${name}`);
+      const required = isRecord(tool.inputSchema) ? tool.inputSchema.required : undefined;
+      const requiredInputs = Array.isArray(required) ? required.filter((key): key is string => typeof key === 'string') : [];
+      out.push({
+        id: mcpActionId(server.id, name),
+        serverName: server.name,
+        ...(requiredInputs.length > 0 ? { requiredInputs } : {}),
+      });
     }
   }
-  return out.sort();
+  return out.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }

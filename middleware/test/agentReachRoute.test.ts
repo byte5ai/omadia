@@ -263,8 +263,9 @@ describe('#2054 — reach, broad-reach confirmation and first-run flow', () => {
     const granted = await call(h, 'PATCH', '/sales/plugins', { id: SEARCH, enabled: true, confirmBroadReach: true });
     assert.equal(granted.status, 200);
     assert.equal(h.store.plugins.some((p) => p.pluginId === SEARCH && p.enabled), true);
-    assert.equal(h.audits.length, 1);
-    const audit = h.audits[0]!;
+    assert.deepEqual(h.audits.map(({ action }) => action), ['agent.plugin_change', 'agent.broad_reach_grant']);
+    assert.deepEqual(h.audits[0]?.after, { pluginId: SEARCH, enabled: true });
+    const audit = h.audits[1]!;
     assert.equal(audit.action, 'agent.broad_reach_grant');
     assert.equal(audit.target, `agent:${sales.id}`);
     assert.deepEqual((audit.before as { broad: boolean }).broad, false);
@@ -277,7 +278,11 @@ describe('#2054 — reach, broad-reach confirmation and first-run flow', () => {
     // Switching a grant off never asks.
     const again = await call(h, 'PATCH', '/sales/plugins', { id: SEARCH, enabled: false });
     assert.equal(again.status, 200);
-    assert.equal(h.audits.length, 1);
+    assert.deepEqual(h.audits.map(({ action }) => action), [
+      'agent.plugin_change', 'agent.broad_reach_grant', 'agent.plugin_change',
+    ]);
+    assert.deepEqual(h.audits[2]?.before, { pluginId: SEARCH, enabled: true });
+    assert.deepEqual(h.audits[2]?.after, { pluginId: SEARCH, enabled: false });
   });
 
   it('only capability plugins are newly granted; a row the agent already has stays', async () => {
@@ -304,20 +309,24 @@ describe('#2054 — reach, broad-reach confirmation and first-run flow', () => {
     await h.store.createAgent({ slug: 'sales', name: 'Sales' });
     const partial = await call(h, 'PUT', '/sales/plugins', { plugins: [{ id: ODOO }] });
     assert.equal(partial.status, 200);
-    assert.equal(h.audits.length, 0);
+    assert.deepEqual(h.audits.map(({ action }) => action), ['agent.plugin_change']);
+    assert.deepEqual(h.audits[0]?.after, { pluginId: ODOO, enabled: true, configChanged: false });
 
     const refused = await call(h, 'PUT', '/sales/plugins', { plugins: [{ id: ODOO }, { id: SEARCH }] });
     assert.equal(refused.status, 409);
     assert.equal(refused.json['error'], 'broad_reach_confirmation_required');
     assert.deepEqual(h.store.plugins.map((p) => p.pluginId), [ODOO]);
+    assert.deepEqual(h.audits.map(({ action }) => action), ['agent.plugin_change']);
 
     const confirmed = await call(h, 'PUT', '/sales/plugins', {
       plugins: [{ id: ODOO }, { id: SEARCH }],
       confirmBroadReach: true,
     });
     assert.equal(confirmed.status, 200);
-    assert.equal(h.audits.length, 1);
-    assert.equal(h.audits[0]!.action, 'agent.broad_reach_grant');
+    assert.deepEqual(h.audits.map(({ action }) => action), [
+      'agent.plugin_change', 'agent.plugin_change', 'agent.broad_reach_grant',
+    ]);
+    assert.deepEqual(h.audits[1]?.after, { pluginId: SEARCH, enabled: true, configChanged: false });
   });
 
   it('the "reset standard to all plugins" route is gone', async () => {

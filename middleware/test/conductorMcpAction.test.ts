@@ -4,7 +4,7 @@ import { strict as assert } from 'node:assert';
 import type { McpCallResult, McpServerConfig, McpServerRow } from '@omadia/orchestrator';
 
 import { mcpActionId, parseMcpActionId } from '../src/conductor/mcpActionId.js';
-import { createMcpActionInvoker, mcpActionIds } from '../src/conductor/mcpActionInvoker.js';
+import { createMcpActionInvoker, listMcpActions } from '../src/conductor/mcpActionInvoker.js';
 
 // MCP tools as Conductor action steps: id algebra, catalog derivation, and the
 // fail-closed dispatcher (service delegation only, errors never become results).
@@ -46,10 +46,13 @@ describe('mcp action ids', () => {
   });
 
   it('derives sorted ids for enabled service-delegated servers only, skipping nameless tools', () => {
-    const ids = mcpActionIds([server(), server({ id: 'srv-2', status: 'disabled' }), server({ id: 'srv-3', delegation: 'per_user' })]);
-    assert.deepEqual(ids, ['mcp:srv-1:attach_receipt', 'mcp:srv-1:list_missing_receipts']);
-    const gated = mcpActionIds([server()], (_s, t) => (t === 'attach_receipt' ? 'blocked' : null));
-    assert.deepEqual(gated, ['mcp:srv-1:list_missing_receipts'], 'verdict-blocked tools leave the catalog so the builder reports them missing');
+    const entries = listMcpActions([server(), server({ id: 'srv-2', status: 'disabled' }), server({ id: 'srv-3', delegation: 'per_user' })]);
+    assert.deepEqual(entries, [
+      { id: 'mcp:srv-1:attach_receipt', serverName: 'Pleo' },
+      { id: 'mcp:srv-1:list_missing_receipts', serverName: 'Pleo' },
+    ]);
+    const gated = listMcpActions([server()], (_s, t) => (t === 'attach_receipt' ? 'blocked' : null));
+    assert.deepEqual(gated, [{ id: 'mcp:srv-1:list_missing_receipts', serverName: 'Pleo' }]);
   });
 });
 

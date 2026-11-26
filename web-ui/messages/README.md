@@ -53,7 +53,7 @@ return <h2>{t('conflictTitle')}</h2>;
 
 Guidelines:
 
-- The first segment matches the page or shared area: `nav`, `layout`, `localeSwitcher`, `login`, `setup`, `admin`, `store`, `system`, `routines`, `memory`, `graph`, `chat`, `chatTabs`, `authBadge`, `agentDetailsModal`, `agentUsagePills`, `nudgeCard`, `privacyReceipt`, `onboarding`.
+- The first segment matches the page or shared area: `nav`, `layout`, `localeSwitcher`, `login`, `setup`, `admin`, `store`, `system`, `routines`, `memory`, `graph`, `chat`, `chatTabs`, `authBadge`, `agentDetailsModal`, `agentUsagePills`, `privacyReceipt`, `onboarding`.
 - Keys are `camelCase`. Avoid sentence-as-key (`"Save changes"`) — wording changes shouldn't break refactors.
 - Group by component, not by reading order.
 - Don't repeat the area in the leaf (`login.loginButton` ❌ → `login.submit` ✅).

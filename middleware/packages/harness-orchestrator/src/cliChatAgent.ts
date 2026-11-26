@@ -19,6 +19,7 @@ import type {
   PendingUserChoice,
   SemanticAnswer,
 } from '@omadia/channel-sdk';
+import { stripKnownAiDisclosureLines } from '@omadia/channel-sdk';
 import type {
   DispatchableToolSpec,
   ToolDispatchService,
@@ -1061,6 +1062,12 @@ export interface CliChatAgentDeps {
     input: ChatTurnInput,
   ) => Promise<Pick<TurnContextValue, 'discretion' | 'audienceFloor'>>;
   /**
+   * #1960 (ADR-0178) — bind one adapter-stated upload to the conversation of
+   * the turn context it runs in (`AttachmentReader.bindToCurrentConversation`).
+   * Unset: stated uploads stay unbound and unreadable on this path.
+   */
+  readonly bindStatedUpload?: (storageKey: string) => Promise<void>;
+  /**
    * Spec 2042 §5.11 / #2194 — the people-egress check of a CLI turn's answer,
    * as the in-process `done` gets it: `withheld` with the honest line as the
    * answer when a reader of the conversation may not know what the turn read.
@@ -1318,6 +1325,10 @@ export class CliChatAgent implements ChatAgent {
       // name the CLI turn instead.
       turnId: parent?.turnId && parent.turnIdIsPlaceholder !== true ? parent.turnId : cliTurnId,
       turnIdIsPlaceholder: false,
+      // #1960 (ADR-0178) — the turn's room, as the in-process turn states it
+      // (`input.sessionScope ?? turnId`). Attachment bindings are keyed on it:
+      // without it a loopback `read_attachment` has no room and is refused.
+      sessionScope: parent?.sessionScope ?? input.sessionScope ?? (parent?.turnId || cliTurnId),
       // ADR-0044 — the box the memory binding publishes this turn's graph read
       // boundary into, shared by reference with every loopback tool call.
       // Always a fresh one, as an in-process turn starts with: a caller's box
@@ -1327,6 +1338,24 @@ export class CliChatAgent implements ChatAgent {
       graphReadScope: {},
       ...fields,
     };
+  }
+
+  /** #1960 — {@link CliChatAgentDeps.bindStatedUpload} for every stated upload. */
+  private async bindStatedUploads(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+  ): Promise<void> {
+    const bind = this.deps.bindStatedUpload;
+    if (bind === undefined) return;
+    for (const upload of input.storedAttachments ?? []) {
+      try {
+        await turnContext.runInTurnContext(() => bind(upload.storageKey));
+      } catch (error) {
+        (this.deps.logger ?? consoleSpawnLogger).warn('attachment binding failed (upload stays unreadable)', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   /** #2194 — {@link CliChatAgentDeps.guardAnswer} in the turn's context. */
@@ -1688,10 +1717,17 @@ export class CliChatAgent implements ChatAgent {
     turns: readonly CliPriorTurn[],
     turnContext: CapturedTurnContext,
   ): Promise<ResolvedCliHistory> {
-    const usable = turns.filter(
-      (turn) =>
-        turn.userMessage.trim().length > 0 && turn.assistantAnswer.trim().length > 0,
-    );
+    // #2003 — replayed answers lose the AI-disclosure line (the delivery
+    // boundary's marking, not the agent's words) before anything else.
+    const usable = turns
+      .map((turn) => ({
+        ...turn,
+        assistantAnswer: stripKnownAiDisclosureLines(turn.assistantAnswer),
+      }))
+      .filter(
+        (turn) =>
+          turn.userMessage.trim().length > 0 && turn.assistantAnswer.trim().length > 0,
+      );
     // Read through the context CAPTURED at the public entry point, never the
     // ambient one: this runs in the `runLifecycle` generator body, which is
     // resumed in the async context of whoever calls `.next()` (#1016, OM-82).
@@ -1949,6 +1985,10 @@ export class CliChatAgent implements ChatAgent {
       // #2194 — the discretion state first: the memory binding, the recall
       // and every loopback tool call label the turn through it.
       await this.beginDiscretion(input, turnContext, cliTurnId);
+      // #1960 (ADR-0178) — bind the adapter-stated uploads to this turn's room,
+      // as the in-process ingest does, so the loopback `read_attachment` can
+      // read them. A failure leaves them unreadable, never readable elsewhere.
+      await this.bindStatedUploads(input, turnContext);
 
       // #1102 — `memory` only with a handler bound to THIS turn; refused
       // outright otherwise.
