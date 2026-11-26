@@ -121,12 +121,12 @@ describe('<TemplateGallery />', () => {
       <TemplateGallery templates={[approvalTemplate, reportTemplate]} onUseTemplate={vi.fn()} />,
     );
 
-    const badges = screen.getAllByText('Runs on a schedule');
+    const badges = screen.getAllByText('Runs on a schedule (UTC)');
     expect(badges).toHaveLength(1);
     const [approvalCard, reportCard] = screen.getAllByRole('article');
     if (!approvalCard || !reportCard) throw new Error('expected two template cards');
-    expect(within(reportCard).getByText('Runs on a schedule')).toBeInTheDocument();
-    expect(within(approvalCard).queryByText('Runs on a schedule')).not.toBeInTheDocument();
+    expect(within(reportCard).getByText('Runs on a schedule (UTC)')).toBeInTheDocument();
+    expect(within(approvalCard).queryByText('Runs on a schedule (UTC)')).not.toBeInTheDocument();
   });
 
   it('calls onUseTemplate with the clicked template', async () => {
@@ -286,7 +286,7 @@ describe('<TemplateGallery /> facets, search and manage actions (#478)', () => {
 
     await user.click(within(card).getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(onCatalogChanged).toHaveBeenCalledTimes(1));
-    expect(approveConductorTemplate).toHaveBeenCalledWith('foreign-pending');
+    expect(approveConductorTemplate).toHaveBeenCalledWith('foreign-pending', 1);
 
     // The page refetches on onCatalogChanged; after the refresh the template is
     // shared and surfaces under the Shared facet.

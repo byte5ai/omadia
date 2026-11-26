@@ -67,6 +67,7 @@ import {
   type AiDisclosureSetup,
 } from './orchestrator.js';
 import type { AnswerVerbosity } from './answerVerbosity.js';
+import type { AnswerLanguage } from './answerLanguage.js';
 import {
   LlmScreener,
   HttpProxyScreener,
@@ -457,6 +458,12 @@ export interface OrchestratorDeps {
    * `OrchestratorOptions.answerVerbosity`.
    */
   readonly answerVerbosity?: AnswerVerbosity;
+  /**
+   * #1992 / ADR-0220 — fallback answer language (`answer_language`), shared by
+   * every Agent this process builds. Absent → German. See
+   * `OrchestratorOptions.answerLanguage`.
+   */
+  readonly answerLanguage?: AnswerLanguage;
   /**
    * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
    * shipping default (standard, active) on every channel. See
@@ -1010,9 +1017,9 @@ export function buildOrchestratorForAgent(
         }
       : {}),
     log: (msg, fields): void => {
-      console.error(
-        `[security-audit] ${msg}${fields ? ` ${JSON.stringify(fields)}` : ''}`,
-      );
+      // #1832 — some callers already carry the prefix; write it once.
+      const line = msg.startsWith('[security-audit]') ? msg : `[security-audit] ${msg}`;
+      console.error(`${line}${fields ? ` ${JSON.stringify(fields)}` : ''}`);
     },
   });
 
@@ -1235,6 +1242,7 @@ export function buildOrchestratorForAgent(
     ...((config.answerVerbosity ?? deps.answerVerbosity)
       ? { answerVerbosity: config.answerVerbosity ?? deps.answerVerbosity }
       : {}),
+    ...(deps.answerLanguage ? { answerLanguage: deps.answerLanguage } : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
@@ -1326,6 +1334,12 @@ export function buildOrchestratorForAgent(
           // Spec 2042 §5.11 / #2194 — the in-process turn's discretion state
           // and the people-egress check of its answer, for this path too.
           discretionTurnFields: (input) => orchestrator.cliDiscretionTurnFields(input),
+          ...(deps.attachmentReader?.bindToCurrentConversation
+            ? {
+                bindStatedUpload: (key: string) =>
+                  deps.attachmentReader!.bindToCurrentConversation!(key),
+              }
+            : {}),
           guardAnswer: (answer, input) => orchestrator.guardCliAnswer(answer, input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat

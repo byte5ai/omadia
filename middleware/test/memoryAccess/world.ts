@@ -39,16 +39,17 @@ export const AGENTS: Readonly<Record<AgentKey, string>> = {
  *  - `dm`: Alice's 1:1 chat with the agent on Teams (personal scope, user tier).
  *  - `room1`, `room2`: two Teams channels of the SAME team, with different
  *    members. Each has its own channel tier; they share the team tier.
- *  - `web`: a web or API turn. It carries no `TurnOrigin`, so it is
- *    context-free in every mode (handoff "Rollout", HTTP/API emit no origin).
- *    Each user has their own web conversation.
+ *  - `web`: a web chat turn. Since #1774 (ADR-0182) it carries the signed-in
+ *    account's origin (`webAccountOrigin`): a one-person room per user, its
+ *    own `user` tier under enforce/strict and a one-person audience under
+ *    members. Each user has their own web conversation.
  */
 export type ContextKey = 'dm' | 'room1' | 'room2' | 'web';
 export const CONTEXT_KEYS: readonly ContextKey[] = ['dm', 'room1', 'room2', 'web'];
 
 export interface ContextDef {
   readonly key: ContextKey;
-  readonly kind: 'personal' | 'group' | 'context-free';
+  readonly kind: 'personal' | 'group' | 'account' | 'context-free';
   /** Who is present. `web` is one person: whoever sends the turn. */
   readonly members: readonly UserKey[] | 'sender';
 }
@@ -58,7 +59,7 @@ export const CONTEXTS: Readonly<Record<ContextKey, ContextDef>> = {
   dm: { key: 'dm', kind: 'personal', members: ['alice'] },
   room1: { key: 'room1', kind: 'group', members: ['alice', 'bob'] },
   room2: { key: 'room2', kind: 'group', members: ['bob', 'carol'] },
-  web: { key: 'web', kind: 'context-free', members: 'sender' },
+  web: { key: 'web', kind: 'account', members: 'sender' },
 };
 
 /** The Teams conversation id of each context-bound context. */

@@ -27,7 +27,7 @@ import { AnswerDetails } from '../_components/chat/AnswerDetails';
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
-import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
+import { parseNudgeBlock } from '../_components/chat/nudgeBlock';
 import {
   McpAuthRequiredCard,
   parseMcpAuthRequired,
@@ -56,7 +56,6 @@ import {
   type OutgoingFileAttachment,
   type FollowUpOption,
   type Message,
-  type NudgeEvent,
   type SubAgentEvent,
   type ToolEvent,
 } from '../_lib/chatSessions';
@@ -634,8 +633,14 @@ export default function ChatPage(): React.ReactElement {
               });
             }}
             onDeleted={() => {
-              streamStore.patch(activeId, { agentUnavailableSlug: undefined });
-              void clearMessages(activeId);
+              // #1886: drop the session from the list (a clear would PUT it
+              // back into existence) and forget the picked agent, which
+              // belonged to the dead pin. The banner already deleted it on the
+              // server; `deleteSession`'s own DELETE then answers 404, which
+              // it treats as done.
+              streamStore.dismiss(activeId);
+              setSelectedAgentSlug(undefined);
+              void deleteSession(activeId);
             }}
           />
         );
@@ -651,7 +656,9 @@ export default function ChatPage(): React.ReactElement {
             {activeSession.messages.length === 0 && (
               <EmptyState hydrating={hydrating} session={activeSession} />
             )}
-            {activeSession.messages.map((m, idx) => (
+            {activeSession.messages.map((m, idx) =>
+              // #1896 — a deliberate NO_REPLY turn leaves no bubble.
+              m.silent === true && m.content === '' ? null : (
               <MessageRow
                 key={m.id}
                 message={m}
@@ -676,7 +683,8 @@ export default function ChatPage(): React.ReactElement {
                   : {})}
                 onDiscardAutoPromoted={clearAutoPromoted}
               />
-            ))}
+              ),
+            )}
           </div>
         </div>
         <ScrollToBottomButton
@@ -1018,9 +1026,6 @@ export function MessageRow({
       {(message.tools?.length ?? 0) > 0 && (
         <ToolTrace tools={message.tools ?? []} />
       )}
-      {(message.nudges?.length ?? 0) > 0 && (
-        <NudgeList nudges={message.nudges ?? []} />
-      )}
       {(message.steers?.length ?? 0) > 0 && (
         <SteerList steers={message.steers ?? []} />
       )}
@@ -1129,7 +1134,6 @@ export function MessageRow({
     message.recalledContext !== undefined ||
     message.plan !== undefined ||
     (message.tools?.length ?? 0) > 0 ||
-    (message.nudges?.length ?? 0) > 0 ||
     (message.steers?.length ?? 0) > 0 ||
     (message.agentsConsulted?.length ?? 0) > 0 ||
     message.answerVerbosity !== undefined ||
@@ -1411,9 +1415,8 @@ export function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
 
 /**
  * OB-77 (Palaia Phase 8 Slice 4) — strips any inline `<nudge>` block
- * from the tool_result.output before rendering. The actual NudgeCard
- * rendering happens at the message level via `<NudgeList>`, which
- * collects per-turn nudges from dedicated stream events. The pipeline
+ * from the tool_result.output before rendering. The web chat renders no
+ * nudge card (#1900, ADR-0021). The pipeline
  * still embeds the XML block in the tool_result content (so the agent
  * sees it on its next API call) — this strip keeps the dev UI's `<pre>`
  * output clean.
@@ -1585,44 +1588,6 @@ function ToolOutputWithNudge({ output }: { output: string }): React.ReactElement
         {cleaned}
       </pre>
     </>
-  );
-}
-
-/**
- * OB-77 — consolidated nudge list rendered between the tool trace and
- * the assistant answer. Multiple nudges stack vertically; each renders
- * a `<NudgeCard>` with its hint + optional CTA button.
- */
-function NudgeList({ nudges }: { nudges: NudgeEvent[] }): React.ReactElement {
-  return (
-    <div className="mt-2 space-y-2">
-      {nudges.map((n) => (
-        <NudgeCard
-          key={`${n.id}:${n.nudgeId}`}
-          nudge={{
-            id: n.nudgeId,
-            text: n.text,
-            ...(n.cta
-              ? {
-                  cta: {
-                    label: n.cta.label,
-                    toolName: n.cta.toolName,
-                    args: n.cta.arguments,
-                  },
-                }
-              : {}),
-          }}
-          onCtaClick={(cta) => {
-            console.warn(
-              `[nudge] CTA invoked: ${cta.toolName}(${JSON.stringify(cta.args)})`,
-            );
-          }}
-          onSuppressClick={(id) => {
-            console.warn(`[nudge] suppress requested for ${id}`);
-          }}
-        />
-      ))}
-    </div>
   );
 }
 

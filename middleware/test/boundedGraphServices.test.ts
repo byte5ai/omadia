@@ -329,6 +329,11 @@ describe('ADR-0044 · bounded processMemory@1', () => {
       (err: unknown) => err instanceof GraphServiceRefusedError && err.reason === 'out-of-scope',
     );
     await assert.rejects(() => bounded.write(input('atlas::s')), GraphServiceRefusedError);
+    // #2223: no process lands from a context-bound turn, where none is readable.
+    await assert.rejects(
+      () => inTurn(STRICT_BOUND, () => bounded.write(input('atlas::s'))),
+      (err: unknown) => err instanceof GraphServiceRefusedError && err.reason === 'out-of-scope',
+    );
   });
 
   it('refuses reads outside a turn', async () => {

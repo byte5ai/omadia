@@ -201,10 +201,9 @@ export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
  * (`requires:` where a plugin manifest provides the name and activate() cannot
  * proceed without it, `optional_requires:` otherwise), released, and the Hub
  * serves the declaring build. Their rows are gone from the table below. The
- * ninth, `@omadia/channel-teams`, declared all thirteen of its names too, but
- * keeps a single residual row — `graphPool` — because this table doubles as the
- * C7 SQL ramp and channel-teams has no `permissions.sql` grant yet (see the
- * table's own comment and omadia#787).
+ * ninth, `@omadia/channel-teams`, declared all thirteen of its names too; its
+ * last residual row, `graphPool` (the C7 SQL ramp), went with 0.46.0, which
+ * declares `permissions.sql` (omadia#838, #2254). The table is now empty.
  *
  * So for these ids the key stays the id, and the id is not a credential —
  * nothing today distinguishes the real `@omadia/channel-teams` zip from a zip
@@ -242,20 +241,12 @@ export const STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
   //   @omadia/agent-odoo-accounting 0.1.4  requires odoo.agentToolkit.accounting
   //   @omadia/agent-confluence      0.3.3  optional_requires confluence.client, confluence.toolkit
   //
-  // @omadia/channel-teams (0.19.1) declared all thirteen of its names too, so
-  // its SERVICE-gate rows are retired as well — with ONE deliberate residual,
-  // `graphPool`. `graphPool` is the only POOL_SHAPED capability, and this exact
-  // list is ALSO consulted by the C7 SQL gate as its legacy ramp
-  // (`createSqlGate`'s `legacyCapabilities`, wired from `legacyServiceGrantsFor`
-  // in `pluginContext.ts`). channel-teams ships no `permissions.sql` and holds
-  // no operator grant, so removing `graphPool` here would leave the manifest
-  // declaration satisfying the service gate while `classifySqlAccess` returns
-  // `undeclared` and throws `SqlPermissionError` on the channel's first Postgres
-  // touch after upgrade — the #794 trap one gate lower. The manifest declaration
-  // means the service gate no longer reads this row; only the SQL ramp does. It
-  // retires when channel-teams declares `permissions.sql` and the operator
-  // grants it (C7 / omadia#787), which is independent of #838.
-  '@omadia/channel-teams': Object.freeze(['graphPool']),
+  // @omadia/channel-teams (0.19.1) declared all thirteen of its names too.
+  // Its last residual, `graphPool` (the C7 SQL ramp), is RETIRED as well
+  // (omadia#838): 0.46.0 declares `permissions.sql` with its own migrations,
+  // the channel runtime reads the operator grant like the tool runtime (#2254),
+  // and the grant is given on the instance. Without a grant the channel runs
+  // without a database rather than failing (`graphPoolAccess.ts` in the plugin).
 
   // W1a (#860) — 'teamsProvisioner' decision, recorded so nobody re-audits:
   // NO row is needed for the Teams agent factory. The consumer is the KERNEL

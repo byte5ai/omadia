@@ -89,9 +89,14 @@ describe('createChatRouter (Phase A)', () => {
   async function mountApp(): Promise<void> {
     const app = express();
     app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as { session: unknown }).session = { sub: 'account-1' };
+      next();
+    });
     app.use(
       '/api',
       createChatRouter({
+        legacyChatOwner: () => Promise.resolve('account-1'),
         chatSessionStore: store as unknown as ChatSessionStore,
         routeTurn: routeTurnFrom(
           (slug) => availableAgents.get(slug),

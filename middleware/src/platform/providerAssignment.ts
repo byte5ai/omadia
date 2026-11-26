@@ -56,6 +56,11 @@ export interface ProviderAssignmentDeps {
   /** Tear down + re-activate a plugin so it re-reads its config. */
   readonly reactivate?: (pluginId: string) => Promise<void>;
   readonly llmProviderCatalog?: LlmProviderCatalogView;
+  readonly onAssignmentPersisted?: (
+    pluginId: string,
+    before: { provider: string | null; model: string | null },
+    after: { provider: string; model: string },
+  ) => Promise<void>;
 }
 
 export interface ProviderAssignmentInput {
@@ -176,6 +181,13 @@ export async function applyProviderAssignment(
   let outcome: PrimaryRebuildOutcome | undefined;
   try {
     await deps.installedRegistry.updateConfig(pluginId, nextConfig);
+    const previousProvider = readStringConfig(entry?.config ?? {}, 'llm_provider') ?? null;
+    const previousModel = readStringConfig(entry?.config ?? {}, desc.modelKeys[0] ?? '') ?? null;
+    if (previousProvider !== provider || previousModel !== storeModel) {
+      await deps.onAssignmentPersisted?.(pluginId,
+        { provider: previousProvider, model: previousModel },
+        { provider, model: storeModel });
+    }
     outcome = await reactivateAfterProviderWrite(deps, pluginId, {
       providerChanged: isEffectiveProviderChange(entry?.config, nextConfig),
       providerWritten: true,

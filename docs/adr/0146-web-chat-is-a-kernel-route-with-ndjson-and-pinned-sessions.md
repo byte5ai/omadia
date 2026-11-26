@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted — refined by [ADR-0180](0180-web-chats-belong-to-the-creating-account.md) (a chat belongs to the account that created it) and
+[ADR-0182](0182-web-and-api-turns-carry-an-account-or-key-origin.md) (the route builds a `TurnOrigin` from the session's account)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers (recorded retroactively); agent routing per

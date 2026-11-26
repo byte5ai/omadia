@@ -312,6 +312,8 @@ export async function seedWorld(
         createdAt: at,
         updatedAt: at,
         messages: [{ id: 'm1', role: 'user', content: `Notiz ${s.canary}`, startedAt: at }],
+        // #1762 — the account that chats in it owns it (the session's `sub`).
+        ...(s.sender ? { ownerUserId: users[s.tenant][s.sender] } : {}),
       });
       location.set(s.canary, path);
       continue;

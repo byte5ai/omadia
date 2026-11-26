@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-0221](0221-a-fast-lane-miss-hands-its-executed-call-to-the-agent.md) (a miss after the query ran hands the executed call to the agent)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers; fast lane under the agent per spec 2042 (#1876), decision-model

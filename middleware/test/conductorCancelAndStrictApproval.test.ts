@@ -494,7 +494,12 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      (req as express.Request & { session?: unknown }).session = { sub: 'op-1', omadia_user_id: 'kg-cluster-op-1', uid: '9b1c2d3e-4f50-4a61-8b72-0c9d1e2f3a4b' } as never;
+      (req as express.Request & { session?: unknown }).session = {
+        sub: 'op-1',
+        email: 'operator@example.test',
+        omadia_user_id: 'kg-cluster-op-1',
+        uid: '9b1c2d3e-4f50-4a61-8b72-0c9d1e2f3a4b',
+      } as never;
       next();
     });
     const deps = {
@@ -570,11 +575,9 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
     assert.deepEqual(holderCalls, ['add:approvers:op-1']);
     assert.equal(audited.length, 1);
     assert.deepEqual(audited[0], {
-      actor: 'op-1',
-      // #775 — the session uuid travels alongside the sub, because the sub is
-      // an email under local auth and must never land in the uuid actor_id
-      // column. #1315 — the uuid is the session's `uid` (users.id), never the
-      // knowledge-graph `omadia_user_id` the harness session also carries.
+      actor: 'operator@example.test',
+      // ADR-0100 — the audit actor uses the session email and account UUID.
+      // This fixture keeps the subject and knowledge-graph ID distinct.
       actorUserId: '9b1c2d3e-4f50-4a61-8b72-0c9d1e2f3a4b',
       roleKey: 'approvers',
       action: 'add',

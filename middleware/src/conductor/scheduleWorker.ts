@@ -1,14 +1,18 @@
 import { randomUUID } from 'node:crypto';
 
-import { cronMatches } from '../scheduler/cron.js';
+import { cronMatchesInZone } from '../scheduler/zonedCron.js';
+import { isValidCron } from '../scheduler/cron.js';
 import type { ConductorSchedule, ConductorScheduleStore } from './scheduleStore.js';
-import type { ConductorRunExecutor } from './runExecutor.js';
+import { WorkflowDisabledError, WorkflowNotFoundError, type ConductorRunExecutor } from './runExecutor.js';
+
+const MINUTE_MS = 60_000;
+const MAX_EXPIRED_MINUTES = 24 * 60;
 
 /**
  * Fires Conductor workflows on their cron triggers (US4 cron / FR-007). Polls `conductor_schedules`
- * once per minute and starts a run for each enabled schedule whose cron matches the current UTC
- * minute and whose workflow is enabled. Per-minute exactly-once is enforced in the DB
- * (`scheduleStore.claimRun` advances `last_run_at` atomically), so it holds across restarts and
+ * periodically and starts a run for each enabled schedule whose local cron matches the
+ * current absolute minute. The DB advances the inspection and dispatch cursors atomically,
+ * so the at-most-once claim holds across restarts and
  * replicas; an in-flight set additionally prevents overlapping startRun for the same schedule.
  * graphPool-gated by the caller, like the await/resume workers.
  */
@@ -23,14 +27,15 @@ export class ConductorScheduleWorker {
       scheduleStore: ConductorScheduleStore;
       executor: ConductorRunExecutor;
       intervalMs?: number;
-      now?: () => Date;
       log?: (msg: string) => void;
     },
   ) {}
 
   start(): void {
     if (this.timer) return;
-    const interval = this.deps.intervalMs ?? 60_000;
+    // Poll several times per minute so crossing a minute boundary during the
+    // query or starting the worker late does not strand a schedule at one phase.
+    const interval = this.deps.intervalMs ?? 15_000;
     void this.tick();
     this.timer = setInterval(() => void this.tick(), interval);
     if (typeof this.timer.unref === 'function') this.timer.unref();
@@ -48,45 +53,73 @@ export class ConductorScheduleWorker {
     if (this.ticking) return;
     this.ticking = true;
     try {
-      const now = (this.deps.now ?? (() => new Date()))();
       let schedules: ConductorSchedule[];
       try {
-        schedules = await this.deps.scheduleStore.listEnabled();
+        schedules = await this.deps.scheduleStore.listForPoll();
       } catch (err) {
         this.deps.log?.(`[conductor] schedule worker list failed: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
 
+      const gaps: ConductorSchedule[] = [];
       for (const s of schedules) {
-        if (!s.workflowEnabled) continue;
-        if (this.inFlight.has(s.id)) continue;
-
-        // A malformed cron on a legacy/manual row must not abort the whole tick (which would skip
-        // every later schedule this minute) — guard each match and skip only the bad row.
         let due: boolean;
+        let invalid: string | undefined;
         try {
-          due = cronMatches(s.cron, now);
+          if (!isValidCron(s.cron)) throw new Error('expected a valid five-field cron expression');
+          due = cronMatchesInZone(s.cron, s.pollMinute, s.timezone);
         } catch (err) {
-          this.deps.log?.(`[conductor] schedule worker bad cron '${s.cron}' on ${s.id}: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
+          due = false;
+          invalid = err instanceof Error ? err.message : String(err);
         }
-        if (!due) continue;
-
+        const alreadyClaimed = s.lastRunAt !== null && s.lastRunAt >= s.pollMinute;
+        const willFire = due && s.workflowEnabled && !this.inFlight.has(s.id) && !alreadyClaimed;
         let won: boolean;
         try {
-          won = await this.deps.scheduleStore.claimRun(s.id, this.claimerId);
+          won = await this.deps.scheduleStore.claimPoll(s, this.claimerId, willFire);
         } catch (err) {
           this.deps.log?.(`[conductor] schedule worker claim ${s.id} failed: ${err instanceof Error ? err.message : String(err)}`);
           continue;
         }
-        if (!won) continue; // another tick/replica already fired this minute
-
+        if (!won) continue;
+        if (invalid !== undefined) {
+          this.deps.log?.(`[conductor] schedule worker invalid cron or zone on ${s.id} (${s.cron}, ${s.timezone}): ${invalid}`);
+          continue;
+        }
+        if (s.pollMinute.getTime() - s.lastCheckedAt.getTime() > MINUTE_MS) gaps.push(s);
+        if (due && !willFire && !alreadyClaimed) {
+          this.logSuppression(s, s.workflowEnabled ? 'start_in_flight' : 'workflow_or_schedule_disabled');
+        }
+        if (!willFire) continue;
         this.inFlight.add(s.id);
         void this.fire(s).finally(() => this.inFlight.delete(s.id));
       }
+      // Process historical gaps after claiming the current minutes.
+      for (const schedule of gaps) this.logExpiredSlots(schedule);
     } finally {
       this.ticking = false;
     }
+  }
+
+  private logExpiredSlots(s: ConductorSchedule): void {
+    const end = s.pollMinute.getTime();
+    const first = Math.max(s.lastCheckedAt.getTime() + MINUTE_MS, end - MAX_EXPIRED_MINUTES * MINUTE_MS);
+    let count = 0;
+    for (let slot = first; slot < end; slot += MINUTE_MS) {
+      if (cronMatchesInZone(s.cron, new Date(slot), s.timezone)) count += 1;
+    }
+    const gap = (end - s.lastCheckedAt.getTime()) / MINUTE_MS - 1;
+    if (count === 0 && gap <= MAX_EXPIRED_MINUTES) return;
+    this.deps.log?.(
+      `[conductor] cron suppressed 'missed_slots_expired' workflow='${s.workflowSlug}' schedule=${s.id} zone=${s.timezone} ` +
+      `after=${s.lastCheckedAt.toISOString()} before=${s.pollMinute.toISOString()} matchingSlots=${count} uninspectedMinutes=${Math.max(0, gap - MAX_EXPIRED_MINUTES)}`,
+    );
+  }
+
+  private logSuppression(s: ConductorSchedule, reason: string): void {
+    this.deps.log?.(
+      `[conductor] cron suppressed '${reason}' workflow='${s.workflowSlug}' schedule=${s.id} zone=${s.timezone} slot=${s.pollMinute.toISOString()}`,
+    );
   }
 
   // At-most-once semantics: the slot is already claimed before this runs. Once startRun() creates the
@@ -100,10 +133,14 @@ export class ConductorScheduleWorker {
         slug: s.workflowSlug,
         payload: {},
         triggerKind: 'cron',
-        triggerSource: { scheduleId: s.id, cron: s.cron },
+        triggerSource: { scheduleId: s.id, cron: s.cron, timezone: s.timezone, slotAt: s.pollMinute.toISOString() },
       });
     } catch (err) {
-      this.deps.log?.(`[conductor] cron fire '${s.workflowSlug}' failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof WorkflowDisabledError || err instanceof WorkflowNotFoundError) {
+        this.logSuppression(s, err instanceof WorkflowDisabledError ? 'workflow_disabled' : 'workflow_not_found');
+      } else {
+        this.deps.log?.(`[conductor] cron fire '${s.workflowSlug}' failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 }
