@@ -5365,7 +5365,7 @@
       },
       "config": {
         "title": "Configuration",
-        "intro": "Fill in the values for this server's placeholders. Non-secret values are stored in the database; fields marked secret are stored encrypted in the Vault. Values are substituted into the endpoint/headers at connect time.",
+        "intro": "Fill in the values for this server's placeholders. Non-secret values are stored in the database; fields marked secret are stored encrypted in the Vault. Both are substituted into the endpoint and headers at connect time.",
         "secret": "secret",
         "secretStored": "•••••••• (stored — leave blank to keep)",
         "secretPlaceholder": "enter secret value",
@@ -5393,7 +5393,32 @@
       "rescanSummary": "{servers, plural, one {# server} other {# servers}} re-scanned, {tools, plural, one {# tool} other {# tools}} checked, {failed, plural, =0 {no failures} one {# server failed} other {# servers failed}}.",
       "rescanFailure": "{name}: {error}",
       "lastScanFailedAt": "Last re-scan failed ({at})",
-      "lastScanFailed": "Last re-scan failed"
+      "lastScanFailed": "Last re-scan failed",
+      "headers": {
+        "title": "Headers",
+        "intro": "Static request headers, for example an API key in x-api-key or Authorization: Bearer …. A header marked secret is stored encrypted in the Vault and never shown again; leave it blank to keep the stored value. Prefer a header over a key in the endpoint URL: an upstream error can quote the URL.",
+        "name": "Header name",
+        "namePlaceholder": "x-api-key",
+        "value": "Header value",
+        "valuePlaceholder": "value",
+        "secret": "secret",
+        "secretStored": "•••••••• (stored — leave blank to keep)",
+        "secretPlaceholder": "enter secret value",
+        "add": "Add header",
+        "remove": "Remove",
+        "save": "Save headers",
+        "saved": "Saved",
+        "errors": {
+          "nameInvalid": "A header name may only contain letters, digits and - _ . ! # $ % & ' * + ^ ` | ~.",
+          "nameReserved": "The MCP transport sets this header itself (for example Content-Type, Accept, Host).",
+          "nameDuplicate": "A header is listed twice.",
+          "valueInvalid": "A header value may not contain line breaks and has at most 8192 characters.",
+          "valueRequired": "A header that is not secret needs a value.",
+          "secretRequired": "A new secret header needs a value.",
+          "tooMany": "A server has at most 20 headers.",
+          "secretsUnavailable": "No Vault is configured, so secret headers cannot be stored."
+        }
+      }
     },
     "sandbox": {
       "toggle": "Test",

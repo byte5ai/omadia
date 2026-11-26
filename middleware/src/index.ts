@@ -3428,6 +3428,8 @@ async function main(): Promise<void> {
                 ? {
                     getConfigHeaders: (cfg: McpServerConfig) =>
                       mcpConfigService.getConfigHeaders(cfg),
+                    getConfigEndpoint: (cfg: McpServerConfig) =>
+                      mcpConfigService.getConfigEndpoint(cfg),
                     getConfigEnv: (cfg: McpServerConfig) =>
                       mcpConfigService.getConfigEnv(cfg),
                   }

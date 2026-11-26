@@ -7265,6 +7265,16 @@ Endpoints that come from a registry catalog are not operator configuration and
 keep the stricter untrusted rule (`assertUntrustedEndpointSafe`,
 `mcpRegistryClient.ts`): `https` only, and no private or loopback host either.
 
+**Static headers and API keys (ADR-0210, #1912).** An admin can give an
+http/sse server static request headers. A header marked secret is stored on
+the row only as its `{header_<name>}` placeholder; the value lives in the Vault
+(`@omadia/mcp-config`) and is filled in per call, like every secret config
+field, which now works in the endpoint as well. No route returns a secret
+value: the header list reports `secretSet` only. Removing a header or a
+placeholder deletes its Vault secret. A secret placed in the endpoint URL can
+still be quoted by an upstream or transport error message; a header avoids
+that. Deleting a server deletes its config secrets.
+
 **stdio trust model (ADR-0211, #1914).** For transport `stdio` the endpoint is
 a command line. The middleware splits it and starts it as its own child
 process, so it runs as the middleware's OS user with the same filesystem and

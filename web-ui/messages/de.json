@@ -5393,7 +5393,32 @@
       "rescanSummary": "{servers, plural, one {# Server} other {# Server}} neu gescannt, {tools, plural, one {# Tool} other {# Tools}} geprüft, {failed, plural, =0 {keine Fehler} one {# Server fehlgeschlagen} other {# Server fehlgeschlagen}}.",
       "rescanFailure": "{name}: {error}",
       "lastScanFailedAt": "Letzter Re-Scan fehlgeschlagen ({at})",
-      "lastScanFailed": "Letzter Re-Scan fehlgeschlagen"
+      "lastScanFailed": "Letzter Re-Scan fehlgeschlagen",
+      "headers": {
+        "title": "Header",
+        "intro": "Statische Request-Header, zum Beispiel ein API-Key in x-api-key oder Authorization: Bearer …. Ein als geheim markierter Header wird verschlüsselt im Vault gespeichert und nie wieder angezeigt; lass das Feld leer, um den gespeicherten Wert zu behalten. Nimm für einen Key lieber einen Header als die Endpunkt-URL: Eine Fehlermeldung des Servers kann die URL zitieren.",
+        "name": "Header-Name",
+        "namePlaceholder": "x-api-key",
+        "value": "Header-Wert",
+        "valuePlaceholder": "Wert",
+        "secret": "geheim",
+        "secretStored": "•••••••• (gespeichert — leer lassen zum Behalten)",
+        "secretPlaceholder": "geheimen Wert eingeben",
+        "add": "Header hinzufügen",
+        "remove": "Entfernen",
+        "save": "Header speichern",
+        "saved": "Gespeichert",
+        "errors": {
+          "nameInvalid": "Ein Header-Name darf nur Buchstaben, Ziffern und - _ . ! # $ % & ' * + ^ ` | ~ enthalten.",
+          "nameReserved": "Diesen Header setzt der MCP-Transport selbst (zum Beispiel Content-Type, Accept, Host).",
+          "nameDuplicate": "Ein Header steht doppelt in der Liste.",
+          "valueInvalid": "Ein Header-Wert darf keinen Zeilenumbruch enthalten und höchstens 8192 Zeichen lang sein.",
+          "valueRequired": "Ein nicht geheimer Header braucht einen Wert.",
+          "secretRequired": "Ein neuer geheimer Header braucht einen Wert.",
+          "tooMany": "Ein Server hat höchstens 20 Header.",
+          "secretsUnavailable": "Es ist kein Vault konfiguriert, daher lassen sich keine geheimen Header speichern."
+        }
+      }
     },
     "sandbox": {
       "toggle": "Testen",

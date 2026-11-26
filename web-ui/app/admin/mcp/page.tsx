@@ -70,6 +70,7 @@ import {
   useRiskCodeLabel,
   useSeverityLabel,
 } from './mcpAdminText';
+import { ServerHeadersForm } from './ServerHeadersForm';
 
 type Tab = 'servers' | 'marketplace' | 'grants' | 'plugins' | 'bindings' | 'audit';
 
@@ -767,7 +768,9 @@ function ServerConfigForm({ server }: { server: McpServerNode }): React.ReactEle
     void load();
   }, [load]);
 
-  if (schema.length === 0) return null;
+  // #1912 — secret header fields are edited in the header editor above.
+  const visibleSchema = schema.filter((f) => !f.key.startsWith('header_'));
+  if (visibleSchema.length === 0) return null;
 
   async function save(): Promise<void> {
     setBusy(true);
@@ -800,7 +803,7 @@ function ServerConfigForm({ server }: { server: McpServerNode }): React.ReactEle
         {t('servers.config.title')}
       </div>
       <div className="text-[11px] text-[color:var(--fg-muted)]">{t('servers.config.intro')}</div>
-      {schema.map((f, i) => (
+      {schema.map((f, i) => f.key.startsWith('header_') ? null : (
         <div key={f.key} className="flex flex-col gap-1">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-[color:var(--fg-muted)]">
@@ -867,6 +870,8 @@ function ServerDetail({
   const tVerdict = useTranslations('skills.verdict');
   const riskCodeLabel = useRiskCodeLabel();
   const format = useFormatter();
+  // #1912 — a header save re-derives the config fields; remount the form.
+  const [configKey, setConfigKey] = useState(0);
   const [ackArm, setAckArm] = useState<string | null>(null);
   const [ackBusy, setAckBusy] = useState<string | null>(null);
   const [testTool, setTestTool] = useState<string | null>(null);
@@ -886,7 +891,8 @@ function ServerDetail({
           : ''}
       </div>
       <McpAuthSection serverId={server.id} />
-      <ServerConfigForm server={server} />
+      <ServerHeadersForm server={server} onSaved={() => setConfigKey((k) => k + 1)} />
+      <ServerConfigForm key={configKey} server={server} />
     </>
   );
   if (server.discoveredTools.length === 0) {

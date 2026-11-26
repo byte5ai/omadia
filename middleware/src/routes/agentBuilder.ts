@@ -80,6 +80,13 @@ import {
 } from '../services/mcpOutboundHostGuard.js';
 import { rescanAllMcpServers } from '../services/mcpRescan.js';
 import {
+  isHeaderRefusal,
+  planHeaders,
+  reconcileConfigSchema,
+  validateHeaderInput,
+  viewHeaders,
+} from '../services/mcpStaticHeaders.js';
+import {
   checkMcpName,
   isMcpInputRefusal,
   isUniqueViolation,
@@ -233,6 +240,7 @@ export interface AgentBuilderRouterOptions {
   readonly mcpOAuthUserKey?: string;
   /** Schema-driven MCP config with Vault-backed secrets (epic #459). */
   readonly mcpConfig?: {
+    getSecret(serverId: string, key: string): Promise<string | undefined>;
     setSecret(serverId: string, key: string, value: string): Promise<void>;
     deleteSecret(serverId: string, key: string): Promise<void>;
     secretsSet(server: McpServerRow): Promise<Record<string, boolean>>;
@@ -562,14 +570,58 @@ export function createAgentBuilderRouter(
    * no value yet (non-secret from the row, secret from the Vault) — the caller
    * turns that into a config prompt instead of letting the process crash.
    */
+  /**
+   * #1912 — validate and store a server's static headers. Returns a refusal
+   * (nothing written) or `undefined` once headers, schema and Vault agree.
+   * http/sse only: a stdio server takes its credentials as environment
+   * variables (config fields), not headers.
+   */
+  async function applyServerHeaders(
+    graph: AgentGraphStore,
+    row: McpServerRow,
+    raw: unknown,
+  ): Promise<{ code: string; message: string } | undefined> {
+    if (row.transport === 'stdio') {
+      return { code: 'headers_not_supported', message: 'a stdio server takes config fields, not headers' };
+    }
+    const input = validateHeaderInput(raw);
+    if (isHeaderRefusal(input)) return input;
+    const plan = planHeaders(input);
+    const hasSecrets = plan.secretWrites.size > 0 || plan.keptSecretKeys.length > 0;
+    const vault = options.mcpConfig;
+    if (hasSecrets && !vault) {
+      return { code: 'secrets_unavailable', message: 'no vault is configured for MCP secrets' };
+    }
+    for (const key of plan.keptSecretKeys) {
+      if ((await vault?.getSecret(row.id, key)) == null) {
+        return { code: 'header_secret_required', message: 'a new secret header needs a value' };
+      }
+    }
+    for (const [key, value] of plan.secretWrites) await vault?.setSecret(row.id, key, value);
+    await graph.setMcpServerHeaders(row.id, plan.headers);
+    const { schema, removedSecretKeys } = reconcileConfigSchema(
+      row.endpoint,
+      plan.headers,
+      row.configSchema,
+    );
+    await graph.setMcpServerConfigSchema(row.id, schema as never);
+    for (const key of removedSecretKeys) await vault?.deleteSecret(row.id, key);
+    return undefined;
+  }
+
   async function resolveServerConfigSchema(
     graph: AgentGraphStore,
     row: McpServerRow,
   ): Promise<{ schema: readonly McpConfigField[]; missing: string[] }> {
+    // #1912 — for http/sse the fields ARE the endpoint/header placeholders, so
+    // a stored schema is reconciled with them (new placeholders appear, gone
+    // ones drop). A stdio schema declares environment variables and is kept.
     let schema: readonly McpConfigField[] =
-      row.configSchema.length > 0
-        ? row.configSchema
-        : deriveMcpConfigSchema(row.endpoint, row.headers);
+      row.transport !== 'stdio'
+        ? reconcileConfigSchema(row.endpoint, row.headers, row.configSchema).schema
+        : row.configSchema.length > 0
+          ? row.configSchema
+          : deriveMcpConfigSchema(row.endpoint, row.headers);
     if (schema.length === 0 && row.source === 'marketplace' && row.registryId) {
       try {
         const registry = (await graph.listMcpRegistries()).find((r) => r.id === row.registryId);
@@ -1498,6 +1550,21 @@ export function createAgentBuilderRouter(
         sendRefusal(res, valid);
         return;
       }
+      // #1912 — optional static headers, checked BEFORE the row exists so a
+      // bad header never leaves a half-configured server behind.
+      const rawHeaders: unknown = (req.body ?? {}).headers;
+      if (rawHeaders !== undefined) {
+        const checked = validateHeaderInput(rawHeaders);
+        const headerRefusal = isHeaderRefusal(checked)
+          ? checked
+          : valid.transport === 'stdio'
+            ? { code: 'headers_not_supported', message: 'a stdio server takes config fields, not headers' }
+            : undefined;
+        if (headerRefusal) {
+          res.status(400).json({ error: 'invalid_mcp_headers', ...headerRefusal });
+          return;
+        }
+      }
       const transport: unknown = valid.transport;
       const endpoint: unknown = valid.endpoint;
       if (transport === 'stdio' && !mcpStdioEnabled) {
@@ -1531,6 +1598,18 @@ export function createAgentBuilderRouter(
         status: valid.status,
       });
       if (row.transport === 'stdio') await recordStdioServerSaved(req, row, 'manual');
+      if (rawHeaders !== undefined) {
+        const refusal = await applyServerHeaders(l.graph, row, rawHeaders);
+        if (refusal) {
+          // Only a vault outage can get here after the check above; the server
+          // exists, so say so instead of pretending nothing was saved.
+          res.status(400).json({ error: 'invalid_mcp_headers', serverId: row.id, ...refusal });
+          return;
+        }
+        const created = (await l.graph.listMcpServers()).find((s) => s.id === row.id) ?? row;
+        res.json(mcpNode(created));
+        return;
+      }
       res.json(mcpNode(row));
     } catch (err) {
       if (isUniqueViolation(err)) {
@@ -1632,6 +1711,20 @@ export function createAgentBuilderRouter(
         }
       }
       await l.graph.deleteMcpServer(id);
+      // #1912 — the server's config secrets (secret fields, secret headers)
+      // would otherwise outlive it in the Vault.
+      if (server && options.mcpConfig) {
+        const secretKeys = new Set(
+          [
+            ...server.configSchema,
+            ...reconcileConfigSchema(server.endpoint, server.headers ?? {}, server.configSchema)
+              .schema,
+          ]
+            .filter((field) => field.secret)
+            .map((field) => field.key),
+        );
+        for (const key of secretKeys) await options.mcpConfig.deleteSecret(id, key);
+      }
       await invalidateMcpServer(id);
       await reload(l);
       res.status(204).end();
@@ -1669,8 +1762,13 @@ export function createAgentBuilderRouter(
       // template placeholder AFTER config substitution (e.g. an M365 entry left
       // as `.../tenants/{tenant_id}/...` with no configured tenant_id) —
       // otherwise the upstream 400 surfaces as a cryptic 502 (issue #459).
-      const placeholders = substituteMcpConfig(row.endpoint ?? '', row.config).match(/\{[^}]+\}/g);
-      if (placeholders && placeholders.length > 0) {
+      // #1912 — a SECRET field with a value in the Vault is configured too: it
+      // is filled into the endpoint at connect time (`getConfigEndpoint`).
+      const secretsSet = options.mcpConfig ? await options.mcpConfig.secretsSet(row) : {};
+      const placeholders = (
+        substituteMcpConfig(row.endpoint ?? '', row.config).match(/\{[^}]+\}/g) ?? []
+      ).filter((p) => secretsSet[p.slice(1, -1)] !== true);
+      if (placeholders.length > 0) {
         res.status(422).json({
           error: 'mcp_endpoint_placeholder',
           serverId: row.id,
@@ -1790,6 +1888,58 @@ export function createAgentBuilderRouter(
     }
   });
 
+  // ── #1912 static headers (ADR-0210) ──────────────────────────────────────
+  // GET lists the header templates; a secret header shows only whether its
+  // Vault value is set. PUT replaces the list: secret values go to the Vault,
+  // the row keeps `{header_<name>}` templates, the schema is reconciled and
+  // the secrets of headers that are gone are deleted.
+  router.get('/mcp-servers/:id/headers', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      const { schema } = await resolveServerConfigSchema(l.graph, row);
+      const secretsSet = options.mcpConfig
+        ? await options.mcpConfig.secretsSet({ ...row, configSchema: schema })
+        : {};
+      res.json({ headers: viewHeaders(row.headers ?? {}, secretsSet) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.put('/mcp-servers/:id/headers', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      const refusal = await applyServerHeaders(l.graph, row, (req.body ?? {}).headers);
+      if (refusal) {
+        res.status(400).json({ error: 'invalid_mcp_headers', ...refusal });
+        return;
+      }
+      await refreshMcpGrantPolicy(l.graph);
+      await l.graph.bumpMcpGrantEpoch(id);
+      // The live connection still carries the old headers.
+      await invalidateMcpServer(id);
+      await reload(l);
+      const updated = (await l.graph.listMcpServers()).find((s) => s.id === id) ?? row;
+      const secretsSet = options.mcpConfig ? await options.mcpConfig.secretsSet(updated) : {};
+      res.json({ headers: viewHeaders(updated.headers ?? {}, secretsSet) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   // PUT saves the schema (incl. per-field secret flags), the non-secret values,
   // and any provided secret values (secrets → Vault, never the DB row).
   router.put('/mcp-servers/:id/config', async (req: Request, res: Response) => {
@@ -1808,7 +1958,22 @@ export function createAgentBuilderRouter(
         secrets?: unknown;
       };
       if (Array.isArray(body.schema)) {
-        await l.graph.setMcpServerConfigSchema(id, body.schema as never);
+        // #1912 — the posted schema keeps its labels/secret flags, but for
+        // http/sse it is reconciled with the endpoint/header placeholders, so
+        // a field the form still sends after its placeholder went is dropped
+        // and its Vault secret deleted.
+        const posted = body.schema as McpConfigField[];
+        if (row.transport === 'stdio') {
+          await l.graph.setMcpServerConfigSchema(id, posted as never);
+        } else {
+          const { schema, removedSecretKeys } = reconcileConfigSchema(
+            row.endpoint,
+            row.headers,
+            posted,
+          );
+          await l.graph.setMcpServerConfigSchema(id, schema as never);
+          for (const key of removedSecretKeys) await options.mcpConfig?.deleteSecret(id, key);
+        }
       }
       if (body.config && typeof body.config === 'object') {
         await l.graph.setMcpServerConfig(id, body.config as Record<string, unknown>);
@@ -3623,7 +3788,11 @@ export function mcpNode(s: McpServerRow) {
     // Declared config fields, derived from endpoint/header placeholders when the
     // operator hasn't saved a schema yet (epic #459).
     configSchema:
-      s.configSchema.length > 0 ? s.configSchema : deriveMcpConfigSchema(s.endpoint, s.headers),
+      s.transport !== 'stdio'
+        ? reconcileConfigSchema(s.endpoint, s.headers, s.configSchema).schema
+        : s.configSchema.length > 0
+          ? s.configSchema
+          : deriveMcpConfigSchema(s.endpoint, s.headers),
   };
 }
 

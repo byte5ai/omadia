@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Added — static headers and API keys for MCP servers, kept in the Vault (#1912, ADR-0210) (2026-11-26)
+
+- `GET/PUT /api/v1/operator/mcp-servers/:id/headers` and `headers` on `POST /mcp-servers`
+  (http/sse): plain headers as typed, secret ones as `{header_<name>}` with the value in the
+  Vault; a secret is never returned. Checked names (RFC 9110 token, no transport headers, no
+  duplicates) and values (no CR/LF, ≤ 8192 chars, ≤ 20 headers).
+- A config field marked secret now works in the endpoint too (`getConfigEndpoint`); Discover no
+  longer answers `422 mcp_endpoint_placeholder` for a secret with a stored value.
+- The config schema of http/sse servers follows the endpoint and header placeholders on every
+  read and save; vanished fields are dropped and their Vault secrets deleted.
+- New "Headers" editor in the expanded server row (`ServerHeadersForm.tsx`); secret header
+  fields no longer show up in the config form. Deleting a server deletes its config secrets.
+  ADR-0210 (Proposed).
+
 ### Security — stdio MCP servers off in the Compose stack; trust model documented (#1914, ADR-0211) (2026-11-26)
 
 - A stdio MCP server runs under the middleware's OS user and can read `/proc/1/environ`

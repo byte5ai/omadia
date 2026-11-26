@@ -5315,6 +5315,15 @@ erlaubt) → 400 mit `code` (`name_required`, `endpoint_invalid`, …); doppelte
 `name_taken` (auch Katalog-Import und Registries). Ein Nicht-UUID-`:id` unter `/mcp-servers/…`
 und `/mcp-registries/…` → 404 `not_found` vor jedem Handler (ADR-0038).
 
+**Statische Header / API-Keys (#1912, ADR-0210):** `GET/PUT /api/v1/operator/mcp-servers/:id/headers`
+(und `headers` beim `POST /mcp-servers`), nur http/sse. Body `[{name, value?, secret}]`; ein geheimer
+Header wird als `{header_<name>}` in `mcp_servers.headers` gespeichert, der Wert liegt im Vault
+(`@omadia/mcp-config`, `<serverId>:header_<name>`), ohne `value` bleibt der gespeicherte. Geheime
+Config-Felder werden jetzt auch im Endpoint eingesetzt (`McpConfigService.getConfigEndpoint`); das
+Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzhaltern abgeglichen
+(`reconcileConfigSchema`), verschwundene Felder samt Vault-Secret gelöscht. UI:
+`web-ui/app/admin/mcp/ServerHeadersForm.tsx`.
+
 ### Öffentlicher MCP-Endpunkt (#542, #1952, ADR-0142/0143)
 
 | Variable | Wirkung |

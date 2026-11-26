@@ -74,8 +74,39 @@ export class McpConfigService {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(server.headers ?? {})) {
       if (typeof v !== 'string') continue;
-      const sub = substituteMcpConfig(v, secretVals);
-      if (sub !== v) out[k] = sub; // only headers that actually held a secret
+      // Non-secret values first (as `mcpRowToConfig` did), so a header mixing
+      // a plain and a secret placeholder comes out complete.
+      const plain = substituteMcpConfig(v, server.config);
+      const sub = substituteMcpConfig(plain, secretVals);
+      if (sub !== plain) out[k] = sub; // only headers that actually held a secret
+    }
+    return out;
+  }
+
+  /**
+   * #1912 — the endpoint with SECRET placeholders filled from the Vault, or
+   * `undefined` when it holds none. Lets a field marked secret work in the
+   * endpoint too (`https://host/mcp?key={api_key}`). The value lives on the
+   * per-call config only, never on the pooled one or the row; a transport error
+   * that quotes the URL can still carry it, which is why a header is the better
+   * place for a key (ADR-0210).
+   */
+  async getConfigEndpoint(cfg: McpServerConfig): Promise<string | undefined> {
+    const server = (await this.deps.graph.listMcpServers()).find((s) => s.id === cfg.id);
+    if (!server?.endpoint) return undefined;
+    const secretVals = await this.secretValues(server);
+    if (Object.keys(secretVals).length === 0) return undefined;
+    const plain = substituteMcpConfig(server.endpoint, server.config);
+    const sub = substituteMcpConfig(plain, secretVals);
+    return sub !== plain ? sub : undefined;
+  }
+
+  private async secretValues(server: McpServerRow): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const f of server.configSchema) {
+      if (!f.secret) continue;
+      const v = await this.getSecret(server.id, f.key);
+      if (v != null) out[f.key] = v;
     }
     return out;
   }

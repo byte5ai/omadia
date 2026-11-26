@@ -310,6 +310,38 @@ export async function getMcpServerConfig(id: string): Promise<McpServerConfigSta
   );
 }
 
+/** #1912 — one static header of an http/sse MCP server. A secret header never
+ *  carries its value back: `value` is `null`, `secretSet` says whether the
+ *  Vault holds one. */
+export interface McpServerHeader {
+  name: string;
+  secret: boolean;
+  value: string | null;
+  secretSet?: boolean;
+}
+
+/** #1912 — what the header editor saves. Omit `value` on a secret header to
+ *  keep the stored secret. */
+export interface McpServerHeaderInput {
+  name: string;
+  secret: boolean;
+  value?: string;
+}
+
+export async function getMcpServerHeaders(id: string): Promise<{ headers: McpServerHeader[] }> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(id)}/headers`);
+}
+
+export async function saveMcpServerHeaders(
+  id: string,
+  headers: McpServerHeaderInput[],
+): Promise<{ headers: McpServerHeader[] }> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(id)}/headers`, {
+    method: 'PUT',
+    body: JSON.stringify({ headers }),
+  });
+}
+
 /** Save a server's config: schema (incl. per-field secret flags), non-secret
  *  values, and any secret values (secrets go to the Vault server-side). */
 export async function saveMcpServerConfig(
