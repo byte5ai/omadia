@@ -336,7 +336,7 @@ if (pgUp) {
       }
     });
 
-    it('persists visibility=team when provided; keeps default when omitted', async (t) => {
+    it('persists visibility=team when provided; stores private when omitted (#1823)', async (t) => {
       try {
         await runGraphMigrations(pool);
         migrated = true;
@@ -367,7 +367,7 @@ if (pgUp) {
       );
       assert.equal(teamNode?.visibility, 'team');
 
-      // Omitted → exact pre-existing default behaviour (DB COALESCE → 'team').
+      // Omitted → `private` (#1823, ADR-0183), no longer the column default `team`.
       const plainRes = await kg.createMemorableKnowledge({
         kind: 'insight',
         summary: 'A memory created without an explicit visibility.',
@@ -378,9 +378,7 @@ if (pgUp) {
           WHERE tenant_id = $1 AND external_id = $2`,
         [NEON_TENANT, plainRes.memorableKnowledgeNodeId],
       );
-      // The historical default is the column default 'team' (via COALESCE);
-      // omitting the field must not change that.
-      assert.equal(plainRow.rows[0]!.visibility, 'team');
+      assert.equal(plainRow.rows[0]!.visibility, 'private');
     });
   });
 }
