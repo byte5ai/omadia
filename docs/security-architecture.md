@@ -534,6 +534,10 @@ working across it:
   `validateConversationRef`; have `validateConversationRef` check that the
   chat exists. (A routine whose chat was deleted is paused on its next fire,
   before the agent turn runs — `ProactiveTargetGoneError`.)
+  **Closed by #1762 (ADR-0180):** a chat belongs to the account that created
+  it, and a turn with another account's `sessionId` answers 404 before any
+  agent runs, so a routine can only be created in, and deliver into, the
+  creator's own chat.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but
@@ -1083,7 +1087,13 @@ The surfaces that boundary must cover, and how each one does:
   only this agent's processes, and none in a context-bound `enforce-strict` /
   `members` turn, where recall skips processes too. A process the turn may not
   read answers like a missing one. With no boundary set (the public MCP
-  endpoint, jobs) they return no process (ADR-0044).
+  endpoint, jobs) they return no process (ADR-0044). The write tools follow
+  the same rule (#2223): `edit_process` changes only a process the turn may
+  read (anything else answers like a missing id), and `write_process` stores
+  only in this agent's scopes (an unqualified scope is qualified with the
+  agent; another agent's scope is refused) and nothing in a context-bound
+  turn or without a boundary, since processes carry no owners. The bounded
+  `processMemory@1` write applies the same rule (`processWriteScope`).
 - **Topics (#1851, ADR 0045):** a topic's name and description are written
   from its members' summaries, so a topic is content of every member.
   Re-cluster (`topicClustering.ts`) groups only memories with the same owner
@@ -1107,12 +1117,32 @@ reading may see. A private or `shared:<x>` memory never reaches a turn read
 by someone who does not own it, and never reaches a context-bound
 `enforce-strict` turn.
 
+Web chat tabs (#1762, ADR-0180): `/api/chat/sessions` and chat turns use
+only the caller's own tabs (`ChatSession.ownerUserId`, the session's `sub`);
+another account's tab answers 404. Tabs written before owners existed belong
+to the instance's only account, else to nobody (hidden, kept on disk).
+
+Memory owners (#1821, #1852, ADR-0181): `POST /api/v1/memory` makes the saver
+the only owner and involved user (foreign ids → `400 memory.foreign_owner`)
+and keeps only source turns the saver sent. Sharing goes only through
+`POST /api/v1/memory/:id/owners`, which takes real users only and writes the
+`INVOLVED` edge with the owner.
+
+Web, routine and API turns (#1774, #1826, ADR-0182): a web chat or web routine
+turn carries a personal origin from the signed-in account (session only), a
+Public API turn one from its key. Under `enforce` / `enforce-strict` /
+`members` each account and each key is its own one-person room; under `off`
+they share the agent tree. Memorable knowledge is `private` unless shared on
+purpose (#1823, ADR-0183; migration `0037`), so recall's team branch admits
+only durable rules and `public` rows.
+
 Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
-  `audienceOwners` and returns everything. The in-tree providers honour it.
-- Only turns that carry a `TurnOrigin` are context-bound.
-- #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
-  lists and reads every tab.
+  `audienceOwners` and returns everything. The in-tree providers honour it;
+  both return nothing for an empty audience (in-memory since #2224).
+- Only turns that carry a `TurnOrigin` are context-bound; since #1774 that
+  includes web chat, web routines and Public API turns, but not routines of
+  other channels.
 
 All of these are pinned as known failures (`todo`, naming the issue) in the
 canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,
@@ -7684,6 +7714,23 @@ A client that sends both a session cookie and an unrelated bearer
 header to `/api/admin/domains` is claimed by this mount (401/404). The surface
 has no user or whitelist management, so it is not a way out of an
 `ADMIN_ALLOWED_EMAILS` lockout.
+
+## 10zc. Channel attachment reads over loopback; fast-lane output in the agent prompt (W15-17, 2026-11-26)
+
+- **`CoreApi.readAttachment`** (ADR-0222). A channel plugin can ask the kernel for an outgoing
+  attachment's bytes. The kernel GETs the URL's path from itself over loopback, only when the path
+  lies under an operator-granted public prefix (`PublicPathGrantRegistry.resolve`), with no cookie
+  or credential, `redirect: 'manual'`, a 15 s deadline and a 25 MiB cap. The owning plugin's router
+  still checks the signed, expiring URL. It reaches only what an anonymous internet client could
+  reach through the public URL. Residuals: plugin routes under a granted prefix must not trust
+  loopback peers (`req.ip`); with `TRUSTED_PROXY_ADDRESSES` containing `loopback` these reads count
+  as proxied; any channel plugin can read any plugin's granted paths regardless of its own network
+  allowlist.
+- **Fast-lane hand-off** (ADR-0221). After a miss whose query ran, the raw tool output (max 12 000
+  characters) reaches the agent as part of the per-turn system hint, masked through the turn's
+  privacy map like any `extraSystemHint`. Under a Privacy Shield the output is never included.
+  The block is tagged `<fast_lane_tool_output>` and declared data, not instruction; this is a prompt
+  rule, not an enforced boundary (accepted prompt-injection residual).
 
 ## 11. Reviewer checklist
 

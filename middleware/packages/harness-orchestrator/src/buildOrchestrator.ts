@@ -68,6 +68,7 @@ import {
   type AiDisclosureSetup,
 } from './orchestrator.js';
 import type { AnswerVerbosity } from './answerVerbosity.js';
+import type { AnswerLanguage } from './answerLanguage.js';
 import {
   LlmScreener,
   HttpProxyScreener,
@@ -458,6 +459,12 @@ export interface OrchestratorDeps {
    * `OrchestratorOptions.answerVerbosity`.
    */
   readonly answerVerbosity?: AnswerVerbosity;
+  /**
+   * #1992 / ADR-0220 — fallback answer language (`answer_language`), shared by
+   * every Agent this process builds. Absent → German. See
+   * `OrchestratorOptions.answerLanguage`.
+   */
+  readonly answerLanguage?: AnswerLanguage;
   /**
    * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
    * shipping default (standard, active) on every channel. See
@@ -1236,6 +1243,7 @@ export function buildOrchestratorForAgent(
     ...((config.answerVerbosity ?? deps.answerVerbosity)
       ? { answerVerbosity: config.answerVerbosity ?? deps.answerVerbosity }
       : {}),
+    ...(deps.answerLanguage ? { answerLanguage: deps.answerLanguage } : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }

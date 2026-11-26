@@ -19,6 +19,7 @@ import type {
   PendingUserChoice,
   SemanticAnswer,
 } from '@omadia/channel-sdk';
+import { stripKnownAiDisclosureLines } from '@omadia/channel-sdk';
 import type {
   DispatchableToolSpec,
   ToolDispatchService,
@@ -1718,10 +1719,17 @@ export class CliChatAgent implements ChatAgent {
     turns: readonly CliPriorTurn[],
     turnContext: CapturedTurnContext,
   ): Promise<ResolvedCliHistory> {
-    const usable = turns.filter(
-      (turn) =>
-        turn.userMessage.trim().length > 0 && turn.assistantAnswer.trim().length > 0,
-    );
+    // #2003 — replayed answers lose the AI-disclosure line (the delivery
+    // boundary's marking, not the agent's words) before anything else.
+    const usable = turns
+      .map((turn) => ({
+        ...turn,
+        assistantAnswer: stripKnownAiDisclosureLines(turn.assistantAnswer),
+      }))
+      .filter(
+        (turn) =>
+          turn.userMessage.trim().length > 0 && turn.assistantAnswer.trim().length > 0,
+      );
     // Read through the context CAPTURED at the public entry point, never the
     // ambient one: this runs in the `runLifecycle` generator body, which is
     // resumed in the async context of whoever calls `.next()` (#1016, OM-82).

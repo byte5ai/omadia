@@ -305,7 +305,15 @@ describe('saveFromClient — refuses to re-create a mirrored transcript', () => 
     before(async () => {
       const app = express();
       app.use(express.json());
-      app.use('/api/chat', createChatSessionsRouter({ getStore: () => store }));
+      // #1762 — a signed-in account (a one-account instance).
+      app.use((req, _res, next) => {
+        (req as unknown as { session: unknown }).session = { sub: 'account-1' };
+        next();
+      });
+      app.use(
+        '/api/chat',
+        createChatSessionsRouter({ getStore: () => store, legacyOwner: () => Promise.resolve('account-1') }),
+      );
       server = await listenLoopback(app);
       base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/api/chat`;
     });

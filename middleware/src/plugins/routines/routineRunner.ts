@@ -4,9 +4,10 @@ import type {
   ChatTurnInput,
   ChatTurnResult,
   SemanticAnswer,
+  TurnOrigin,
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
-import { turnContext, today } from '@omadia/orchestrator';
+import { turnContext, today, webAccountOrigin } from '@omadia/orchestrator';
 import { meterUsageCost, runInExecutionContext } from '@omadia/usage-telemetry';
 import {
   SYSTEM_SPEAKER,
@@ -37,6 +38,7 @@ import {
   effectiveTimeoutMs,
   timeoutSignal,
 } from './routineRunControl.js';
+import { WEB_ROUTINE_CHANNEL } from './webChatProactiveSender.js';
 
 /**
  * Structural subset of `JobScheduler` the runner depends on. Typed as a
@@ -62,6 +64,18 @@ export interface JobSchedulerLike {
  * returns a synthetic `ChatTurnResult` (with run-trace) without spinning
  * up the real orchestrator.
  */
+/**
+ * #1774 (ADR-0182) — a web routine runs in its owner's one-person room, like
+ * the web chat it was created in: its `userId` is the session's canonical
+ * omadia id (`httpRoutineContext`). Routines of other channels keep running
+ * without an origin; their `userId` is not known to be canonical.
+ */
+export function routineOrigin(routine: Pick<Routine, 'channel' | 'userId'>): { origin?: TurnOrigin } {
+  return routine.channel === WEB_ROUTINE_CHANNEL && routine.userId.length > 0
+    ? { origin: webAccountOrigin(routine.userId) }
+    : {};
+}
+
 export interface OrchestratorLike {
   runTurn(input: ChatTurnInput): Promise<ChatTurnResult>;
   /**
@@ -1025,6 +1039,8 @@ export class RoutineRunner {
       userMessage,
       userId: routine.userId,
       sessionScope: `routine:${routine.id}`,
+      // #1774 / ADR 0182 — a web routine runs in its owner's one-person room.
+      ...routineOrigin(routine),
       // #1770 / #1771 / ADR 0242 — nobody is present: no interactive tools,
       // no earlier runs as trusted context; the run knows its time and zone.
       unattended: true,

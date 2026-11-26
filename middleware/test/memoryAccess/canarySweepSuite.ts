@@ -15,6 +15,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { seedInMemory } from './backends.js';
 import {
+  PROBE_WRITE_SCOPE,
   sweepPluginServicesOutsideTurn,
   sweepRegisteredGraphTool,
   sweepTurn,
@@ -25,7 +26,16 @@ import {
 } from './canarySweep.js';
 import { PINNED, expected, type Mode } from './oracle.js';
 import type { Seeded } from './seed.js';
-import { AGENT_KEYS, allViewers, buildWorld, viewerId, type AgentKey, type TurnItem } from './world.js';
+import {
+  AGENTS,
+  AGENT_KEYS,
+  allViewers,
+  buildWorld,
+  viewerId,
+  type AgentKey,
+  type ProcessItem,
+  type TurnItem,
+} from './world.js';
 
 interface KnownLeak {
   readonly issue: string;
@@ -158,13 +168,32 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
           'plugin-neighbors',
           'plugin-service',
         ];
-        if (backend === 'neon') expectedEntries.push('process-tool');
+        // Processes carry no owners: a context-bound strict / members turn reads
+        // none, and since #1774 every turn of those modes is context-bound
+        // (web turns carry the account origin).
+        const processesReadable = mode === 'off' || mode === 'enforce';
+        if (backend === 'neon' && processesReadable) expectedEntries.push('process-tool');
         assert.deepEqual([...seen].sort(), expectedEntries.sort());
         const silent = inMode().filter(
           (sweep) => !sweep.sightings.some((s) => s.entry === 'context' && s.verdict.allowed),
         );
         assert.deepEqual(silent.map((s) => viewerId(s.viewer)), [], 'every turn recalls something it may see');
       });
+
+      if (backend === 'neon') {
+        it(`${mode}: process writes stay inside the turn's boundary (#2223)`, (t) => {
+          if (!seeded) return t.skip('no test database');
+          const out = processWriteViolations(seeded, inMode());
+          assert.deepEqual(out.violations, [], out.violations.slice(0, 40).join('\n'));
+          // Every strict / members turn is context-bound (#1774): none may write.
+          if (mode === 'off' || mode === 'enforce') {
+            assert.ok(out.allowedEdits > 0, 'CONTROL: a turn edits its own agent\'s process');
+            assert.ok(out.allowedWrites > 0, 'CONTROL: a turn writes into its own agent\'s scope');
+          } else {
+            assert.equal(out.allowedEdits + out.allowedWrites, 0);
+          }
+        });
+      }
 
       for (const k of known) {
         it(`${mode}: known leak ${k.issue}: ${k.title}`, { todo: k.issue }, (t) => {
@@ -207,4 +236,52 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
       );
     }
   });
+}
+
+/**
+ * #2223 — what the write probe got through: an edit may reach the store only
+ * for a process the turn may read (the shield aside: under a shield an
+ * unprotected process is withheld from the answer, not from its agent), a
+ * write only in this agent's scopes and only where its processes are
+ * readable at all; the unqualified probe scope is qualified with the agent.
+ */
+function processWriteViolations(
+  seeded: Seeded,
+  sweeps: readonly TurnSweep[],
+): { violations: string[]; allowedEdits: number; allowedWrites: number } {
+  const processById = new Map(
+    seeded.world.byStore.process.map((p) => [seeded.location.get(p.canary), p] as const),
+  );
+  const violations: string[] = [];
+  let allowedEdits = 0;
+  let allowedWrites = 0;
+  for (const sweep of sweeps) {
+    const log = sweep.processWrites;
+    if (!log) continue;
+    const who = `${viewerId(sweep.viewer)} ${sweep.mode}`;
+    for (const id of log.edited) {
+      const item = processById.get(id);
+      if (item && expected(sweep.viewer, sweep.mode, { ...item, unprotected: false }).allowed) {
+        allowedEdits += 1;
+      } else {
+        violations.push(`${who}: edit_process reached the store for ${id}`);
+      }
+    }
+    const own: ProcessItem = {
+      store: 'process',
+      canary: '',
+      tenant: sweep.viewer.tenant,
+      agent: sweep.viewer.agent,
+      context: sweep.viewer.context,
+      sender: sweep.viewer.user,
+      unprotected: false,
+    };
+    const mayWrite = expected(sweep.viewer, sweep.mode, own).allowed;
+    const prefix = `${AGENTS[sweep.viewer.agent]}::`;
+    for (const scope of log.written) {
+      if (mayWrite && scope === `${prefix}${PROBE_WRITE_SCOPE}`) allowedWrites += 1;
+      else violations.push(`${who}: write_process reached the store with scope ${scope}`);
+    }
+  }
+  return { violations, allowedEdits, allowedWrites };
 }

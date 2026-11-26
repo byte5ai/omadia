@@ -716,6 +716,9 @@ export interface Message {
    */
   answerVerbosity?: AnswerVerbosityInfo;
   error?: boolean;
+  /** #1896 — the agent answered `NO_REPLY`: the turn ran, nothing to show.
+   *  The chat renders no bubble for it. */
+  silent?: true;
   /**
    * #1094 — set when the turn ended DEGRADED: a tool call had already
    * committed a real side effect when a later step of the same turn threw, so

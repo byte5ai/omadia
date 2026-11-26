@@ -191,7 +191,8 @@ export function effectiveMemoryScope(
     if (strict || reason !== 'context-free') {
       options.log?.(
         '[security-audit] effectiveMemoryScope: no resolvable turn context — agent-private scope',
-        { agentSlug, reason, mode: strict ? 'enforce-strict' : 'enforce' },
+        // #1826 — the mode the agent is set to, not a two-way bucket.
+        { agentSlug, reason, mode: options.mode ?? 'enforce' },
       );
     }
     return orchestratorMemoryScope(agentSlug);

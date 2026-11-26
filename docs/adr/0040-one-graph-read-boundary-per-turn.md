@@ -111,3 +111,10 @@ Chosen option: **A**.
   service grants (a plugin now gets a bounded form) and the reads with no boundary set
   (plugin-facing paths fail closed).
 - Related: ADR-0016, ADR-0019, [ADR-0033](0033-memory-tool-protected-trees-and-seeded-rules.md).
+
+## Errata
+
+- 2026-11-26: The neutral consequence "`edit_process` / `write_process` … are not covered
+  yet" no longer holds for the process write tools (#2223): `edit_process` changes only a
+  process the turn may read, `write_process` stores only in this agent's scopes and nothing in a
+  context-bound turn or without a boundary. `listRecentPlans` is unchanged.

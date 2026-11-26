@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted — refined by [ADR-0182](0182-web-and-api-turns-carry-an-account-or-key-origin.md)
+(web chat, web routines and Public API turns now carry an origin from the account or API key)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers; chat-context memory ACL in #881 (epic #860 wave W5, design
