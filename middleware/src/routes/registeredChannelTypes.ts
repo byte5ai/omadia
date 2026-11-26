@@ -8,7 +8,15 @@
  * turn (the agents page once stored `channel-api` for the API channel, whose
  * type is `@omadia/channel-api`), so the binding and routing-tester routes
  * refuse it instead of storing or answering for it.
+ *
+ * Plus the types the kernel routes itself, without a channel plugin: the web
+ * chat (`web`, `routes/chat.ts`) resolves its agent through the same tables.
  */
+
+import { WEB_CHANNEL_TYPE } from './chat.js';
+
+/** Channel types the kernel routes itself; accepted whatever is installed. */
+export const KERNEL_CHANNEL_TYPES: readonly string[] = [WEB_CHANNEL_TYPE];
 
 interface CatalogLike {
   list(): ReadonlyArray<{ readonly plugin: { readonly id: string; readonly kind: string; readonly is_reference_only?: boolean } }>;
@@ -33,13 +41,14 @@ export function registeredChannelTypes(sources: RegisteredChannelTypeSources): R
   const { catalog, installed, channelTypesOf } = sources;
   if (!catalog || !installed || !channelTypesOf) return undefined;
   const installedIds = new Set(installed.list().map((e) => e.id));
-  return new Set(
-    catalog
+  return new Set([
+    ...KERNEL_CHANNEL_TYPES,
+    ...catalog
       .list()
       .filter((e) => e.plugin.kind === 'channel' && e.plugin.is_reference_only !== true)
       .filter((e) => installedIds.has(e.plugin.id))
       .flatMap((e) => channelTypesOf(e.plugin.id)),
-  );
+  ]);
 }
 
 /** The `400 unknown_channel_type` body: what was sent and what is accepted. */

@@ -109,9 +109,9 @@ describe('#1879 channel types on the binding and routing-tester routes', () => {
       body: JSON.stringify({ bindings }),
     });
 
-  it('the known types are those of the installed channel plugins', () => {
+  it('the known types are those of the installed channel plugins plus the kernel web chat', () => {
     const known = registeredChannelTypes({ catalog, installed, channelTypesOf });
-    assert.deepEqual([...(known ?? [])].sort(), ['@omadia/channel-api', 'discord']);
+    assert.deepEqual([...(known ?? [])].sort(), ['@omadia/channel-api', 'discord', 'web']);
     assert.equal(registeredChannelTypes({ catalog: undefined, installed, channelTypesOf }), undefined);
   });
 
@@ -127,8 +127,21 @@ describe('#1879 channel types on the binding and routing-tester routes', () => {
     const body = (await res.json()) as { error: string; channel_type: string; known_channel_types: string[] };
     assert.equal(body.error, 'unknown_channel_type');
     assert.equal(body.channel_type, 'channel-api');
-    assert.deepEqual(body.known_channel_types, ['@omadia/channel-api', 'discord']);
+    assert.deepEqual(body.known_channel_types, ['@omadia/channel-api', 'discord', 'web']);
     assert.deepEqual(store.bindings, []);
+  });
+
+  it('accepts the kernel web chat type without any channel plugin for it', async () => {
+    const res = await put([{ channel_type: 'web', channel_key: 'session-1' }]);
+    assert.equal(res.status, 200);
+    const tester = await fetch(`${baseUrl}/resolve-channel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel_type: 'web', channel_key: 'session-1' }),
+    });
+    // The fake registry cannot resolve a turn; what is guarded here is that
+    // the type check lets `web` through instead of refusing it.
+    assert.notEqual(tester.status, 400);
   });
 
   it('refuses the type of a channel that is not installed', async () => {
