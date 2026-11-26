@@ -233,6 +233,10 @@ export type AuditAction =
   // #1762 follow-up (ADR-0184) — owner-less web chats assigned to one account.
   // Written before anything changes; `after` carries the count.
   | 'chat.assign_orphans'
+  // ADR-0185 (#1829, #1831) — an operator deleted ONE memorable knowledge
+  // entry without an owner. Written before the delete; `target` is
+  // `memory:<mk id>`, `before` the optional reason.
+  | 'memory.ownerless_delete'
   | 'api_key.create'
   | 'api_key.revoke'
   | 'api_key.delete'

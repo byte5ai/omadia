@@ -71,6 +71,9 @@ export interface ChatMessage {
    * Trusted only from the server's own copy — a client cannot mint one.
    */
   proactive?: ChatProactiveMarker;
+  /** #1896 — a deliberate NO_REPLY turn: empty content, the chat shows no
+   *  bubble for it. */
+  silent?: true;
 }
 
 export interface ChatProactiveMarker {
@@ -283,6 +286,8 @@ interface ServerTurn {
   telemetry?: { tool_calls: number; iterations: number };
   startedAt: number;
   finishedAt: number;
+  /** #1896 — the agent answered NO_REPLY; `assistantMessage` is empty. */
+  silent?: true;
 }
 
 export class ChatSessionStore {
@@ -654,6 +659,7 @@ export class ChatSessionStore {
       startedAt: turn.startedAt,
       finishedAt: turn.finishedAt,
       ...(turn.telemetry ? { telemetry: turn.telemetry } : {}),
+      ...(turn.silent ? { silent: true as const } : {}),
     };
 
     if (!existing) return;

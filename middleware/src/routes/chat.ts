@@ -8,6 +8,7 @@ import {
   logNoReplyDrop,
   makePrincipal,
   parseAgentCommand,
+  suppressNoReplyStream,
   type AgentCommand,
 } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
@@ -797,7 +798,8 @@ export function createChatRouter(
       // Keep draining the generator even after the client disconnects so the
       // orchestrator's 'done' path fires — that's where sessionLogger.log()
       // persists the turn. Otherwise a reload mid-stream loses the answer.
-      for await (const event of iterator) {
+      // #1896 — a bare NO_REPLY ends as a silent `done`, never as text.
+      for await (const event of suppressNoReplyStream(iterator)) {
         // Track activity + counters from the events the orchestrator yields
         // directly. The observer covers the streamed-from-Anthropic side;
         // these cover the tool-loop side.

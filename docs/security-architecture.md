@@ -7254,7 +7254,26 @@ leave a record of who did it.
   everything = the
   tenant. Team and channel have no KG scoping yet and say so. Kept on purpose:
   the per-scope Q&A transcripts under `/memories/sessions` and the chat tabs
-  under `/memories/chat-sessions` (open point, see handoff §13).
+  under `/memories/chat-sessions` (open point, see handoff §13); the page's
+  user-axis hint says so.
+- **User axis = one person (ADR-0186, #1840, #1842, #1843).** The selector may
+  be the omadia user id, the account id the admin user page shows (`users.id`,
+  resolved through the `web:<id>` channel identity) or `<channel>~<id>` of a
+  known channel identity (a Telegram user without an account); the response
+  names the resolved id (`resolvedUser`, warning `user_selector_resolved`), and
+  a uuid nobody has gets `user_unknown` instead of a silent "nothing to
+  delete". Turns are matched by the identity's `<kind>:<id>` too. A remembered
+  fact the person owns alone is deleted with its excerpts; one shared with
+  other owners only loses the person (a `memory_acl_audit` `shrink` row with
+  the operator as actor). With a resolved person the purge also deletes their
+  datasets, the processes they created (`processes.created_by_omadia_user_id`,
+  migration 0038; processes stored before it have no creator and are not
+  selected) and their `User` / `ChannelIdentity` nodes (name, e-mail) — last,
+  so the earlier layers still resolve them. Preview and audit row carry the
+  extra counts (`deleted_detail`).
+- **Account deletion is separate.** Deleting an account in `/admin/users`
+  removes the `users` row only; the dialog and the page say that memory and
+  data stay and point to the purge with the omadia user id the page shows.
 - **One selection.** Preview and delete run the same plan (scratch targets +
   KG filters, one shared SQL CTE in the Neon backend), so both select by the
   same rules. The delete re-resolves the plan when it runs: data that arrived
@@ -7282,9 +7301,11 @@ leave a record of who did it.
 Residual: the preview token does not survive a restart or span several
 middleware processes; the outcome (counts, `completed`/`failed`) is only in
 `memory_purge_audit`, since `admin_audit` is append-only.
-A user purge misses a Turn whose `user_id` is a raw channel id (Telegram id,
-Teams `29:` id without an AAD id) when its run trace was never ingested, since
-the `BELONGS_TO` edge to the user cluster is the only other link.
+A user purge misses a Turn whose `user_id` is a raw channel id that matches
+neither the omadia id, an AAD id nor an identity's `<kind>:<id>` (a Teams `29:`
+id without an AAD id) when its run trace was never ingested, since the
+`BELONGS_TO` edge to the user cluster is the only other link. A login after an
+identity purge creates a new cluster with a new omadia user id.
 
 ## 10p. MCP outbound targets and stdio servers (#1341, #1342)
 
@@ -7703,6 +7724,23 @@ A client that sends both a session cookie and an unrelated bearer
 header to `/api/admin/domains` is claimed by this mount (401/404). The surface
 has no user or whitelist management, so it is not a way out of an
 `ADMIN_ALLOWED_EMAILS` lockout.
+
+## 10zc. Channel attachment reads over loopback; fast-lane output in the agent prompt (W15-17, 2026-11-26)
+
+- **`CoreApi.readAttachment`** (ADR-0222). A channel plugin can ask the kernel for an outgoing
+  attachment's bytes. The kernel GETs the URL's path from itself over loopback, only when the path
+  lies under an operator-granted public prefix (`PublicPathGrantRegistry.resolve`), with no cookie
+  or credential, `redirect: 'manual'`, a 15 s deadline and a 25 MiB cap. The owning plugin's router
+  still checks the signed, expiring URL. It reaches only what an anonymous internet client could
+  reach through the public URL. Residuals: plugin routes under a granted prefix must not trust
+  loopback peers (`req.ip`); with `TRUSTED_PROXY_ADDRESSES` containing `loopback` these reads count
+  as proxied; any channel plugin can read any plugin's granted paths regardless of its own network
+  allowlist.
+- **Fast-lane hand-off** (ADR-0221). After a miss whose query ran, the raw tool output (max 12 000
+  characters) reaches the agent as part of the per-turn system hint, masked through the turn's
+  privacy map like any `extraSystemHint`. Under a Privacy Shield the output is never included.
+  The block is tagged `<fast_lane_tool_output>` and declared data, not instruction; this is a prompt
+  rule, not an enforced boundary (accepted prompt-injection residual).
 
 ## 11. Reviewer checklist
 

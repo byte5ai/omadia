@@ -45,6 +45,121 @@ changelog.
   `chat.assign_orphans` (target `user:<users.id>`, `after: { owner, count }`) first and changes
   nothing if that fails. Unknown account 404, disabled account 409.
 
+### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
+
+- Memory purge, axis "User": the selector may be the omadia user id, the account id from
+  `/admin/users/<id>` or `<channel>~<id>` of a known channel identity; the preview names the
+  resolved person (`resolvedUser`, warning `user_selector_resolved`) and an unknown uuid
+  warns `user_unknown` (#1840). The user detail page shows the omadia user id.
+- Shared remembered facts only lose the purged owner (ACL audit `shrink` row); facts they own
+  alone are deleted, and the preview and result count excerpts and de-owned facts separately
+  (`kgDeownedCount`, `kgExcerptCount`) (#1842).
+- With a resolved person the purge also deletes their datasets, the processes they created
+  and their `User` / `ChannelIdentity` nodes; channel turns are matched by `<kind>:<id>`
+  (#1843). The account-delete dialog says memory and data stay and points to the purge.
+- **Migration** `harness-knowledge-graph-neon` **0038_process_created_by** — nullable
+  `processes.created_by_omadia_user_id` + partial index; `write_process` stamps the turn's
+  omadia user id, the bounded `processMemory@1` sets it from the turn, never from the plugin.
+- `memory_purge_audit.deleted_detail` (jsonb, added by the audit store's idempotent DDL) keeps
+  all layer counts. plugin-api 1.100.0 also adds `MemorableKnowledgeCount` /
+  `MemorableKnowledgePurgeResult`, `findOmadiaUserIdByChannelIdentity?`,
+  `count/purgeUserIdentity?`, `ProcessMemoryService.count/purgeByCreator?`,
+  `WriteProcessInput.createdByOmadiaUserId` and `SYSTEM_ACTOR_OMADIA_USER_ID`.
+
+### Fixed — memory tool hygiene: reaper, rules, error paths (#1829, #1831, #1832, ADR-0185) (2026-11-26)
+
+- The scratch promotion reaper no longer reads plugin storage
+  (`/memories/orchestrators/<slug>/plugins/<id>/`): plugin files are never scored, promoted or
+  dropped (#1829).
+- Rule entries follow their `/memories/_rules/` files (#1831): exact path match instead of an
+  unescaped `LIKE` prefix, a changed file updates the entry and its embedding, a removed file
+  removes the entry. `runDurableRulesSync` runs at boot and after a purge of axis `all`.
+- Owner-less memorable knowledge can be deleted one by one: `GET|DELETE
+  /api/v1/admin/memory/ownerless[/:id]` (audited first, owned entries → 409) and the Danger
+  Zone section "Memories without an owner". plugin-api **1.100.0** adds the optional
+  `listOwnerlessMemorableKnowledge` / `deleteOwnerlessMemory`; `admin_audit` action
+  `memory.ownerless_delete`.
+- Memory tool (#1832): error texts carry only model-facing `/memories/…` paths (the namespacer
+  maps physical roots back; a scope violation no longer names the agent), the per-call log line
+  carries command, path and outcome but no note content, `MemoryPathDenied` /
+  `MemoryScopeViolation` log one line without a stack trace, and `effectiveMemoryScope` audit
+  lines carry `[security-audit]` once.
+
+### Added — core seams for channel plugins: enum PATCH validation, channels empty state, attachment byte read (ADR-0222) (2026-11-26)
+
+- **#1998 (core part)** — the post-install setup PATCH (`/api/v1/admin/runtime/installed/:id/secrets`)
+  validates `enum` fields with the install path's `coerceSetupFieldValue`: a value the manifest does
+  not list is refused with `400 runtime.setup_field_invalid` (`reason: enum_mismatch`) and nothing is
+  written (ADR-0054: one validation for both paths). An empty value removes an optional enum (the
+  plugin's default applies); a required enum (the manifest default) cannot be cleared. The
+  Telegram `dm_policy` enum and its fail-closed parsing are the plugin's part.
+- **#2001 (core part)** — the `/operator/channels` empty state no longer claims Telegram reports
+  its keys; it explains that only channel plugins with a key directory appear (en + de).
+- **#1993 (core part)** — new optional `CoreApi.readAttachment(url)` (`@omadia/channel-sdk` 0.3.17,
+  `AttachmentReadResult`): a channel reads an outgoing attachment's bytes in-process
+  (`src/channels/attachmentByteReader.ts`: loopback GET, only under an operator-granted public
+  path, no credentials, no redirects, 15 s, 25 MiB) and uploads them instead of handing its platform
+  an unreachable `localhost` URL. ADR-0222 (Proposed). The Telegram multipart upload and visible
+  failure note follow in omadia-channel-telegram.
+
+### Fixed — fast lane refuses wrong maps and unfitting tools, hands its fetched result to the agent (ADR-0221) (2026-11-26)
+
+`@omadia/fast-path` 0.7.0.
+
+- **#1898** — a planned column that no returned record fills counts as a wrong map
+  (`mapRefreshRecords`): the turn misses as `unmappable`, the plan is booked as a failure and the
+  answer cache is not written, instead of rendering a table with empty columns as an answer.
+- **#1931** — the router can decide `agent_no_tool` ("none of the offered tools returns this"),
+  which goes to the agent as a complex turn; with only one offered tool a deterministic decision
+  needs confidence 0.8 (`ROUTER_MIN_CONFIDENCE_SINGLE_TOOL`) instead of 0.6.
+- **#1930** — a miss after the fast lane's query ran (`tool-error`, `truncated`, `unmappable`,
+  `empty-result`, `summary-unresolvable`) carries the executed call (`ChatTriageOutcome.executed`);
+  the fast-lane wrapper hands it to the agent as a per-turn hint (`fastLaneHandoffHint`), masked
+  like any `extraSystemHint`. Without a Privacy Shield it includes the output (max 12 000 chars);
+  under a shield only the call and row count. Amends ADR-0074's "miss runs byte-for-byte" rule —
+  ADR-0221 (Proposed).
+
+### Changed — the answer language follows the user (ADR-0220) (2026-11-26)
+
+- **#1992** — the system prompt no longer hard-codes German. The agent answers in the language of
+  the user's latest message; a message without a recognizable language keeps the conversation's
+  language, and only without a conversation does the new `@omadia/orchestrator` setup field
+  `answer_language` apply (enum `de`/`en`/`fr`/`es`/`it`/`nl`/`pl`, default `de`). Wired like
+  `answer_verbosity` through `OrchestratorDeps`. `ChatTurnInput.locale` stays a hint for kernel
+  notices. Decision after the recheck's recommendation, reversible — ADR-0220 (Proposed).
+
+### Fixed — plugin channel turns carry their channel kind; replayed answers drop the disclosure line (2026-11-26)
+
+- **#1994** — receipts (`turn_receipts.channel`) and the per-channel AI-disclosure override now read
+  the turn's channel kind through one derivation, `turnChannelKind` (`@omadia/orchestrator`): the
+  minted channel identity's kind, else the kind `TurnOrigin.channelType` names. Telegram and Teams
+  turns no longer record `channel = NULL`, a `telegram=`/`teams=` override applies, and the
+  `/health` posture claim for those kinds is true. No plugin release needed.
+- **#2003** — replayed prior turns lose every known AI-disclosure line (all locales and levels,
+  `stripKnownAiDisclosureLines` in `@omadia/channel-sdk`) before they reach the model, on the
+  in-process path (`maskPriorTurnsForWire`) and the subscription-CLI path (`maskHistory`). The model
+  no longer sees the boundary's marking as its own words and stops repeating it. Covers Telegram,
+  Teams and every other channel.
+
+### Fixed — web chat shows no internal sentinels or notes; Delete session removes it (2026-11-26)
+
+- **#1896** — a bare `NO_REPLY` no longer reaches streamed turns as text. `suppressNoReplyStream`
+  (`@omadia/channel-sdk` 0.3.17) holds `text_delta` while the text can still become the sentinel and turns
+  a no-reply `done` into `answer: ''` + `silent: true`. Wired into `/api/chat/stream` and the public
+  API channel (`harness-channel-api` `chatRouter`). The web chat renders no bubble for a silent
+  turn; the session schema keeps `silent`. Text already released ("explanation\nNO_REPLY") is taken
+  back with one `text_retract`; a retract back to zero re-arms the hold for a later iteration.
+- **#1956** — the session logger mirrors the user-facing answer into the web-chat document: the
+  `<!-- orchestrator:rendered_table … -->` and `rendered_attachments` notes are stripped
+  (`stripOrchestratorNotes`), so a reload shows no note text and the client's PUT matches the
+  mirror (no duplicate turn). A NO_REPLY turn is mirrored silent and empty.
+- **#1900** — the web chat no longer renders process-promotion nudge cards (decision after the
+  recommendation, ADR-0021: a decoration needs a working next action; the card's buttons only
+  logged to the console and its text was written for the model). `NudgeCard` and its `nudgeCard`
+  catalog keys are gone; the `<nudge>` parser stays for the tool trace.
+- **#1886** — "Delete session" in the agent-unavailable banner removes the session from the list
+  and resets the picked agent instead of clearing it (the clear's PUT recreated the session).
+
 ### Security — web, routine and API turns are one-person rooms; memories private by default (#1774, #1826, #1823, ADR-0182, ADR-0183) (2026-11-26)
 
 - Web chat turns carry `TurnOrigin { channelType: 'http', scope: personal(<omadia user id>) }`,

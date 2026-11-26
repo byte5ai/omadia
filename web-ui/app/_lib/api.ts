@@ -2127,6 +2127,9 @@ export interface AdminUser {
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
+  /** #1840 — the knowledge-graph id the memory purge and owner lists use.
+   *  Only on the detail response; null when the account has none yet. */
+  omadiaUserId?: string | null;
 }
 
 export interface AdminUsersListResponse {
@@ -4587,6 +4590,16 @@ export interface MemoryPurgePreviewResult {
   /** Knowledge-Graph conversation history: turns, sessions, runs, tool
    *  calls, plans and derived facts (#1334). */
   conversationCount: number;
+  /** #1842 — remembered facts shared with others: they only lose the user. */
+  kgDeownedCount?: number;
+  /** #1842 — excerpts deleted with the remembered facts. */
+  kgExcerptCount?: number;
+  /** #1843 — the user's datasets, processes and identity nodes. */
+  datasetCount?: number;
+  processCount?: number;
+  identityCount?: number;
+  /** #1840 — the person a user-axis selector resolved to. */
+  resolvedUser?: { omadiaUserId: string; via: string };
   /** Top-level entries a re-seed resets and writes back (#1335). */
   reseedEntries: string[];
   warnings: MemoryPurgeWarning[];
@@ -4598,7 +4611,12 @@ export interface MemoryPurgePreviewResult {
 export interface MemoryPurgeResult {
   scratchDeleted: number;
   kgDeleted: number;
+  kgDeowned?: number;
+  kgExcerptsDeleted?: number;
   conversationDeleted: number;
+  datasetsDeleted?: number;
+  processesDeleted?: number;
+  identityDeleted?: number;
   /** Files the re-seed wrote back; present only on a re-seed purge. */
   reseededFiles?: number;
   /** `memory_purge_audit` row id; absent when the purge was not recorded. */
@@ -4656,6 +4674,49 @@ export async function purgeMemory(body: {
     );
   }
   return JSON.parse(text) as MemoryPurgeResult;
+}
+
+// -----------------------------------------------------------------------------
+// Owner-less memories (ADR-0185, #1829/#1831) — memorable knowledge with an
+// empty owner list (scratch reaper, seeded rules). No owner can delete it, so
+// the operator lists and deletes single entries at
+// /api/v1/admin/memory/ownerless (cookie session, audited server-side).
+// Owned entries are refused by the server (409 has_owners).
+// -----------------------------------------------------------------------------
+
+export interface OwnerlessMemory {
+  id: string;
+  kind: MemorableKind | null;
+  summary: string;
+  createdBy: string | null;
+  originAgent: string | null;
+  createdAt: string | null;
+  /** A rule entry derived from a file under /memories/_rules/. */
+  isRule: boolean;
+}
+
+export interface OwnerlessMemoriesResult {
+  /** False when the knowledge graph cannot list owner-less entries. */
+  supported: boolean;
+  items: OwnerlessMemory[];
+}
+
+export async function listOwnerlessMemories(): Promise<OwnerlessMemoriesResult> {
+  return getJson<OwnerlessMemoriesResult>('/v1/admin/memory/ownerless');
+}
+
+export async function deleteOwnerlessMemory(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(`/v1/admin/memory/ownerless/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE memory/ownerless failed: ${res.status}`, await res.text());
+  }
 }
 
 // -----------------------------------------------------------------------------
