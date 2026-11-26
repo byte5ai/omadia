@@ -374,7 +374,8 @@ export function isTruncatedOutput(raw: string): boolean {
 /**
  * Deterministically map a tool's raw string output onto publishable rows.
  * Returns null when the output cannot be mapped (non-JSON, no record array,
- * no mapped field present, a truncated result under a filter, sort or take)
+ * no mapped field present, a mapped column no record fills (#1898: a guessed
+ * attribute), a truncated result under a filter, sort or take)
  * — the caller then falls back to the agent path. An empty record array — or a filter
  * matching nothing — maps to [] (a genuinely empty data set).
  */
@@ -403,6 +404,9 @@ export function mapRefreshRecords(
   if (!records) return null;
   if (requiresCompleteResult(source) && isTruncatedOutput(raw)) return null;
   const pairs: Array<{ row: Record<string, unknown>; record: Record<string, unknown> }> = [];
+  // #1898 — columns some record fills; a column no record fills is a guessed
+  // attribute, i.e. a wrong map, and refused like a wrong shape.
+  const filled = new Set<string>();
   for (const rec of records) {
     if (typeof rec !== 'object' || rec === null) return null;
     const r = rec as Record<string, unknown>;
@@ -410,7 +414,10 @@ export function mapRefreshRecords(
     let mappedAny = false;
     for (const [fieldKey, attr] of Object.entries(source.map)) {
       const v = readAttr(r, attr);
-      if (v !== undefined) mappedAny = true;
+      if (v !== undefined) {
+        mappedAny = true;
+        filled.add(fieldKey);
+      }
       row[fieldKey] = displayCell(v);
     }
     if (!mappedAny) return null; // wrong shape — refuse rather than render blanks
@@ -423,6 +430,7 @@ export function mapRefreshRecords(
     }
     pairs.push({ row, record: r });
   }
+  if (records.length > 0 && filled.size < Object.keys(source.map).length) return null;
   const sort = source.sort;
   // Array#sort is stable: equal keys keep the fetch order, as in the verbs
   const ordered = sort ? [...pairs].sort((a, b) => compareRecords(a.record, b.record, sort)) : pairs;

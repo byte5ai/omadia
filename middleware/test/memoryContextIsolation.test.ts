@@ -131,7 +131,8 @@ test('the agent tier is readable but not writable from a context turn', async ()
     MemoryScopeViolation,
   );
   const reply = await createNote(a, '/memories/~agent/global.md', 'leak');
-  assert.match(reply, /is not permitted to write/);
+  // #1832 — the refusal names the model-facing path, not the agent or the physical tree.
+  assert.equal(reply, 'Error: The path /memories/~agent/global.md is not available to the memory tool.');
   assert.equal(await root.fileExists(`/memories/orchestrators/${AGENT}/global.md`), false);
 });
 

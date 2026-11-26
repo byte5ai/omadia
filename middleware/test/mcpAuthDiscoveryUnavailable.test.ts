@@ -323,7 +323,7 @@ describe('MCP operator routes on discovery failures', () => {
         forgetClient: (i) => service.forgetClient(i),
         issuerUse: (sv) => service.issuerUse(sv),
       },
-      auditMcpDelegationChange: (entry) => {
+      recordAudit: (entry) => {
         audits.push({ ...entry });
         return Promise.resolve();
       },
@@ -437,7 +437,12 @@ describe('MCP operator routes on discovery failures', () => {
     const ok = await putDelegation(base, { delegation: 'service', confirm: true });
     assert.equal(ok.status, 200);
     assert.deepEqual(
-      audits.map((a) => [a['from'], a['to']]),
+      audits
+        .filter((a) => a['action'] === 'mcp_server.delegation_change')
+        .map((a) => [
+          (a['before'] as { delegation: string }).delegation,
+          (a['after'] as { delegation: string }).delegation,
+        ]),
       [['per_user', 'service']],
     );
   });

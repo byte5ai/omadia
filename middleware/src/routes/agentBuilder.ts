@@ -56,7 +56,7 @@ import {
 } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
-import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, readOperatorAuditState, type AuditActor, type AuditEntryInput } from '../auth/adminAuditLog.js';
 import { requireBroadReachConfirmation } from '../agents/broadReachGate.js';
 import type { ReachSources } from '../agents/agentReachSources.js';
 
@@ -201,7 +201,7 @@ export interface AgentBuilderRouterOptions {
     forgetClient(issuer: string): Promise<boolean>;
     /** #1947 — a server's issuer; `undefined` when it cannot be told now. */
     issuerUse(server: McpServerRow): Promise<string | null | undefined>;
-    beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
+    beginAuthorization(server: McpServerRow, userKey: string, actor?: AuditActor): Promise<{ authorizeUrl: string }>;
     /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
      *  validated against the flow-bound issuer before any exchange. */
     completeAuthorization(
@@ -210,7 +210,7 @@ export interface AgentBuilderRouterOptions {
       iss: string | null,
       /** #1908 (ADR-0175): the user key of the session finishing the flow. */
       completingUserKeyFor: (flow: { serverId: string; userKey: string }) => Promise<string | null>,
-    ): Promise<{ serverId: string }>;
+    ): Promise<{ serverId: string; actor?: AuditActor }>;
     setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
     getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
     /** #1923 — whether the stored authorization of (server, user) still counts. */
@@ -297,16 +297,6 @@ export interface AgentBuilderRouterOptions {
    *  removed whose token, why (a disconnect or the server's deletion), and
    *  whether the provider revoked the grant. Best-effort like the hook above.
    *  Never receives a token. Absent → only the log line is written. */
-  /** #1933 — a server's delegation mode changed. Best-effort like the
-   *  disconnect hook. Absent → only the log line is written. */
-  readonly auditMcpDelegationChange?: (entry: {
-    readonly actor: string | null;
-    readonly actorUserId?: string;
-    readonly serverId: string;
-    readonly serverName: string;
-    readonly from: 'per_user' | 'service';
-    readonly to: 'per_user' | 'service';
-  }) => Promise<void>;
   readonly auditMcpOAuthDisconnect?: (entry: {
     readonly actor: string | null;
     readonly actorUserId?: string;
@@ -392,6 +382,7 @@ export function createAgentBuilderRouter(
     '/public-mcp-bindings',
     createPublicMcpBindingsRouter({
       getStore: () => options.getPublicMcpBindingStore?.(),
+      ...(options.recordAudit ? { audit: { record: options.recordAudit } } : {}),
       ...(options.operatorAuth ? { operatorAuth: options.operatorAuth } : {}),
       ...(options.publicMcpBindingExistence
         ? { existence: options.publicMcpBindingExistence }
@@ -505,7 +496,8 @@ export function createAgentBuilderRouter(
   };
   /** Issue #1925 — a removed OAuth authorization leaves a trace: a log line
    *  always, an `admin_audit` row when the hook is wired. One per token. */
-  /** #1933 — log + admin audit of a delegation change. Best-effort. */
+  /** #1933 — log + admin audit of a delegation change. Best-effort: the
+   *  audit row goes through the shared operator audit (`auditMcpServer`). */
   const recordDelegationChange = async (
     req: Request,
     server: McpServerRow,
@@ -514,18 +506,8 @@ export function createAgentBuilderRouter(
     console.log(
       `[mcp] delegation change: id=${server.id} name=${JSON.stringify(server.name)} from=${server.delegation} to=${to} actor=${sessionIdentity(req) ?? 'unknown'}`,
     );
-    if (!options.auditMcpDelegationChange) return;
-    try {
-      await options.auditMcpDelegationChange({
-        ...auditActor(req),
-        serverId: server.id,
-        serverName: server.name,
-        from: server.delegation,
-        to,
-      });
-    } catch (err) {
-      console.warn(`[mcp] delegation audit write failed for id=${server.id}: ${msg(err)}`);
-    }
+    await auditMcpServer(req, server.id, 'mcp_server.delegation_change',
+      { delegation: server.delegation }, { name: server.name, delegation: to });
   };
   /** #1947 — once no remaining server resolves to `issuer`, its stored client
    *  and vault secret go too. Best-effort: a failure leaves a client row. */
@@ -758,6 +740,18 @@ export function createAgentBuilderRouter(
     }
   }
 
+  function auditMutation(req: Request, entry: Omit<AuditEntryInput, 'actor'>): Promise<void> {
+    return recordBroadReachAudit({ ...entry, actor: auditActorFromRequest(req) });
+  }
+
+  const auditMcpServer = (
+    req: Request,
+    serverId: string,
+    action: AuditEntryInput['action'],
+    before?: unknown,
+    after?: unknown,
+  ) => auditMutation(req, { action, target: 'mcp-server:' + serverId, before, after });
+
   async function agentOr404(
     l: Live,
     slug: string,
@@ -830,7 +824,7 @@ export function createAgentBuilderRouter(
         await mcpGrantOfEdge(l, req.body ?? {}),
       );
       if (audit === undefined) return;
-      const edge = await createEdge(l, agent, req.body ?? {});
+      const edge = await createEdge(l, agent, req.body ?? {}, (entry) => auditMutation(req, entry));
       await recordBroadReachAudit(audit);
       const diff = await reload(l);
       res.json({ edge, diff });
@@ -846,7 +840,8 @@ export function createAgentBuilderRouter(
       if (!l) return;
       try {
         const kind = str(req.query['kind']);
-        await deleteEdge(l, decodeURIComponent(str(req.params.id)), kind);
+        await deleteEdge(l, decodeURIComponent(str(req.params.id)), kind,
+          options.recordAudit ? (entry) => auditMutation(req, entry) : undefined);
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -887,6 +882,11 @@ export function createAgentBuilderRouter(
         },
         options.getActiveProvider?.(),
       );
+      await auditMutation(req, {
+        action: 'agent.subagent_change',
+        target: 'agent:' + agent.slug,
+        after: subAgentAuditView(row),
+      });
       await reload(l);
       res.json(subAgentNode(row));
     } catch (err) {
@@ -931,6 +931,15 @@ export function createAgentBuilderRouter(
           req.body ?? {},
           options.getActiveProvider?.(),
         );
+        await auditMutation(req, {
+          action: 'agent.subagent_change',
+          target: 'agent:' + agent.slug,
+          before: subAgentAuditView(current),
+          after: {
+            ...subAgentAuditView(row),
+            instructionsChanged: current.systemPromptOverride !== row.systemPromptOverride,
+          },
+        });
         await reload(l);
         res.json(subAgentNode(row));
       } catch (err) {
@@ -945,7 +954,19 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        await l.graph.deleteSubAgent(str(req.params.id));
+        const id = str(req.params.id);
+        const previous = options.recordAudit
+          ? await readOperatorAuditState(async () => (await l.graph.listAllSubAgents()).find((row) => row.id === id))
+          : undefined;
+        await l.graph.deleteSubAgent(id);
+        if (previous) {
+          await auditMutation(req, {
+            action: 'agent.subagent_change',
+            target: previous === 'unknown' ? 'subagent:' + id : 'agent:' + previous.parentAgentId,
+            before: previous === 'unknown' ? previous : subAgentAuditView(previous),
+            after: null,
+          });
+        }
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -1025,6 +1046,11 @@ export function createAgentBuilderRouter(
         // operator confirms, but the attach itself is never blocked.
         const risks = scanSkillForRisks(skill.frontmatter, skill.body, skill.description);
         const link = await l.graph.addPersonaSkill(agent.id, skillId);
+        await auditMutation(req, {
+          action: 'agent.persona_skill_change',
+          target: 'agent:' + agent.slug,
+          after: { skillId: link.skillId, attached: true },
+        });
         await reload(l);
         res.json({
           agentId: link.agentId,
@@ -1046,7 +1072,19 @@ export function createAgentBuilderRouter(
       try {
         const agent = await agentOr404(l, str(req.params.slug), res);
         if (!agent) return;
-        await l.graph.removePersonaSkill(agent.id, str(req.params.skillId));
+        const skillId = str(req.params.skillId);
+        const previous = options.recordAudit
+          ? await readOperatorAuditState(async () => (await l.graph.listPersonaSkills(agent.id)).find((row) => row.skillId === skillId))
+          : undefined;
+        await l.graph.removePersonaSkill(agent.id, skillId);
+        if (previous) {
+          await auditMutation(req, {
+            action: 'agent.persona_skill_change',
+            target: 'agent:' + agent.slug,
+            before: previous === 'unknown' ? previous : { skillId, attached: true },
+            after: { skillId, attached: false },
+          });
+        }
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -1584,6 +1622,7 @@ export function createAgentBuilderRouter(
         status: b.status ?? 'enabled',
       });
       if (row.transport === 'stdio') await recordStdioServerSaved(req, row, 'manual');
+      else await auditMcpServer(req, row.id, 'mcp_server.create', null, mcpServerAuditView(row));
       res.json(mcpNode(row));
     } catch (err) {
       fail(res, err);
@@ -1636,11 +1675,26 @@ export function createAgentBuilderRouter(
           return;
         }
       }
-      if (hasStatus) await l.graph.setMcpServerStatus(id, status as 'enabled' | 'disabled');
+      if (hasStatus) {
+        await l.graph.setMcpServerStatus(id, status as 'enabled' | 'disabled');
+        if (row.status !== status) {
+          await auditMcpServer(req, id, 'mcp_server.update', { status: row.status }, { status });
+        }
+      }
       // Privacy-bypass (epic #459) is read live off the rebuilt DomainTool, so a
       // reload below is what makes the toggle take effect.
-      if (hasBypass) await l.graph.setMcpServerPrivacyBypass(id, privacyBypass as boolean);
-      if (hasKg) await l.graph.setMcpServerKgIngest(id, kgIngest as boolean);
+      if (hasBypass) {
+        await l.graph.setMcpServerPrivacyBypass(id, privacyBypass as boolean);
+        if (row.privacyBypass !== privacyBypass) {
+          await auditMcpServer(req, id, 'mcp_server.update', { privacyBypass: row.privacyBypass }, { privacyBypass });
+        }
+      }
+      if (hasKg) {
+        await l.graph.setMcpServerKgIngest(id, kgIngest as boolean);
+        if (row.kgIngest !== kgIngest) {
+          await auditMcpServer(req, id, 'mcp_server.update', { kgIngest: row.kgIngest }, { kgIngest });
+        }
+      }
       // Status changes must reach both enforcement layers: the dispatch guard
       // (policy refresh) and the visible tool surface (epoch bump + rebuild).
       await refreshMcpGrantPolicy(l.graph);
@@ -1682,6 +1736,9 @@ export function createAgentBuilderRouter(
         }
       }
       await l.graph.deleteMcpServer(id);
+      if (server) {
+        await auditMcpServer(req, id, 'mcp_server.delete', mcpServerAuditView(server), null);
+      }
       await invalidateMcpServer(id);
       if (issuer && options.mcpOAuth) {
         await forgetIssuerClientIfUnused(l, issuer);
@@ -1766,6 +1823,8 @@ export function createAgentBuilderRouter(
         });
         return;
       }
+      await auditMcpServer(req, row.id, 'mcp_server.discover',
+        { toolCount: row.discoveredTools?.length ?? 0 }, { toolCount: tools.length });
       // Re-discovery can change verdicts (and thus the runtime blocklist) and
       // tool specs. Refresh the policy, then bump the server's grant epoch so
       // the reload's diff actually rebuilds the affected agents — verdict rows
@@ -1862,17 +1921,36 @@ export function createAgentBuilderRouter(
         config?: unknown;
         secrets?: unknown;
       };
-      if (Array.isArray(body.schema)) {
-        await l.graph.setMcpServerConfigSchema(id, body.schema as never);
-      }
-      if (body.config && typeof body.config === 'object') {
-        await l.graph.setMcpServerConfig(id, body.config as Record<string, unknown>);
-      }
-      if (body.secrets && typeof body.secrets === 'object' && options.mcpConfig) {
-        for (const [k, v] of Object.entries(body.secrets as Record<string, unknown>)) {
-          if (typeof v === 'string' && v.length > 0) {
-            await options.mcpConfig.setSecret(id, k, v);
+      const before = {
+        fields: Object.keys(row.config ?? {}).length,
+        schemaFields: row.configSchema?.length ?? 0,
+      };
+      const after = { ...before, secretsWritten: 0 };
+      let configWritten = false;
+      let schemaWritten = false;
+      try {
+        if (Array.isArray(body.schema)) {
+          await l.graph.setMcpServerConfigSchema(id, body.schema as never);
+          after.schemaFields = body.schema.length;
+          schemaWritten = true;
+        }
+        if (body.config && typeof body.config === 'object') {
+          await l.graph.setMcpServerConfig(id, body.config as Record<string, unknown>);
+          after.fields = Object.keys(body.config).length;
+          configWritten = true;
+        }
+        if (body.secrets && typeof body.secrets === 'object' && options.mcpConfig) {
+          for (const [k, v] of Object.entries(body.secrets as Record<string, unknown>)) {
+            if (typeof v === 'string' && v.length > 0) {
+              await options.mcpConfig.setSecret(id, k, v);
+              after.secretsWritten++;
+            }
           }
+        }
+      } finally {
+        if (configWritten || schemaWritten || after.secretsWritten > 0) {
+          await auditMcpServer(req, id, 'mcp_server.config_change', before,
+            { ...after, configWritten, schemaWritten });
         }
       }
       // Config feeds connect-time substitution — refresh + reload so it applies.
@@ -1912,6 +1990,9 @@ export function createAgentBuilderRouter(
           res.status(401).json({ error: 'unauthenticated' });
           return;
         }
+        const previous = options.recordAudit
+          ? await readOperatorAuditState(() => l.graph.getMcpToolVerdictAck(id, toolName, CURRENT_VERIFIER_VERSION))
+          : undefined;
         const ack = await l.graph.upsertMcpToolVerdictAck(
           id,
           toolName,
@@ -1919,6 +2000,9 @@ export function createAgentBuilderRouter(
           verdict.contentHash,
           actor,
         );
+        await auditMcpServer(req, id, 'mcp_server.verdict_ack',
+          previous === 'unknown' ? previous : { toolName, acknowledged: previous?.contentHash === verdict.contentHash },
+          { toolName: ack.toolName, acknowledged: true, severity: verdict.severity });
         // An ack unblocks the (server, tool) pair. Refresh the policy (the
         // dispatch guard allows immediately), then bump the grant epoch +
         // reload so hydration re-materializes the previously-filtered tool
@@ -2039,7 +2123,12 @@ export function createAgentBuilderRouter(
       // needs the confirmation, and each is audited.
       const audits = await pluginMcpGrantBroadReachGate(l, req, res, pluginId, mcpServerId);
       if (audits === undefined) return;
+      const previouslyGranted = options.recordAudit
+        ? await readOperatorAuditState(async () => (await l.graph.listGrantedServerIdsForPlugin(pluginId)).includes(mcpServerId))
+        : 'unknown';
       await l.graph.upsertPluginMcpGrant(pluginId, mcpServerId, actor);
+      await auditMcpServer(req, mcpServerId, 'mcp_server.plugin_grant_change',
+        { pluginId, granted: previouslyGranted }, { pluginId, granted: true });
       for (const entry of audits) await recordBroadReachAudit(entry);
       res.json({ pluginId, serverId: mcpServerId, grantedBy: actor });
     } catch (err) {
@@ -2057,7 +2146,10 @@ export function createAgentBuilderRouter(
         res.status(400).json({ error: 'invalid_grant' });
         return;
       }
-      await l.graph.deletePluginMcpGrant(pluginId, mcpServerId);
+      if (await l.graph.deletePluginMcpGrant(pluginId, mcpServerId)) {
+        await auditMcpServer(req, mcpServerId, 'mcp_server.plugin_grant_change',
+          { pluginId, granted: true }, { pluginId, granted: false });
+      }
       res.status(204).end();
     } catch (err) {
       fail(res, err);
@@ -2206,7 +2298,7 @@ export function createAgentBuilderRouter(
         return;
       }
       try {
-        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, userKey);
+        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, userKey, auditActorFromRequest(req));
         res.json({ authorizeUrl });
       } catch (err) {
         // Issuer without DCR needs a one-time manual client first.
@@ -2251,7 +2343,21 @@ export function createAgentBuilderRouter(
         res.status(400).json({ error: 'invalid_oauth_client' });
         return;
       }
+      const previous = options.recordAudit
+        ? await readOperatorAuditState(() => l.graph.getMcpOAuthClient(issuer))
+        : undefined;
       await options.mcpOAuth.setManualClient(issuer, clientId, clientSecret);
+      const issuerHost = URL.canParse(issuer) ? new URL(issuer).hostname : null;
+      await auditMutation(req, {
+        action: 'mcp_server.oauth_client_change',
+        target: 'mcp-oauth-client',
+        before: previous === 'unknown' ? previous : previous ? { issuerHost, hasSecret: Boolean(previous.clientSecretRef) } : null,
+        after: {
+          issuerHost,
+          hasSecret: Boolean(clientSecret),
+          clientChanged: previous === 'unknown' ? null : previous?.clientId !== clientId,
+        },
+      });
       res.json({ issuer, clientId });
     } catch (err) {
       fail(res, err);
@@ -2356,7 +2462,8 @@ export function createAgentBuilderRouter(
    *  Hit by the starter's own browser redirect. `state` only finds the flow;
    *  the completing SESSION must map to the user who started it (#1908,
    *  ADR-0175). The path is public (no 401 before the handler), so the session
-   *  is attached best-effort by `attachOptionalSession` in index.ts. */
+   *  is attached best-effort by `attachOptionalSession` in index.ts.
+   *  Successful token writes are audited with the initiator from the flow. */
   router.get('/mcp-oauth/callback', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
@@ -2402,7 +2509,13 @@ export function createAgentBuilderRouter(
         const server = (await l.graph.listMcpServers()).find((s) => s.id === flow.serverId);
         return server ? oauthUserKeyFor(req, server) : null;
       };
-      await options.mcpOAuth.completeAuthorization(state, code, iss, completingUserKeyFor);
+      const authorization = await options.mcpOAuth.completeAuthorization(state, code, iss, completingUserKeyFor);
+      await recordBroadReachAudit({
+        actor: authorization.actor ?? {},
+        action: 'mcp_server.oauth_connect',
+        target: 'mcp-server:' + authorization.serverId,
+        after: { authorized: true },
+      });
       res.status(200).send(donePage(true, 'The server is now authorized for you.'));
     } catch (err) {
       if (err instanceof Error && err.name === 'McpOAuthCompleterMismatchError') {
@@ -2575,6 +2688,10 @@ export function createAgentBuilderRouter(
           grantRefs: diff.toGrant,
           revokeIds,
         });
+        const remaining = [...grantIdsByTool.keys()].filter((tool) => !toRevoke.includes(tool));
+        await auditMcpServer(req, mcpServerId, 'mcp_server.agent_grant_change',
+          { agentId: agent.id, tools: [...grantIdsByTool.keys()].sort() },
+          { agentId: agent.id, tools: [...remaining, ...diff.toGrant].sort() });
         await recordBroadReachAudit(broadReachAudit);
       }
       if (delegation !== undefined && delegation !== server.delegation) {
@@ -2629,6 +2746,8 @@ export function createAgentBuilderRouter(
         return;
       }
       await l.graph.deleteToolGrant(grantId);
+      await auditMcpServer(req, grant.mcpServerId ?? 'unknown', 'mcp_server.agent_grant_change',
+        mcpGrantAuditView(grant), null);
       if (grant.mcpServerId) {
         // A revoke changes the holder's tool surface: refresh the dispatch
         // policy and bump the server's grant epoch so the reload rebuilds the
@@ -2727,6 +2846,9 @@ export function createAgentBuilderRouter(
           return;
         }
         const toolName = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+        const previous = options.recordAudit
+          ? await readOperatorAuditState(async () => (await l.graph.listAllSkillToolBindings()).find((row) => row.skillId === id && row.contract === contract))
+          : undefined;
         await l.graph.upsertSkillToolBinding({
           skillId: id,
           contract,
@@ -2734,6 +2856,9 @@ export function createAgentBuilderRouter(
           toolName,
           boundBy: actor,
         });
+        await auditMcpServer(req, mcpServerId, 'mcp_server.skill_binding_change',
+          previous === 'unknown' ? previous : previous ? { skillId: id, contract, mcpServerId: previous.mcpServerId, toolName: previous.toolName } : null,
+          { skillId: id, contract, mcpServerId, toolName });
         await reload(l);
         res.json({ skillId: id, contract, mcpServerId, toolName, boundBy: actor });
       } catch (err) {
@@ -2748,7 +2873,21 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        await l.graph.deleteSkillToolBinding(str(req.params.id), str(req.params.contract));
+        const skillId = str(req.params.id);
+        const contract = str(req.params.contract);
+        const previous = options.recordAudit
+          ? await readOperatorAuditState(async () => (await l.graph.listAllSkillToolBindings()).find((row) => row.skillId === skillId && row.contract === contract))
+          : undefined;
+        await l.graph.deleteSkillToolBinding(skillId, contract);
+        if (previous === 'unknown') {
+          await auditMutation(req, {
+            action: 'mcp_server.skill_binding_change', target: 'skill:' + skillId,
+            before: previous, after: { contract, bound: false },
+          });
+        } else if (previous) {
+          await auditMcpServer(req, previous.mcpServerId, 'mcp_server.skill_binding_change',
+            { skillId, contract, toolName: previous.toolName }, null);
+        }
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -2810,6 +2949,11 @@ export function createAgentBuilderRouter(
       const token =
         authKind === 'bearer' && typeof b.token === 'string' && b.token !== '' ? b.token : null;
       const row = await l.graph.createMcpRegistry({ name, url, authKind });
+      await auditMutation(req, {
+        action: 'mcp_server.registry_create',
+        target: 'mcp-registry:' + row.id,
+        after: { name: row.name, authKind: row.authKind },
+      });
       // Secret-at-rest: the bearer token goes to the Vault, never the DB row.
       if (token && options.mcpRegistrySecrets) {
         await options.mcpRegistrySecrets.setToken(row.id, token);
@@ -2831,7 +2975,17 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const registryId = str(req.params.id);
+      const previous = options.recordAudit
+        ? await readOperatorAuditState(async () => (await l.graph.listMcpRegistries()).find((row) => row.id === registryId))
+        : undefined;
       await l.graph.deleteMcpRegistry(registryId);
+      if (previous) {
+        await auditMutation(req, {
+          action: 'mcp_server.registry_delete',
+          target: 'mcp-registry:' + registryId,
+          before: previous === 'unknown' ? previous : { name: previous.name, authKind: previous.authKind },
+        });
+      }
       await options.mcpRegistrySecrets?.deleteToken(registryId);
       mcpRegistryClient.invalidate(registryId);
       res.status(204).end();
@@ -2917,6 +3071,7 @@ export function createAgentBuilderRouter(
         configSchema: entry.configSchema ?? [],
       });
       if (row.transport === 'stdio') await recordStdioServerSaved(req, row, 'marketplace');
+      else await auditMcpServer(req, row.id, 'mcp_server.create', null, mcpServerAuditView(row));
       res.json(mcpNode(row));
     } catch (err) {
       if (err instanceof McpRegistryError) {
@@ -2971,11 +3126,20 @@ export function createAgentBuilderRouter(
   );
 
   /** Bulk re-discover + re-scan of every enabled server (#455 Phase 3). */
-  router.post('/mcp-servers/rescan-all', async (_req: Request, res: Response) => {
+  router.post('/mcp-servers/rescan-all', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
     try {
       const result = await rescanAllMcpServers(l.graph, mcp, (m) => console.log(m));
+      await auditMutation(req, {
+        action: 'mcp_server.rescan_all',
+        target: 'mcp-server:all',
+        after: {
+          scannedServers: result.scannedServers,
+          scannedTools: result.scannedTools,
+          failedServers: result.failures.map(({ serverId }) => serverId),
+        },
+      });
       await reload(l);
       res.json(result);
     } catch (err) {
@@ -3391,6 +3555,7 @@ async function createEdge(
   l: Live,
   agent: AgentRow,
   body: Record<string, unknown>,
+  audit: (entry: Omit<AuditEntryInput, 'actor'>) => Promise<void>,
 ): Promise<{ id: string; kind: string; source: string; target: string }> {
   const kind = String(body['kind'] ?? '');
   const source = String(body['source'] ?? '');
@@ -3402,6 +3567,12 @@ async function createEdge(
       assertArchetypeAllows(agent, 'channel_binding');
       const { channelType, channelKey } = parseChannel(source);
       await l.config.createChannelBinding(agent.id, { channelType, channelKey });
+      await audit({
+        action: 'channel.binding_change',
+        target: channelType + ':' + channelKey,
+        before: null,
+        after: { agentId: agent.id, slug: agent.slug },
+      });
       return { id: `channel_bind:${channelType}:${channelKey}`, kind, source, target };
     }
     case 'skill': {
@@ -3457,6 +3628,14 @@ async function createEdge(
         toolRef,
         mcpServerId,
       });
+      if (grant.toolKind === 'mcp' && grant.mcpServerId) {
+        await audit({
+          action: 'mcp_server.agent_grant_change',
+          target: 'mcp-server:' + grant.mcpServerId,
+          before: null,
+          after: mcpGrantAuditView(grant),
+        });
+      }
       return { id: `tool_grant:${grant.id}`, kind, source, target };
     }
     case 'subagent':
@@ -3469,25 +3648,61 @@ async function createEdge(
   }
 }
 
-async function deleteEdge(l: Live, id: string, kind: string): Promise<void> {
+async function deleteEdge(
+  l: Live,
+  id: string,
+  kind: string,
+  audit?: (entry: Omit<AuditEntryInput, 'actor'>) => Promise<void>,
+): Promise<void> {
   switch (kind) {
     case 'channel_bind': {
       const rest = id.slice('channel_bind:'.length);
       const sep = rest.indexOf(':');
       const channelType = sep >= 0 ? rest.slice(0, sep) : rest;
       const channelKey = sep >= 0 ? rest.slice(sep + 1) : '';
+      const previous = audit ? await l.config.resolveBinding(channelType, channelKey) : undefined;
       await l.config.removeChannelBinding(channelType, channelKey);
+      if (previous) {
+        await audit?.({
+          action: 'channel.binding_change',
+          target: channelType + ':' + channelKey,
+          before: { agentId: previous.agentId },
+          after: null,
+        });
+      }
       return;
     }
-    case 'subagent':
-      await l.graph.deleteSubAgent(id.slice('subagent:'.length));
+    case 'subagent': {
+      const subAgentId = id.slice('subagent:'.length);
+      const previous = audit ? (await l.graph.listAllSubAgents()).find((row) => row.id === subAgentId) : undefined;
+      await l.graph.deleteSubAgent(subAgentId);
+      if (previous) {
+        await audit?.({
+          action: 'agent.subagent_change',
+          target: 'agent:' + previous.parentAgentId,
+          before: subAgentAuditView(previous),
+          after: null,
+        });
+      }
       return;
+    }
     case 'skill':
       await l.graph.setSubAgentSkill(id.slice('skill:'.length), null);
       return;
-    case 'tool_grant':
-      await l.graph.deleteToolGrant(id.slice('tool_grant:'.length));
+    case 'tool_grant': {
+      const grantId = id.slice('tool_grant:'.length);
+      const previous = audit ? (await l.graph.listAllToolGrants()).find((row) => row.id === grantId) : undefined;
+      await l.graph.deleteToolGrant(grantId);
+      if (previous?.toolKind === 'mcp' && previous.mcpServerId) {
+        await audit?.({
+          action: 'mcp_server.agent_grant_change',
+          target: 'mcp-server:' + previous.mcpServerId,
+          before: mcpGrantAuditView(previous),
+          after: null,
+        });
+      }
       return;
+    }
     case 'schedule':
       await l.graph.deleteSchedule(id.slice('schedule:'.length));
       return;
@@ -3631,6 +3846,39 @@ function effectiveFallbackOf(
   if (fallback === 'none') return null;
   if (fallback === 'auto') return effectiveModel;
   return `${fallback.provider}:${fallback.model}`;
+}
+
+function mcpGrantAuditView(grant: ToolGrantRow) {
+  return {
+    agentId: grant.agentId,
+    subAgentId: grant.subAgentId,
+    toolName: grant.toolRef,
+  };
+}
+
+function mcpServerAuditView(row: McpServerRow) {
+  return {
+    name: row.name,
+    transport: row.transport,
+    status: row.status,
+    source: row.source,
+    registryId: row.registryId,
+    privacyBypass: row.privacyBypass,
+    kgIngest: row.kgIngest,
+    delegation: row.delegation,
+  };
+}
+
+function subAgentAuditView(row: SubAgentRow) {
+  return {
+    id: row.id,
+    skillId: row.skillId,
+    model: row.model,
+    status: row.status,
+    maxTokens: row.maxTokens,
+    maxIterations: row.maxIterations,
+    instructionsSet: Boolean(row.systemPromptOverride),
+  };
 }
 
 function subAgentNode(s: SubAgentRow) {

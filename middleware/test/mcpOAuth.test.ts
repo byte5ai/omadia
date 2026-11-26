@@ -540,15 +540,21 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
     await svc.beginAuthorization(
       { id: 'srv-1', name: 'srv', endpoint: 'https://srv.example/mcp', transport: 'http' } as never,
       'user-a',
+      { id: '00000000-0000-4000-8000-000000000001', email: 'operator@example.com' },
     );
     assert.equal(flowCreates.length, 1);
     assert.equal(flowCreates[0]?.['issRequired'], true);
     assert.equal(flowCreates[0]?.['issuer'], 'https://as.example');
+    assert.equal(flowCreates[0]?.['auditActorId'], '00000000-0000-4000-8000-000000000001');
+    assert.equal(flowCreates[0]?.['auditActorEmail'], 'operator@example.com');
   });
 
   it('accepts a matching iss and stores the token', async () => {
     const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
-    const { graph, tokenWrites } = fakeGraph({ flow: { ...FLOW_BASE, issRequired: true } });
+    const actor = { id: '00000000-0000-4000-8000-000000000001', email: 'operator@example.com' };
+    const { graph, tokenWrites } = fakeGraph({ flow: {
+      ...FLOW_BASE, issRequired: true, auditActorId: actor.id, auditActorEmail: actor.email,
+    } });
     const client = {
       exchangeCode: async () => ({
         accessToken: 'AT',
@@ -565,6 +571,7 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
     });
     const out = await svc.completeAuthorization('ST', 'CODE', 'https://as.example', AS_USER_A);
     assert.equal(out.serverId, 'srv-1');
+    assert.deepEqual(out.actor, actor);
     assert.equal(tokenWrites.length, 1, 'a valid callback stores exactly one token');
     // AC3: the token is bound to the issuer that minted it.
     assert.equal(tokenWrites[0]?.['issuer'], 'https://as.example');

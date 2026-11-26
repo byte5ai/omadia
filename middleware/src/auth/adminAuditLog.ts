@@ -31,10 +31,36 @@ export type AuditAction =
   // security decision and belongs in the trail (any operator can assign
   // themselves — the single-role system has no finer permission today).
   | 'conductor.role_holders_change'
+  | 'conductor.role_created'
+  | 'conductor.role_updated'
+  | 'conductor.role_deleted'
+  | 'conductor.template_submitted'
+  | 'conductor.template_approved'
+  | 'conductor.template_rejected'
   // #330 C2a — plugin-driven conversation bind/unbind: a binding decides
   // which Agent answers a group, so the auto-bind lifecycle belongs in the
   // same trail as the role batons.
   | 'channel.binding_change'
+  | 'routine.pause'
+  | 'routine.resume'
+  | 'routine.trigger'
+  | 'routine.template_change'
+  | 'routine.delete'
+  | 'agent.create'
+  | 'agent.update'
+  | 'agent.model_policy_change'
+  | 'agent.identity_change'
+  | 'agent.fast_lane_change'
+  | 'agent.peer_mode_change'
+  | 'agent.channel_policy_change'
+  | 'agent.plugin_change'
+  | 'agent.sessions_drain'
+  | 'agent.sessions_kill'
+  | 'agent.subagent_change'
+  | 'agent.persona_skill_change'
+  | 'provider.assignment_change'
+  | 'plugin.config_change'
+  | 'plugin.secret_change'
   // #330 round 4 — the operator terminated a live facilitation from the admin
   // lens. The lens is gone (#2067); the action stays for the rows it wrote.
   | 'conductor.facilitation_terminate'
@@ -91,6 +117,7 @@ export type AuditAction =
   // #1347 — a plugin finished its install wizard / was removed. The uninstall
   // row lists the grants that left with it.
   | 'plugin.install'
+  | 'plugin.package_upload'
   // #2088 — end of service of an agent: what ended with it (processes of its
   // archetype, message subscriptions), then the change itself. A delete
   // keeps a tombstone; the purge is the hard delete of one.
@@ -174,9 +201,24 @@ export type AuditAction =
   // its server. `after` holds the server name, whose token it was, the cause
   // and whether the provider revoked the grant. Never a token.
   | 'mcp_server.oauth_disconnect'
+  | 'mcp_server.create'
+  | 'mcp_server.update'
+  | 'mcp_server.delete'
+  | 'mcp_server.discover'
+  | 'mcp_server.rescan_all'
+  | 'mcp_server.config_change'
+  | 'mcp_server.verdict_ack'
+  | 'mcp_server.agent_grant_change'
+  | 'mcp_server.plugin_grant_change'
+  | 'mcp_server.skill_binding_change'
+  | 'mcp_server.oauth_connect'
+  | 'mcp_server.oauth_client_change'
   // #1933 — a server's delegation mode changed (`per_user` ⇄ `service`).
   // `service` makes every caller act under one shared authorization.
   | 'mcp_server.delegation_change'
+  | 'mcp_server.registry_create'
+  | 'mcp_server.registry_delete'
+  | 'mcp_server.public_binding_change'
   // #1487 — a plugin registry was added, changed or removed. Registries
   // decide where installable code comes from. `before`/`after` carry the url
   // and whether a token is set — never the token.
@@ -190,6 +232,10 @@ export type AuditAction =
   // in the same transaction as its `memory_purge_audit` row (which then gets
   // the outcome); `target` is `memory-purge:<that row's id>`.
   | 'memory.purge'
+  // ADR-0185 (#1829, #1831) — an operator deleted ONE memorable knowledge
+  // entry without an owner. Written before the delete; `target` is
+  // `memory:<mk id>`, `before` the optional reason.
+  | 'memory.ownerless_delete'
   | 'api_key.create'
   | 'api_key.revoke'
   | 'api_key.delete'
@@ -298,6 +344,31 @@ export interface AuditEntryInput {
   target: string;
   before?: unknown;
   after?: unknown;
+}
+
+/** A missing snapshot must not prevent an otherwise valid operator mutation. */
+export async function readOperatorAuditState<T>(read: () => Promise<T>): Promise<T | 'unknown'> {
+  try {
+    return await read();
+  } catch {
+    console.error('[admin-audit] could not read the prior state');
+    return 'unknown';
+  }
+}
+
+/** Record a completed operator mutation without changing its outcome. */
+export async function recordOperatorAudit(
+  audit: Pick<AdminAuditLog, 'record'> | undefined,
+  req: Request,
+  entry: Omit<AuditEntryInput, 'actor'>,
+): Promise<void> {
+  if (!audit) return;
+  try {
+    await audit.record({ ...entry, actor: auditActorFromRequest(req) });
+  } catch {
+    // The database error itself can include payload data.
+    console.error(`[admin-audit] failed to record ${entry.action}`);
+  }
 }
 
 export interface AuditEntry {
@@ -514,7 +585,7 @@ export function roleChangeAuditEntry(entry: {
   holdersAfter: readonly string[];
 }): AuditEntryInput {
   return {
-    actor: { id: entry.actorUserId, email: entry.actor },
+    actor: { id: entry.actorUserId, email: entry.actor || undefined },
     action: 'conductor.role_holders_change',
     target: `conductor-role:${entry.roleKey}`,
     before: { action: entry.action, holderId: entry.holderId },

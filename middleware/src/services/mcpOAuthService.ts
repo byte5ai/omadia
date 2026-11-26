@@ -31,6 +31,7 @@ import {
 import { redactedErrorText } from './secretRedaction.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 import { substituteMcpConfig } from '../agents/subAgentToolHydration.js';
+import type { AuditActor } from '../auth/adminAuditLog.js';
 
 import type {
   AgentGraphStore,
@@ -550,7 +551,11 @@ export class McpOAuthService {
   }
 
   /** Start the authorization flow: returns the URL to send the user to. */
-  async beginAuthorization(server: McpServerRow, userKey: string): Promise<BeginAuthResult> {
+  async beginAuthorization(
+    server: McpServerRow,
+    userKey: string,
+    actor: AuditActor = {},
+  ): Promise<BeginAuthResult> {
     if (!server.endpoint) throw new Error('server has no endpoint');
     if (server.transport === 'stdio') throw new Error('stdio servers do not use OAuth');
     const discovered = await this.discovery.discover(this.resolveEndpoint(server));
@@ -589,6 +594,8 @@ export class McpOAuthService {
       // authorization request did, so keep the value used above rather than
       // recomputing it at the callback.
       resource: discovered.resource.resource,
+      ...(actor.id ? { auditActorId: actor.id } : {}),
+      ...(actor.email ? { auditActorEmail: actor.email } : {}),
     });
     return { authorizeUrl: url };
   }
@@ -611,7 +618,7 @@ export class McpOAuthService {
     code: string,
     iss: string | null | undefined,
     completingUserKeyFor: CompletingUserKeyFor,
-  ): Promise<{ serverId: string }> {
+  ): Promise<{ serverId: string; actor?: AuditActor }> {
     const flow = await this.deps.graph.takeMcpOAuthFlow(state);
     if (!flow) throw new Error('unknown or expired authorization state');
     const completer = await completingUserKeyFor({ serverId: flow.serverId, userKey: flow.userKey });
@@ -666,7 +673,11 @@ export class McpOAuthService {
       resource: flow.resource,
     });
     await this.persistToken(flow.serverId, flow.userKey, tok, flow.issuer);
-    return { serverId: flow.serverId };
+    const actor = {
+      ...(flow.auditActorId ? { id: flow.auditActorId } : {}),
+      ...(flow.auditActorEmail ? { email: flow.auditActorEmail } : {}),
+    };
+    return { serverId: flow.serverId, ...(actor.id || actor.email ? { actor } : {}) };
   }
 
   /** Load a stored OAuth client for an issuer, resolving its secret. */
