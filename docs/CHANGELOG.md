@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — channel plugins get the SQL grant check and kernel-run migrations (ADR-0050) (2026-11-26)
+
+- A channel plugin that declares `permissions.sql` (Teams, byte5ai/omadia-channel-teams#74)
+  now gets the same treatment as a tool plugin (#838). The kernel reads the operator's grant
+  before the context is built, and only a grant for the declared ledger counts. With the grant
+  the plugin gets `ctx.sql`, and the kernel runs the ledger handoff and the declared migrations
+  before `activate()`.
+- Before this, `DefaultChannelRegistry` never passed `sqlGranted`. A channel was ungranted
+  forever and reached `graphPool` only through the grandfather row in
+  `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20`, which drifted from ADR-0050.
+- The steps now live in `middleware/src/plugins/pluginSqlBoot.ts`, shared by both runtimes.
+  The tool runtime is unchanged.
+- The `@omadia/channel-teams` `graphPool` row stays until Teams 0.46 is on the Hub and the
+  operator has granted its `permissions.sql`.
+
+### Docs — ADR 0225: a channel account is linked to an omadia user only through the kernel (2026-11-26)
+
+- Proposed (#1995). A pairing should link a channel account to an existing omadia user. The
+  kernel owns that link, and the plugin attests only the channel identity. Implementation
+  follows. Until it ships, a channel does not claim a link in its texts.
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`
