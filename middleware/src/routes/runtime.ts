@@ -22,6 +22,7 @@ import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
 import { coerceSetupFieldValue, extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { pluginLlmProviderId } from '../platform/llmProviderManifest.js';
 import {
   buildPrivacyPosture,
   readOpenFieldClassification,
@@ -380,7 +381,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         await auditPrivacyChange(deps, req, id, installed.config, nextConfig);
         // #1076 — an `llm_provider` change also rebuilds the plugins that
         // inherit it (extras from the orchestrator), dependents first.
-        await reactivateAfterProviderWrite(deps, id, {
+        await reactivateAfterProviderWrite(providerWriteDeps(deps), id, {
           providerChanged: isEffectiveProviderChange(installed.config, nextConfig),
           providerWritten: Object.hasOwn(patch, 'llm_provider'),
         });
@@ -1047,6 +1048,20 @@ function resolveJsonFileField(
  * Sends the response itself (including error responses), so callers must not
  * write to `res` afterwards.
  */
+/**
+ * #1891 — the reactivation deps of a config or secret write: a provider
+ * plugin's own write (e.g. its base URL) rebuilds every LLM plugin too.
+ */
+function providerWriteDeps(deps: RuntimeDeps): RuntimeDeps & {
+  readonly isProviderPlugin: (pluginId: string) => boolean;
+} {
+  return {
+    ...deps,
+    isProviderPlugin: (pluginId) =>
+      pluginLlmProviderId(deps.catalog?.get(pluginId)?.manifest) !== undefined,
+  };
+}
+
 async function applySetupValues(
   deps: RuntimeDeps,
   id: string,
@@ -1157,7 +1172,7 @@ async function applySetupValues(
       providerChanged = isEffectiveProviderChange(installed.config, nextConfig);
     }
     // #1076 — same dependent rebuild as PATCH /installed/:id/config.
-    await reactivateAfterProviderWrite(deps, id, { providerChanged, providerWritten });
+    await reactivateAfterProviderWrite(providerWriteDeps(deps), id, { providerChanged, providerWritten });
     const keys = await vault.listKeys(id);
     const updated = deps.installedRegistry.get(id);
     const configValues = stringifyConfigValues(updated?.config);

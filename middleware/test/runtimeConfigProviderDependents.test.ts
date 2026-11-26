@@ -23,6 +23,9 @@ import { InMemorySecretVault } from '../src/secrets/vault.js';
 
 const ORCH = '@omadia/orchestrator';
 const EXTRAS = '@omadia/orchestrator-extras';
+const VERIFIER = '@omadia/verifier';
+/** #1891 — a provider plugin: its manifest carries an `llm_provider` block. */
+const ANTHROPIC_PLUGIN = '@omadia/plugin-llm-anthropic';
 
 /** `runtime.dependent_rebuild_failed` — the write landed, a dependent is down. */
 interface DependentFailureBody {
@@ -69,9 +72,35 @@ async function makeHarness(
     source_kind: 'manifest-v1',
     origin: 'installed',
   };
+  const providerEntry: PluginCatalogEntry = {
+    plugin: { id: ANTHROPIC_PLUGIN, name: 'Anthropic', version: '0.1.0' } as never,
+    manifest: {
+      llm_provider: {
+        id: 'anthropic',
+        label: 'Anthropic',
+        wire_format: 'anthropic',
+        default_base_url: 'https://api.anthropic.com',
+        models: [
+          {
+            id: 'anthropic:claude-haiku-5-5',
+            model_id: 'claude-haiku-5-5',
+            label: 'Haiku',
+            class: 'fast',
+            max_tokens: 1000,
+            context_window: 2000,
+            vision: false,
+          },
+        ],
+      },
+      setup: { fields: [{ key: 'anthropic_base_url', type: 'string' }] },
+    },
+    source_path: '<test>',
+    source_kind: 'manifest-v1',
+    origin: 'installed',
+  };
   const catalog = {
     get: (id: string): PluginCatalogEntry | undefined =>
-      id === ORCH ? orchEntry : undefined,
+      id === ORCH ? orchEntry : id === ANTHROPIC_PLUGIN ? providerEntry : undefined,
   } as unknown as PluginCatalog;
 
   const reactivated: string[] = [];
@@ -249,5 +278,46 @@ describe('runtime config writes rebuild provider dependents (#1076)', () => {
     });
     assert.equal(status, 200);
     assert.deepEqual(h.reactivated, [ORCH]);
+  });
+});
+
+describe('#1891 — a provider plugin config write rebuilds the LLM plugins', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+  });
+
+  it('PATCH config of the provider plugin rebuilds it, then extras/verifier, the orchestrator last', async () => {
+    h = await makeHarness([{ id: ANTHROPIC_PLUGIN }, { id: ORCH }, { id: EXTRAS }, { id: VERIFIER }]);
+    const status = await patch(`${h.baseUrl}/installed/${encodeURIComponent(ANTHROPIC_PLUGIN)}/config`, {
+      anthropic_base_url: 'https://api.anthropic.com',
+    });
+    assert.equal(status, 200);
+    assert.equal(h.reactivated[0], ANTHROPIC_PLUGIN);
+    assert.deepEqual([...h.reactivated].sort(), [ANTHROPIC_PLUGIN, EXTRAS, ORCH, VERIFIER].sort());
+    assert.equal(h.reactivated.at(-1), ORCH, 'the capturing orchestrator is rebuilt last');
+  });
+
+  it('reports an LLM plugin that does not come back up', async () => {
+    h = await makeHarness([{ id: ANTHROPIC_PLUGIN }, { id: ORCH }, { id: EXTRAS }], { erroredOn: EXTRAS });
+    const res = await patchWithBody(
+      `${h.baseUrl}/installed/${encodeURIComponent(ANTHROPIC_PLUGIN)}/config`,
+      { anthropic_base_url: 'https://api.anthropic.com' },
+    );
+    assert.equal(res.status, 500);
+    const body = JSON.parse(res.body) as DependentFailureBody;
+    assert.equal(body.code, 'runtime.dependent_rebuild_failed');
+    assert.equal(body.dependentId, EXTRAS);
+    assert.equal(body.primaryApplied, true);
+  });
+
+  it('a non-provider plugin write rebuilds no LLM plugin', async () => {
+    h = await makeHarness([{ id: '@omadia/plugin-office' }, { id: ORCH }, { id: EXTRAS }]);
+    const status = await patch(`${h.baseUrl}/installed/${encodeURIComponent('@omadia/plugin-office')}/config`, {
+      some_key: 'x',
+    });
+    assert.equal(status, 200);
+    assert.deepEqual(h.reactivated, ['@omadia/plugin-office']);
   });
 });

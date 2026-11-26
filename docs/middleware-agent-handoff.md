@@ -3576,7 +3576,13 @@ Drift-Test hält beide gleich). `reactivateAfterProviderWrite`
 (`src/platform/providerDependents.ts`) baut bei einer **effektiven**
 Provider-Änderung (vorher `?? 'anthropic'` gegen nachher; unset → explizit
 `anthropic` zählt nicht) zuerst jedes installierte abhängige Plugin neu, dann das
-Plugin selbst. Die Reihenfolge ist tragend: der Orchestrator greift
+Plugin selbst. #1891: Ein Config- oder Secret-Write an ein **Provider-Plugin**
+(Manifest mit `llm_provider`-Block, z. B. `anthropic_base_url` von
+`@omadia/plugin-llm-anthropic`) zählt als Provider-Änderung für alle
+LLM-Plugins: erst das Provider-Plugin (es registriert den Deskriptor neu), dann
+jedes installierte Plugin aus `LLM_PLUGINS` in `rebuildOrder` (Orchestrator
+zuletzt); ein Plugin, das nicht wieder hochkommt, kommt als
+`runtime.dependent_rebuild_failed` zurück. Die Reihenfolge ist tragend: der Orchestrator greift
 `factExtractor`, `contextRetriever` und `sessionBriefing` von extras eager in
 seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 (`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach

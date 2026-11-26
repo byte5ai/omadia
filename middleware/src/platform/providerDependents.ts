@@ -22,9 +22,17 @@
  * torn-down instances. So the plugin that captures a rebuilt one is rebuilt
  * after it ({@link rebuildOrder}); the settings PATCH, which reactivates
  * several scopes at once, sorts by the same rule.
+ *
+ * #1891 — a provider plugin's own config (e.g. `anthropic_base_url` of
+ * `@omadia/plugin-llm-anthropic`) changes the provider every LLM plugin runs
+ * on, without any `llm_provider` write. Its reactivation is therefore a
+ * provider change for every installed LLM plugin: the provider plugin first
+ * (it re-registers the descriptor), then the LLM plugins in
+ * {@link rebuildOrder}, and a plugin that does not come back up is reported.
  */
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { DEFAULT_PROVIDER, LLM_PLUGINS, readStringConfig } from './pluginLlmReadiness.js';
+
 
 /** Ids of the LLM plugins that inherit their provider from `pluginId`. */
 export function providerDependentsOf(pluginId: string): string[] {
@@ -63,6 +71,14 @@ export function rebuildOrder(
   return [...ids.filter((id) => !capturers.has(id)), ...ids.filter((id) => capturers.has(id))];
 }
 
+/** #1891 — every installed LLM plugin, in the order a provider change rebuilds them. */
+export function llmPluginsToRebuild(isInstalled: (pluginId: string) => boolean): string[] {
+  return rebuildOrder(
+    LLM_PLUGINS.map((p) => p.id).filter(isInstalled),
+    isInstalled,
+  );
+}
+
 function effectiveProvider(cfg: Record<string, unknown> | undefined): string {
   return (readStringConfig(cfg ?? {}, 'llm_provider') ?? DEFAULT_PROVIDER).trim();
 }
@@ -79,6 +95,11 @@ export function isEffectiveProviderChange(
 export interface ProviderReactivationDeps {
   readonly installedRegistry: Pick<InstalledRegistry, 'has' | 'get'>;
   readonly reactivate?: (pluginId: string) => Promise<void>;
+  /**
+   * #1891 — `true` when `pluginId` contributes an LLM provider (its manifest
+   * has an `llm_provider` block). Absent = no plugin is a provider plugin.
+   */
+  readonly isProviderPlugin?: (pluginId: string) => boolean;
 }
 
 /** How the written plugin itself came out of the rebuild. */
@@ -225,6 +246,9 @@ export async function reactivateAfterProviderWrite(
 ): Promise<PrimaryRebuildOutcome | undefined> {
   const reactivate = deps.reactivate;
   if (reactivate === undefined) return undefined;
+  if (deps.isProviderPlugin?.(pluginId) === true) {
+    return reactivateProviderPlugin(deps.installedRegistry, reactivate, pluginId);
+  }
   const dependents = dependentsToRebuild(deps.installedRegistry, pluginId, opts);
   const dependentFailures: Array<{ readonly id: string; readonly reason: string }> = [];
   for (const id of dependents) {
@@ -255,6 +279,33 @@ export async function reactivateAfterProviderWrite(
   );
   const [firstFailure, ...otherFailures] = failures;
   // Only one error can be thrown; the rest are logged, not dropped.
+  for (const f of otherFailures) console.error(`[providers] ${f.message}`);
+  if (firstFailure !== undefined) throw firstFailure;
+  return outcome;
+}
+
+/**
+ * #1891 — rebuild a provider plugin, then every installed LLM plugin that
+ * resolved a provider from the descriptor it registers (they resolve once per
+ * `activate()`). Same failure contract as {@link reactivateAfterProviderWrite}:
+ * the first LLM plugin left down is thrown, the rest are logged.
+ */
+async function reactivateProviderPlugin(
+  installedRegistry: ProviderReactivationDeps['installedRegistry'],
+  reactivate: (pluginId: string) => Promise<void>,
+  pluginId: string,
+): Promise<PrimaryRebuildOutcome> {
+  await reactivate(pluginId);
+  const outcome: PrimaryRebuildOutcome = {
+    providerChanged: true,
+    primaryFailure: activationFailure(installedRegistry, pluginId),
+  };
+  const failures: ProviderDependentRebuildError[] = [];
+  for (const id of llmPluginsToRebuild((p) => installedRegistry.has(p))) {
+    const reason = await rebuildDependent(installedRegistry, reactivate, id);
+    if (reason !== undefined) failures.push(new ProviderDependentRebuildError(pluginId, id, reason, outcome));
+  }
+  const [firstFailure, ...otherFailures] = failures;
   for (const f of otherFailures) console.error(`[providers] ${f.message}`);
   if (firstFailure !== undefined) throw firstFailure;
   return outcome;
