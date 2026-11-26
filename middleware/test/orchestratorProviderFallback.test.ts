@@ -12,7 +12,7 @@ import { describe, it } from 'node:test';
 
 import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamEvent } from '@omadia/llm-provider';
 import { createProviderHealth } from '@omadia/llm-provider';
-import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
+import { buildSystemNotice, NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 import type { TurnReceiptRecordInput } from '@omadia/plugin-api';
 import { InMemoryMemoryStore, MemoryToolHandler } from '@omadia/memory';
 
@@ -277,7 +277,10 @@ describe('fallback scope across the tool loop (#1033 W3, advisor round)', () => 
 // ── #1877 — a pinned primary the pool cannot serve ─────────────────────────
 
 describe('pinned primary unavailable (#1877)', () => {
-  function build(fallbackRef: { provider: string; model: string } | undefined) {
+  function build(
+    fallbackRef: { provider: string; model: string } | undefined,
+    extra: Record<string, unknown> = {},
+  ) {
     const seen: LlmRequest[] = [];
     const receipts: TurnReceiptRecordInput[] = [];
     const own = answering('anthropic', 'from own provider', seen);
@@ -297,6 +300,7 @@ describe('pinned primary unavailable (#1877)', () => {
       providerPool: pool,
       primaryRef: { provider: 'openai', model: 'gpt-5.5' },
       ...(fallbackRef ? { fallbackRef } : {}),
+      ...extra,
       turnReceiptStore: () => ({
         record: async (entry: TurnReceiptRecordInput) => {
           receipts.push(entry);
@@ -341,9 +345,40 @@ describe('pinned primary unavailable (#1877)', () => {
     assert.equal(h.seen.at(-1)?.model, 'claude-sonnet-5-5');
   });
 
-  it('a fallback the pool cannot serve either fails like none', async () => {
+  it('a fallback the pool cannot serve either fails like none, and says so', async () => {
     const h = build({ provider: 'mistral', model: 'large' });
     const answerOut = await h.orchestrator.chat({ userMessage: 'Hallo', sessionScope: 's-u4' });
     assert.equal(answerOut.systemNotice?.code, 'model_unavailable');
+    assert.match(answerOut.text, /auch das Ersatzmodell ist nicht verfügbar/);
+  });
+
+  it('runTurn itself returns the notice, so the verifier and routines get it too', async () => {
+    const h = build(undefined);
+    const result = await h.orchestrator.runTurn({ userMessage: 'Hallo', sessionScope: 's-u5' });
+    assert.equal(result.systemNotice?.code, 'model_unavailable');
+    assert.equal(result.answer, result.systemNotice?.text);
+    assert.equal(h.seen.length, 0);
+  });
+
+  it('the working-mode classifier sends nothing to another provider when no fallback is allowed', async () => {
+    const h = build(undefined, {
+      personaSkills: [{ skillId: 'sk-1', slug: 'a', name: 'A', description: 'a', body: 'b' }],
+    });
+    const result = await h.orchestrator.runTurn({ userMessage: 'Hallo', sessionScope: 's-u6' });
+    assert.equal(result.systemNotice?.code, 'model_unavailable');
+    assert.equal(h.seen.length, 0, 'not even the classifier reached the host provider');
+  });
+
+  it('the notice words each reason (en + de), the image case included', () => {
+    const text = (reason: string, locale: string) =>
+      buildSystemNotice('model_unavailable', {
+        agent: { slug: 'p07', displayName: 'Pia' },
+        items: [reason],
+        locale,
+      }).text;
+    assert.match(text('fallback_no_vision', 'en'), /cannot read the images in this message/);
+    assert.match(text('fallback_no_vision', 'de'), /kann die Bilder in dieser Nachricht nicht lesen/);
+    assert.match(text('no_fallback', 'en'), /no fallback model is allowed/);
+    assert.match(text('fallback_unavailable', 'de'), /auch das Ersatzmodell ist nicht verfügbar/);
   });
 });

@@ -2519,6 +2519,7 @@
       "sameRef": "Fallback und Primär sind dasselbe Modell — anderen Fallback wählen oder Keiner.",
       "sameProvider": "Gleicher Provider wie das primäre Modell — ein Ausfall des Providers trifft beide.",
       "deferred": "Das primäre Modell nennt {provider}, der Host läuft aber auf {active} und hat keinen Pool für {provider} — der Effort greift, der Modellwechsel nicht.",
+      "toolIncompatible": "Diese Richtlinie nennt {provider}, das die Turns dieses Agenten nicht ausführen kann (das Abo-CLI beantwortet nur Anfragen ohne Tools). Wähle einen Provider mit API-Key und speichere.",
       "primaryUnavailable": "{provider} ist gerade nicht verfügbar (kein Key oder der Provider wurde entfernt). Mit Fallback „Keiner“ scheitern die Turns dieses Agenten mit einem Hinweis; mit Fallback laufen sie auf dem Fallback.",
       "summaryUnavailableNoFallback": "{primary} nicht verfügbar · kein Fallback, Turns scheitern",
       "summaryUnavailableWithFallback": "{primary} nicht verfügbar · läuft auf Fallback {fallback}",

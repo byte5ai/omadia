@@ -2889,6 +2889,7 @@ export function createOperatorAgentsRouter(
     ...(ctx.activeProvider !== undefined ? { activeProvider: ctx.activeProvider } : {}),
     switchesProviders: ctx.switchesProviders === true,
     usable: (provider: string) => ctx.usable(provider),
+    runsToolTurns: (provider: string) => ctx.runsToolTurns(provider),
   });
   // Read + write as a pair like context-memory: which model answers under
   // an agent's name is a cost / data-residency / quality decision that must

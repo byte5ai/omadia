@@ -54,6 +54,8 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
   const [deferredProvider, setDeferredProvider] = useState<string | undefined>(undefined);
   // #1877 — the saved primary's provider cannot be used now (no key, removed).
   const [primaryUnavailable, setPrimaryUnavailable] = useState<string | undefined>(undefined);
+  // #1871 — a policy saved before the check names the subscription CLI.
+  const [toolIncompatible, setToolIncompatible] = useState<string | undefined>(undefined);
   const [vision, setVision] = useState<{ primary?: boolean | null; fallback?: boolean | null }>({});
   const [providers, setProviders] = useState<BuilderProviderGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -83,6 +85,7 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
       setActiveProvider(policy.activeProvider);
       setDeferredProvider(policy.deferredProvider);
       setPrimaryUnavailable(policy.primaryUnavailable);
+      setToolIncompatible(policy.toolIncompatible);
       setVision(policy.vision ?? {});
       // A pre-W1 middleware has no `providers` — fall back to grouping the
       // scoped `models` list so the section still renders something honest.
@@ -121,6 +124,7 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
       setVision(res.vision);
       setDeferredProvider(res.deferredProvider);
       setPrimaryUnavailable(res.primaryUnavailable);
+      setToolIncompatible(res.toolIncompatible);
       setError(null);
       // The effective model may have moved with the policy; re-read it.
       const after = await getAgentModelPolicy(props.slug);
@@ -196,6 +200,11 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
             )}
             {!sameRef && sameProvider && (
               <p className="text-[color:var(--warning)]">{t('sameProvider')}</p>
+            )}
+            {toolIncompatible && !dirty && (
+              <p className="text-[color:var(--danger)]">
+                {t('toolIncompatible', { provider: toolIncompatible })}
+              </p>
             )}
             {unavailable && (
               <p className="text-[color:var(--danger)]">

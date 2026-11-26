@@ -17,6 +17,18 @@ export type NoticeLocale = 'de' | 'en';
 
 type Template = (agent: string, items: readonly string[]) => string;
 
+/** #1877 — the second half of `model_unavailable`, by reason. */
+const MODEL_UNAVAILABLE_REASON_EN: Readonly<Record<string, string>> = {
+  no_fallback: 'and no fallback model is allowed',
+  fallback_unavailable: 'and its fallback model is unavailable too',
+  fallback_no_vision: 'and its fallback model cannot read the images in this message',
+};
+const MODEL_UNAVAILABLE_REASON_DE: Readonly<Record<string, string>> = {
+  no_fallback: 'und ein Ersatzmodell ist nicht erlaubt',
+  fallback_unavailable: 'und auch das Ersatzmodell ist nicht verfügbar',
+  fallback_no_vision: 'und das Ersatzmodell kann die Bilder in dieser Nachricht nicht lesen',
+};
+
 const TEMPLATES: Record<SystemNoticeCode, Record<NoticeLocale, Template>> = {
   agent_disabled: {
     de: (a) => `${a} ist derzeit deaktiviert und kann nicht antworten. Bitte wende dich an deinen Administrator.`,
@@ -82,11 +94,12 @@ const TEMPLATES: Record<SystemNoticeCode, Record<NoticeLocale, Template>> = {
     en: (a) =>
       `${a} is no longer available: the plugin for ${a}'s role was removed. ${a}'s running processes were aborted; pending closing messages will not be sent. Please contact your administrator.`,
   },
+  // #1877 — `items[0]` is the reason (`ModelUnavailableReason`).
   model_unavailable: {
-    de: (a) =>
-      `${a} kann gerade nicht antworten: Das für ${a} eingestellte Modell ist nicht verfügbar, und ein Ersatzmodell ist nicht erlaubt. Bitte wende dich an deinen Administrator.`,
-    en: (a) =>
-      `${a} cannot answer right now: the model set for ${a} is unavailable, and no fallback model is allowed. Please contact your administrator.`,
+    de: (a, items) =>
+      `${a} kann gerade nicht antworten: Das für ${a} eingestellte Modell ist nicht verfügbar, ${MODEL_UNAVAILABLE_REASON_DE[items[0] ?? ''] ?? MODEL_UNAVAILABLE_REASON_DE['no_fallback']}. Bitte wende dich an deinen Administrator.`,
+    en: (a, items) =>
+      `${a} cannot answer right now: the model set for ${a} is unavailable, ${MODEL_UNAVAILABLE_REASON_EN[items[0] ?? ''] ?? MODEL_UNAVAILABLE_REASON_EN['no_fallback']}. Please contact your administrator.`,
   },
   identity_guard_unavailable: {
     de: (a) => `Die Antwort von ${a} wurde zurückgehalten, weil die Identitätsprüfung nicht abgeschlossen werden konnte. Bitte versuche es erneut.`,

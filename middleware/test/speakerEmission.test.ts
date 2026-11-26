@@ -329,6 +329,16 @@ describe('the typed emitter (#2045)', () => {
     );
     assert.deepEqual(ok.speaker, lena);
   });
+
+  it('#1877 — a routine turn that did not run sends the model_unavailable notice as system', async () => {
+    const notice = { code: 'model_unavailable' as const, text: 'Lena kann gerade nicht antworten.', locale: 'de' };
+    const out = await publishRoutineAnswer(
+      { runTurn: async () => ({ answer: '', toolCalls: 0, iterations: 0 }), emitter: emitter(), speaker: lena },
+      { answer: notice.text, toolCalls: 0, iterations: 0, systemNotice: notice },
+    );
+    assert.deepEqual(out.speaker, SYSTEM_SPEAKER);
+    assert.equal(out.systemNotice?.code, 'model_unavailable');
+  });
 });
 
 /**

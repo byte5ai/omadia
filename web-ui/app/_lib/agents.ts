@@ -570,6 +570,8 @@ export interface ModelPolicyDto {
   deferredProvider?: string;
   /** #1877 — the primary's provider cannot be used now (no key, removed). */
   primaryUnavailable?: string;
+  /** #1871 — a stored primary/fallback on a provider that cannot run tool turns. */
+  toolIncompatible?: string;
   vision: { primary?: boolean | null; fallback?: boolean | null };
 }
 
@@ -586,6 +588,7 @@ export interface SetModelPolicyResponse {
   vision: { primary?: boolean; fallback?: boolean };
   deferredProvider?: string;
   primaryUnavailable?: string;
+  toolIncompatible?: string;
 }
 
 /**

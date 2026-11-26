@@ -203,6 +203,8 @@ export interface ModelPolicyReadoutContext {
   /** A provider pool is wired: the turn loop switches providers itself (W3). */
   readonly switchesProviders: boolean;
   usable(provider: string): Promise<boolean>;
+  /** #1871 — see {@link ModelPolicyValidationContext.runsToolTurns}. Absent = every provider can. */
+  runsToolTurns?(provider: string): boolean;
 }
 
 /** What the Model tab says about an explicit primary besides the policy. */
@@ -211,6 +213,12 @@ export interface ModelPolicyReadout {
   readonly deferredProvider?: string;
   /** #1877 — the primary's provider cannot be used now (no key, removed). */
   readonly primaryUnavailable?: string;
+  /**
+   * #1871 — a policy saved before the write-time check names a provider that
+   * cannot run the agent's tool turns (the subscription CLI) as primary or
+   * fallback. The Model tab asks the operator to pick another one.
+   */
+  readonly toolIncompatible?: string;
 }
 
 /**
@@ -223,9 +231,13 @@ export async function describeModelPolicyRuntime(
   policy: ModelPolicy,
   ctx: ModelPolicyReadoutContext,
 ): Promise<ModelPolicyReadout> {
-  if (!isModelRef(policy.primary)) return {};
+  const incompatible = [policy.primary, policy.fallback]
+    .filter(isModelRef)
+    .find((ref) => ctx.runsToolTurns?.(ref.provider) === false)?.provider;
+  const flag = incompatible !== undefined ? { toolIncompatible: incompatible } : {};
+  if (!isModelRef(policy.primary)) return flag;
   const provider = policy.primary.provider;
-  if (!(await ctx.usable(provider))) return { primaryUnavailable: provider };
+  if (!(await ctx.usable(provider))) return { ...flag, primaryUnavailable: provider };
   const deferred = resolveModelPolicyRuntime(policy, ctx.activeProvider).deferredProvider;
-  return deferred !== undefined && !ctx.switchesProviders ? { deferredProvider: deferred } : {};
+  return deferred !== undefined && !ctx.switchesProviders ? { ...flag, deferredProvider: deferred } : flag;
 }

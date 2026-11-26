@@ -2519,6 +2519,7 @@
       "sameRef": "Fallback and primary are the same model — pick a different fallback or None.",
       "sameProvider": "Same provider as the primary — a provider outage affects both.",
       "deferred": "The primary names {provider}, but the host currently runs {active} and has no pool for {provider} — the effort applies, the model switch does not.",
+      "toolIncompatible": "This policy names {provider}, which cannot run this agent's turns (the subscription CLI answers only requests without tools). Pick a provider with an API key and save.",
       "primaryUnavailable": "{provider} is unavailable right now (no key, or the provider was removed). With fallback None this agent's turns fail with a notice; with a fallback they run on the fallback.",
       "summaryUnavailableNoFallback": "{primary} unavailable · no fallback, turns fail",
       "summaryUnavailableWithFallback": "{primary} unavailable · runs on fallback {fallback}",

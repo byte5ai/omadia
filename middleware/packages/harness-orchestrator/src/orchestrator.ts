@@ -347,13 +347,17 @@ interface TurnExecution {
  * key, removed) and allows no usable fallback. The turn fails with the
  * `model_unavailable` notice instead of running on another provider.
  */
+/** #1877 — why no fallback could take the turn of an unavailable primary. */
+export type ModelUnavailableReason = 'no_fallback' | 'fallback_unavailable' | 'fallback_no_vision';
+
 export class PrimaryModelUnavailableError extends Error {
   constructor(
     readonly agentId: string,
     readonly providerId: string,
+    readonly reason: ModelUnavailableReason,
   ) {
     super(
-      `agent '${agentId}': primary provider '${providerId}' is not available and the model policy allows no fallback`,
+      `agent '${agentId}': primary provider '${providerId}' is not available and no fallback can take the turn (${reason})`,
     );
     this.name = 'PrimaryModelUnavailableError';
   }
@@ -4922,15 +4926,9 @@ export class Orchestrator {
    * `runTurn()` directly.
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    let turn: ChatTurnResult;
-    try {
-      turn = await this.runTurn(input);
-    } catch (err) {
-      if (!(err instanceof PrimaryModelUnavailableError)) throw err;
-      // #1877 — see `executionOnFallback`: the turn fails as a notice.
-      const notice = this.modelUnavailableNotice(input);
-      return { text: notice.text, speaker: SYSTEM_SPEAKER, systemNotice: notice };
-    }
+    const turn = await this.runTurn(input);
+    // #1877 — the turn did not run; the notice is the whole answer.
+    if (turn.systemNotice) return toSemanticAnswer(turn);
     // Phase 3 — the level this answer was generated under, on EVERY answer
     // this path returns (choice cards and gate returns included),
     // so a channel can always offer the neighbouring steps. Resolved here,
@@ -5549,7 +5547,16 @@ export class Orchestrator {
   }
 
   async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
-    const result = await this.runTurnCore(input);
+    let result: ChatTurnResult;
+    try {
+      result = await this.runTurnCore(input);
+    } catch (err) {
+      if (!(err instanceof PrimaryModelUnavailableError)) throw err;
+      // #1877 — every caller of `runTurn` (chat, the verifier, routines) gets
+      // the `model_unavailable` notice instead of a generic error.
+      const notice = this.modelUnavailableNotice(input, err.reason);
+      return { answer: notice.text, toolCalls: 0, iterations: 0, systemNotice: notice };
+    }
     const aiDisclosure = this.resolveTurnDisclosure(input);
     return aiDisclosure ? { ...result, aiDisclosure } : result;
   }
@@ -6437,19 +6444,21 @@ export class Orchestrator {
     hasImages: boolean,
   ): Promise<TurnExecution> {
     const ref = this.fallbackRef;
-    const refuse = (why: string): never => {
+    const refuse = (reason: ModelUnavailableReason, why: string): never => {
       console.warn(`[orchestrator] agent '${this.agentId}': primary provider '${unavailable}' is not available — ${why}`);
-      throw new PrimaryModelUnavailableError(this.agentId, unavailable);
+      throw new PrimaryModelUnavailableError(this.agentId, unavailable, reason);
     };
-    if (!ref) return refuse('the model policy allows no fallback; the turn fails');
+    if (!ref) return refuse('no_fallback', 'the model policy allows no fallback; the turn fails');
     if (hasImages && this.fallbackVisionSupported === false) {
-      return refuse(`fallback model '${ref.model}' cannot read images; the turn fails`);
+      return refuse('fallback_no_vision', `fallback model '${ref.model}' cannot read images; the turn fails`);
     }
     const fbProvider =
       ref.provider === this.provider.id
         ? this.provider
         : await this.providerPool?.get(ref.provider).catch(() => undefined);
-    if (!fbProvider) return refuse(`fallback provider '${ref.provider}' is not available either; the turn fails`);
+    if (!fbProvider) {
+      return refuse('fallback_unavailable', `fallback provider '${ref.provider}' is not available either; the turn fails`);
+    }
     console.warn(
       `[orchestrator] agent '${this.agentId}': primary provider '${unavailable}' is not available — starting on fallback '${fbProvider.id}:${ref.model}'`,
     );
@@ -6467,9 +6476,11 @@ export class Orchestrator {
   }
 
   /** #1877 — the `model_unavailable` notice for this agent, in the turn's locale. */
-  private modelUnavailableNotice(input: ChatTurnInput): SystemNotice {
+  private modelUnavailableNotice(input: ChatTurnInput, reason: ModelUnavailableReason): SystemNotice {
     const locale = this.turnLocale(input);
     return buildSystemNotice('model_unavailable', {
+      // The template words the reason (`systemNotices.ts`).
+      items: [reason],
       agent: {
         slug: this.agentId,
         displayName: this.identityName ?? this.agentId,
@@ -6483,9 +6494,10 @@ export class Orchestrator {
    * #1033 W3 — the provider/model the agent's policy puts the turn on: the
    * policy's primary when it names another provider the pool can serve, else
    * the agent's own provider with `turnModel`. `primaryUnavailable` names a
-   * policy provider the pool could not serve (the caller logs it). Shared by
-   * the turn loop and the working-mode classifier (#2051), so both run under
-   * the same policy.
+   * policy provider the pool could not serve; `resolveTurnExecution` turns it
+   * into the fallback or the `model_unavailable` refusal (#1877). The
+   * working-mode classifier (#2051) goes through `resolveTurnExecution` too,
+   * so both run under the same policy.
    */
   private async resolvePrimaryExecution(turnModel: string): Promise<{
     provider: LlmProvider;
@@ -6804,6 +6816,21 @@ export class Orchestrator {
    * `auto` and triage is configured, otherwise the policy's primary
    * ({@link resolvePrimaryExecution}), never a hardcoded vendor id.
    */
+  /**
+   * #1877 — where the working-mode classifier runs: the same execution the
+   * turn gets (the primary, or the policy's fallback when the primary cannot
+   * be served), `undefined` when neither may take the user's message.
+   */
+  private async workingModeClassifierExecution(): Promise<{ provider: LlmProvider; model: string } | undefined> {
+    try {
+      const exec = await this.resolveTurnExecution(this.model, false);
+      return { provider: exec.provider, model: exec.model };
+    } catch (err) {
+      if (err instanceof PrimaryModelUnavailableError) return undefined;
+      throw err;
+    }
+  }
+
   private async resolveTurnWorkingMode(userMessage: string): Promise<{
     mode: SelectedWorkingMode | undefined;
     verdict?: {
@@ -6816,7 +6843,11 @@ export class Orchestrator {
     if (this.personaSkills.length === 0) return { mode: undefined };
     const classifier = this.modelRouting
       ? { provider: this.provider, model: this.modelRouting.classifierModel }
-      : await this.resolvePrimaryExecution(this.model);
+      : await this.workingModeClassifierExecution();
+    // #1877 — the primary is unavailable and no fallback may take the turn:
+    // the user's message goes to no other provider, not even to classify it.
+    // The turn itself then ends with the `model_unavailable` notice.
+    if (!classifier) return { mode: undefined };
     const r = await routeTurnWorkingMode(
       classifier.provider,
       this.personaSkills,
@@ -8425,7 +8456,7 @@ export class Orchestrator {
       if (!(err instanceof PrimaryModelUnavailableError)) throw err;
       // #1877 — the turn fails visibly, as a `system` notice, before any
       // model call; it never runs silently on another provider.
-      const notice = this.modelUnavailableNotice(input);
+      const notice = this.modelUnavailableNotice(input, err.reason);
       yield {
         type: 'done',
         answer: notice.text,

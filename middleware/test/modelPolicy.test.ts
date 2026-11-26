@@ -202,6 +202,18 @@ describe('describeModelPolicyRuntime (#1871, #1877)', () => {
     });
   });
 
+  it('#1871 — a stored CLI primary or fallback is flagged tool-incompatible', async () => {
+    const ctx = { ...readout(['anthropic', 'claude-cli'], true), runsToolTurns: (p: string) => p !== 'claude-cli' };
+    assert.deepEqual(
+      await describeModelPolicyRuntime({ primary: 'auto', fallback: { provider: 'claude-cli', model: 'sonnet-cli' } }, ctx),
+      { toolIncompatible: 'claude-cli' },
+    );
+    assert.deepEqual(
+      await describeModelPolicyRuntime({ primary: { provider: 'claude-cli', model: 'sonnet-cli' }, fallback: 'none' }, ctx),
+      { toolIncompatible: 'claude-cli' },
+    );
+  });
+
   it('a primary whose provider lost its key is reported unavailable', async () => {
     assert.deepEqual(await describeModelPolicyRuntime(primaryOpenai, readout(['anthropic'], true)), {
       primaryUnavailable: 'openai',
