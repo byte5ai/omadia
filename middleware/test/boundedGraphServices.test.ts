@@ -172,12 +172,19 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
     assert.ok(calls.includes('getNeighbors'), 'the bounded per-node read ran');
   });
 
-  it('ADR-0167: a plugin declaring none still writes during the transition', async () => {
+  it('ADR-0169: a plugin declaring none writes no entity and no fact', async () => {
     const { kg, calls } = fakeGraph();
     const bounded = boundKnowledgeGraph(kg, '@test/undeclared');
-    await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]);
-    await bounded.ingestFacts([]);
-    assert.deepEqual(calls, ['ingestEntities', 'ingestFacts']);
+    const fact = (ids: string[]) =>
+      ({ factId: 'fact:t:s:p:o', sourceTurnId: 't', subject: 's', predicate: 'p', object: 'o', mentionedEntityIds: ids }) as never;
+    await assert.rejects(
+      () => bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]),
+      KgEntityNamespaceError,
+    );
+    await assert.rejects(() => bounded.ingestFacts([fact(['odoo:res.partner:1'])]), KgEntityNamespaceError);
+    // Not even a fact that mentions no entity.
+    await assert.rejects(() => bounded.ingestFacts([fact([])]), /system='fact'/);
+    assert.deepEqual(calls, [], 'a refused write never reached the graph');
   });
 
   it('enforce-strict: an entity another conversation captured stays out; synced master data stays in', async () => {
@@ -234,12 +241,15 @@ describe('ADR-0167 · kernel node namespaces are never an entity system', () => 
     });
   }
 
-  it('an undeclared writer still writes its own master data (the Odoo / Confluence syncs)', async () => {
+  it('ADR-0169: the Odoo and Confluence syncs write their own master data once declared', async () => {
     const { kg, calls } = fakeGraph();
-    const bounded = boundKnowledgeGraph(kg, '@test/undeclared-sync');
-    await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]);
-    await bounded.ingestEntities([{ system: 'confluence', model: 'page', id: '123' }]);
-    await bounded.ingestFacts([fact('fact:t:s:p:o', ['odoo:res.partner:1'])]);
+    const odoo = boundKnowledgeGraph(kg, '@omadia/integration-odoo', ['odoo']);
+    const confluence = boundKnowledgeGraph(kg, '@omadia/integration-confluence', ['confluence']);
+    await odoo.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]);
+    await confluence.ingestEntities([{ system: 'confluence', model: 'page', id: '123' }]);
+    await odoo.ingestFacts([fact('fact:t:s:p:o', ['odoo:res.partner:1'])]);
+    await assert.rejects(() => odoo.ingestEntities([{ system: 'confluence', model: 'page', id: '1' }]), refused);
+    await assert.rejects(() => confluence.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]), refused);
     assert.deepEqual(calls, ['ingestEntities', 'ingestEntities', 'ingestFacts']);
   });
 });

@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
+
+- The ADR-0167 transition is over (#2244). `entityWriteGuard`
+  (`middleware/src/platform/boundedGraphServices.ts`) no longer lets a plugin without
+  `permissions.graph.entity_systems` write through the bounded `knowledgeGraph@1` service:
+  every entity and every fact it sends is refused with `KgEntityNamespaceError` before the
+  graph. The one-time `[security-audit] … without declaring` warning is gone.
+- **Minimum plugin versions for entity writes:** `@omadia/integration-odoo` **0.6.1**
+  (declares `[odoo]`, integration-odoo#12) and `@omadia/integration-confluence` **0.6.1**
+  (declares `[confluence]`, integration-confluence#9). Both are the Hub's latest and active
+  on Fly since 2026-11-26; older releases keep running, only their entity sync (off by
+  default) is refused.
+- ADR-0169 (Proposed) refines ADR-0167; ADR-0167's status line and the index say so.
+
 ### Security — plugins declare `odoo` / `confluence` themselves (ADR-0167) (2026-11-26)
 
 - Owner decision: the manifest loader no longer strips `odoo` and `confluence` from

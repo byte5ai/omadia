@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — refined by [ADR-0169](0169-undeclared-plugins-write-no-entities-or-facts.md) (the transition for undeclared writers ended)
 
 - **Date:** 2026-11-25; the end of the transition decided by the owner on 2026-11-26.
 - **Deciders:** Review follow-up of #2233 (owner task "Follow-ups aus dem Review von #2233"),
