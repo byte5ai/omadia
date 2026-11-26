@@ -252,7 +252,7 @@ describe('office create_xlsx dataset mode (B3)', () => {
       ],
     });
     assert.match(out, /^Error: formula in sheet "S", computed column "lookup" rejected: .*IMPORTCSV/);
-    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(tool.drain('t'), undefined, 'no attachment is produced');
     assert.equal(store.size, 0, 'nothing is stored');
   });
 
@@ -287,7 +287,7 @@ describe('office create_xlsx dataset mode (B3)', () => {
       /^Error: invalid create_xlsx input — sheets\.0\.columns\.1\.formula: rejected: it contains the control character U\+0001,/,
     );
     assert.equal(resolved, false, 'the dataset is never resolved');
-    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(tool.drain('t'), undefined, 'no attachment is produced');
     assert.equal(store.size, 0, 'nothing is stored');
   });
 
@@ -325,7 +325,7 @@ describe('office create_xlsx dataset mode (B3)', () => {
       'Error: sheet "Kunden": unknown column key "Betrag_EUR" — the dataset has no such field. ' +
         'Use a field path of the dataset as key: "Kundennr", "Name", "Betrag"',
     );
-    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(tool.drain('t'), undefined, 'no attachment is produced');
     assert.equal(store.size, 0, 'nothing is stored');
   });
 
@@ -423,7 +423,7 @@ describe('office create_xlsx formula cells', () => {
       ],
     });
     assert.match(out, /^Error: formula in sheet "S", cell A2 rejected: .*WEBSERVICE/);
-    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(tool.drain(undefined), undefined, 'no attachment is produced');
     assert.equal(store.size, 0, 'nothing is stored');
   });
 });
