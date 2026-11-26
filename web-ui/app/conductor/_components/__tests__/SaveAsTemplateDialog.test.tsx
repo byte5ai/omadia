@@ -244,7 +244,7 @@ describe('<SaveAsTemplateDialog />', () => {
     // Owned id → versioned publish, with the copy-not-reference note visible.
     const publishV2 = screen.getByRole('button', { name: 'Publish as v2' });
     expect(publishV2).toBeEnabled();
-    expect(screen.getByText(/keep their copy and will show an update hint/)).toBeInTheDocument();
+    expect(screen.getByText(/starts as private and needs review before sharing/)).toBeInTheDocument();
 
     await user.click(publishV2);
 

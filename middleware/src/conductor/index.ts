@@ -8,7 +8,7 @@ import {
   speakingIdentityFor,
   type DefaultChannelBotKey,
 } from './channelBotOwnership.js';
-import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
+import type { JsonObject } from '@omadia/conductor-core';
 
 import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
 
@@ -46,6 +46,9 @@ import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
 import type { ConductorRouterDeps } from './routes.js';
+import { UserStore } from '../auth/userStore.js';
+import { actionCatalogId, type ActionCatalogEntry } from './mcpActionInvoker.js';
+import type { PublishKnownRefs } from './publishValidation.js';
 import { ConductorDiscussionAdmin } from './discussionAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
@@ -255,7 +258,7 @@ export async function wireConductor(deps: {
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** lists registered deterministic-action / tool ids (incl. `mcp:<serverId>:<tool>`) for the
    *  Designer's action-step picker and the builder's capability check. May be async. */
-  listActions?: () => string[] | Promise<string[]>;
+  listActions?: () => ActionCatalogEntry[] | Promise<ActionCatalogEntry[]>;
   /** People-directory union (kernel `PeopleDirectoryRegistry.search`) — builder person
    *  suggestions + `GET /people`. Omit on hosts without channel plugins. */
   searchPeople?: ConductorPeopleSearch;
@@ -317,6 +320,7 @@ export async function wireConductor(deps: {
    *  rotate, enable/disable, delete, payload scope). Passed straight through to the
    *  admin router; `index.ts` maps it onto `admin_audit`. */
   auditWebhookChange?: NonNullable<ConductorRouterDeps['auditWebhookChange']>;
+  auditGovernanceChange?: NonNullable<ConductorRouterDeps['auditGovernanceChange']>;
   /** Global inbound kill switch (`CONDUCTOR_WEBHOOKS_ENABLED`). Default true. */
   webhooksEnabled?: boolean;
   /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
@@ -669,15 +673,21 @@ export async function wireConductor(deps: {
     return [...ids].sort();
   };
 
-  // Live known-reference sets, shared by the STRICT template validation on the
-  // resolve/instantiate routes AND the builder's proposal-prefill vetting (#478 B4)
-  // — one definition so the two gates can never drift apart.
-  const templateKnownRefs = async (): Promise<KnownRefs> => ({
-    agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
-    actionIds: (await deps.listActions?.()) ?? [],
-    roleKeys: (await roleStore.listRoles()).map((r) => r.key),
-    eventIds: await knownEventIds(),
-  });
+  // One live catalog for publish, template resolution and builder proposal prefills.
+  const templateKnownRefs = async (): Promise<PublishKnownRefs> => {
+    const actions = (await deps.listActions?.()) ?? [];
+    const requiredActionInputs = new Map(actions.flatMap((entry) =>
+      typeof entry === 'string' || !entry.requiredInputs?.length ? [] : [[entry.id, entry.requiredInputs] as const],
+    ));
+    return {
+      agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
+      actionIds: actions.map(actionCatalogId),
+      requiredActionInputs,
+      roleKeys: await roleStore.listRoleKeys(),
+      eventIds: await knownEventIds(),
+    };
+  };
+  const users = new UserStore(deps.pool);
 
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
   // refs are sourced live from the event catalog so the builder + validate can flag unknown events.
@@ -717,6 +727,7 @@ export async function wireConductor(deps: {
       discussionService,
       roleStore,
       scheduleStore,
+      listWorkflowSchedules: (id) => scheduleStore.listForWorkflow(id),
       executor,
       eventRouter,
       eventCatalog: deps.eventCatalog,
@@ -729,9 +740,10 @@ export async function wireConductor(deps: {
       // Composite workflow-template catalog (#429 bundled + #478 user/plugin) + DB store.
       templateCatalog,
       templateStore,
-      // Live known-reference sets for the STRICT template validation (stricter than 'POST /'
-      // on purpose: a template instance must be runnable, not merely well-formed).
       templateKnownRefs,
+      isOperatorAccountId: async (id) => (await users.findById(id)) !== null,
+      hasOtherActiveOperator: (actor, subject) => users.hasOtherActiveOperator(actor.id, actor.email ?? subject),
+      ...(deps.auditGovernanceChange ? { auditGovernanceChange: deps.auditGovernanceChange } : {}),
       webhookEndpoints,
       webhookSubscriptions,
       ...(deps.auditRoleChange ? { auditRoleChange: deps.auditRoleChange } : {}),

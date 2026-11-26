@@ -45,10 +45,11 @@ type PreviewNode = Node<PreviewNodeData>;
 
 /** kind (plural, as declared in TemplateSlots) → placeholder token (singular);
  *  mirrors conductor-core's SLOT_TOKEN. */
-const SLOT_TOKEN: Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', string> = {
+const SLOT_TOKEN = {
   agents: 'agent',
   actions: 'action',
   roles: 'role',
+  people: 'person',
   events: 'event',
   channels: 'channel',
 };
@@ -92,7 +93,7 @@ export function buildTemplatePreviewFlow(
         ? slotAwareRef(template, 'agents', String(step.agentId ?? ''), locale)
         : kind === 'action'
           ? slotAwareRef(template, 'actions', String(step.actionId ?? ''), locale)
-          : slotAwareRef(template, 'roles', String(principal.ref ?? ''), locale);
+          : slotAwareRef(template, principal.kind === 'user' ? 'people' : 'roles', String(principal.ref ?? ''), locale);
     const authored = step.position as { x?: unknown; y?: unknown } | undefined;
     const position =
       typeof authored?.x === 'number' && typeof authored.y === 'number'
