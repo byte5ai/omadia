@@ -9,6 +9,7 @@
 import { strict as assert } from 'node:assert';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import express from 'express';
@@ -164,5 +165,26 @@ describe('GET /admin/runtime/installed reports an entry without a package', () =
     } finally {
       await served.close();
     }
+  });
+});
+
+describe('package sources wired in index.ts', () => {
+  // A PLUGIN_DEV_DIR plugin has its package in the local-dev store; every
+  // "has a package?" question must ask that store too, or the agent page,
+  // the runtime list and the boot warning call a running dev plugin
+  // packageless.
+  const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+
+  it('one source list names the uploaded, built-in and local-dev stores', () => {
+    assert.match(
+      source,
+      /const packageSources = \[uploadedPackageStore, builtInPackageStore, localDevPackageStore\]/,
+    );
+  });
+
+  it('every hasPackage / warnPackagelessEntries call uses that list', () => {
+    assert.doesNotMatch(source, /hasPackage\(id, \[/);
+    assert.doesNotMatch(source, /warnPackagelessEntries\(installedRegistry, \[/);
+    assert.equal((source.match(/hasPackage\(id, packageSources\)/g) ?? []).length >= 2, true);
   });
 });

@@ -1214,6 +1214,9 @@ async function main(): Promise<void> {
       `[middleware] local-dev package store loaded (${localDevPackageStore.list().length} packages at ${localDevPackageStore.rootPath()})`,
     );
   }
+  // Every place a plugin's package can live — the catalog reads all three, so
+  // "has no package" must too (a PLUGIN_DEV_DIR plugin is not packageless).
+  const packageSources = [uploadedPackageStore, builtInPackageStore, localDevPackageStore] as const;
 
   // Resolution order on ID collision (PluginCatalog.load applies last-set-
   // wins): Local-Dev > Uploaded > Built-in > PLUGIN_MANIFEST_DIR (examples).
@@ -2615,7 +2618,7 @@ async function main(): Promise<void> {
   );
   // Entries of the registry whose package is gone are visited by no runtime
   // (each walks the packages), so nothing ever reports them. Once per boot.
-  warnPackagelessEntries(installedRegistry, [uploadedPackageStore, builtInPackageStore], (message) => {
+  warnPackagelessEntries(installedRegistry, packageSources, (message) => {
     console.warn(message);
   });
   // #1070 — the orchestrator (an extension) has now had its chance to provide
@@ -4664,7 +4667,7 @@ async function main(): Promise<void> {
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
       // #1942 — an assigned plugin whose package is gone shows as such.
-      hasPackage: (id: string) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
+      hasPackage: (id: string) => hasPackage(id, packageSources),
       // #2088 — end of service before a disable or a delete; the audit of both.
       endOfService: agentEndOfService,
       // #1881 (ADR-0218) — see `agentSlugState` above.
@@ -6764,7 +6767,7 @@ async function main(): Promise<void> {
       promptContributionRegistry,
       vault: secretVault,
       catalog: pluginCatalog,
-      hasPackage: (id) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
+      hasPackage: (id) => hasPackage(id, packageSources),
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),

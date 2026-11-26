@@ -50,7 +50,7 @@ changelog.
 - **Agent create errors** (#1885). A malformed slug is `400 invalid_body` on `slug` (`AGENT_SLUG_RE`, exported by `@omadia/orchestrator`), a taken slug `409 slug_taken`. The form keeps its values until the server confirms, errors are localized with field hints, and the slug `pattern`s compile under the browser's `v` flag.
 - **Agent Builder inspector** names the agent's resolved model, not the Plugin Builder's code-generation model, as the "Main model" default (#1901).
 - **Teams identity form** shows the missing Microsoft 365 connector up front and keeps "Start provisioning" disabled (#1903).
-- **Assigned plugins without a package** are marked `package_missing` in the operator-agents plugin lists and shown as "Package missing" on the agent page; the boot warning names byte5ai/omadia-ui-support for the canvas ids (#1942).
+- **Assigned plugins without a package** are marked `package_missing` in the operator-agents plugin lists and shown as "Package missing" on the agent page; the boot warning names byte5ai/omadia-ui-support for the canvas ids (#1942). The check (agent page, `GET /admin/runtime/installed`, boot warning) asks the uploaded, built-in and local-dev (`PLUGIN_DEV_DIR`) stores, so a local-dev plugin is not called packageless.
 
 ### Fixed — agent identity prompt: base identity kept, server-side preview, slider baseline, prompt audit (#1878, #1890, #1893, #1219, ADR-0217) (2026-11-26)
 
