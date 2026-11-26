@@ -352,6 +352,7 @@ import {
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 import {
+  createOptionalSession,
   createRequireAuth,
   createSessionGate,
   evaluateSessionToken,
@@ -404,7 +405,7 @@ import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
 } from './auth/platformSettings.js';
-import { initSetupToken, PgSetupTokenStore } from './auth/setupToken.js';
+import { initSetupToken, isDesktopLoopbackKernel, PgSetupTokenStore } from './auth/setupToken.js';
 import {
   describeTrustedProxies,
   parseTrustedProxies,
@@ -3413,14 +3414,22 @@ async function main(): Promise<void> {
                 // the raw <pre>; the block is stripped from the UI output.
                 const authBlock = (needsClient: boolean): string =>
                   `\n<mcp-auth-required serverId="${xmlAttr(server.id)}" server="${xmlAttr(server.name)}"${desc.issuerHost ? ` host="${xmlAttr(desc.issuerHost)}"` : ''} needsClient="${needsClient ? 'true' : 'false'}"></mcp-auth-required>`;
-                try {
-                  const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
-                  return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect (this opens the provider's login), then retry: ${authorizeUrl}${authBlock(false)}`;
-                } catch {
+                // #1908 (ADR-0175): no flow is started here and no authorize
+                // URL goes into the text. That URL carried a live `state`, and
+                // the text reaches the model, run contexts and group channels:
+                // whoever opened it could connect their provider account under
+                // this user. The Connect card starts the flow from the user's
+                // own session instead.
+                // Same rule as the auth-status route: only an issuer with no
+                // broker AND no stored client needs the one-time setup.
+                const storedClient =
+                  desc.issuer !== null ? await mcpAuditStore.getMcpOAuthClient(desc.issuer) : undefined;
+                if (!desc.brokered && desc.issuer !== null && storedClient === undefined) {
                   // Delegating server with no registered client yet — point
                   // the user at the one-time setup instead of a raw error.
                   return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
                 }
+                return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect in the chat (this opens the provider's login), then retry.${authBlock(false)}`;
               },
               // Vault-resolved config: secret headers (http) + env (stdio).
               ...(mcpConfigService
@@ -5024,6 +5033,11 @@ async function main(): Promise<void> {
   // after the operator-agents router. 503s without a graphPool (in-memory KG
   // backend). Writes route through ConfigStore/AgentGraphStore → notify →
   // registry.reload(), and we reload inline so the response reflects the diff.
+  //
+  // #1908 (ADR-0175): the MCP OAuth callback is a public path, so `requireAuth`
+  // waves it through without reading the cookie. Attach the session best-effort
+  // so the callback can refuse a completer other than the flow's starter.
+  app.use('/api/v1/operator/mcp-oauth/callback', createOptionalSession(sessionDeps));
   app.use(
     '/api/v1/operator',
     requireAuth,
@@ -5095,7 +5109,18 @@ async function main(): Promise<void> {
           serversHint: e.plugin.permissions_summary.mcp_servers_hint ?? [],
         })),
       // Generic MCP OAuth (epic #459 W9) — begin/callback/manual-client routes.
-      ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
+      ...(mcpOAuthService
+        ? {
+            mcpOAuth: mcpOAuthService,
+            mcpOAuthUserKey,
+            // #1908 (ADR-0175) — desktop only: the OS browser that finishes the
+            // flow has no session; the loopback kernel's caller is its user.
+            mcpOAuthSessionlessCallback: isDesktopLoopbackKernel({
+              desktopEmbedded: config.OMADIA_DESKTOP_EMBEDDED,
+              host: config.HOST,
+            }),
+          }
+        : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
       // Issue #1342 — stdio switch + durable trace of saved stdio servers.

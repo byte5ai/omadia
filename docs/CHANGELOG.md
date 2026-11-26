@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Security — MCP OAuth callback completes only for the user who started the flow (#1908, ADR-0175) (2026-11-26)
+
+- `McpOAuthService.completeAuthorization` takes the completing session's user key
+  (`completingUserKeyFor`) and refuses a different user or a browser without a session
+  before the code exchange (`McpOAuthCompleterMismatchError`, 403 page "started by a
+  different account"). The flow is consumed, nothing is stored.
+- The callback stays a public path; `createOptionalSession` (`auth/requireAuth.ts`) attaches
+  a valid session to it without answering 401.
+- A tool-call auth failure no longer starts a flow or writes the authorize URL (with its
+  `state`) into the model's text; the chat's Connect card starts the flow from the user's own
+  session.
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`
