@@ -208,7 +208,7 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
     assert.equal(rows[0]!.count, '3', 'one mcp grant plus two unconstrained native grants');
   });
 
-  it('a repeated grant is a no-op, top-level and on a sub-agent (#1939, 0117)', async () => {
+  it('a repeated grant is a no-op, top-level and on a sub-agent (#1939, 0118)', async () => {
     const store = new AgentGraphStore(pool);
     const agent = await pool.query<{ id: string }>(
       `INSERT INTO agents (slug, name) VALUES ($1, 'W09 Grant Agent') RETURNING id`,

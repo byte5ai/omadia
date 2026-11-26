@@ -169,7 +169,7 @@ Contract: ADR-0230 (Proposed).
   failure). Pruning keeps hash-bound acknowledgements. A granted tool the discovered
   server no longer lists is not handed to a model.
 - **#1939** A repeated canvas drop is a no-op: core migration
-  `0117_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
+  `0118_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
   unique index `agent_tool_grants_subagent_uidx`; `createToolGrant` binds only the
   parameters its conflict query uses (the agent node answered 500). Hydration builds one
   tool per granted tool.
