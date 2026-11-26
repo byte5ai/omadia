@@ -64,8 +64,9 @@ export interface MaterializeOptions {
 /** Result of materialization — the channel-bound answer body. */
 export interface MaterializeResult {
   readonly text: string;
-  /** Rows in the dataset — the number the answer is ABOUT, not the number
-   *  shown. */
+  /** Rows the answer is ABOUT, not the number shown: the dataset's rows, or
+   *  the envelope's full match count when the tool returned one page of a
+   *  larger result (#1848). */
   readonly rowCount: number;
   /** Rows actually rendered into `text` (≤ `rowCount`). When smaller, `text`
    *  ends with a note naming how many were left out. */
@@ -437,15 +438,46 @@ function renderList(
 
 /** The honest footer under a capped render. German, like every other line
  *  the user reads from this assistant; the numbers are the point. The file
- *  offer only when an export tool can actually build the file (#1559). */
-function truncationNote(total: number, shown: number, fileExportAvailable: boolean): string {
+ *  offer only when an export tool can actually build the file (#1559). The
+ *  export reads the same turn dataset, so when the tool returned only a page
+ *  of a larger result (`held < total`, #1848) the offer names the rows the
+ *  file will hold instead of promising the full list. */
+function truncationNote(
+  total: number,
+  shown: number,
+  held: number,
+  fileExportAvailable: boolean,
+): string {
   const omitted = total - shown;
   const counted =
     `_… ${String(omitted)} weitere Zeile${omitted === 1 ? '' : 'n'} nicht angezeigt ` +
     `(${String(shown)} von ${String(total)}).`;
-  return fileExportAvailable
-    ? `${counted} Die vollständige Liste gibt es als Excel-Datei — einfach danach fragen._`
-    : `${counted}_`;
+  if (!fileExportAvailable) return `${counted}_`;
+  if (held < total) {
+    return held > shown
+      ? `${counted} Die ${String(held)} abgefragten Zeilen gibt es als Excel-Datei — einfach danach fragen._`
+      : `${counted}_`;
+  }
+  return `${counted} Die vollständige Liste gibt es als Excel-Datei — einfach danach fragen._`;
+}
+
+/** Envelope keys that carry the full match count of a paged tool result. */
+const ENVELOPE_TOTAL_KEYS = ['totalMatched', 'total'] as const;
+
+/** #1848 — the number of rows the result is about. A tool that returns one
+ *  page next to the full count (`{ rows, totalMatched }`) keeps that count
+ *  in its envelope; the dataset holds only the page. A count smaller than the
+ *  page, or not a whole number, is not trusted. Verb-derived datasets carry
+ *  no envelope and count their own rows. */
+function resultTotal(dataset: Dataset): number {
+  const held = dataset.rows.length;
+  const values = dataset.envelope?.values;
+  if (values === undefined) return held;
+  for (const key of ENVELOPE_TOTAL_KEYS) {
+    const v = values[key];
+    if (typeof v === 'number' && Number.isSafeInteger(v) && v >= held) return v;
+  }
+  return held;
 }
 
 /** #1542 — the user-facing note under a render with unrenderable cells: the
@@ -595,10 +627,11 @@ export function materialize(
   }
 
   const resolvedColumns = resolveRenderColumns(dataset, directive.columns);
-  const total = dataset.rows.length;
+  const held = dataset.rows.length;
+  const total = resultTotal(dataset);
   // A scalar is one value by definition; tables and lists are capped so the
   // channel gets a readable answer plus an honest count, never a torn table.
-  const shown = directive.format === 'scalar' ? total : Math.min(total, maxRows);
+  const shown = directive.format === 'scalar' ? held : Math.min(held, maxRows);
   const rows = dataset.rows.slice(0, shown);
 
   let body: string;
@@ -630,8 +663,8 @@ export function materialize(
         `render directive has an unsupported format "${String(directive.format)}"`,
       );
   }
-  if (shown < total) {
-    body = `${body}\n\n${truncationNote(total, shown, opts?.fileExportAvailable === true)}`;
+  if (directive.format !== 'scalar' && shown < total) {
+    body = `${body}\n\n${truncationNote(total, shown, held, opts?.fileExportAvailable === true)}`;
   }
   const unrenderedColumns = collectUnrenderedColumns(
     directive.format === 'scalar' ? rows.slice(0, 1) : rows,

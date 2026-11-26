@@ -2067,6 +2067,7 @@ groups?: Array<{
 key: unknown;
 value: number | null;
 }>;
+totalGroups?: number;
 aggregateValue?: number | null;
 totalMatched: number;
 }
@@ -2082,6 +2083,10 @@ limit: number;
 offset: number;
 }
 export declare function validateDatasetQueryOptions(columns: readonly DatasetColumnSchema[], opts: DatasetQueryOptions | undefined): NormalizedDatasetQuery;
+export declare const ENCRYPTED_DATASET_CELL_PREFIX = "enc1:";
+export declare function isEncryptedDatasetCell(value: unknown): boolean;
+export declare function datasetQueryValueColumns(query: NormalizedDatasetQuery): string[];
+export declare function assertNoEncryptedQueryColumns(query: NormalizedDatasetQuery, encryptedColumns: ReadonlySet<string>): void;
 
 // ===== limitSignal.d.ts =====
 export type LimitSignalKind =

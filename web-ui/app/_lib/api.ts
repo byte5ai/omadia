@@ -4439,8 +4439,28 @@ export interface DatasetRowsPage {
  */
 export interface DatasetUploadResponse {
   dataset: { datasetId: string; rowCount: number; graphNodeId: string };
-  privacyScan: { scannedCells: number; maskedCells: number };
+  privacyScan: DatasetPrivacyScan;
   truncation: { truncatedCellCount: number; truncatedColumns: string[] };
+  /**
+   * #1844 — one entry per imported table: one for a CSV, one per sheet for a
+   * workbook. The top-level fields above describe only the first.
+   */
+  datasets?: DatasetImportedTable[];
+}
+
+/** Text cells the scan read, cells it flagged, and how flagged cells were
+ *  stored: encrypted with the real value, or as a pseudonym. */
+export interface DatasetPrivacyScan {
+  scannedCells: number;
+  maskedCells: number;
+  encryptedAtRest?: boolean;
+}
+
+export interface DatasetImportedTable {
+  dataset: { datasetId: string; rowCount: number; graphNodeId: string };
+  privacyScan: DatasetPrivacyScan;
+  truncation: { truncatedCellCount: number; truncatedColumns: string[] };
+  sheetName?: string;
 }
 
 /**

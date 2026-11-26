@@ -151,7 +151,14 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
           format,
         });
         if (!imported.ok) {
-          res.status(422).json({ code: 'dataset.import_failed', message: imported.reason });
+          // #1847 — a coded failure (separator, ragged rows, row cap, …) gets
+          // its own code so the UI can say what is wrong in the user's
+          // language; `message` stays the English diagnostic.
+          res.status(422).json({
+            code: imported.code ? `dataset.${imported.code}` : 'dataset.import_failed',
+            message: imported.reason,
+            ...(imported.line !== undefined ? { line: imported.line } : {}),
+          });
           return;
         }
         const first = imported.imported[0];
