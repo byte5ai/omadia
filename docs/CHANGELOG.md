@@ -41,7 +41,7 @@ changelog.
 - MCP server administration, tool discovery, verdict acknowledgements, grants,
   registries, OAuth and public bindings write operator audit rows. The audit
   page offers a common MCP filter for these and existing MCP events.
-- Core migration `0114_mcp_oauth_flow_audit_actor` retains the signed-in
+- Core migration `0115_mcp_oauth_flow_audit_actor` retains the signed-in
   initiator until the OAuth flow is consumed. Successful callbacks record that
   operator independently of the callback session (ADR-0246).
 - Local ZIP uploads and Builder publishes record package version and source.
@@ -56,6 +56,8 @@ changelog.
 - Agent, helper, working-mode, model, provider, binding and plugin setting
   changes use the signed-in operator's audit identity. Plugin credentials,
   arbitrary configuration values and agent instructions stay out of the trail.
+- Agent status transitions retain the existing `agent.disable` event in both
+  directions. The end-of-service action runs only when disabling.
 
 ### Fixed — audit test and orb setup (#2185, #2186) (2026-11-26)
 

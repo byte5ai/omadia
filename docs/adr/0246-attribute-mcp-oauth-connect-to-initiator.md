@@ -32,7 +32,7 @@ Use the third option. Copy the actor from `auditActorFromRequest` at
 authorization start into the one-time flow. Write `mcp_server.oauth_connect`
 after the callback persists the token, using the actor from the consumed flow.
 The audit row carries the server id and authorization outcome. In-flight flows
-created before migration 0114 can complete with an unattributed event.
+created before migration 0115 can complete with an unattributed event.
 
 ## Consequences
 

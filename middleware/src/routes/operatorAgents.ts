@@ -2653,14 +2653,15 @@ export function createOperatorAgentsRouter(
         const before = { name: existing.name, privacyProfile: existing.privacyProfile };
         const after = { name: updated.name, privacyProfile: updated.privacyProfile };
         const descriptionChanged = existing.description !== updated.description;
-        const enabled = existing.status !== updated.status && updated.status === 'enabled';
-        if (!isDeepStrictEqual(before, after) || descriptionChanged || enabled) {
+        if (!isDeepStrictEqual(before, after) || descriptionChanged) {
           await auditAgent(req, existing.slug, 'agent.update',
             { ...before, status: existing.status, descriptionSet: Boolean(existing.description) },
             { ...after, status: updated.status, descriptionSet: Boolean(updated.description), descriptionChanged });
         }
       }
-      if (disabling) {
+      // Keep the existing status event for both directions. Only disabling
+      // runs end of service. The audit row's before/after gives the direction.
+      if (body.status && body.status !== existing.status) {
         await recordAudit({
           actor,
           action: 'agent.disable',

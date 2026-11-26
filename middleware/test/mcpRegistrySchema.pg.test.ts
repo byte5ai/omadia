@@ -259,7 +259,7 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
     assert.equal(flows.rowCount, 0, 'pending flows must cascade with the server');
   });
 
-  it('round-trips the resource and signed-in audit actor on an OAuth flow (0111, 0114)', async () => {
+  it('round-trips the resource and signed-in audit actor on an OAuth flow (0111, 0115)', async () => {
     const server = await pool.query<{ id: string }>(
       `INSERT INTO mcp_servers (name, transport, endpoint)
        VALUES ($1, 'http', 'https://resource.invalid/mcp') RETURNING id`,
