@@ -126,14 +126,11 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       JSON.stringify(existing.quality ?? null) ===
         JSON.stringify(next.quality ?? null);
     if (unchanged) return Promise.resolve(existing);
-    // Mirrors the real store's ADR-0216 check.
-    if (
-      existing !== undefined &&
-      input.expectedRevision !== undefined &&
-      existing.revision !== input.expectedRevision
-    ) {
+    // Mirrors the real store's ADR-0216 check: no row reads as revision 0.
+    const currentRevision = existing?.revision ?? 0;
+    if (input.expectedRevision !== undefined && currentRevision !== input.expectedRevision) {
       return Promise.reject(
-        new AgentIdentityRevisionConflictError(input.expectedRevision, existing.revision),
+        new AgentIdentityRevisionConflictError(input.expectedRevision, currentRevision),
       );
     }
     const bumped = { ...next, revision: (existing?.revision ?? 0) + 1 };
@@ -382,7 +379,8 @@ describe('operator agent identity routes (#914)', () => {
     // Nothing authored…
     assert.equal(body.identity.display_name, null);
     assert.equal(body.identity.avatar, null);
-    assert.equal(body.identity.revision, 1);
+    // ADR-0216 — no row yet projects revision 0 (the first save stores 1).
+    assert.equal(body.identity.revision, 0);
     // …but the agent still HAS a name and a description.
     assert.equal(body.resolved.display_name, 'Sales Agent');
     assert.equal(body.resolved.short_description, 'Sells');
@@ -806,7 +804,7 @@ describe('operator agent identity routes (#914)', () => {
       });
 
     it('refuses a write based on a stale revision with 409 and keeps the other write', async () => {
-      const first = await put({ short_description: 'From tab A', expected_revision: 1 });
+      const first = await put({ short_description: 'From tab A', expected_revision: 0 });
       assert.equal(first.status, 200);
       const firstBody = (await first.json()) as { identity: { revision: number } };
       assert.equal(firstBody.identity.revision, 1);
@@ -824,6 +822,21 @@ describe('operator agent identity routes (#914)', () => {
       assert.equal(typeof body['message'], 'string');
       assert.equal(identityStore.rows.get('agent-1')?.shortDescription, 'Tab A again');
       assert.equal(reloads, 0, 'a refused write rebuilds nothing');
+    });
+
+    it('refuses a second first save: expected_revision 0 means "no identity yet"', async () => {
+      const tabA = await put({ short_description: 'Tab A', expected_revision: 0 });
+      assert.equal(tabA.status, 200);
+      const tabB = await put({ accent_color: '#123456', expected_revision: 0 });
+      assert.equal(tabB.status, 409);
+      const body = (await tabB.json()) as Record<string, unknown>;
+      assert.equal(body['current_revision'], 1);
+      assert.equal(identityStore.rows.get('agent-1')?.shortDescription, 'Tab A');
+    });
+
+    it('refuses a revision above 0 for an agent without an identity row', async () => {
+      const res = await put({ short_description: 'x', expected_revision: 3 });
+      assert.equal(res.status, 409);
     });
 
     it('accepts a write at the current revision', async () => {

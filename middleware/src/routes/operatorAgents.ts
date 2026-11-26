@@ -1642,7 +1642,8 @@ const AgentIdentitySchema = z.object({
   quality: QualityConfigSchema.nullish(),
   // #1889 / ADR-0216 — the `identity.revision` the client's form was read
   // at. A stale one is a 409; absent skips the check (older API clients).
-  expected_revision: z.number().int().positive().optional(),
+  // `0` = read before any identity existed: the row must still not exist.
+  expected_revision: z.number().int().nonnegative().optional(),
 });
 
 /** What a write did to the agent's published Teams package. */
@@ -1693,6 +1694,9 @@ function identityRuntimeView(
   };
 }
 
+/** ADR-0216 — the projected revision of an agent without an identity row. */
+export const NO_IDENTITY_REVISION = 0;
+
 export function projectAgentIdentity(
   agent: AgentIdentityProjectionAgent,
   identity: AgentIdentityRecord | undefined,
@@ -1714,7 +1718,10 @@ export function projectAgentIdentity(
       language: identity?.language ?? null,
       persona: identity?.persona ?? null,
       quality: identity?.quality ?? null,
-      revision: identity?.revision ?? 1,
+      // ADR-0216 — 0 = no identity row yet. The stored revision starts at
+      // 1, so a form read before the first save can be told apart from one
+      // read after it (the Teams manifest keeps `resolveAgentIdentity`'s 1).
+      revision: identity?.revision ?? NO_IDENTITY_REVISION,
       avatar:
         identity?.avatar == null
           ? null

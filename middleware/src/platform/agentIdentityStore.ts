@@ -450,8 +450,11 @@ export class AgentIdentityStore {
     // A save that changes nothing loses nothing, whatever revision it read.
     if (sameContent(existing, input)) return existing as AgentIdentityRecord;
     const expected = input.expectedRevision ?? null;
-    if (existing && expected !== null && existing.revision !== expected) {
-      throw new AgentIdentityRevisionConflictError(expected, existing.revision);
+    // ADR-0216 — no row reads as revision 0, so a writer that saw none and
+    // one that saw revision N are both held to what they saw.
+    const currentRevision = existing?.revision ?? 0;
+    if (expected !== null && currentRevision !== expected) {
+      throw new AgentIdentityRevisionConflictError(expected, currentRevision);
     }
     const values = [
       agentId,

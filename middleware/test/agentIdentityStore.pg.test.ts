@@ -205,7 +205,14 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
   });
 
   it('refuses a save over a revision that moved on, and takes one at the current revision (#1889)', async () => {
-    const first = await store.save(agentId, { ...EMPTY, displayName: 'A', expectedRevision: 1 });
+    // 0 = "read before any identity existed": the first save of a second
+    // tab that also saw none is refused, even though no row was there for
+    // either when they read.
+    const first = await store.save(agentId, { ...EMPTY, displayName: 'A', expectedRevision: 0 });
+    await assert.rejects(
+      store.save(agentId, { ...EMPTY, displayName: 'Other tab', expectedRevision: 0 }),
+      (err: unknown) => err instanceof AgentIdentityRevisionConflictError && err.currentRevision === 1,
+    );
     const second = await store.save(agentId, {
       ...EMPTY,
       displayName: 'B',
@@ -222,6 +229,20 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
     // Same content as stored loses nothing, whatever revision it read.
     const same = await store.save(agentId, { ...EMPTY, displayName: 'B', expectedRevision: 1 });
     assert.equal(same.revision, second.revision);
+  });
+
+  it('two concurrent first saves that both saw no identity: exactly one is stored (ADR-0216)', async () => {
+    const results = await Promise.allSettled([
+      store.save(agentId, { ...EMPTY, displayName: 'Tab A', expectedRevision: 0 }),
+      store.save(agentId, { ...EMPTY, displayName: 'Tab B', expectedRevision: 0 }),
+    ]);
+    const stored = results.filter((r) => r.status === 'fulfilled');
+    const refused = results.filter(
+      (r) => r.status === 'rejected' && r.reason instanceof AgentIdentityRevisionConflictError,
+    );
+    assert.equal(stored.length, 1);
+    assert.equal(refused.length, 1);
+    assert.equal((await store.getByAgentId(agentId))?.revision, 1);
   });
 
   it('treats a blank string as "inherit", not as an empty name', async () => {

@@ -407,7 +407,8 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
     <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-lg font-medium">{t('heading')}</h2>
-        {dto && (
+        {/* ADR-0216 — revision 0 = nothing saved yet; there is no number to show. */}
+        {dto && dto.identity.revision > 0 && (
           <span className="text-[11px] text-[color:var(--fg-muted)]">
             {t('revision', { revision: dto.identity.revision })}
           </span>

@@ -48,7 +48,12 @@ Chosen option: **A**.
   Nothing is written and nothing is rebuilt.
 - A write whose content equals the stored content is accepted whatever revision it names:
   it cannot lose anything.
-- A row that does not exist yet has no revision to compare; the first write creates it.
+- An agent without an identity row projects `revision: 0` (a stored row starts at 1). A
+  write with `expected_revision: 0` means "no row may exist yet": if one does, or a
+  concurrent first save inserts it first, the write is refused with the same 409 (the
+  upsert's `WHERE revision = 0` never matches a stored row). A revision above 0 for an
+  agent without a row is refused too. The Teams manifest keeps its own fallback of 1
+  (`resolveAgentIdentity`); only the operator projection uses 0.
 - **Clients that send no `expected_revision` are accepted unchecked**, for backwards
   compatibility of API clients. The web UI always sends it.
 - **Adopted now:** `PUT /:slug/identity` (agent identity, persona, quality). The revision it
