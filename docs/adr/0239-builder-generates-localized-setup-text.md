@@ -16,6 +16,12 @@ The Setup Store expects bilingual labels, help, and enum labels. Builder drafts 
 
 A Builder setup field may specify `label_localized` and `help_localized` as nonempty English and German strings. `enum_labels` maps a value in `enum_values` to the same bilingual shape. Existing drafts and integrations can still send strings. Codegen emits the bilingual manifest shape in either case and copies existing single-language text to both entries when a translation was never supplied. Missing labels derive from the field key or enum value. The Builder prompt authors translations for new fields. Stored keys, option values, and secrets retain their existing handling.
 
+The setup editor edits the field text in the current UI locale and preserves
+an existing translation in the other locale. The workspace confirms text on
+blur. Its spec PATCH optionally carries the last-read setup array to detect a
+concurrent edit. The server guards the update using the specification read
+for that request, and the client may reload and retry against the new state.
+
 ## Considered Options
 
 - Require bilingual draft values before building. This would break older drafts at their next build.

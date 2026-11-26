@@ -1,6 +1,6 @@
 import type { Router, Request, Response } from 'express';
 
-import type { DraftStore } from '../plugins/builder/draftStore.js';
+import { StaleDraftSpecError, type DraftStore } from '../plugins/builder/draftStore.js';
 import { BuilderModelRegistry } from '../plugins/builder/modelRegistry.js';
 import {
   IllegalSpecState,
@@ -52,7 +52,7 @@ export function registerBuilderEditRoutes(
     const draftId = readId(req);
     if (!draftId) return sendJson(res, 400, { code: 'builder.invalid_id', message: 'missing :id' });
 
-    const body = (req.body ?? {}) as { patches?: unknown };
+    const body = (req.body ?? {}) as { patches?: unknown; expectedSetupFields?: unknown };
     if (!Array.isArray(body.patches) || body.patches.length === 0) {
       return sendJson(res, 400, {
         code: 'builder.invalid_patches',
@@ -77,6 +77,15 @@ export function registerBuilderEditRoutes(
         message: `kein Draft mit id '${draftId}'`,
       });
     }
+    const guardedSetupEdit = body.expectedSetupFields !== undefined;
+    const staleSetupFields = () => sendJson(res, 409, {
+      code: 'builder.setup_fields_changed',
+      message: 'The setup fields changed while the edit was being saved.',
+    });
+    if (guardedSetupEdit &&
+        JSON.stringify(body.expectedSetupFields) !== JSON.stringify(draft.spec.setup_fields ?? [])) {
+      return staleSetupFields();
+    }
 
     let nextSpec: AgentSpecSkeleton;
     try {
@@ -86,7 +95,16 @@ export function registerBuilderEditRoutes(
       return sendJson(res, 400, { code: 'builder.illegal_patch', message });
     }
 
-    const updated = await deps.draftStore.update(email, draftId, { spec: nextSpec });
+    let updated;
+    try {
+      updated = await deps.draftStore.update(email, draftId, { spec: nextSpec }, guardedSetupEdit ? draft.spec : undefined);
+    } catch (err) {
+      if (err instanceof StaleDraftSpecError) return staleSetupFields();
+      throw err;
+    }
+    if (!updated) {
+      return sendJson(res, 404, { code: 'builder.draft_not_found', message: 'Draft not found.' });
+    }
     deps.bus.emit(draftId, { type: 'spec_patch', patches, cause: 'user' });
     deps.rebuildScheduler.schedule(email, draftId);
 

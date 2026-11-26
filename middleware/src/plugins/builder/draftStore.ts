@@ -141,6 +141,10 @@ CREATE INDEX IF NOT EXISTS idx_triage_log_fingerprint
   ON builder_triage_log(fingerprint);
 `;
 
+export class StaleDraftSpecError extends Error {
+  override readonly name = 'StaleDraftSpecError';
+}
+
 export interface DraftUpdate {
   name?: string;
   spec?: AgentSpecSkeleton;
@@ -403,14 +407,19 @@ export class DraftStore {
     userEmail: string,
     id: string,
     patch: DraftUpdate,
+    expectedSpec?: AgentSpecSkeleton,
   ): Promise<Draft | null> {
     const db = this.required();
     const exists = db
       .prepare(
-        'SELECT id FROM drafts WHERE id = ? AND user_email = ? AND deleted_at IS NULL',
+        `SELECT ${expectedSpec ? 'spec_json' : 'NULL AS spec_json'}
+         FROM drafts WHERE id = ? AND user_email = ? AND deleted_at IS NULL`,
       )
-      .get(id, userEmail) as { id: string } | undefined;
+      .get(id, userEmail) as { spec_json: string } | undefined;
     if (!exists) return null;
+    if (expectedSpec && JSON.stringify(normalizeSkeletonArrays(JSON.parse(exists.spec_json))) !== JSON.stringify(expectedSpec)) {
+      throw new StaleDraftSpecError('The draft specification changed while the edit was being saved.');
+    }
 
     const fields: string[] = [];
     const params: unknown[] = [];
@@ -461,11 +470,15 @@ export class DraftStore {
     fields.push('updated_at = ?');
     params.push(Date.now());
     params.push(id, userEmail);
+    if (expectedSpec) params.push(exists.spec_json);
 
-    db.prepare(
+    const result = db.prepare(
       `UPDATE drafts SET ${fields.join(', ')}
-       WHERE id = ? AND user_email = ? AND deleted_at IS NULL`,
+       WHERE id = ? AND user_email = ? AND deleted_at IS NULL${expectedSpec ? ' AND spec_json = ?' : ''}`,
     ).run(...params);
+    if (expectedSpec && result.changes === 0) {
+      throw new StaleDraftSpecError('The draft specification changed while the edit was being saved.');
+    }
 
     const updated = await this.load(userEmail, id);
     if (updated && this.onUpdated && shouldFireOnUpdated(patch)) {

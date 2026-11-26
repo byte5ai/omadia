@@ -1,14 +1,13 @@
 'use client';
 
-import { useCallback, useId, useMemo, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useCallback, useId, useRef, useState } from 'react';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { Plus, Trash2 } from 'lucide-react';
 
-import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
+import { ApiError, getBuilderDraft, patchBuilderSpec } from '../../../../_lib/api';
 import type {
-  JsonPatch,
   OAuthProvider,
   SetupField,
 } from '../../../../_lib/builderTypes';
@@ -16,6 +15,7 @@ import { cn } from '../../../../_lib/cn';
 
 interface SetupFieldsEditorProps {
   draftId: string;
+  specUpdatedAt: number;
   /** Server-canonical setup_fields. Re-renders flow through here via SSE
    *  + Workspace re-fetch. */
   fields: ReadonlyArray<SetupField>;
@@ -28,75 +28,92 @@ const FIELD_TYPES: ReadonlyArray<NonNullable<SetupField['type']>> = [
   'string',
   'secret',
   'url',
-  'number',
+  'integer',
+  'host_list',
   'boolean',
   'oauth',
 ];
 
 const KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
 
-/**
- * Setup-Fields-Editor — declarative slot for credentials and runtime
- * config. Each entry in `spec.setup_fields` describes one input the
- * agent needs (API keys, group slugs, base URLs, …). The Test-Credentials
- * drawer in the Preview-Pane reads this list to render the form for the
- * in-memory PreviewSecretBuffer.
- *
- * Edits flow through PATCH /drafts/:id/spec — every change rewrites the
- * full `setup_fields` array (replace-on-path) so we don't have to manage
- * per-row JSON-Pointer indices that shift as the user adds and removes.
- */
+type FieldUpdate = (field: SetupField) => SetupField | null;
+type FieldRename = { rowId: string; from: string; to: string };
+type FieldsEdit = (fields: SetupField[]) => {
+  fields: SetupField[];
+  rename?: FieldRename;
+} | null;
+
+/** Buffer text in the row and serialize committed changes against the saved draft. */
 export function SetupFieldsEditor({
   draftId,
+  specUpdatedAt,
   fields,
   oauthProviders,
 }: SetupFieldsEditorProps): React.ReactElement {
   const t = useTranslations('builder.spec.setupFields');
-  const safeFields = useMemo<SetupField[]>(
-    () => fields.filter((f): f is SetupField => f !== null && typeof f === 'object' && 'key' in f),
-    [fields],
-  );
+  const [saved, setSaved] = useState<{ updatedAt: number; fields: SetupField[] } | null>(null);
+  const safeFields = (saved && saved.updatedAt >= specUpdatedAt ? saved.fields : fields)
+    .filter((field) => field && typeof field.key === 'string');
   const [savingError, setSavingError] = useState<string | null>(null);
+  const saveQueue = useRef(Promise.resolve());
+  const [rowIds, setRowIds] = useState(new Map<string, string>());
+  const [pendingRename, setPendingRename] = useState<FieldRename | null>(null);
+  const fieldKeys = useRef(new Map<string, string>());
+  const renamedCount = useRef(0);
 
-  const replace = useCallback(
-    async (next: SetupField[]) => {
+  const saveEdit = useCallback((edit: FieldsEdit) => {
+    const result = saveQueue.current.then(async () => {
       setSavingError(null);
       try {
-        const patch: JsonPatch = { op: 'replace', path: '/setup_fields', value: next };
-        await patchBuilderSpec(draftId, [patch]);
-      } catch (err) {
-        setSavingError(humanizeApiError(err));
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const { draft } = await getBuilderDraft(draftId);
+          const current = draft.spec.setup_fields ?? [];
+          const next = edit(current);
+          if (!next) {
+            setSaved({ updatedAt: draft.updatedAt, fields: current });
+            setSavingError(t('saveConflict'));
+            return;
+          }
+          if (next.rename) setPendingRename(next.rename);
+          try {
+            const { draft: updated } = await patchBuilderSpec(draftId, [
+              { op: 'replace', path: '/setup_fields', value: next.fields },
+            ], current);
+            if (next.rename) {
+              const { rowId, from, to } = next.rename;
+              fieldKeys.current.set(rowId, to);
+              const reusableId = `renamed:${String(++renamedCount.current)}`;
+              setRowIds((previous) => new Map(previous).set(from, reusableId).set(to, rowId));
+            }
+            setSaved({ updatedAt: updated.updatedAt, fields: updated.spec.setup_fields ?? [] });
+            return;
+          } catch (err) {
+            if (!(err instanceof ApiError) || err.code !== 'builder.setup_fields_changed') throw err;
+          } finally {
+            if (next.rename) setPendingRename(null);
+          }
+        }
+        setSavingError(t('saveConflict'));
+      } catch {
+        setSavingError(t('saveFailed'));
       }
-    },
-    [draftId],
-  );
+    });
+    saveQueue.current = result;
+    return result;
+  }, [draftId, t]);
 
-  const removeAt = useCallback(
-    (i: number) => {
-      const next = safeFields.slice();
-      next.splice(i, 1);
-      void replace(next);
-    },
-    [replace, safeFields],
-  );
-
-  const updateAt = useCallback(
-    (i: number, patch: Partial<SetupField>) => {
-      const current = safeFields[i];
-      if (!current) return;
-      const next = safeFields.slice();
-      next[i] = { ...current, ...patch };
-      void replace(next);
-    },
-    [replace, safeFields],
-  );
-
-  const addNew = useCallback(
-    (entry: SetupField) => {
-      void replace([...safeFields, entry]);
-    },
-    [replace, safeFields],
-  );
+  function updateField(rowId: string, displayedKey: string, edit: FieldUpdate): Promise<void> {
+    return saveEdit((current) => {
+      const key = fieldKeys.current.get(rowId) ?? displayedKey;
+      const index = current.findIndex((field) => field?.key === key);
+      if (index < 0) return null;
+      const next = current.slice();
+      const updated = edit(current[index]!);
+      if (!updated || current.some((field, i) => i !== index && field?.key === updated.key)) return null;
+      next[index] = updated;
+      return { fields: next, ...(updated.key === key ? {} : { rename: { rowId, from: key, to: updated.key } }) };
+    });
+  }
 
   return (
     <div className="space-y-3">
@@ -110,20 +127,31 @@ export function SetupFieldsEditor({
         </p>
       ) : (
         <ul className="space-y-2">
-          {safeFields.map((f, i) => (
-            <SetupFieldRow
-              key={`${f.key}-${String(i)}`}
-              field={f}
-              oauthProviders={oauthProviders}
-              onChange={(patch) => updateAt(i, patch)}
-              onRemove={() => removeAt(i)}
-            />
-          ))}
+          {safeFields.map((field) => {
+            const rowId = pendingRename?.to === field.key && !safeFields.some(({ key }) => key === pendingRename.from)
+              ? pendingRename.rowId
+              : (rowIds.get(field.key) ?? `field:${field.key}`);
+            return (
+              <SetupFieldRow
+                key={rowId}
+                field={field}
+                oauthProviders={oauthProviders}
+                onChange={(edit) => updateField(rowId, field.key, edit)}
+                onRemove={() => saveEdit((current) => {
+                  const key = fieldKeys.current.get(rowId) ?? field.key;
+                  const latest = current.find((item) => item?.key === key);
+                  if (latest && JSON.stringify(latest) !== JSON.stringify({ ...field, key })) return null;
+                  return { fields: current.filter((item) => item?.key !== key) };
+                })}
+              />
+            );
+          })}
         </ul>
       )}
       <NewFieldForm
         existingKeys={safeFields.map((f) => f.key)}
-        onSubmit={addNew}
+        onSubmit={(entry) => saveEdit((current) =>
+          current.some((field) => field?.key === entry.key) ? null : { fields: [...current, entry] })}
       />
       {savingError ? (
         <p className="text-[11px] text-[color:var(--danger)]">{savingError}</p>
@@ -142,85 +170,63 @@ function SetupFieldRow({
 }: {
   field: SetupField;
   oauthProviders: ReadonlyArray<OAuthProvider>;
-  onChange: (patch: Partial<SetupField>) => void;
+  onChange: (edit: FieldUpdate) => Promise<void>;
   onRemove: () => void;
 }): React.ReactElement {
   const t = useTranslations('builder.spec.setupFields');
-  const keyId = useId();
-  const labelId = useId();
+  const language = useLocale().startsWith('de') ? 'de' : 'en';
+  const typeId = useId();
   const providerId = useId();
-  const scopesId = useId();
-  // scopes is a comma-separated list — keep the raw text local so an
-  // in-progress separator ("profile," while typing the second scope) survives
-  // the per-keystroke PATCH→refetch round-trip that filters empty entries.
-  const canonicalScopes = (field.scopes ?? []).join(', ');
-  const [scopesText, setScopesText] = useState(canonicalScopes);
-  const [prevCanonicalScopes, setPrevCanonicalScopes] = useState(canonicalScopes);
-  // Adjust-state-on-prop-change (React idiom, no effect): re-sync only on an
-  // external change (agent edit / other tab), not on the echo of our own edit
-  // — compare canonical to what the local text parses back to.
-  if (canonicalScopes !== prevCanonicalScopes) {
-    setPrevCanonicalScopes(canonicalScopes);
-    const localParsed = scopesText
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
-      .join(', ');
-    if (canonicalScopes !== localParsed) setScopesText(canonicalScopes);
-  }
+  const update = (patch: Partial<SetupField>) => onChange((current) => {
+    const changed = (Object.keys(patch) as Array<keyof SetupField>).some((key) =>
+      JSON.stringify(current[key]) !== JSON.stringify(field[key]) &&
+      JSON.stringify(current[key]) !== JSON.stringify(patch[key]),
+    );
+    return changed ? null : { ...current, ...patch };
+  });
+  const labelOf = (current: SetupField) => current.label_localized?.[language] ?? current.label ?? '';
+  const helpOf = (current: SetupField) => current.help_localized?.[language] ?? current.help ?? current.description ?? '';
+  const scopesOf = (current: SetupField) => (current.scopes ?? []).join(', ');
   return (
     <li className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/40 p-3">
       <div className="grid grid-cols-1 gap-2 md:grid-cols-[1.2fr_1fr_0.8fr_0.6fr_auto]">
+        <BufferedField
+          label={t('fieldKey')}
+          value={field.key}
+          validate={(key) => KEY_PATTERN.test(key) ? undefined : t('validation.keyFormat')}
+          onCommit={(key, base) => onChange((current) => current.key === base ? { ...current, key } : null)}
+          mono
+        />
+        <BufferedField
+          label={t('fieldLabel')}
+          value={labelOf(field)}
+          placeholder={field.key}
+          normalize={(label) => label.trim() || field.label_localized?.[language === 'de' ? 'en' : 'de'] || ''}
+          onCommit={(label, base) => onChange((current) => {
+            if (labelOf(current) !== base && labelOf(current) !== label) return null;
+            const other = language === 'de' ? 'en' : 'de';
+            const fallback = current.label_localized?.[other] ?? current.label?.trim() ?? '';
+            const edited = label.trim();
+            const text = edited || fallback;
+            if (!edited && !current.label_localized) return { ...current, label: undefined };
+            return {
+              ...current,
+              label_localized: { en: text, de: text, [other]: fallback || text },
+            };
+          })}
+        />
         <div>
-          <label
-            htmlFor={keyId}
-            className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
-          >
-            key
-          </label>
-          <input
-            id={keyId}
-            type="text"
-            value={field.key}
-            onChange={(e) => onChange({ key: e.target.value })}
-            onBlur={(e) => {
-              if (!KEY_PATTERN.test(e.target.value)) {
-                // Revert visually — server rejects, this just hints.
-                e.target.style.borderColor = 'var(--danger)';
-              } else {
-                e.target.style.borderColor = '';
-              }
-            }}
-            className="font-mono-num mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
-          />
-        </div>
-        <div>
-          <label
-            htmlFor={labelId}
-            className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
-          >
-            label
-          </label>
-          <input
-            id={labelId}
-            type="text"
-            value={field.label ?? ''}
-            onChange={(e) => onChange({ label: e.target.value })}
-            placeholder={field.key}
-            className="mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
-          />
-        </div>
-        <div>
-          <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-            type
+          <label htmlFor={typeId} className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
+            {t('fieldType')}
           </label>
           <select
+            id={typeId}
             value={field.type ?? 'string'}
             onChange={(e) => {
               const nextType = e.target.value as SetupField['type'];
               // provider/scopes belong to type:oauth only — clear them when
               // switching away so we never emit a field the linter rejects.
-              onChange(
+              update(
                 nextType === 'oauth'
                   ? { type: nextType }
                   : { type: nextType, provider: undefined, scopes: undefined },
@@ -228,6 +234,7 @@ function SetupFieldRow({
             }}
             className="font-mono-num mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
           >
+            {field.type && !FIELD_TYPES.includes(field.type) && <option value={field.type}>{field.type}</option>}
             {FIELD_TYPES.map((t) => (
               <option key={t} value={t}>
                 {t}
@@ -237,13 +244,13 @@ function SetupFieldRow({
         </div>
         <div>
           <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-            required
+            {t('fieldRequired')}
           </label>
           <label className="mt-1 inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-strong)]">
             <input
               type="checkbox"
               checked={Boolean(field.required)}
-              onChange={(e) => onChange({ required: e.target.checked })}
+              onChange={(e) => update({ required: e.target.checked })}
               className="size-3.5 rounded border-[color:var(--border)] accent-[color:var(--accent)]"
             />
             <span className="font-mono-num text-[10px] uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
@@ -264,15 +271,20 @@ function SetupFieldRow({
         </div>
       </div>
       <div className="mt-2">
-        <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-          description
-        </label>
-        <input
-          type="text"
-          value={field.description ?? ''}
-          onChange={(e) => onChange({ description: e.target.value })}
+        <BufferedField
+          label={t('fieldDescription')}
+          value={helpOf(field)}
           placeholder={t('descriptionPlaceholder')}
-          className="mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
+          normalize={field.help_localized ? (text) =>
+            text.trim() || field.help_localized?.[language === 'de' ? 'en' : 'de'] || '' : undefined}
+          onCommit={(description, base) => onChange((current) => {
+            if (helpOf(current) !== base && helpOf(current) !== description) return null;
+            if (!current.help_localized && !current.help) return { ...current, description };
+            if (!current.help_localized) return { ...current, help: description };
+            const other = language === 'de' ? 'en' : 'de';
+            const text = description.trim() || current.help_localized[other];
+            return { ...current, help_localized: { ...current.help_localized, [language]: text } };
+          })}
         />
       </div>
       {field.type === 'oauth' ? (
@@ -289,7 +301,7 @@ function SetupFieldRow({
                 id={providerId}
                 value={field.provider ?? ''}
                 onChange={(e) =>
-                  onChange({ provider: e.target.value || undefined })
+                  update({ provider: e.target.value || undefined })
                 }
                 className="font-mono-num mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
               >
@@ -306,32 +318,87 @@ function SetupFieldRow({
               </p>
             )}
           </div>
-          <div>
-            <label
-              htmlFor={scopesId}
-              className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
-            >
-              {t('oauth.scopes')}
-            </label>
-            <input
-              id={scopesId}
-              type="text"
-              value={scopesText}
-              onChange={(e) => {
-                setScopesText(e.target.value);
-                const scopes = e.target.value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter((s) => s.length > 0);
-                onChange({ scopes: scopes.length > 0 ? scopes : undefined });
-              }}
-              placeholder={t('oauth.scopesPlaceholder')}
-              className="font-mono-num mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
-            />
-          </div>
+          <BufferedField
+            label={t('oauth.scopes')}
+            value={scopesOf(field)}
+            normalize={(text) => text.split(',').map((scope) => scope.trim()).filter(Boolean).join(', ')}
+            onCommit={(text, base) => onChange((current) => {
+              if (current.type !== 'oauth' || (scopesOf(current) !== base && scopesOf(current) !== text)) return null;
+              const scopes = text.split(',').map((scope) => scope.trim()).filter(Boolean);
+              return { ...current, scopes: scopes.length > 0 ? scopes : undefined };
+            })}
+            placeholder={t('oauth.scopesPlaceholder')}
+            mono
+          />
         </div>
       ) : null}
     </li>
+  );
+}
+
+function BufferedField({
+  label,
+  value,
+  onCommit,
+  placeholder,
+  validate,
+  normalize,
+  mono,
+}: {
+  label: string;
+  value: string;
+  onCommit: (text: string, base: string) => Promise<void>;
+  placeholder?: string;
+  validate?: (text: string) => string | undefined;
+  normalize?: (text: string) => string;
+  mono?: boolean;
+}): React.ReactElement {
+  const id = useId();
+  const [edit, setEdit] = useState<{ text: string; base: string } | null>(null);
+  const lastSubmission = useRef<{ text: string } | null>(null);
+  const text = edit?.text ?? value;
+  const error = validate?.(text);
+  return (
+    <div>
+      <label htmlFor={id} className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
+        {label}
+      </label>
+      <input
+        id={id}
+        type="text"
+        value={text}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const text = e.target.value;
+          const base = lastSubmission.current?.text ?? value;
+          setEdit((previous) => ({ text, base: previous?.base ?? base }));
+        }}
+        onBlur={() => {
+          if (!edit || error) return;
+          const normalized = normalize?.(edit.text) ?? edit.text;
+          if (normalized === edit.base) {
+            setEdit(null);
+            return;
+          }
+          const submission = { text: normalized };
+          const submittedEdit = { text: edit.text, base: normalized };
+          lastSubmission.current = submission;
+          setEdit(submittedEdit);
+          void onCommit(edit.text, edit.base).then(() => {
+            if (lastSubmission.current !== submission) return;
+            lastSubmission.current = null;
+            setEdit((current) => current === submittedEdit ? null : current);
+          });
+        }}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? `${id}-error` : undefined}
+        className={cn(
+          'mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none',
+          mono && 'font-mono-num',
+        )}
+      />
+      {error && <p id={`${id}-error`} className="mt-1 text-[10px] text-[color:var(--danger)]">{error}</p>}
+    </div>
   );
 }
 
@@ -382,7 +449,7 @@ function NewFieldForm({
         </div>
         <div>
           <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-            type
+            {t('fieldType')}
           </label>
           <select
             value={type}
@@ -433,18 +500,4 @@ function NewFieldForm({
       ) : null}
     </div>
   );
-}
-
-function humanizeApiError(err: unknown): string {
-  if (err instanceof ApiError) {
-    try {
-      const body = JSON.parse(err.body) as { code?: string; message?: string };
-      if (body.code && body.message) return `${body.code}: ${body.message}`;
-      if (body.message) return body.message;
-    } catch {
-      // ignore
-    }
-    return err.message;
-  }
-  return err instanceof Error ? err.message : String(err);
 }

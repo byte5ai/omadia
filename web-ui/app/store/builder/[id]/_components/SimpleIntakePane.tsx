@@ -151,9 +151,10 @@ export function SimpleIntakePane({
           if (ev.type === 'error') {
             console.warn(`[builder.simple.intake] provider error (${ev.code})`, ev.message);
             if (ev.code !== 'builder.turn_stopped') {
-              setError(ev.code === 'builder.resume_exhausted'
-                ? tError('resumeExhausted')
-                : humanizeProviderError(ev.message, t('errorProviderGeneric')));
+              const errorKey = ev.code === 'builder.resume_exhausted'
+                ? 'resumeExhausted'
+                : ev.code === 'builder.llm_access_missing' ? 'llmAccessMissing' : null;
+              setError(errorKey ? tError(errorKey) : humanizeProviderError(ev.message, t('errorProviderGeneric')));
             }
             break;
           }

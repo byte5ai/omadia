@@ -150,6 +150,22 @@ describe('PATCH /api/v1/builder/drafts/:id/spec', () => {
     assert.equal(app.rebuilds[0].draftId, app.draftId);
   });
 
+  it('rejects a stale setup editor without replacing a newer setup field', async () => {
+    app = await createTestApp();
+    const url = `/api/v1/builder/drafts/${app.draftId}/spec`;
+    const patches = [{ op: 'replace', path: '/setup_fields', value: [{ key: 'region', type: 'string' }] }];
+    assert.equal((await patchJson(app.baseUrl, url, { patches, expectedSetupFields: [] })).status, 200);
+
+    const stale = await patchJson(app.baseUrl, url, {
+      patches: [{ op: 'replace', path: '/setup_fields', value: [{ key: 'timeout', type: 'integer' }] }],
+      expectedSetupFields: [],
+    });
+    assert.equal(stale.status, 409);
+    assert.equal(stale.json?.code, 'builder.setup_fields_changed');
+    assert.equal(app.events.length, 1);
+    assert.deepEqual((await app.draftStore.load(app.userEmail, app.draftId))?.spec.setup_fields, patches[0]?.value);
+  });
+
   it('rejects with 401 when no session', async () => {
     app = await createTestApp({ email: null });
     const result = await patchJson(

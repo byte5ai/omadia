@@ -22,6 +22,7 @@ import type { ToolSpec } from '../../../../_lib/builderTypes';
 
 interface SpecEditorProps {
   draftId: string;
+  specUpdatedAt?: number;
   /** Server-canonical spec. Re-renders flow through here via the
    *  SSE-driven re-fetch in Workspace; the editor never holds the spec as
    *  truth — it only buffers in-flight edits as `dirty` overrides. */
@@ -53,11 +54,12 @@ type SaveStatus =
  * Tools and setup_fields stay read-only counts here; they have richer
  * editing surfaces that fit better in dedicated panes (B.5-6 territory).
  */
-export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): React.ReactElement {
+export function SpecEditor({ draftId, spec, specUpdatedAt = 0, agentStuck }: SpecEditorProps): React.ReactElement {
   const t = useTranslations('builder.spec.editor');
   const [dirty, setDirty] = useState<Partial<Record<string, string>>>({});
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
   const debounceTimers = useRef<Map<string, number>>(new Map());
+  const patchQueue = useRef(Promise.resolve());
   // B.11-5: Tool-Test modal — opens when the operator clicks the play icon
   // on a row. Re-keyed by tool id so re-opening a tool resets the form.
   const [testTool, setTestTool] = useState<ToolSpec | null>(null);
@@ -95,11 +97,12 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
   }, [spec]);
 
   useEffect(() => {
+    const timers = debounceTimers.current;
     return () => {
-      for (const id of debounceTimers.current.values()) {
+      for (const id of timers.values()) {
         window.clearTimeout(id);
       }
-      debounceTimers.current.clear();
+      timers.clear();
     };
   }, []);
 
@@ -108,7 +111,9 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
       if (patches.length === 0) return;
       setStatus({ kind: 'pending' });
       try {
-        await patchBuilderSpec(draftId, patches);
+        const save = patchQueue.current.then(() => patchBuilderSpec(draftId, patches));
+        patchQueue.current = save.then(() => undefined, () => undefined);
+        await save;
         setStatus({ kind: 'saved' });
         // Fade the saved indicator after a moment.
         window.setTimeout(() => {
@@ -150,17 +155,25 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
   );
 
   const onScalarDebouncedCommit = useCallback(
-    (path: string): void => {
+    (path: string, value: string): void => {
       const existing = debounceTimers.current.get(path);
       if (existing) window.clearTimeout(existing);
       const id = window.setTimeout(() => {
         debounceTimers.current.delete(path);
-        onScalarCommit(path);
+        void sendPatch([{ op: 'replace', path, value }]);
       }, 500);
       debounceTimers.current.set(path, id);
     },
-    [onScalarCommit],
+    [sendPatch],
   );
+
+  function flushScalarCommit(path: string, value: string): void {
+    const timer = debounceTimers.current.get(path);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    debounceTimers.current.delete(path);
+    void sendPatch([{ op: 'replace', path, value }]);
+  }
 
   const onArrayAdd = useCallback(
     (path: string, value: string): void => {
@@ -232,12 +245,13 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
 
         <FieldGroup title={t('groups.description')}>
           <TextareaField
-            label="Description"
+            label={t('groups.description')}
             value={valueOf('/description')}
             onChange={(v) => {
               onScalarChange('/description', v);
-              onScalarDebouncedCommit('/description');
+              onScalarDebouncedCommit('/description', v);
             }}
+            onBlur={(v) => flushScalarCommit('/description', v)}
             rows={2}
           />
         </FieldGroup>
@@ -248,8 +262,9 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
             value={valueOf('/playbook/when_to_use')}
             onChange={(v) => {
               onScalarChange('/playbook/when_to_use', v);
-              onScalarDebouncedCommit('/playbook/when_to_use');
+              onScalarDebouncedCommit('/playbook/when_to_use', v);
             }}
+            onBlur={(v) => flushScalarCommit('/playbook/when_to_use', v)}
             rows={3}
           />
           <ArrayField
@@ -290,6 +305,7 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
         <FieldGroup title={t('groups.setupFields')}>
           <SetupFieldsEditor
             draftId={draftId}
+            specUpdatedAt={specUpdatedAt}
             fields={spec.setup_fields ?? []}
             oauthProviders={spec.oauth_providers ?? []}
           />
@@ -413,6 +429,7 @@ interface TextareaFieldProps {
   label: string;
   value: string;
   onChange: (next: string) => void;
+  onBlur?: (value: string) => void;
   rows?: number;
 }
 
@@ -420,6 +437,7 @@ function TextareaField({
   label,
   value,
   onChange,
+  onBlur,
   rows = 3,
 }: TextareaFieldProps): React.ReactElement {
   const id = useId();
@@ -436,6 +454,7 @@ function TextareaField({
         value={value}
         rows={rows}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={(e) => onBlur?.(e.currentTarget.value)}
         className="w-full resize-y rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[13px] leading-snug text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
       />
     </div>

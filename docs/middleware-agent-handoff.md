@@ -4837,6 +4837,18 @@ Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
   sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
   Admin-Session.
 
+**Workspace-Editoren.** Beschreibung und Einsatzbereich werden nach
+einer Eingabepause oder beim Verlassen gespeichert. Bei Setup-Feldern sendet
+die Web-UI den zuletzt gelesenen Stand als `expectedSetupFields` mit. Der
+Spec-PATCH meldet `409 builder.setup_fields_changed`, wenn die Basis nicht
+mehr aktuell ist. Der Client liest die Felder erneut und übernimmt Änderungen
+an anderen Feldern. Wurde der bearbeitete Wert gleichzeitig geändert, zeigt er
+den Konflikt an. Der Templatewechsel lädt Slotliste und Editor-Typen neu.
+Der erfolgreiche Build-Status liefert die kanonische `templateId`, die der
+Publish-Dialog mit der aktuellen Vorlage abgleicht (ADR-0230).
+Leere neue Entwürfe beginnen mit `tool`. Für einen externen Client
+wählt der Builder `integration`, bevor er Slots schreibt.
+
 **Vorschau-Turns.** Die Modellnutzung trägt eine Turn-ID und die Session
 `builder-preview:<draftId>`. Die Nutzungsseite fasst Vorschau und Builder
 zusammen und zählt einen Entwurf einmal. Eine Modellablehnung markiert den

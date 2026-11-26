@@ -42,6 +42,7 @@ import type {
   ListBuilderTemplatesResponse,
   ListDraftsResponse,
   PreviewStreamEvent,
+  SetupField,
   TemplateSlotsResponse,
 } from './builderTypes';
 
@@ -2372,6 +2373,7 @@ export async function restoreBuilderDraft(id: string): Promise<DraftEnvelope> {
 export async function patchBuilderSpec(
   id: string,
   patches: JsonPatch[],
+  expectedSetupFields?: readonly SetupField[],
 ): Promise<DraftEnvelope> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(
@@ -2383,7 +2385,7 @@ export async function patchBuilderSpec(
         'content-type': 'application/json',
         ...forwarded,
       },
-      body: JSON.stringify({ patches }),
+      body: JSON.stringify({ patches, expectedSetupFields }),
       credentials: 'include',
       cache: 'no-store',
     },
@@ -2568,6 +2570,7 @@ export async function refreshPreview(draftId: string): Promise<{
 export async function getPreviewStatus(draftId: string): Promise<{
   phase: 'idle' | 'ok' | 'failed';
   buildN?: number;
+  templateId?: string;
   agentId?: string;
   errorCount?: number;
   reason?: string;
@@ -2579,6 +2582,7 @@ export async function getPreviewStatus(draftId: string): Promise<{
   return getJson<{
     phase: 'idle' | 'ok' | 'failed';
     buildN?: number;
+    templateId?: string;
     agentId?: string;
     errorCount?: number;
     reason?: string;

@@ -32,6 +32,7 @@
  * Contract: ADR-0230.
  */
 
+import { canonicalTemplateId } from './agentSpec.js';
 import {
   BuildPipelineError,
   type BuildPipeline,
@@ -104,6 +105,7 @@ export async function warmPreview(
 ): Promise<PreviewHandle> {
   const { userEmail, draftId } = opts;
   let builtN: number | undefined;
+  let builtTemplate: string | undefined;
   try {
     return await deps.previewCache.ensureWarm({
       userEmail,
@@ -113,10 +115,12 @@ export async function warmPreview(
         const result = await runBuild(deps, opts);
         await deps.previewSecretBuffer.warm(userEmail, draftId);
         builtN = result.buildN;
+        builtTemplate = canonicalTemplateId(result.draft.spec.template ?? 'integration');
         deps.bus.emit(draftId, {
           type: 'build_status',
           phase: 'ok',
           buildN: result.buildN,
+          templateId: builtTemplate,
         });
         const { configValues, secretValues } = splitBufferByFieldType(
           deps.previewSecretBuffer.get(userEmail, draftId),
@@ -125,6 +129,7 @@ export async function warmPreview(
         return {
           zipBuffer: result.buildResult.zip,
           rev: result.buildN,
+          templateId: builtTemplate,
           configValues,
           secretValues,
         };
@@ -132,7 +137,7 @@ export async function warmPreview(
     });
   } catch (err) {
     if (isBuildStatusReported(err)) throw err;
-    reportActivationFailure(deps, draftId, builtN, err);
+    reportActivationFailure(deps, draftId, builtN, builtTemplate, err);
     throw markReported(err);
   }
 }
@@ -196,6 +201,7 @@ function reportActivationFailure(
   deps: WarmPreviewDeps,
   draftId: string,
   builtN: number | undefined,
+  builtTemplate: string | undefined,
   err: unknown,
 ): void {
   const message = err instanceof Error ? err.message : String(err);
@@ -218,6 +224,7 @@ function reportActivationFailure(
       type: 'build_status',
       phase: 'ok',
       buildN: builtN,
+      ...(builtTemplate ? { templateId: builtTemplate } : {}),
       missingSetupKey: missingKey,
     });
     return;

@@ -3602,7 +3602,10 @@
       "kindTool": "Tool",
       "kindIntegrationHint": "Plugin kind: integration — an external system with credentials. Granted to agents per agent.",
       "kindToolHint": "Plugin kind: tool — local logic without an external system. Granted to agents per agent.",
-      "codegenModelLabel": "Code generation"
+      "codegenModelLabel": "Code generation",
+      "installSlotsLoading": "The Builder is loading the template requirements.",
+      "installSlotsUnavailable": "Template requirements could not be loaded. Reload the draft and try again.",
+      "installIncompleteSimple": "The plugin is still missing required pieces. Ask the Builder to finish it, then run a preview."
     },
     "tools": {
       "form": {
@@ -3959,7 +3962,14 @@
           "noProviders": "Declare an oauth_providers descriptor first (ask the Plugin Builder) — then pick it here.",
           "scopes": "scopes",
           "scopesPlaceholder": "comma-separated, e.g. profile, email"
-        }
+        },
+        "fieldKey": "Field key",
+        "fieldLabel": "Label",
+        "fieldType": "Field type",
+        "fieldRequired": "Required field",
+        "fieldDescription": "Setup instructions",
+        "saveConflict": "The setup fields changed. Check the latest values and try again.",
+        "saveFailed": "The setup field could not be saved."
       }
     },
     "slots": {

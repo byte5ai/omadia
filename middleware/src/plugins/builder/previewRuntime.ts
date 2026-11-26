@@ -371,6 +371,7 @@ export interface PreviewActivateOptions {
   zipBuffer: Buffer;
   draftId: string;
   rev: number;
+  templateId?: string;
   /** Non-secret config values (from the draft's setup-fields). */
   configValues: Readonly<Record<string, unknown>>;
   /** Secret values (in-memory only — never persisted). */
@@ -384,6 +385,7 @@ export interface PreviewHandle {
   readonly draftId: string;
   readonly agentId: string;
   readonly rev: number;
+  readonly templateId?: string;
   readonly toolkit: PreviewToolkit;
   readonly previewDir: string;
   /** (prefix, router) pairs the plugin's `activate()` registered via
@@ -687,6 +689,7 @@ export class PreviewRuntime {
       draftId: opts.draftId,
       agentId,
       rev: opts.rev,
+      ...(opts.templateId ? { templateId: opts.templateId } : {}),
       toolkit: {
         get tools(): ReadonlyArray<PreviewToolDescriptor> {
           return toolCaptures.filter((c) => !c.disposed).map((c) => c.tool);

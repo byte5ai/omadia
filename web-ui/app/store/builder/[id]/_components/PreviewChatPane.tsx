@@ -76,6 +76,7 @@ type ChatItem =
 export interface BuildStatusSnapshot {
   phase: 'idle' | 'building' | 'ok' | 'failed';
   buildN?: number;
+  templateId?: string;
   reason?: string;
   errorCount?: number;
   /** #1809 — `ok` build whose preview waits for a test credential. */
@@ -365,6 +366,7 @@ export function PreviewChatPane({
         const snapshot: BuildStatusSnapshot = {
           phase: ev.phase,
           ...(ev.buildN !== undefined ? { buildN: ev.buildN } : {}),
+          ...(ev.templateId !== undefined ? { templateId: ev.templateId } : {}),
           ...(ev.reason !== undefined ? { reason: ev.reason } : {}),
           ...(totalIssueCount > 0 ? { errorCount: totalIssueCount } : {}),
           ...(ev.missingSetupKey !== undefined

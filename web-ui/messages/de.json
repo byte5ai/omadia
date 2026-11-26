@@ -3602,7 +3602,10 @@
       "kindTool": "Tool",
       "kindIntegrationHint": "Plugin-Art: Integration — ein externes System mit Zugangsdaten. Wird Agenten einzeln freigegeben.",
       "kindToolHint": "Plugin-Art: Tool — lokale Logik ohne externes System. Wird Agenten einzeln freigegeben.",
-      "codegenModelLabel": "Codegenerierung"
+      "codegenModelLabel": "Codegenerierung",
+      "installSlotsLoading": "Der Builder lädt die Anforderungen der Vorlage.",
+      "installSlotsUnavailable": "Die Anforderungen der Vorlage konnten nicht geladen werden. Lade den Entwurf neu und versuche es erneut.",
+      "installIncompleteSimple": "Dem Plugin fehlen noch erforderliche Bestandteile. Bitte den Builder, es fertigzustellen, und starte anschließend eine Vorschau."
     },
     "tools": {
       "form": {
@@ -3959,7 +3962,14 @@
           "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Plugin Builder fragen) — dann hier auswählen.",
           "scopes": "Scopes",
           "scopesPlaceholder": "kommagetrennt, z.B. profile, email"
-        }
+        },
+        "fieldKey": "Feldschlüssel",
+        "fieldLabel": "Bezeichnung",
+        "fieldType": "Feldtyp",
+        "fieldRequired": "Pflichtfeld",
+        "fieldDescription": "Hinweise zur Einrichtung",
+        "saveConflict": "Die Einrichtungsfelder haben sich geändert. Prüfe den aktuellen Stand und versuche es erneut.",
+        "saveFailed": "Das Einrichtungsfeld konnte nicht gespeichert werden."
       }
     },
     "slots": {

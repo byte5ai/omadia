@@ -229,6 +229,13 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   const [buildStatus, setBuildStatus] = useState<BuildStatusSnapshot>({
     phase: 'idle',
   });
+  const updateBuildStatus = useCallback((status: BuildStatusSnapshot) => {
+    setBuildStatus((previous) => (
+      status.phase === 'ok' && status.buildN === previous.buildN && !status.templateId && previous.templateId
+        ? { ...status, templateId: previous.templateId }
+        : status
+    ));
+  }, []);
   // B.7-6: Builder-Agent retried fill_slot 3× and is stuck. Cleared
   // automatically on the next slot_patch for the same slotKey (agent
   // succeeded after intervention) — see useSpecEvents handler below.
@@ -405,7 +412,11 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   // rail dot, tab badges, header chip). Hoisted to the workspace so the
   // SlotEditor + the Editor's tab strip + the Preview pane all read the
   // same source of truth instead of each pane fetching independently.
-  const [templateSlots, setTemplateSlots] = useState<TemplateSlotDef[]>([]);
+  const currentTemplate = normalizeTemplateId(draft.spec.template);
+  const slotRequestKey = `${draft.id}:${currentTemplate}`;
+  const [slotRequest, setSlotRequest] = useState<{ key: string; slots: TemplateSlotDef[] | null } | null>(null);
+  const activeSlotRequest = slotRequest?.key === slotRequestKey ? slotRequest : null;
+  const templateSlots = activeSlotRequest?.slots ?? [];
   const [bufferedSecretKeys, setBufferedSecretKeys] = useState<string[]>([]);
   // Stable callback refs for child components — without these the inline
   // arrow forms got recreated on every Workspace render, and PreviewChatPane's
@@ -426,15 +437,20 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     let alive = true;
     void getTemplateSlots(draft.id)
       .then((res) => {
-        if (alive) setTemplateSlots(res.slots);
+        if (alive) {
+          setSlotRequest({
+            key: slotRequestKey,
+            slots: normalizeTemplateId(res.template) === currentTemplate ? res.slots : null,
+          });
+        }
       })
       .catch(() => {
-        // Non-fatal — workspace just won't show the warning indicators.
+        if (alive) setSlotRequest({ key: slotRequestKey, slots: null });
       });
     return () => {
       alive = false;
     };
-  }, [draft.id]);
+  }, [draft.id, currentTemplate, slotRequestKey]);
 
   useEffect(() => {
     let alive = true;
@@ -465,6 +481,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
           setBuildStatus({
             phase: 'ok',
             buildN: res.buildN,
+            ...(res.templateId ? { templateId: res.templateId } : {}),
             ...(res.missingSetupKey !== undefined
               ? { missingSetupKey: res.missingSetupKey }
               : {}),
@@ -559,13 +576,14 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       if (ev.type === 'build_status') {
         const snap: BuildStatusSnapshot = { phase: ev.phase };
         if (ev.buildN !== undefined) snap.buildN = ev.buildN;
+        if (ev.templateId !== undefined) snap.templateId = ev.templateId;
         if (ev.errorCount !== undefined) snap.errorCount = ev.errorCount;
         if (ev.reason !== undefined) snap.reason = ev.reason;
         if (ev.errors !== undefined) snap.errors = ev.errors;
         if (ev.missingSetupKey !== undefined) {
           snap.missingSetupKey = ev.missingSetupKey;
         }
-        setBuildStatus(snap);
+        updateBuildStatus(snap);
         // Clear the transient auto-fix-running pill once a new build
         // event fires — either the auto-fix turn produced an ok build
         // (resolution) or another failure (the orchestrator will fire
@@ -656,9 +674,12 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   // the per-pane warning chip / collapsed-rail dot so the user sees at a
   // glance which menu has unfinished business — no "test the preview
   // first and then discover three required slots are empty" anti-loop.
-  const filledSlotKeys = Object.keys(draft.slots);
+  const filledSlotKeys = new Set([
+    ...Object.keys(draft.spec.slots ?? {}),
+    ...Object.keys(draft.slots),
+  ]);
   const missingRequiredSlots = templateSlots.filter(
-    (s) => s.required && !filledSlotKeys.includes(s.key),
+    (s) => s.required && !filledSlotKeys.has(s.key),
   ).length;
 
   const declaredSetupFields = draft.spec.setup_fields ?? [];
@@ -737,10 +758,19 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     if (uiSurfacesCollapsed) r.collapse();
     else r.expand();
   }, [uiSurfacesCollapsed, uiSurfacesPanelRef]);
-  const installEnabled =
-    editorWarningTotal === 0 &&
-    missingRequiredCredentials === 0 &&
-    buildStatus.phase === 'ok';
+  let installDisabledReason: string | null = null;
+  if (buildStatus.phase !== 'ok' || !buildStatus.templateId ||
+      normalizeTemplateId(buildStatus.templateId) !== currentTemplate) {
+    installDisabledReason = tw('installBuildMustSucceed');
+  } else if (activeSlotRequest?.slots == null) {
+    installDisabledReason = tw(activeSlotRequest ? 'installSlotsUnavailable' : 'installSlotsLoading');
+  } else if (editorWarningTotal > 0) {
+    installDisabledReason = viewMode === 'simple'
+      ? tw('installIncompleteSimple')
+      : tw('installEditorWarnings', { count: editorWarningTotal });
+  } else if (missingRequiredCredentials > 0) {
+    installDisabledReason = tw('installMissingCredentials', { count: missingRequiredCredentials });
+  }
 
   return (
     <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 lg:px-6 lg:py-8 2xl:max-w-[1900px] 3xl:max-w-[2300px]">
@@ -749,22 +779,12 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
         viewToggleDisabled={chatStreaming || viewSwitching}
-        installEnabled={installEnabled}
-        installDisabledReason={
-          buildStatus.phase !== 'ok'
-            ? tw('installBuildMustSucceed')
-            : editorWarningTotal > 0
-              ? tw('installEditorWarnings', { count: editorWarningTotal })
-              : missingRequiredCredentials > 0
-                ? tw('installMissingCredentials', {
-                    count: missingRequiredCredentials,
-                  })
-                : null
-        }
+        installEnabled={installDisabledReason === null}
+        installDisabledReason={installDisabledReason}
         onInstallClick={() => setInstallModalOpen(true)}
         templates={templates}
         models={models}
-        currentTemplate={normalizeTemplateId(draft.spec.template)}
+        currentTemplate={currentTemplate}
         templateSwitchEnabled={isDraftSwitchable}
         onTemplateChange={async (next) => {
           try {
@@ -835,7 +855,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         <SimpleWorkspace
           draft={draft}
           model={draft.codegenModel}
-          onBuildStatus={setBuildStatus}
+          onBuildStatus={updateBuildStatus}
           pendingUserChoice={pendingUserChoice}
           onUserChoiceResolved={clearUserChoice}
           onIntakeStreamingChange={setBuilderChatStreaming}
@@ -879,6 +899,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
               <div className="overflow-y-auto">
                 <SpecEditor
                   draftId={draft.id}
+                  specUpdatedAt={draft.updatedAt}
                   spec={draft.spec}
                   agentStuck={agentStuck}
                 />
@@ -886,6 +907,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             )}
             {tab === 'slots' && (
               <SlotEditor
+                templateId={currentTemplate}
                 draftId={draft.id}
                 slots={draft.slots}
                 templateSlots={templateSlots}
@@ -921,7 +943,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             draftId={draft.id}
             initialTranscript={draft.previewTranscript}
             setupFields={draft.spec.setup_fields ?? []}
-            onBuildStatus={setBuildStatus}
+            onBuildStatus={updateBuildStatus}
             agentStuck={agentStuck}
             onClearAgentStuck={handleClearAgentStuck}
             runtimeSmoke={runtimeSmoke}

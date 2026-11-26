@@ -146,7 +146,7 @@ export interface SetupField {
   help?: string;
   help_localized?: { en: string; de: string };
   enum_labels?: Record<string, { en: string; de: string }>;
-  type?: 'string' | 'secret' | 'url' | 'number' | 'boolean' | 'oauth';
+  type?: 'string' | 'secret' | 'url' | 'number' | 'integer' | 'boolean' | 'oauth' | 'enum' | 'host_list' | 'json_file';
   required?: boolean;
   /** Spec 005 (#371) — for `type: 'oauth'` fields: the oauth_providers[].id
    *  this field connects through, plus the requested scopes. */
@@ -270,6 +270,7 @@ export type SpecBusEvent =
       type: 'build_status';
       phase: 'building' | 'ok' | 'failed';
       buildN?: number;
+      templateId?: string;
       reason?: string;
       errorCount?: number;
       /** #1809 — only with `ok`: the build compiled, but the preview waits
@@ -549,6 +550,7 @@ export type PreviewStreamEvent =
       type: 'build_status';
       phase: 'building' | 'ok' | 'failed';
       buildN?: number;
+      templateId?: string;
       reason?: string;
       /** #1809 — `ok` whose preview waits for this test credential. */
       missingSetupKey?: string;

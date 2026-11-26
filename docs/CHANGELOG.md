@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder workspace editors (2026-11-26)
+
+- The spec editor saves the latest textarea value after a pause or on blur
+  (#1734). Setup fields buffer text locally, confirm the current server spec
+  before committing, and retain the other locale when a translated label is
+  edited (#1735, ADR-0239).
+- The Simple view explains missing model access and unfinished plugins in
+  operator language (#1793).
+- The workspace reloads required slots and editor types when a template
+  changes. Publish requires a successful build for the selected template
+  (#1805, ADR-0230). New drafts start with the local `tool` layout and can
+  switch to `integration` when an external client is required (#1780,
+  ADR-0064).
+
 ### Fixed — Builder localization (2026-11-26)
 
 - The Plugin Builder and Agent Builder use the selected language for template

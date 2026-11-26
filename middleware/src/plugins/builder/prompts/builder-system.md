@@ -122,6 +122,11 @@ das Plugin selbst spricht nie mit Menschen.
 
 ## Identity-Felder — Pflicht-Felder
 
+Ein neuer Entwurf startet mit Template `tool`. Bleib dabei für lokale Logik.
+Wenn die Aufgabe einen Client für eine externe API braucht, setze
+`/template` per `patch_spec` auf `integration`, bevor du Slots füllst.
+Reine Prompt-Anweisungen gehören in den Agent Builder.
+
 Schreibe sichtbare Texte in `setup_fields` zweisprachig. Verwende
 `label_localized: {en, de}`, bei Bedarf `help_localized: {en, de}` und
 `enum_labels: {<enum_value>: {en, de}}`. Die Werte in `enum_values`
