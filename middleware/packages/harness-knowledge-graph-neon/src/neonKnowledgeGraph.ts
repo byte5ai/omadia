@@ -117,6 +117,7 @@ import {
   SYSTEM_AUDIT_ACTOR_UUID,
   buildRecallTsQuery,
   isMemorableContentCorrection,
+  INCONSISTENCY_MAX_LOST_VERDICTS,
   MEMORY_CORRECTED_AT_PROP,
 } from '@omadia/plugin-api';
 import {
@@ -4185,7 +4186,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND type = 'MemorableKnowledge'
           AND embedding IS NOT NULL
           AND NOT (properties ? 'last_inconsistency_check_at')
-        ORDER BY created_at ASC
+        ORDER BY properties->>'last_inconsistency_attempt_at' ASC NULLS FIRST,
+                 created_at ASC
         LIMIT $2`,
       [this.tenantId, limit],
     );
@@ -4225,7 +4227,38 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
 
   async markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
+    opts?: { verdictLost?: boolean },
   ): Promise<void> {
+    if (opts?.verdictLost === true) {
+      // ADR-0190 (#1861) — count the lost attempt; give up (marker +
+      // outcome) once INCONSISTENCY_MAX_LOST_VERDICTS attempts were lost.
+      await this.pool.query(
+        `UPDATE graph_nodes AS g
+            SET properties = g.properties
+                  || jsonb_build_object(
+                       'inconsistency_lost_verdicts', a.n,
+                       'last_inconsistency_attempt_at', to_jsonb(now()::timestamptz)
+                     )
+                  || CASE WHEN a.n >= $3
+                       THEN jsonb_build_object(
+                              'last_inconsistency_check_at', to_jsonb(now()::timestamptz),
+                              'inconsistency_check_outcome', 'verdict_lost'
+                            )
+                       ELSE '{}'::jsonb
+                     END
+           FROM (
+             SELECT id,
+                    COALESCE((properties->>'inconsistency_lost_verdicts')::int, 0) + 1 AS n
+               FROM graph_nodes
+              WHERE tenant_id = $1
+                AND external_id = $2
+                AND type = 'MemorableKnowledge'
+           ) AS a
+          WHERE g.id = a.id`,
+        [this.tenantId, memorableKnowledgeNodeId, INCONSISTENCY_MAX_LOST_VERDICTS],
+      );
+      return;
+    }
     // jsonb_set creates the key if absent, replaces if present. The
     // timestamp string is wrapped in to_jsonb so the column stays
     // jsonb-typed end-to-end.
@@ -4787,7 +4820,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       status: terminalStatus,
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
       excerpt_pair: existing.duplicateExcerptOf,
     };
     const validated = validateNodeProps('ExcerptMergeCandidate', nextProps);

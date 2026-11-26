@@ -5158,15 +5158,20 @@ Grenzen: `docs/security-architecture.md` §7c.
   Live-Pfad. Turns ohne Personen-Owner (`key:<id>`, Public API) sind keine Kandidaten.
   Ergebnis `promotePhase.skipped` zählt bewusst ausgelassene Turns.
 - **Auto-Merge** (`kg_auto_merge_enabled`, Default an; `kg_auto_merge_threshold`
-  Default 0.98, Flag-Floor 0.90): löst nur nahezu identische Paare mit gleichen Zahlen
-  und entfernt nur maschinell erzeugte Einträge (`created_by` `auto:`/`system:`/
-  `scratch-reaper`). Audit als `system:auto-merge` über
+  Default 0.98, Flag-Floor 0.90): löst nur Paare mit gleichem Text (Kind/Summary/
+  Rationale ohne Groß-/Kleinschreibung, Leerraum, Satzzeichen) und entfernt nur
+  maschinell erzeugte, nicht von einer Person korrigierte Einträge (`created_by`
+  `auto:`/`system:`/`scratch-reaper`, kein `corrected_at`). `KG_AUTO_MERGE_ENABLED`
+  greift nur, wenn die Config das Feld nicht enthält (Installationen von vor dem Feld). Audit als `system:auto-merge` über
   `AclMutationOptions.systemActor` (nil-UUID + Label, `resolved_by: null`).
 - **Paare.** Löschen schließt offene `Inconsistency`/`MergeCandidate`/
   `ExcerptMergeCandidate`-Paare (`closed_reason: memory_deleted`); eine Auflösung, die
   eine gelöschte Seite behalten würde, wirft `keeper_missing` (HTTP 409).
 - **Widerspruchs-Judge:** `maxTokens` 500; verlorene Verdicts lassen
-  `last_inconsistency_check_at` ungesetzt.
+  `last_inconsistency_check_at` ungesetzt und zählen `inconsistency_lost_verdicts`
+  hoch (`last_inconsistency_attempt_at`; Queue: nie versuchte Einträge zuerst). Nach
+  3 verlorenen Läufen (`INCONSISTENCY_MAX_LOST_VERDICTS`) gilt der Eintrag als geprüft
+  mit `inconsistency_check_outcome: 'verdict_lost'`.
 
 ### Structured Datasets — CSV Import (#430)
 
@@ -5330,6 +5335,12 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
 | `USAGE_FX_DISABLED` | `true` schaltet den Abruf des EZB-Tageskurses für die EUR-Ansicht des Kosten-Dashboards ab (`GET www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`, ohne Credentials, höchstens alle 6 h). Default aus — für air-gapped oder egress-beschränkte Installationen. Ohne Kurs bleibt das Dashboard in USD. Siehe Abschnitt Usage-Telemetrie, Lesepfad. |
+
+### Auto-Merge von Memory-Duplikaten (ADR-0190, #1835)
+
+| Variable | Wirkung |
+|---|---|
+| `KG_AUTO_MERGE_ENABLED` | Fallback für den Manifest-Schalter `kg_auto_merge_enabled` der Agent Runtime Extras. Gelesen wird die Variable nur, wenn die gespeicherte Plugin-Config das Feld **nicht** enthält (Installationen von vor dem Feld); eine frische Installation bekommt den Manifest-Default `true` in die Config, danach entscheidet der Schalter in der Admin-UI. `false` = Duplikate werden nur gelistet (ab cosine 0.95), nie automatisch aufgelöst. Unset und Feld fehlt = an. |
 
 ### Self-Update und Release-Check (#432, #1381)
 

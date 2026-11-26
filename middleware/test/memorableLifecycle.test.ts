@@ -4,8 +4,8 @@
  *  - #1819 deleting an entry retires its source turns from promotion;
  *  - #1862 deleting closes the entry's open pairs, and a resolution that
  *    keeps a deleted side is refused;
- *  - #1835 auto-merge resolves only near-exact pairs, never deletes a
- *    hand-saved entry, and audits as the system with the cosine;
+ *  - #1835 auto-merge resolves only textually identical pairs, never deletes a
+ *    hand-saved or user-corrected entry, and audits as the system with the cosine;
  *  - #1861 a lost contradiction verdict leaves the entry unchecked;
  *  - #1864 a turn no person owns is skipped, not failed.
  */
@@ -23,6 +23,7 @@ import { JUDGEMENT_MAX_TOKENS } from '@omadia/orchestrator-extras/dist/inconsist
 import { promoteTurnIfSignificant } from '@omadia/orchestrator-extras/dist/promotion.js';
 import { agentOfTurnScope } from '@omadia/orchestrator-extras/dist/bulkPromotion.js';
 import {
+  INCONSISTENCY_MAX_LOST_VERDICTS,
   PROMOTION_RETIRED_PROP,
   SYSTEM_AUDIT_ACTOR_UUID,
   type GraphNode,
@@ -156,6 +157,59 @@ describe('ADR-0190 · safe auto-merge (#1835)', () => {
     assert.ok(await kg.getMemorableKnowledge(b));
   });
 
+  it('never deletes an auto-saved entry a person corrected (corrected_at)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const older = await seedMk(kg, 'The contact for Project Zebra is Max Mueller.', `auto:${OWNER}`);
+    const edited = await seedMk(kg, 'The contact for Project Zebra is Max Mueller.', `auto:${OWNER}`);
+    await kg.updateMemorableKnowledge(
+      edited,
+      { summary: 'The contact for Project Zebra is Moritz Mueller.' },
+      { actorOmadiaUserId: OWNER },
+    );
+    kg.setEmbedding(edited, VEC);
+    await mergeDetector(kg).detectFor(edited);
+    assert.ok(await kg.getMemorableKnowledge(edited), 'the correction survives');
+    assert.ok(await kg.getMemorableKnowledge(older), 'texts differ, nothing retired');
+  });
+
+  it('a corrected copy wins over an identical uncorrected one', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const older = await seedMk(kg, 'Draft text.', `auto:${OWNER}`);
+    const corrected = await seedMk(kg, 'Draft text.', `auto:${OWNER}`);
+    await kg.updateMemorableKnowledge(
+      corrected,
+      { summary: 'Project Zebra uses the Ibis server.' },
+      { actorOmadiaUserId: OWNER },
+    );
+    const olderNode = rawNode(kg, older);
+    assert.ok(olderNode);
+    olderNode.props = { ...olderNode.props, summary: 'Project Zebra uses the Ibis server.' };
+    kg.setEmbedding(corrected, VEC);
+    await mergeDetector(kg).detectFor(older);
+    assert.ok(await kg.getMemorableKnowledge(corrected), 'the corrected entry is kept');
+    assert.equal(await kg.getMemorableKnowledge(older), null, 'the older uncorrected copy is retired');
+  });
+
+  it('leaves an auto-saved pair that differs in one word open', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const a = await seedMk(kg, 'The budget request for Zebra was approved.', `auto:${OWNER}`);
+    const b = await seedMk(kg, 'The budget request for Zebra was rejected.', `auto:${OWNER}`);
+    await mergeDetector(kg).detectFor(b);
+    assert.ok(await kg.getMemorableKnowledge(a));
+    assert.ok(await kg.getMemorableKnowledge(b));
+    const open = await kg.listMergeCandidates({ viewerOmadiaUserId: OWNER, status: 'open' });
+    assert.equal(open.length, 1, 'left for review');
+  });
+
+  it('merges copies that differ only in case, spacing and punctuation', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const older = await seedMk(kg, 'Project Zebra starts on November 10.', `auto:${OWNER}`);
+    const newer = await seedMk(kg, 'project  zebra starts on november 10', `auto:${OWNER}`);
+    await mergeDetector(kg).detectFor(newer);
+    assert.ok(await kg.getMemorableKnowledge(older), 'older kept');
+    assert.equal(await kg.getMemorableKnowledge(newer), null, 'restatement retired');
+  });
+
   it('retires the auto-saved copy of a hand-saved entry, audited as the system', async () => {
     const kg = new InMemoryKnowledgeGraph();
     const saved = await seedMk(kg, 'Project Zebra starts on November 10.', `web:${OWNER}`);
@@ -190,8 +244,11 @@ describe('ADR-0190 · lost contradiction verdicts are retried (#1861)', () => {
       async createInconsistency() {
         return null;
       },
-      async markMemorableKnowledgeInconsistencyChecked(id: string) {
-        checked.push(id);
+      async markMemorableKnowledgeInconsistencyChecked(
+        id: string,
+        opts?: { verdictLost?: boolean },
+      ) {
+        checked.push(opts?.verdictLost === true ? `lost:${id}` : id);
       },
     } as unknown as KnowledgeGraph;
   }
@@ -212,7 +269,7 @@ describe('ADR-0190 · lost contradiction verdicts are retried (#1861)', () => {
     const { llm, calls } = llmReplying('{"compatible": "no", "reason": "Both state the same win', 'max_tokens');
     const detector = createInconsistencyDetector({ graph: graphWith(checked), embeddingClient: embedder, llm, log: () => {} });
     await detector.detectFor('mk-a');
-    assert.deepEqual(checked, []);
+    assert.deepEqual(checked, ['lost:mk-a'], 'only an attempt is recorded');
     assert.equal(calls[0]?.maxTokens, JUDGEMENT_MAX_TOKENS);
     assert.ok(JUDGEMENT_MAX_TOKENS >= 500);
   });
@@ -223,6 +280,38 @@ describe('ADR-0190 · lost contradiction verdicts are retried (#1861)', () => {
     const detector = createInconsistencyDetector({ graph: graphWith(checked), embeddingClient: embedder, llm, log: () => {} });
     await detector.detectFor('mk-a');
     assert.deepEqual(checked, ['mk-a']);
+  });
+});
+
+describe('ADR-0190 · lost verdicts do not block the bulk queue (#1861)', () => {
+  it('gives up after INCONSISTENCY_MAX_LOST_VERDICTS lost passes', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const id = await seedMk(kg, 'Wartung Ibis am Montag.', `auto:${OWNER}`);
+    for (let i = 1; i < INCONSISTENCY_MAX_LOST_VERDICTS; i++) {
+      await kg.markMemorableKnowledgeInconsistencyChecked(id, { verdictLost: true });
+      assert.deepEqual(
+        await kg.listMemorableKnowledgeIdsForBulkInconsistencyCheck({ limit: 10 }),
+        [id],
+        `still queued after ${String(i)} lost passes`,
+      );
+    }
+    await kg.markMemorableKnowledgeInconsistencyChecked(id, { verdictLost: true });
+    assert.deepEqual(
+      await kg.listMemorableKnowledgeIdsForBulkInconsistencyCheck({ limit: 10 }),
+      [],
+    );
+    assert.equal(rawNode(kg, id)?.props['inconsistency_check_outcome'], 'verdict_lost');
+  });
+
+  it('queues never-attempted entries before ones whose verdicts were lost', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const stuck = await seedMk(kg, 'Wartung Ibis am Montag.', `auto:${OWNER}`);
+    const fresh = await seedMk(kg, 'Wartung Reiher am Dienstag.', `auto:${OWNER}`);
+    await kg.markMemorableKnowledgeInconsistencyChecked(stuck, { verdictLost: true });
+    assert.deepEqual(
+      await kg.listMemorableKnowledgeIdsForBulkInconsistencyCheck({ limit: 1 }),
+      [fresh],
+    );
   });
 });
 

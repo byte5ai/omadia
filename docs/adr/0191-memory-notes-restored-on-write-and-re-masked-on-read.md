@@ -65,6 +65,12 @@ get the #1544 echo re-mask, as before.
 - 🔴 **Bad:** Notes stored before this change with surrogates stay ambiguous. A surrogate of
   the `PLATZHALTER-*` or pool-address shape is caught once the reading turn has minted it;
   a pool person name the reading turn did not mint is not recognisable and reads as a name.
+- 🔴 **Bad:** A note now holds real values, so on read it is only as masked as the reading
+  turn's mask makes it. A value the writing turn masked but the reading turn's detectors miss
+  (a C1 name found in the prompt context but not in the note text, or a reading turn that
+  runs on C0 after a C1 outage, which ADR-0095 allows without blocking) reaches the model in
+  clear. Before this change such a note held only surrogates. This is the same residual as
+  recalled turns, which also store real values and are masked on read.
 - 🔴 **Bad:** Each `memory` call costs one preview mask call and, on read, one mask pass (C1
   detector included when configured).
 - ⚪ **Neutral:** Stored processes (`write_process`, `run_stored_process`) are also

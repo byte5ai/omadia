@@ -682,12 +682,13 @@ export async function activate(
   // Slice 13 — AUTOMATIC dedup, narrowed by ADR-0190 (#1835). When enabled
   // (default on), the merge detector flags pairs from cosine 0.90 and
   // RESOLVES only near-exact ones itself: cosine >= kg_auto_merge_threshold
-  // (default 0.98) AND the same numbers on both sides, retiring only a
-  // machine-made copy (never a hand-saved or durable entry), audited as
-  // `system:auto-merge` with the cosine. A correction that changes a date
-  // stays an open pair. Switch: the manifest field `kg_auto_merge_enabled`
-  // (operator UI); the env var KG_AUTO_MERGE_ENABLED only when the field is
-  // unset. Off → flag-only at 0.95 (legacy).
+  // (default 0.98) AND the same text on both sides, retiring only a
+  // machine-made copy nobody corrected (never a hand-saved, user-corrected or
+  // durable entry), audited as `system:auto-merge` with the cosine. Any
+  // textual change (date, name, verdict) stays an open pair. Switch: the
+  // manifest field `kg_auto_merge_enabled` (seeded on install); the env var
+  // KG_AUTO_MERGE_ENABLED only for an install whose config lacks the field.
+  // Off → flag-only at 0.95 (legacy).
   const autoMergeEnabledRaw =
     ctx.config.get<unknown>('kg_auto_merge_enabled') ??
     process.env['KG_AUTO_MERGE_ENABLED'];

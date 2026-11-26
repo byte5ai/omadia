@@ -641,9 +641,10 @@ export class ContextRetriever {
     // without adding verbose retrieval traces. stderr is used so Fly's log
     // aggregator reliably forwards it (we've seen stdout INFO lines dropped).
     const scope = input.sessionScope ?? '<no-scope>';
-    const termsPreview = extractedTerms.slice(0, 5).join(',');
+    // Only the term COUNT: the terms are the user's own words — under prompt
+    // masking the real values (#1869) — and do not belong in server logs.
     console.error(
-      `[context:inner] scope=${scope} tail=${String(tail.length)} entity-hits=${String(entityHitsFiltered.length)} fts=${String(ftsHitsFiltered.length)} memory=${String(memoryHits.length)} terms=[${termsPreview}] rendered=${String(text.length)}B`,
+      `[context:inner] scope=${scope} tail=${String(tail.length)} entity-hits=${String(entityHitsFiltered.length)} fts=${String(ftsHitsFiltered.length)} memory=${String(memoryHits.length)} terms=${String(extractedTerms.length)} rendered=${String(text.length)}B`,
     );
 
     return {
@@ -1070,7 +1071,7 @@ export class ContextRetriever {
       const pre = `${planHits.length}/${processHits.length}/${memoryHits.length}`;
       const post = `${recalled.plans.length}/${recalled.processes.length}/${recalled.insights.length}`;
       console.error(
-        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} durableJudge=${this.opts.durableRelevanceJudgeEnabled ? 'on' : 'off'} durable=${String(durableHits.length)}→${String(judgedDurable.length)} pre(p/pr/i)=${pre} post=${post} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
+        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} durableJudge=${this.opts.durableRelevanceJudgeEnabled ? 'on' : 'off'} durable=${String(durableHits.length)}→${String(judgedDurable.length)} pre(p/pr/i)=${pre} post=${post} terms=${String(extractedTerms.length)} plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
       );
     }
 

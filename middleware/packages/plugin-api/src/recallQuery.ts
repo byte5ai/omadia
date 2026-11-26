@@ -19,6 +19,14 @@ export const RECALL_QUERY_MAX_TERMS = 16;
 /** Shortest kept term without a digit. Digit terms ("p11", "42") need 2. */
 const MIN_TERM_LENGTH = 3;
 const MIN_DIGIT_TERM_LENGTH = 2;
+/**
+ * Two-letter words are kept only when written as an acronym (all capitals:
+ * "IT", "HR", "KI", "EU"). Lowercase two-letter words are mostly filler
+ * ("in", "an", "es", "it"), so they stay out.
+ */
+const ACRONYM_TERM_LENGTH = 2;
+/** Capitalised two-letter fillers that are not topics. */
+const ACRONYM_STOPWORDS: ReadonlySet<string> = new Set(['ok', 'ja', 'no', 'hi', 'so']);
 
 // Function words and filler in German and English. They carry no topic, so
 // matching on them only adds noise. Lowercase, compared after lowercasing.
@@ -56,24 +64,34 @@ const RECALL_STOPWORDS: ReadonlySet<string> = new Set([
  * The content terms of a message as the `simple` text-search parser sees them:
  * lowercase runs of letters and digits, split at every other character (so
  * "Sicherheits-Patches" gives "sicherheits" and "patches"). Stop words and
- * very short tokens are dropped, duplicates removed, capped at
+ * very short tokens are dropped (a two-letter word survives only as a
+ * capitalised acronym such as "IT" or "HR"), duplicates removed, capped at
  * {@link RECALL_QUERY_MAX_TERMS}. Every term matches `^[\p{L}\p{N}]+$`.
  */
 export function extractRecallSearchTerms(message: string): string[] {
-  const tokens = message.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const rawTokens = message.match(/[\p{L}\p{N}]+/gu) ?? [];
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const token of tokens) {
+  for (const raw of rawTokens) {
+    const token = raw.toLowerCase();
     if (seen.has(token)) continue;
     const hasDigit = /\p{N}/u.test(token);
-    const minLength = hasDigit ? MIN_DIGIT_TERM_LENGTH : MIN_TERM_LENGTH;
-    if (token.length < minLength) continue;
+    if (!hasDigit && !isKeptLength(raw, token)) continue;
+    if (hasDigit && token.length < MIN_DIGIT_TERM_LENGTH) continue;
     if (!hasDigit && RECALL_STOPWORDS.has(token)) continue;
     seen.add(token);
     out.push(token);
     if (out.length >= RECALL_QUERY_MAX_TERMS) break;
   }
   return out;
+}
+
+/** Long enough, or a two-letter acronym written in capitals ("IT", "HR"). */
+function isKeptLength(raw: string, token: string): boolean {
+  if (token.length >= MIN_TERM_LENGTH) return true;
+  if (token.length !== ACRONYM_TERM_LENGTH) return false;
+  const isCapitals = raw === raw.toUpperCase() && raw !== token;
+  return isCapitals && !ACRONYM_STOPWORDS.has(token);
 }
 
 /**

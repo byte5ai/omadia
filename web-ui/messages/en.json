@@ -6308,7 +6308,7 @@
   "adminDuplicates": {
     "list": {
       "title": "Memory · Possible Duplicates",
-      "intro": "Memories that are semantically almost identical. The “Memories” tab shows MK pairs (cosine ≥ 0.90 while auto-merge is on, ≥ 0.95 while it is off), the “Excerpts” tab shows Palaia excerpt pairs (cosine ≥ 0.97). Auto-merge (setting “Auto-merge duplicates” of Agent Runtime Extras, on by default) resolves only near-exact pairs by itself (cosine ≥ 0.98 and the same numbers) and only retires an automatically saved copy; the audit trail names the system and the score. Entries saved by hand are never deleted automatically, and they stay here as open pairs. Deleting a memory closes its open pairs. Clicking an entry opens the side-by-side view with a resolve button.",
+      "intro": "Memories that are semantically almost identical. The “Memories” tab shows MK pairs (cosine ≥ 0.90 while auto-merge is on, ≥ 0.95 while it is off), the “Excerpts” tab shows Palaia excerpt pairs (cosine ≥ 0.97). Auto-merge (setting “Auto-merge duplicates” of Agent Runtime Extras, on by default) resolves only near-exact pairs by itself (cosine ≥ 0.98 and the same text) and only retires an automatically saved copy nobody corrected; the audit trail names the system and the score. Entries saved or corrected by hand are never deleted automatically, and they stay here as open pairs. Deleting a memory closes its open pairs. Clicking an entry opens the side-by-side view with a resolve button.",
       "tabs": {
         "memories": "Memories",
         "excerpts": "Excerpts (Palaia)"

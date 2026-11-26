@@ -5,7 +5,9 @@
  *  - a resolution that keeps a deleted side is refused (`keeper_missing`);
  *  - bulk promotion skips retired turns and turns no person owns (Public API
  *    `key:<id>`), and creates entries like live auto-promotion (excerpt,
- *    origin agent).
+ *    origin agent);
+ *  - a lost contradiction verdict records an attempt, moves the entry behind
+ *    never-attempted ones and gives up after INCONSISTENCY_MAX_LOST_VERDICTS.
  */
 
 import { strict as assert } from 'node:assert';
@@ -16,7 +18,11 @@ import { Pool } from 'pg';
 import { NeonKnowledgeGraph } from '@omadia/knowledge-graph-neon/dist/neonKnowledgeGraph.js';
 import { runGraphMigrations } from '@omadia/knowledge-graph-neon/dist/migrator.js';
 import { createBulkPromotionService } from '@omadia/orchestrator-extras';
-import { PROMOTION_RETIRED_PROP, type PalaiaExcerptExtractor } from '@omadia/plugin-api';
+import {
+  INCONSISTENCY_MAX_LOST_VERDICTS,
+  PROMOTION_RETIRED_PROP,
+  type PalaiaExcerptExtractor,
+} from '@omadia/plugin-api';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
 
@@ -42,6 +48,15 @@ async function propsOf(p: Pool, externalId: string): Promise<Record<string, unkn
     [TENANT, externalId],
   );
   return rows[0]?.properties;
+}
+
+async function embeddingDims(p: Pool): Promise<number> {
+  const { rows } = await p.query<{ dims: number | null }>(
+    `SELECT atttypmod AS dims FROM pg_attribute
+      WHERE attrelid = 'graph_nodes'::regclass AND attname = 'embedding'`,
+  );
+  const dims = rows[0]?.dims ?? -1;
+  return dims > 0 ? dims : 768;
 }
 
 async function turn(
@@ -77,6 +92,49 @@ describe('ADR-0190 memorable lifecycle (real PG)', { skip: !pool }, () => {
       await clean(pool);
       await pool.end();
     }
+  });
+
+  it('lost verdicts queue the entry last and give up after the limit', async () => {
+    const kg = await ready;
+    assert.ok(kg && pool);
+    await clean(pool);
+    const mk = async (summary: string): Promise<string> => {
+      const created = await kg.createMemorableKnowledge({
+        kind: 'reference',
+        summary,
+        createdBy: `auto:${OWNER}`,
+        involvedOmadiaUserIds: [OWNER],
+        aclOwners: [OWNER],
+      });
+      const id = created.memorableKnowledgeNodeId;
+      await pool.query(
+        `UPDATE graph_nodes
+            SET embedding = (SELECT ('[' || string_agg('0.1', ',') || ']')::vector
+                               FROM generate_series(1, $3::int))
+          WHERE tenant_id = $1 AND external_id = $2`,
+        [TENANT, id, await embeddingDims(pool)],
+      );
+      return id;
+    };
+    const stuck = await mk('Wartung Ibis am Montag.');
+    const fresh = await mk('Wartung Reiher am Dienstag.');
+    await kg.markMemorableKnowledgeInconsistencyChecked(stuck, { verdictLost: true });
+    assert.deepEqual(
+      await kg.listMemorableKnowledgeIdsForBulkInconsistencyCheck({ limit: 1 }),
+      [fresh],
+      'a never-attempted entry goes first',
+    );
+    for (let i = 1; i < INCONSISTENCY_MAX_LOST_VERDICTS; i++) {
+      await kg.markMemorableKnowledgeInconsistencyChecked(stuck, { verdictLost: true });
+    }
+    const props = await propsOf(pool, stuck);
+    assert.equal(props?.['inconsistency_lost_verdicts'], INCONSISTENCY_MAX_LOST_VERDICTS);
+    assert.equal(props?.['inconsistency_check_outcome'], 'verdict_lost');
+    assert.ok(props?.['last_inconsistency_check_at'], 'marked checked after the limit');
+    assert.deepEqual(
+      await kg.listMemorableKnowledgeIdsForBulkInconsistencyCheck({ limit: 10 }),
+      [fresh],
+    );
   });
 
   it('delete retires the source turn and closes open pairs; keeping a deleted side is refused', async () => {

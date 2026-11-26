@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.99.0 — 2026-11-26
+## 1.105.0 — 2026-11-26
 
 Additive.
 
@@ -30,6 +30,13 @@ Additive.
 - **`MEMORY_CORRECTED_AT_PROP`** (`corrected_at`) / **`isMemorableContentCorrection`**
   and **`RecalledInsight.asOf?` / `correctedByUser?`** (#1863): a person's content edit
   of a memorable entry is stamped and recalled with its day.
+- **`markMemorableKnowledgeInconsistencyChecked(id, opts?: { verdictLost?: boolean })`**
+  and **`INCONSISTENCY_MAX_LOST_VERDICTS`** (ADR-0190, #1861): a pass that lost a
+  verdict records an attempt (`inconsistency_lost_verdicts`,
+  `last_inconsistency_attempt_at`) instead of the marker; after the limit the entry is
+  marked checked with `inconsistency_check_outcome: 'verdict_lost'`. A third-party
+  provider that ignores the option sets the marker on the first lost pass, as all
+  providers did before #1861 (no retry, no endless retries either).
 
 ### Changed (behaviour)
 
@@ -43,6 +50,10 @@ Additive.
   content term has no lexical leg (#1822).
 - `updateMemorableKnowledge` on both bundled providers stamps `corrected_at` when the
   patch changes kind, summary or rationale (#1863).
+- `listMemorableKnowledgeIdsForBulkInconsistencyCheck` on both bundled providers puts
+  never-attempted entries first, then orders by the last lost attempt and age.
+- `extractRecallSearchTerms` keeps two-letter acronyms written in capitals ("IT",
+  "HR", "EU"); lowercase two-letter words stay out.
 
 ## 1.98.0 — 2026-11-25
 

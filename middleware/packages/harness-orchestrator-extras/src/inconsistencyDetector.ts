@@ -30,7 +30,7 @@ import type {
   KnowledgeGraph,
   MemorableKnowledgeHit,
 } from '@omadia/plugin-api';
-import { parseLlmJson } from '@omadia/plugin-api';
+import { INCONSISTENCY_MAX_LOST_VERDICTS, parseLlmJson } from '@omadia/plugin-api';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
 
@@ -284,8 +284,20 @@ export function createInconsistencyDetector(
     // again (the bulk check only picks entries without the marker). Pairs
     // already flagged are idempotent on re-run.
     if (verdictLost) {
+      // ADR-0190 — record the lost attempt; after
+      // INCONSISTENCY_MAX_LOST_VERDICTS the provider gives up on the entry
+      // so a pair that never gets a verdict stops blocking the queue.
+      try {
+        await deps.graph.markMemorableKnowledgeInconsistencyChecked(source.id, {
+          verdictLost: true,
+        });
+      } catch (err) {
+        log(
+          `[inconsistency] attempt write failed for ${source.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       log(
-        `[inconsistency] ${memorableKnowledgeNodeId} left unchecked: at least one verdict was lost — the next sweep retries`,
+        `[inconsistency] ${memorableKnowledgeNodeId} left unchecked: at least one verdict was lost — retried on a later sweep (gives up after ${String(INCONSISTENCY_MAX_LOST_VERDICTS)} lost passes)`,
       );
       return { candidatesScanned: filtered.length, inconsistenciesCreated: created };
     }

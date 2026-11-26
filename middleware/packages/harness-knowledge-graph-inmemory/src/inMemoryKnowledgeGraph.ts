@@ -112,6 +112,7 @@ import {
   SYSTEM_AUDIT_ACTOR_UUID,
   extractRecallSearchTerms,
   isMemorableContentCorrection,
+  INCONSISTENCY_MAX_LOST_VERDICTS,
   MEMORY_CORRECTED_AT_PROP,
 } from '@omadia/plugin-api';
 
@@ -1467,7 +1468,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         ...pair.props,
         status: 'dismissed',
         resolved_at: now,
-        resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
+        resolved_by: resolvedByOf(actor),
         closed_reason: 'memory_deleted',
         closed_memory: memorableKnowledgeNodeId,
       };
@@ -2194,7 +2195,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'dismiss' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
     };
     return this.hydrateInconsistency(externalId)!;
   }
@@ -2205,15 +2206,21 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     limit: number;
   }): Promise<string[]> {
     const limit = Math.max(1, Math.min(opts.limit, 200));
-    const candidates: { id: string; createdAt: string }[] = [];
+    const candidates: { id: string; createdAt: string; attemptAt: string }[] = [];
     for (const node of this.nodes.values()) {
       if (node.type !== 'MemorableKnowledge') continue;
       if (!this.embeddings.has(node.id)) continue;
       if (node.props['last_inconsistency_check_at'] !== undefined) continue;
       const createdAt = String(node.props['created_at'] ?? '');
-      candidates.push({ id: node.id, createdAt });
+      const attemptAt = String(node.props['last_inconsistency_attempt_at'] ?? '');
+      candidates.push({ id: node.id, createdAt, attemptAt });
     }
-    candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // ADR-0190 — never-attempted first, then by last lost attempt, then age.
+    candidates.sort(
+      (a, b) =>
+        a.attemptAt.localeCompare(b.attemptAt) ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
     return candidates.slice(0, limit).map((c) => c.id);
   }
 
@@ -2243,9 +2250,27 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
+    opts?: { verdictLost?: boolean },
   ): Promise<void> {
     const node = this.nodes.get(memorableKnowledgeNodeId);
     if (!node || node.type !== 'MemorableKnowledge') return;
+    if (opts?.verdictLost === true) {
+      // ADR-0190 (#1861) — see NeonKnowledgeGraph.
+      const now = new Date().toISOString();
+      const lost = Number(node.props['inconsistency_lost_verdicts'] ?? 0) + 1;
+      node.props = {
+        ...node.props,
+        inconsistency_lost_verdicts: lost,
+        last_inconsistency_attempt_at: now,
+        ...(lost >= INCONSISTENCY_MAX_LOST_VERDICTS
+          ? {
+              last_inconsistency_check_at: now,
+              inconsistency_check_outcome: 'verdict_lost',
+            }
+          : {}),
+      };
+      return;
+    }
     node.props = {
       ...node.props,
       last_inconsistency_check_at: new Date().toISOString(),
@@ -2421,7 +2446,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
     };
     return this.hydrateMergeCandidate(externalId)!;
   }
@@ -2840,7 +2865,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.systemActor ? null : actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
     };
     return this.hydrateExcerptMergeCandidate(externalId)!;
   }
@@ -3834,4 +3859,18 @@ function cosine(a: readonly number[], b: readonly number[]): number {
   }
   if (na === 0 || nb === 0) return Number.NaN;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+const RESOLVED_BY_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * ADR-0190 — `resolved_by` of a pair: the person's uuid, null for a job or a
+ * non-uuid actor (mirrors NeonKnowledgeGraph).
+ */
+function resolvedByOf(actor: AclMutationOptions): string | null {
+  if (actor.systemActor) return null;
+  return RESOLVED_BY_UUID_RE.test(actor.actorOmadiaUserId)
+    ? actor.actorOmadiaUserId
+    : null;
 }

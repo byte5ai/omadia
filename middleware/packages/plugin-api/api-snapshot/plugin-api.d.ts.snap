@@ -1362,7 +1362,9 @@ unchecked: number;
 alreadyChecked: number;
 withoutEmbedding: number;
 }>;
-markMemorableKnowledgeInconsistencyChecked(memorableKnowledgeNodeId: string): Promise<void>;
+markMemorableKnowledgeInconsistencyChecked(memorableKnowledgeNodeId: string, opts?: {
+verdictLost?: boolean;
+}): Promise<void>;
 listMergeCandidates(opts: ListMergeCandidatesOptions): Promise<MergeCandidateNode[]>;
 getMergeCandidate(mergeCandidateExternalId: string, viewerOmadiaUserId: string): Promise<MergeCandidateNode | null>;
 createMergeCandidate(input: CreateMergeCandidateInput): Promise<MergeCandidateNode | null>;
@@ -1550,6 +1552,7 @@ rationale?: string | null;
 significance?: number;
 }
 export declare const MEMORY_CORRECTED_AT_PROP = "corrected_at";
+export declare const INCONSISTENCY_MAX_LOST_VERDICTS = 3;
 export declare function isMemorableContentCorrection(current: Readonly<Record<string, unknown>>, patch: MemorableKnowledgeUpdate): boolean;
 export interface SessionFilter {
 userId?: string;

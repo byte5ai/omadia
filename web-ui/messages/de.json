@@ -6308,7 +6308,7 @@
   "adminDuplicates": {
     "list": {
       "title": "Memory · Mögliche Duplikate",
-      "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.90, solange Auto-Merge an ist, sonst ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Auto-Merge (Einstellung „Duplikate automatisch zusammenführen“ der Agent Runtime Extras, standardmäßig an) löst nur nahezu identische Paare selbst auf (cosine ≥ 0.98 und dieselben Zahlen) und entfernt dabei nur eine automatisch gespeicherte Kopie; der Audit-Trail nennt das System und den Wert. Von Hand gespeicherte Einträge werden nie automatisch gelöscht und bleiben hier als offene Paare. Wird eine Memory gelöscht, schließen sich ihre offenen Paare. Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
+      "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.90, solange Auto-Merge an ist, sonst ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Auto-Merge (Einstellung „Duplikate automatisch zusammenführen“ der Agent Runtime Extras, standardmäßig an) löst nur nahezu identische Paare selbst auf (cosine ≥ 0.98 und derselbe Text) und entfernt dabei nur eine automatisch gespeicherte Kopie, die niemand korrigiert hat; der Audit-Trail nennt das System und den Wert. Von Hand gespeicherte oder korrigierte Einträge werden nie automatisch gelöscht und bleiben hier als offene Paare. Wird eine Memory gelöscht, schließen sich ihre offenen Paare. Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
       "tabs": {
         "memories": "Memories",
         "excerpts": "Auszüge (Palaia)"

@@ -479,9 +479,12 @@ export interface KnowledgeGraph {
   /**
    * Slice 9.5 — list `MemorableKnowledge` external_ids that still need a
    * bulk inconsistency-check pass: embedding column populated AND no
-   * `last_inconsistency_check_at` marker on the row. Ordered by
-   * `created_at` ascending (oldest first — most likely source of
-   * historical conflicts that predate Slice 9). Clamped to [1, 200].
+   * `last_inconsistency_check_at` marker on the row. Ordered by the last
+   * lost-verdict attempt (`last_inconsistency_attempt_at`, never-attempted
+   * first — ADR-0190, so entries whose verdicts keep getting lost do not
+   * hold the head of the queue), then `created_at` ascending (oldest first —
+   * most likely source of historical conflicts that predate Slice 9).
+   * Clamped to [1, 200].
    * Returns external_ids (`mk:<uuid>`), not internal uuids, so callers
    * can feed them straight into `inconsistencyDetector.detectFor()`.
    */
@@ -503,9 +506,18 @@ export interface KnowledgeGraph {
    * of every successful run (whether 0 or N Inconsistencies were
    * created) so the bulk-job dedupes correctly. Idempotent: re-writing
    * the marker just refreshes the timestamp.
+   *
+   * ADR-0190 (#1861) — with `{ verdictLost: true }` the pass lost at least
+   * one verdict: the provider records an attempt instead
+   * (`inconsistency_lost_verdicts` + 1, `last_inconsistency_attempt_at`)
+   * and only sets the marker, with `inconsistency_check_outcome:
+   * 'verdict_lost'`, once {@link INCONSISTENCY_MAX_LOST_VERDICTS} attempts
+   * were lost — so a pair that never gets a verdict stops costing model
+   * calls on every sweep.
    */
   markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
+    opts?: { verdictLost?: boolean },
   ): Promise<void>;
   /**
    * Slice 10 — list near-duplicate-candidate markers visible to the
@@ -1135,6 +1147,13 @@ export interface MemorableKnowledgeUpdate {
  * patch does not stamp it.
  */
 export const MEMORY_CORRECTED_AT_PROP = 'corrected_at';
+
+/**
+ * ADR-0190 (#1861) — after this many bulk passes that each lost a
+ * contradiction verdict, an entry is marked checked with
+ * `inconsistency_check_outcome: 'verdict_lost'` instead of being retried.
+ */
+export const INCONSISTENCY_MAX_LOST_VERDICTS = 3;
 
 /**
  * #1863 — whether `patch` changes the content (kind, summary, rationale) of

@@ -38,13 +38,19 @@ describe('extractRecallSearchTerms / buildRecallTsQuery (#1822)', () => {
     }
   });
 
+  it('keeps two-letter acronyms but not lowercase two-letter filler', () => {
+    assert.deepEqual(extractRecallSearchTerms('Was wissen wir über IT?'), ['wissen', 'it']);
+    assert.deepEqual(extractRecallSearchTerms('Wer ist in HR für die EU zuständig?'), ['hr', 'eu', 'zuständig']);
+    assert.equal(buildRecallTsQuery('OK, so it is'), null);
+  });
+
   it('cannot carry tsquery syntax from the message', () => {
     const query = buildRecallTsQuery("Kunde & 'Müller' | !Zebra <-> (Projekt):*");
     assert.equal(query, 'kunde | müller | zebra | projekt');
   });
 
-  it('keeps short tokens only when they hold a digit, and caps the term count', () => {
-    assert.deepEqual(extractRecallSearchTerms('Raum B2 im 3. Stock, KW 47'), ['raum', 'b2', 'stock', '47']);
+  it('keeps short tokens only with a digit or as a capitalised acronym, and caps the term count', () => {
+    assert.deepEqual(extractRecallSearchTerms('Raum B2 im 3. Stock, KW 47'), ['raum', 'b2', 'stock', 'kw', '47']);
     const many = Array.from({ length: 40 }, (_, i) => `begriff${i}`).join(' ');
     assert.equal(extractRecallSearchTerms(many).length, RECALL_QUERY_MAX_TERMS);
   });

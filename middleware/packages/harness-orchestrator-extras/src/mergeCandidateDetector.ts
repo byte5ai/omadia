@@ -15,7 +15,7 @@
  *
  * Unlike the Slice-9 Inconsistency-Detector, this detector is
  * **cosine-only** — no Haiku judgement pass (auto-merge adds a deterministic
- * same-numbers check, ADR-0190). At ≥ 0.95 the content
+ * same-text check, ADR-0190). At ≥ 0.95 the content
  * overlap is high enough that one is a refinement/restatement of the
  * other; the operator picks `keep_a` / `keep_b` / `not_duplicate`.
  *
@@ -23,12 +23,13 @@
  */
 
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type {
-  GraphNode,
-  KnowledgeGraph,
-  MemorableKnowledgeHit,
-  MergeCandidateDetectorService,
-  PalaiaExcerptHit,
+import {
+  MEMORY_CORRECTED_AT_PROP,
+  type GraphNode,
+  type KnowledgeGraph,
+  type MemorableKnowledgeHit,
+  type MergeCandidateDetectorService,
+  type PalaiaExcerptHit,
 } from '@omadia/plugin-api';
 
 export interface MergeCandidateDetectorDeps {
@@ -48,11 +49,13 @@ export interface MergeCandidateDetectorDeps {
    * Auto-merge threshold (ADR-0190). When set, a flagged MK pair is RESOLVED
    * automatically (the duplicate is retired via `resolveMergeCandidate`)
    * instead of only being flagged for an operator — but only a NEAR-EXACT
-   * pair: cosine at or above this value AND the same numbers on both sides
-   * (a changed date or amount is a correction, not a duplicate). SAFETY:
-   * only a machine-made entry (auto-promoted, reaper, system) is ever
-   * retired; a hand-saved or `manuallyAuthored` (durable) entry is never
-   * deleted, and a pair of two such entries stays open for an operator.
+   * pair: cosine at or above this value AND the same text on both sides once
+   * case, whitespace and punctuation are ignored (a changed date, amount,
+   * name or verdict is a correction, not a duplicate). SAFETY: only a
+   * machine-made entry (auto-promoted, reaper, system) that no person has
+   * corrected is ever retired; a hand-saved, user-corrected (`corrected_at`)
+   * or `manuallyAuthored` (durable) entry is never deleted, and a pair of
+   * two such entries stays open for an operator.
    * Two machine-made entries: the OLDER one wins. The resolution is audited
    * as `system:auto-merge` with the cosine as the reason.
    * Undefined → auto-merge disabled (flag-only, legacy behaviour).
@@ -75,25 +78,38 @@ export const AUTO_MERGE_SYSTEM_ACTOR = 'system:auto-merge';
  */
 const MACHINE_MADE_CREATED_BY = /^(auto:|system:|scratch-reaper)/;
 
-/** True when a person saved the entry (or it is durable/operator-curated). */
+/**
+ * True when a person saved the entry, corrected it (#1863 `corrected_at`),
+ * or it is durable/operator-curated. An auto-promoted entry a person later
+ * edited keeps `created_by: auto:…`, so the correction marker must count too.
+ */
 export function isUserSaved(node: GraphNode): boolean {
   if (node.manuallyAuthored === true) return true;
+  const correctedAt = node.props[MEMORY_CORRECTED_AT_PROP];
+  if (typeof correctedAt === 'string' && correctedAt.length > 0) return true;
   return !MACHINE_MADE_CREATED_BY.test(String(node.props['created_by'] ?? ''));
 }
 
-/** The numbers an entry states, in order — dates, amounts, versions. */
-function numbersOf(node: GraphNode): string {
-  const text = `${String(node.props['summary'] ?? '')} ${String(node.props['rationale'] ?? '')}`;
-  return (text.match(/\d+/g) ?? []).join(' ');
+/** Kind, summary and rationale with case, whitespace and punctuation dropped. */
+function normalizedTextOf(node: GraphNode): string {
+  const text = [node.props['kind'], node.props['summary'], node.props['rationale']]
+    .map((v) => String(v ?? ''))
+    .join(' ');
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
 }
 
 /**
- * ADR-0190 — near-exact: the two entries state the same numbers. A pair that
- * differs only in a date or amount scores a high cosine but is a correction;
- * it stays an open pair (and the contradiction check sees it).
+ * ADR-0190 — near-exact: the two entries say the same thing word for word
+ * (case, whitespace and punctuation ignored). Any other difference — a date,
+ * an amount, a name, "approved" vs "rejected" — can be a correction even at a
+ * high cosine; such a pair stays open for review (and the contradiction check
+ * sees it).
  */
 export function isNearExactDuplicate(a: GraphNode, b: GraphNode): boolean {
-  return numbersOf(a) === numbersOf(b);
+  return normalizedTextOf(a) === normalizedTextOf(b);
 }
 
 export function createMergeCandidateDetector(
@@ -213,7 +229,7 @@ export function createMergeCandidateDetector(
               : null;
             if (keeper === null) {
               log(
-                `[merge-detector] auto-merge SKIP ${source.id} vs ${candidate.mk.id}: ${isNearExactDuplicate(source, candidate.mk) ? 'both saved on purpose' : 'numbers differ'} (left open)`,
+                `[merge-detector] auto-merge SKIP ${source.id} vs ${candidate.mk.id}: ${isNearExactDuplicate(source, candidate.mk) ? 'both saved or corrected by a person' : 'texts differ'} (left open)`,
               );
             } else {
               // duplicateOf is sorted ascending; keep_a keeps [0] (deletes [1]),
@@ -228,7 +244,7 @@ export function createMergeCandidateDetector(
                   {
                     actorOmadiaUserId: viewer,
                     systemActor: AUTO_MERGE_SYSTEM_ACTOR,
-                    reason: `auto-merge: cosine=${candidate.cosineSim.toFixed(3)} >= ${autoMergeThreshold.toFixed(2)}, same numbers, kept ${keeper}`,
+                    reason: `auto-merge: cosine=${candidate.cosineSim.toFixed(3)} >= ${autoMergeThreshold.toFixed(2)}, same text, kept ${keeper}`,
                   },
                 );
                 log(

@@ -83,13 +83,17 @@ The rules:
    (`<agentSlug>::…`), and the turn's member owners. Skipped turns are counted as
    `skipped`, not `failed`.
 4. **Safe auto-merge.** With auto-merge on (manifest field `kg_auto_merge_enabled`,
-   default on; env `KG_AUTO_MERGE_ENABLED` only when the field is unset), pairs are
+   default on and seeded into every fresh install; env `KG_AUTO_MERGE_ENABLED` is only a
+   fallback for an install whose config holds no value for the field), pairs are
    flagged from cosine 0.90, and a pair is resolved by the job only when it is
    near-exact: cosine ≥ `kg_auto_merge_threshold` (default 0.98) **and** both sides
-   state the same numbers. Only a machine-made entry (`created_by` `auto:…`,
-   `system:…`, the scratch reaper) is ever retired; a hand-saved or
+   carry the same kind, summary and rationale once case, whitespace and punctuation
+   are dropped. Any other difference (a date, an amount, a name, "approved" vs
+   "rejected") can be a correction and stays an open pair. Only a machine-made entry
+   (`created_by` `auto:…`, `system:…`, the scratch reaper) that no person corrected
+   (no `corrected_at`, #1863) is ever retired; a hand-saved, user-corrected or
    `manuallyAuthored` entry always wins, and two of them stay an open pair. Two
-   machine-made copies: the older one wins.
+   machine-made, uncorrected, textually identical copies: the older one wins.
 5. **Jobs are audited as jobs.** `AclMutationOptions.systemActor` (`system:<job>`) is
    audit-only: authorisation still checks the owner, but the audit row carries the nil
    actor uuid with the job label, the reason carries the cosine, and the pair's
@@ -101,8 +105,12 @@ The rules:
    detail pages disable those actions.
 7. **Lost verdicts are retried.** The contradiction judge gets an output budget that
    fits the answer the prompt asks for (500 tokens). A failed or unparseable verdict
-   leaves `last_inconsistency_check_at` unset, so the next bulk sweep judges the entry
-   again.
+   leaves `last_inconsistency_check_at` unset, so a later bulk sweep judges the entry
+   again. Each lost pass is counted (`inconsistency_lost_verdicts`,
+   `last_inconsistency_attempt_at`); the bulk queue takes never-attempted entries
+   first, and after `INCONSISTENCY_MAX_LOST_VERDICTS` (3) lost passes the entry is
+   marked checked with `inconsistency_check_outcome: 'verdict_lost'`, so a pair that
+   never gets a verdict cannot hold the head of the queue or cost model calls forever.
 
 ### Consequences
 

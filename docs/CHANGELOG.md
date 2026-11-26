@@ -184,6 +184,7 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+
 ### Fixed — memory notes keep their meaning under prompt masking (ADR-0191) (2026-11-26)
 
 - **A note no longer reads as a fact about another term (#1841).** With `mask_user_prompt`
@@ -211,10 +212,12 @@ Contract: ADR-0230 (Proposed).
   skips retire the turn.
 - **Auto-merge only merges near-exact copies (#1835).** New manifest switch
   `kg_auto_merge_enabled` (Agent Runtime Extras, default on; `KG_AUTO_MERGE_ENABLED`
-  only when unset). Pairs are flagged from cosine 0.90; the job resolves only cosine ≥
-  0.98 (`kg_auto_merge_threshold`) with the same numbers on both sides, and only retires
-  a machine-made copy — hand-saved and durable entries are never deleted. The audit row
-  names `system:auto-merge` with the cosine (plugin-api 1.99.0
+  only on installs whose config has no value for the field). Pairs are flagged from
+  cosine 0.90; the job resolves only cosine ≥ 0.98 (`kg_auto_merge_threshold`) with the
+  same text on both sides (case, whitespace and punctuation ignored), and only retires a
+  machine-made copy nobody corrected — hand-saved, user-corrected (`corrected_at`) and
+  durable entries are never deleted. The audit row
+  names `system:auto-merge` with the cosine (plugin-api 1.105.0
   `AclMutationOptions.systemActor`), `resolved_by` is null. `/admin/duplicates` intro
   describes this (en+de).
 - **Pairs close with their entry (#1862).** Deleting an entry dismisses its open
@@ -222,8 +225,12 @@ Contract: ADR-0230 (Proposed).
   in favour of a side that no longer exists answers 409 `*.keeper_missing` and deletes
   nothing; the detail pages disable those buttons and say why.
 - **Contradiction verdicts are no longer lost (#1861).** Judge output cap 200 → 500
-  tokens; a failed or unparseable verdict leaves the entry unchecked so the next bulk
-  sweep retries.
+  tokens; a failed or unparseable verdict leaves the entry unchecked so a later bulk
+  sweep retries. Each lost pass is counted (`inconsistency_lost_verdicts`,
+  `last_inconsistency_attempt_at`); the bulk queue takes never-attempted entries first,
+  and after 3 lost passes (`INCONSISTENCY_MAX_LOST_VERDICTS`, plugin-api) the entry is
+  marked checked with `inconsistency_check_outcome: verdict_lost`, so a pair that never
+  gets a verdict no longer blocks newer entries.
 
 ### Fixed — recall quality (2026-11-26)
 
