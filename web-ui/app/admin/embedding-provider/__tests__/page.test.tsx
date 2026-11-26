@@ -301,7 +301,9 @@ describe('keyless embedder — weight download', () => {
     const card = await screen.findByTestId('local-model-card');
     // The size has to be stated BEFORE the click: 135 MB on a metered
     // connection is a decision, not a detail.
-    expect(card.textContent).toContain('129');
+    // Decimal MB, as the label says (#1839): 135_392_208 bytes → 135 MB,
+    // not 129 (that was MiB under an "MB" label).
+    expect(card.textContent).toContain('135 MB');
     expect(card.textContent).toContain('/var/embedding-models');
     expect(screen.getByTestId('local-model-fetch')).toBeTruthy();
   });

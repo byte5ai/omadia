@@ -178,6 +178,18 @@ Contract: ADR-0230 (Proposed).
 - **#1854** Graph explorer: the owner/audit section of a memory is keyed by the entry, so
   selecting another entry shows its own audit (a new request) and empty owner/reason inputs
   instead of the previous entry's history and typed text.
+- **#1839** Memory, graph and knowledge admin copy: no visible text names internal planning
+  steps any more ("slice 6.5", "Slice 9", "slice 11", "#133"). Hard-coded English went into
+  the catalogs (en+de): `/memories` heading and row labels, the history's actor/before/after
+  lines (new namespace `memoryAudit`), the graph owner section (tabs, Delete, translated
+  action names via the shared `memoryAuditLabels.ts`), the recall card's insight kind,
+  kg-priorities "Add", the duplicates/inconsistencies status filter and "Detector". German
+  values that were English or jargon are translated (bulk promotion, duplicates and
+  inconsistencies, KG lifecycle, KG priorities, graph filters, `/memory` axes). The `/admin`
+  storage-backend card names Postgres and In-Memory instead of a filesystem option that
+  does not exist. The local model size is shown in decimal MB (135 MB, it divided by 1024
+  twice under an "MB" label), and the adapter's store text says 135 MB instead of 144 MB.
+  i18n literal ceiling lowered to 114; four stale identical-value exceptions removed.
 
 ### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
 

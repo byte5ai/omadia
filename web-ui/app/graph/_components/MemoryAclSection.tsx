@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import type { MemorableAclAction } from '@/app/_lib/api';
+import { memoryAuditActionKey } from '@/app/_lib/memoryAuditLabels';
 import type { GraphNode } from './graphTypes';
 
 interface AclAuditEntry {
@@ -11,7 +13,7 @@ interface AclAuditEntry {
   memoryExternalId: string;
   actorOmadiaUserId: string;
   actorChannelIdentityId?: string;
-  action: 'create' | 'expand' | 'shrink' | 'delete' | 'edit' | 'edit_excerpt';
+  action: MemorableAclAction;
   beforeOwners: string[];
   afterOwners: string[] | null;
   reason?: string;
@@ -42,6 +44,8 @@ export default function MemoryAclSection({
   onDeleted,
 }: Props): React.ReactElement {
   const t = useTranslations('graph.acl');
+  const tAudit = useTranslations('memoryAudit');
+  const tActions = useTranslations('memories.detail.actions');
   const format = useFormatter();
   const memoryId = memory.id;
   const ownersFromProps = Array.isArray(memory.props['acl_owners'])
@@ -193,6 +197,13 @@ export default function MemoryAclSection({
     }
   }, [memoryId, onDeleted, reason, t]);
 
+  // A known action reads as the memory history labels it; an unknown one
+  // (newer middleware) stays raw rather than showing a key path.
+  const actionLabel = (action: string): string => {
+    const key = memoryAuditActionKey(action);
+    return key === null ? action : tActions(key);
+  };
+
   return (
     <div className="mt-3 border-t border-[color:var(--border)] pt-3">
       <div className="mb-2 flex gap-1 text-[10px] font-semibold uppercase tracking-wide">
@@ -206,7 +217,7 @@ export default function MemoryAclSection({
               : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg)]'
           }`}
         >
-          Owners ({owners.length})
+          {t('ownersTab', { count: owners.length })}
         </button>
         {/* eslint-disable-next-line no-restricted-syntax -- segmented tab selector with active-state styling */}
         <button
@@ -218,7 +229,7 @@ export default function MemoryAclSection({
               : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg)]'
           }`}
         >
-          Audit
+          {t('auditTab')}
         </button>
       </div>
 
@@ -287,7 +298,7 @@ export default function MemoryAclSection({
                 disabled={busy}
                 title={t('deleteTitle')}
               >
-                Delete
+                {t('delete')}
               </Button>
             </div>
           </div>
@@ -340,22 +351,22 @@ export default function MemoryAclSection({
                                   : 'rounded bg-[color:var(--danger)]/20 px-1 text-[color:var(--danger)]'
                       }
                     >
-                      {e.action}
+                      {actionLabel(e.action)}
                     </span>
                     <span className="text-[color:var(--fg-subtle)]">
                       {format.dateTime(new Date(e.createdAt))}
                     </span>
                   </div>
                   <div className="mt-1 font-mono text-[10px] text-[color:var(--fg-muted)]">
-                    actor: {e.actorOmadiaUserId}
+                    {tAudit('actor', { actor: e.actorOmadiaUserId })}
                   </div>
                   <div className="font-mono text-[10px] text-[color:var(--fg-muted)]">
-                    before: [{e.beforeOwners.join(', ') || '—'}]
+                    {tAudit('before')} [{e.beforeOwners.join(', ') || '—'}]
                   </div>
                   <div className="font-mono text-[10px] text-[color:var(--fg-muted)]">
-                    after:{' '}
+                    {tAudit('after')}{' '}
                     {e.afterOwners === null
-                      ? '(deleted)'
+                      ? tAudit('deleted')
                       : `[${e.afterOwners.join(', ') || '—'}]`}
                   </div>
                   {e.reason && (

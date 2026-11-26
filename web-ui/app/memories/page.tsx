@@ -98,7 +98,7 @@ export default function MemoriesPage(): React.ReactElement {
       <header className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-6 py-4">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-lg font-medium">Memories</h1>
+            <h1 className="text-lg font-medium">{t('list.title')}</h1>
             <p className="text-xs text-[color:var(--fg-muted)]">
               {t('list.subtitle')}
             </p>
@@ -197,13 +197,15 @@ export default function MemoriesPage(): React.ReactElement {
                       <>
                         <span aria-hidden>·</span>
                         <span>
-                          significance {mk.props.significance.toFixed(2)}
+                          {t('list.significance', {
+                            value: mk.props.significance.toFixed(2),
+                          })}
                         </span>
                       </>
                     )}
                     <span aria-hidden>·</span>
                     <span className="font-mono">
-                      created_by {mk.props.created_by}
+                      {t('list.createdBy', { by: mk.props.created_by })}
                     </span>
                   </div>
                 </Link>

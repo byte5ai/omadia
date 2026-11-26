@@ -7,8 +7,8 @@ identity:
   kind: "model"
   domain: "core.embeddings"
   description:
-    en: "Turns text into vectors on this machine, with no API key and no separate server, so semantic search, memory and duplicate detection also work on the subscription path. Use it instead of the Ollama or OpenAI compatible adapter, only one of the three can be active. The model is downloaded once, about 144 MB, and then runs offline."
-    de: "Rechnet Texte auf diesem Rechner in Zahlenvektoren um, ohne API-Schlüssel und ohne eigenen Server, damit semantische Suche, Gedächtnis und Duplikaterkennung auch auf dem Abo-Weg funktionieren. Nutze es alternativ zum Ollama- oder OpenAI-kompatiblen Adapter, aktiv sein darf immer nur eines der drei. Das Modell wird einmal geladen, etwa 144 MB, und läuft danach ohne Internet."
+    en: "Turns text into vectors on this machine, with no API key and no separate server, so semantic search, memory and duplicate detection also work on the subscription path. Use it instead of the Ollama or OpenAI compatible adapter, only one of the three can be active. The model is downloaded once, about 135 MB, and then runs offline."
+    de: "Rechnet Texte auf diesem Rechner in Zahlenvektoren um, ohne API-Schlüssel und ohne eigenen Server, damit semantische Suche, Gedächtnis und Duplikaterkennung auch auf dem Abo-Weg funktionieren. Nutze es alternativ zum Ollama- oder OpenAI-kompatiblen Adapter, aktiv sein darf immer nur eines der drei. Das Modell wird einmal geladen, etwa 135 MB, und läuft danach ohne Internet."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -71,7 +71,7 @@ setup:
       Uninstall the current one in the store first, then install this plugin.
 
       **Fetch the weights once.** The weights are deliberately *not* included
-      in the package — they would add about 144 MB to every desktop installer,
+      in the package — they would add about 135 MB to every desktop installer,
       for a plugin many installations never activate. After the install, open
       Admin → Embedding provider and click **Load model now**. When the
       download is complete, click **Reactivate provider**: the plugin reads
@@ -114,7 +114,7 @@ setup:
       Plugin.
 
       **Einmal Gewichte holen.** Die Gewichte sind bewusst *nicht* im Paket
-      enthalten — sie wären rund 144 MB in jedem Desktop-Installer, für ein
+      enthalten — sie wären rund 135 MB in jedem Desktop-Installer, für ein
       Plugin, das viele Installationen nie aktivieren. Öffne nach der
       Installation Admin → Embedding-Anbieter und klicke **Modell jetzt
       laden**. Ist der Download fertig, klicke **Anbieter neu aktivieren**:

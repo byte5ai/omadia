@@ -269,7 +269,7 @@
         },
         "memoryBackend": {
           "title": "Storage Backend",
-          "description": "Switch memory storage between filesystem and Postgres; Postgres needs DATABASE_URL and takes effect after a restart."
+          "description": "Switch memory storage between Postgres and In-Memory (volatile); Postgres needs DATABASE_URL and the switch takes effect after a restart."
         },
         "embeddingProvider": {
           "title": "Embedding Provider",
@@ -6329,12 +6329,17 @@
       "resultTitle": "Result · {duration} ms",
       "newDuplicates": "new duplicates",
       "errors": "errors",
-      "statusAll": "all",
       "loading": "loading…",
       "refresh": "refresh",
       "error": "Error: {message}",
       "emptyMemories": "No duplicate candidates in this selection.",
-      "emptyExcerpts": "No excerpt duplicates in this selection."
+      "emptyExcerpts": "No excerpt duplicates in this selection.",
+      "statusFilter": {
+        "open": "open",
+        "resolved": "resolved",
+        "dismissed": "dismissed",
+        "all": "all"
+      }
     },
     "detail": {
       "title": "Resolve duplicate",
@@ -6409,7 +6414,7 @@
       "confirmBulkRun": "Start bulk detect for up to {count} memories? Up to 5 Haiku calls per memory — costs scale with the limit.",
       "bulkDetectAria": "Bulk inconsistency detect",
       "bulkDetectTitle": "Bulk Detect",
-      "bulkDetectDescription": "Memories that have not had an inconsistency check yet (= from before Slice 9).",
+      "bulkDetectDescription": "Memories that have not had a contradiction check yet (saved before the check existed, or not checked since).",
       "previewFailed": "Preview failed: {message}",
       "unchecked": "unchecked",
       "alreadyChecked": "already checked",
@@ -6424,11 +6429,17 @@
       "resultTitle": "Result · {duration} ms",
       "newConflicts": "new conflicts",
       "errors": "errors",
-      "statusAll": "all",
       "loading": "loading…",
       "refresh": "refresh",
       "error": "Error: {message}",
-      "empty": "No inconsistencies in this selection."
+      "empty": "No inconsistencies in this selection.",
+      "statusFilter": {
+        "open": "open",
+        "resolved": "resolved",
+        "dismissed": "dismissed",
+        "all": "all"
+      },
+      "detectorLabel": "Detector"
     },
     "detail": {
       "title": "Resolve conflict",
@@ -6536,7 +6547,8 @@
     "colAction": "Action",
     "colWeight": "Weight",
     "colReason": "Reason",
-    "colUpdated": "Updated"
+    "colUpdated": "Updated",
+    "add": "Add"
   },
   "adminDatasets": {
     "title": "Knowledge · Datasets",
@@ -6772,11 +6784,11 @@
       "memories": "Memories",
       "memoriesHint": "MK + excerpt + provenance (2 hops)",
       "topics": "Topics",
-      "topicsHint": "Cluster nodes + HAS_TOPIC (slice 11)",
+      "topicsHint": "Topic clusters and their members",
       "issues": "Issues",
       "issuesHint": "Conflicts + duplicate candidates",
       "plans": "Plans",
-      "plansHint": "Plan DAG of the selected session (#133)"
+      "plansHint": "Plan steps of the selected session"
     },
     "modes": {
       "graph": "Graph",
@@ -6823,7 +6835,10 @@
       "auditUnreadable": "Audit log unreadable: {error}",
       "auditLoading": "Loading audit trail…",
       "auditEmpty": "No audit entries.",
-      "reasonQuoted": "“{reason}”"
+      "reasonQuoted": "“{reason}”",
+      "ownersTab": "Owners ({count})",
+      "auditTab": "Audit",
+      "delete": "Delete"
     },
     "listView": {
       "runTrace": "Run trace",
@@ -6937,7 +6952,10 @@
       "ownerCount": "{count, plural, one {# owner} other {# owners}}",
       "loadMore": "Load more",
       "loadingMore": "Loading more…",
-      "shownCount": "{count, plural, one {# entry shown} other {# entries shown}} — more are available."
+      "shownCount": "{count, plural, one {# entry shown} other {# entries shown}} — more are available.",
+      "title": "Memories",
+      "significance": "significance {value}",
+      "createdBy": "created by {by}"
     },
     "detail": {
       "actions": {
@@ -6971,7 +6989,7 @@
       "excerptsHeading": "Source snippets",
       "excerptsSubtitle": "Verbatim from the original turn — provenance anchor for the memory.",
       "excerptsUnreadable": "Snippets unreadable: {error}",
-      "excerptsEmpty": "No source snippets — the memory was saved before slice 6.5 or the extractor returned no excerpts.",
+      "excerptsEmpty": "No source snippets — the memory was saved before source snippets were recorded, or the extractor returned none.",
       "excerptCopyTitle": "Copy snippet to the clipboard",
       "excerptCopied": "✓ copied",
       "excerptCopy": "copy",
@@ -7648,5 +7666,12 @@
     "channelsLabel": "Channels (comma-separated)",
     "channelsPlaceholder": "teams, web",
     "reachesNobody": "Nobody can reach this agent with these settings."
+  },
+  "memoryAudit": {
+    "actor": "actor: {actor}",
+    "before": "before:",
+    "after": "after:",
+    "deleted": "(deleted)",
+    "ownersDelta": "owners {delta}"
   }
 }

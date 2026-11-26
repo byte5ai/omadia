@@ -119,6 +119,14 @@ function errorCodeOf(err: unknown): string | null {
   }
 }
 
+/** Decimal megabytes, matching the "MB" in the label and the size the
+ *  adapter's store text names (#1839; it divided by 1024 twice, i.e. MiB). */
+const BYTES_PER_MEGABYTE = 1_000_000;
+
+function toMegabytes(bytes: number): number {
+  return Math.round(bytes / BYTES_PER_MEGABYTE);
+}
+
 export default function EmbeddingProviderPage(): React.ReactElement {
   const t = useTranslations('adminEmbeddingProvider');
   const format = useFormatter();
@@ -385,7 +393,7 @@ export default function EmbeddingProviderPage(): React.ReactElement {
               <p className="mt-1">
                 {t('localModelBody', {
                   size: format.number(
-                    Math.round(localModel.totalBytes / 1024 / 1024),
+                    toMegabytes(localModel.totalBytes),
                   ),
                 })}
               </p>
@@ -397,10 +405,10 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                 <p data-testid="local-model-progress" className="mt-3">
                   {t('localModelProgress', {
                     done: format.number(
-                      Math.round(localModel.job.downloadedBytes / 1024 / 1024),
+                      toMegabytes(localModel.job.downloadedBytes),
                     ),
                     total: format.number(
-                      Math.round(localModel.job.totalBytes / 1024 / 1024),
+                      toMegabytes(localModel.job.totalBytes),
                     ),
                     file: localModel.job.currentFile ?? '—',
                   })}
