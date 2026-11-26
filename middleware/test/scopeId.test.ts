@@ -221,6 +221,22 @@ describe('#575 D3 — scopeGraphKey is injective where sanitizeScope was not', (
     assert.equal(scopeGraphKey('   '), 'unscoped');
   });
 
+  it('does NOT let a scope spelled like a produced key land in that partition (#2277)', () => {
+    // Every key the digest branch emits is itself graph-safe. A web chat may
+    // name its own sessionId ([A-Za-z0-9_-]{1,80}), so a passthrough of that
+    // shape would pick another conversation's partition.
+    for (const raw of ['teams:19:abc@thread', 'conductor:run1:step2', '///', 'x'.repeat(90)]) {
+      const key = scopeGraphKey(raw);
+      assert.notEqual(scopeGraphKey(key), key, `raw=${raw} key=${key}`);
+    }
+    // A digest-shaped scope nobody produced is hashed too, not passed through.
+    assert.notEqual(scopeGraphKey('my-tab-0123456789abcdef'), 'my-tab-0123456789abcdef');
+  });
+
+  it("does NOT map a scope literally named 'unscoped' onto the empty scope's key", () => {
+    assert.notEqual(scopeGraphKey('unscoped'), scopeGraphKey(''));
+  });
+
   it("does NOT collapse a non-empty unsafe scope onto 'unscoped'", () => {
     // sanitizeScope mapped '///' to 'unscoped' — indistinguishable from a
     // turn that carried no scope at all. That conflation is the bug.

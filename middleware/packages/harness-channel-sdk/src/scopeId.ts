@@ -239,6 +239,18 @@ const GRAPH_KEY_SAFE = /^[a-z0-9_-]{1,80}$/;
 const DIGEST_LEN = 16;
 
 /**
+ * The shape the digest branch of {@link scopeGraphKey} always produces:
+ * `…-<16 lowercase hex>`. Same reason as `CONTEXT_KEY_DIGEST_SHAPE` below:
+ * every produced key is itself graph-safe, so without this guard the
+ * passthrough branch returns it unchanged and a raw scope spelled like another
+ * scope's key lands in that scope's partition (#2277).
+ */
+const GRAPH_KEY_DIGEST_SHAPE = new RegExp(`-[0-9a-f]{${DIGEST_LEN}}$`);
+
+/** The key of a genuinely empty scope. A raw scope of this spelling is hashed. */
+const UNSCOPED_GRAPH_KEY = 'unscoped';
+
+/**
  * #575 D3 — the injective replacement for `sanitizeScope`.
  *
  * `sanitizeScope` (`harness-orchestrator/src/sessionLogger.ts`) maps a scope to
@@ -257,13 +269,16 @@ const DIGEST_LEN = 16;
  *  - A scope that was ALREADY lossless (it matches the safe pattern) is
  *    returned byte-identically, so every partition that was never at risk keeps
  *    its existing data. `'http-default'`, `'teams-unknown'` and ordinary
- *    chat-tab ids all take this path.
+ *    chat-tab ids all take this path — unless the scope is spelled like a key
+ *    this function produces (ends in `-<16 hex>`) or is `'unscoped'`. Passing
+ *    those through would let a caller who names their own scope (a web chat's
+ *    `sessionId`) choose another conversation's partition (#2277).
  *  - Anything else keeps a readable sanitized stem and gains a digest of the
  *    RAW string, which is what makes the mapping injective.
  *
  * A genuinely empty scope still maps to `'unscoped'`, exactly as before. A
  * non-empty scope never does — conflating "no scope" with "a scope made of
- * punctuation" is part of the bug.
+ * punctuation" (or literally named `unscoped`) is part of the bug.
  *
  * **Migration:** for any scope that was lossy — which is every `teams-<conv>`,
  * `telegram:<id>`, `routine:<id>`, `conductor:<run>:<step>` and every
@@ -274,8 +289,14 @@ const DIGEST_LEN = 16;
  */
 export function scopeGraphKey(rawScope: string): string {
   const trimmed = rawScope?.trim() ?? '';
-  if (trimmed.length === 0) return 'unscoped';
-  if (GRAPH_KEY_SAFE.test(trimmed)) return trimmed;
+  if (trimmed.length === 0) return UNSCOPED_GRAPH_KEY;
+  if (
+    GRAPH_KEY_SAFE.test(trimmed) &&
+    !GRAPH_KEY_DIGEST_SHAPE.test(trimmed) &&
+    trimmed !== UNSCOPED_GRAPH_KEY
+  ) {
+    return trimmed;
+  }
 
   const digest = createHash('sha256').update(trimmed, 'utf8').digest('hex').slice(0, DIGEST_LEN);
   const stem = trimmed

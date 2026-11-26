@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — scopeGraphKey: a produced key is no longer a fixed point (#2277) (2026-11-26)
+
+- `scopeGraphKey` (`@omadia/channel-sdk`, the injective graph-scope key behind
+  `OMADIA_INJECTIVE_SCOPE_KEYS`) passed every graph-safe scope through unchanged, and every key
+  its digest branch emits is graph-safe. A web chat naming its `sessionId` after another
+  conversation's key landed in that conversation's partition. A safe scope now passes through
+  only when it does not end in `-<16 hex>` and is not `unscoped`; those are hashed, as
+  `safeContextSegment` already does for context keys. Default deployments (flag off) are
+  unaffected; with the flag on, only scopes of exactly those spellings move partition.
+
 ### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
 
 - With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
