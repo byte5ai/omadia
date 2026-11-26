@@ -99,14 +99,6 @@ export function createFilesystemObjectStore(rootDir: string): TigrisStore {
       await writeAtomically(at.data, body);
     },
 
-    /** ADR-0187 (#1986) — bytes first, then metadata; a missing object is fine. */
-    async delete(key: string): Promise<void> {
-      const at = locate(key);
-      if (at === null) return;
-      await rm(at.data, { force: true });
-      await rm(at.meta, { force: true });
-    },
-
     async getStream(key: string) {
       const at = locate(key);
       if (at === null) throw notFound();

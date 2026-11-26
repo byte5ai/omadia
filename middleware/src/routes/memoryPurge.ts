@@ -33,7 +33,6 @@ import {
   unsupportedUserLayers,
   type ResolvedPurgeUser,
 } from '../services/memoryPurgeUser.js';
-import type { GeneratedObjectFilter, GeneratedObjectsRegistry } from '../services/generatedObjects.js';
 
 /**
  * Danger-Zone memory purge — operator-facing admin endpoints.
@@ -108,9 +107,6 @@ export interface MemoryPurgeDeps {
   /** #1843 — the processes a person created go with a user purge. Resolved
    *  per call: the provider can change at runtime. */
   processMemory?: () => ProcessMemoryService | undefined;
-  /** #1986 (ADR-0187) — generated Office/Diagram files: the user axis
-   *  releases the person's, axis `all` every record. */
-  generatedObjects?: GeneratedObjectsRegistry;
   /** #1831 (ADR-0185) — re-derive the rule entries from the `_rules/` files
    *  after a purge removed memorable knowledge (axis `all` deletes the rule
    *  entries with everything else; the files stay or are re-seeded). */
@@ -129,8 +125,7 @@ export interface PurgeWarning {
     | 'reseed_failed'
     | 'user_selector_resolved'
     | 'user_unknown'
-    | 'user_layers_unsupported'
-    | 'generated_files_pending';
+    | 'user_layers_unsupported';
   params?: Record<string, string>;
 }
 
@@ -141,8 +136,6 @@ interface PurgePlan {
   reseedEntries: string[];
   /** #1840/#1843 — the person a `user` selector names, when it names one. */
   user: ResolvedPurgeUser | null;
-  /** #1986 — the generated-file records the purge releases. */
-  generated: GeneratedObjectFilter | null;
 }
 
 /**
@@ -286,21 +279,12 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
         if (!scratchTargets.includes(target)) scratchTargets.push(target);
       }
     }
-    const base = {
+    return {
       scratchTargets,
       reseedEntries,
       user,
-      generated: null,
       ...kgFilters(axis, user?.omadiaUserId ?? selector, tenantId, actorOmadiaUserId),
     };
-    return { ...base, generated: generatedFilter(axis, base) };
-  }
-
-  /** #1986 — which generated-file records a purge releases. */
-  function generatedFilter(axis: MemoryPurgeAxis, plan: PurgePlan): GeneratedObjectFilter | null {
-    if (axis === 'all') return { all: true };
-    if (axis === 'user' && plan.user) return { ownerOmadiaUserId: plan.user.omadiaUserId };
-    return null;
   }
 
   function userDataDeps(): Parameters<typeof countUserData>[0] {
@@ -347,10 +331,6 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       ...(erasesUserData(plan)
         ? await countUserData(userDataDeps(), plan.user.omadiaUserId)
         : { datasets: 0, processes: 0, identity: 0 }),
-      generatedFiles:
-        deps.generatedObjects && plan.generated
-          ? (await deps.generatedObjects.count(plan.generated)).objects
-          : 0,
     };
   }
 
@@ -370,12 +350,6 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       deleted.conversation = (
         await history.purgeConversationHistory(plan.conversationFilter)
       ).deletedNodes;
-    }
-    // #1986 — before the identity step; the records are keyed by the raw id.
-    if (deps.generatedObjects && plan.generated) {
-      const released = await deps.generatedObjects.release(plan.generated);
-      deleted.generatedFiles = released.deleted;
-      deleted.generatedPending = released.pending;
     }
     if (erasesUserData(plan)) {
       const userData = { datasets: 0, processes: 0, identity: 0 };
@@ -401,9 +375,6 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       });
     }
     if (user?.via === 'unresolved') warnings.push({ code: 'user_unknown' });
-    if ((counts.generatedPending ?? 0) > 0) {
-      warnings.push({ code: 'generated_files_pending', params: { count: String(counts.generatedPending) } });
-    }
     if (plan && erasesUserData(plan)) {
       const missing = unsupportedUserLayers(userDataDeps());
       if (missing.length > 0) {
@@ -453,7 +424,6 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
         datasetCount: counts.datasets ?? 0,
         processCount: counts.processes ?? 0,
         identityCount: counts.identity ?? 0,
-        generatedFileCount: counts.generatedFiles ?? 0,
         ...(plan.user ? { resolvedUser: plan.user } : {}),
         reseedEntries: plan.reseedEntries,
         warnings: planWarnings(axis, counts, plan),
@@ -550,7 +520,6 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       datasets: 0,
       processes: 0,
       identity: 0,
-      generatedFiles: 0,
     };
     try {
       await executePlan(plan, deleted);
@@ -607,7 +576,6 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       datasetsDeleted: deleted.datasets ?? 0,
       processesDeleted: deleted.processes ?? 0,
       identityDeleted: deleted.identity ?? 0,
-      generatedFilesDeleted: deleted.generatedFiles ?? 0,
       ...(reseededFiles !== undefined ? { reseededFiles } : {}),
       ...(auditId ? { auditId } : {}),
       warnings,

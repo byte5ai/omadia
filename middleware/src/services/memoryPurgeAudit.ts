@@ -39,10 +39,6 @@ export interface MemoryPurgeCounts {
   datasets?: number;
   processes?: number;
   identity?: number;
-  /** #1986 — generated Office/Diagram files deleted from their bucket, and
-   *  the ones that should go but could not (producer inactive, delete failed). */
-  generatedFiles?: number;
-  generatedPending?: number;
 }
 
 export interface MemoryPurgeAuditStart {

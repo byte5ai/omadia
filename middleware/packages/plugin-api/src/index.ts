@@ -35,8 +35,6 @@ export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
 export * from './datasetId.js';
-// ADR-0187 (#1986) — generated files recorded with owner and chat.
-export * from './generatedObjects.js';
 
 // #440: provider-neutral `embeddingClient@1` contract. Lives here for the same
 // reason the KG contract does — every adapter (`@omadia/embeddings` for Ollama,

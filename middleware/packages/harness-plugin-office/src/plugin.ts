@@ -1,7 +1,5 @@
 import {
-  GENERATED_OBJECTS_SERVICE_NAME,
   PRIVACY_REDACT_SERVICE_NAME,
-  type GeneratedObjectsService,
   type NativeToolAttachment,
   type PluginContext,
   type PrivacyGuardService,
@@ -10,9 +8,6 @@ import { createTigrisStore } from '@omadia/diagrams';
 import { turnContext } from '@omadia/orchestrator';
 
 import { createDocumentsRouter } from './documentsRouter.js';
-
-/** The producer id the kernel files this plugin's files under (ADR-0187). */
-const PRODUCER_ID = '@omadia/plugin-office';
 import { OfficeService } from './officeService.js';
 import {
   OfficeTool,
@@ -72,12 +67,6 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
     secretAccessKey: awsSecretAccessKey,
     bucket: tigrisBucket,
   });
-  // ADR-0187 (#1986) — generated files are recorded under the turn's person
-  // and chat and deleted with them. Optional: without the kernel service the
-  // bucket's lifecycle rule is the only expiry.
-  const generated = ctx.services.get<GeneratedObjectsService>(GENERATED_OBJECTS_SERVICE_NAME);
-  const deleteObject = store.delete?.bind(store);
-  const disposeDeleter = deleteObject ? generated?.registerDeleter(PRODUCER_ID, deleteObject) : undefined;
   const service = new OfficeService({
     store,
     secret: signingSecret,
@@ -85,7 +74,6 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
     tenantId,
     signedUrlTtlSec,
     log: (msg) => ctx.log(msg),
-    ...(generated ? { onPersisted: (key: string) => generated.record(PRODUCER_ID, key) } : {}),
   });
   // Dataset rendering (M3): resolve a datasetId → real rows server-side within
   // the current turn. turnContext gives the turnId; the privacy store is keyed
@@ -150,7 +138,6 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
       ctx.log('deactivating office plugin');
       disposeXlsx();
       disposeDocx();
-      disposeDeleter?.();
       disposeRoute();
     },
   };

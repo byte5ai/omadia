@@ -8,17 +8,6 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.100.0 — 2026-11-26
-
-Additive.
-
-### Added
-
-- **`generatedObjects@1`** (`GENERATED_OBJECTS_SERVICE_NAME`, `GeneratedObjectsService`,
-  `GeneratedObjectDeleter`; ADR-0187, #1986): kernel-provided. A plugin that writes generated
-  files records each key under the current turn's person and chat and registers how its objects
-  are deleted; the kernel deletes a key once no chat or person references it.
-
 ## 1.99.0 — 2026-11-26
 
 Additive.

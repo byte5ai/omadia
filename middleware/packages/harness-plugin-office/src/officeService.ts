@@ -17,9 +17,6 @@ export interface OfficeServiceOptions {
   readonly tenantId: string;
   readonly signedUrlTtlSec: number;
   readonly log?: (msg: string) => void;
-  /** ADR-0187 — called with the key of every file the turn got (stored or
-   *  cache hit), so the kernel files it under the turn's person and chat. */
-  readonly onPersisted?: (key: string) => Promise<void>;
 }
 
 /**
@@ -51,8 +48,6 @@ export class OfficeService {
     if (!cacheHit) {
       await this.opts.store.put(key, result.buffer, result.mediaType);
     }
-
-    await this.opts.onPersisted?.(key);
 
     const url = signDocumentUrl({
       key,
