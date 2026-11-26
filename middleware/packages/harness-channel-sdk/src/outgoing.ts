@@ -294,10 +294,15 @@ export interface AgentConsultation {
   toolCalls?: number;
 }
 
-/** Image/file side-channel. `url` must be reachable by the channel. */
+/**
+ * Image/file side-channel. A channel either hands `url` to its platform (the
+ * URL must then be reachable from there) or reads the bytes in-process with
+ * `CoreApi.readAttachment(url)` and uploads them (#1993, ADR-0222).
+ */
 export interface OutgoingAttachment {
   kind: 'image' | 'file';
-  /** URL the channel fetches / displays. May be signed + TTL-bound. */
+  /** URL the channel fetches / displays, or passes to `CoreApi.readAttachment`.
+   *  May be signed + TTL-bound. */
   url: string;
   /** Human-readable name. Connectors display this when rendering inline. */
   altText: string;
@@ -446,3 +451,24 @@ export interface OutgoingRoutineList {
     lastRunStatus: 'ok' | 'error' | 'timeout' | null;
   }>;
 }
+
+/** #1993 / ADR-0222 — the result of `CoreApi.readAttachment`. */
+export type AttachmentReadResult =
+  | {
+      ok: true;
+      bytes: Uint8Array;
+      /** `Content-Type` of the stored object, without parameters. */
+      mediaType?: string;
+      /** File name from `Content-Disposition`, without any path part. */
+      fileName?: string;
+    }
+  | {
+      ok: false;
+      /**
+       * `not_kernel_attachment` — not served under a granted public path of
+       * this kernel (use the URL); `not_found` — expired, unknown or refused
+       * signature; `too_large` — above the kernel's read cap; `failed` —
+       * timeout or server error.
+       */
+      reason: 'not_kernel_attachment' | 'not_found' | 'too_large' | 'failed';
+    };

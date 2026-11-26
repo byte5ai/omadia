@@ -108,6 +108,8 @@ const MessageSchema = z.object({
     })
     .optional(),
   error: z.boolean().optional(),
+  // #1896 — a deliberate NO_REPLY turn; the chat shows no bubble for it.
+  silent: z.literal(true).optional(),
   startedAt: z.number(),
   finishedAt: z.number().optional(),
   // #1071 — marker of a server-written routine delivery. Accepted so a

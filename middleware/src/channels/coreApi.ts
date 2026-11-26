@@ -20,6 +20,7 @@ import type {
   LogLevel,
   PlatformIdentity,
   TargetedSendProvider,
+  AttachmentReadResult,
 } from '@omadia/channel-sdk';
 import { channelUserPrincipal } from '@omadia/channel-sdk';
 import { deriveChannelType } from './channelType.js';
@@ -209,6 +210,12 @@ export interface CreateCoreApiOptions {
    * is registered under. Absent ⇒ derived from the channel id alone.
    */
   channelTypeFor?: (channelId: string) => string;
+  /**
+   * #1993 / ADR-0222 — in-process read of an outgoing attachment's bytes
+   * (`attachmentByteReader.ts`). Absent → `CoreApi.readAttachment` stays
+   * undefined and channels keep sending URLs.
+   */
+  readAttachment?: (url: string) => Promise<AttachmentReadResult>;
   log?: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
 }
 
@@ -333,6 +340,17 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
 
     log,
   };
+
+  if (opts.readAttachment) {
+    const read = opts.readAttachment;
+    api.readAttachment = async (url: string): Promise<AttachmentReadResult> => {
+      try {
+        return await read(url);
+      } catch {
+        return { ok: false, reason: 'failed' };
+      }
+    };
+  }
 
   if (opts.webSockets) {
     const webSockets = opts.webSockets;

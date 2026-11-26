@@ -32,9 +32,15 @@ export const ROUTER_TOOL = 'route_turn';
 export const ROUTER_MAX_TOKENS = 200;
 /** Below this a deterministic decision goes to the agent (no planner call). */
 export const ROUTER_MIN_CONFIDENCE = 0.6;
+/**
+ * #1931 — the bar when only ONE tool is offered: a router with a single tool
+ * leans towards it even when it does not answer the question, and a wrong
+ * deterministic answer is worse than an agent turn.
+ */
+export const ROUTER_MIN_CONFIDENCE_SINGLE_TOOL = 0.8;
 
-export type RouterDecision = 'deterministic' | 'agent_simple' | 'agent_complex';
-const DECISIONS: readonly RouterDecision[] = ['deterministic', 'agent_simple', 'agent_complex'];
+export type RouterDecision = 'deterministic' | 'agent_simple' | 'agent_complex' | 'agent_no_tool';
+const DECISIONS: readonly RouterDecision[] = ['deterministic', 'agent_simple', 'agent_complex', 'agent_no_tool'];
 
 export interface RouteResult {
   decision: RouterDecision;
@@ -93,6 +99,7 @@ export type RouteOutcome =
 export const ROUTER_SYSTEM = `You are the Omadia fast-path router. Classify ONE user turn by calling ${ROUTER_TOOL} — never answer the turn itself.
 - "deterministic": the answer IS the rows of exactly ONE read query with ONE of the TOOLS — a plain lookup or list, optionally counted, with a numeric column totalled, or the top N ROWS by one of their own columns ("Geburtstage im Januar", "offene Posten von Müller", "wie viele Kunden in Berlin", "die 5 größten offenen Rechnungen"). Set "tool".
 - "agent_simple": greeting, chit-chat, a short confirmation, a one-step question that needs none of the TOOLS.
+- "agent_no_tool": the turn asks for data, but NONE of the TOOLS returns it (another system, another kind of record, a field no tool lists). Never pick a tool just because it is the only one offered.
 - "agent_complex": explanations, advice, opinions, writes or changes, several queries, joins, comparisons, analysis, planning, code — or when unsure. Also every total, count or ranking PER GROUP (per customer, per month, per department): "Kunden mit dem höchsten offenen Betrag" sums invoices per customer — that is not the rows of one query.
 A follow-up of the PREVIOUS QUERY that only changes values ("und im Februar?", "and for Weber?") is deterministic with the same tool.
 "confidence": the probability (0..1) that your decision is right. A wrong deterministic decision is worse than an agent turn.`;
@@ -193,7 +200,11 @@ export async function routeTurn(opts: {
   );
   if (route.decision === 'agent_simple') return agent('agent:simple', 'simple');
   if (route.decision === 'agent_complex') return agent('agent:complex', 'complex');
-  if (route.confidence < ROUTER_MIN_CONFIDENCE) return agent('router-low-confidence');
+  // #1931 — data the offered tools do not hold: the agent answers with its
+  // own (non-plannable) tools; that is a complex turn for the model router.
+  if (route.decision === 'agent_no_tool') return agent('agent:no-tool', 'complex');
+  const bar = toolNames.length === 1 ? ROUTER_MIN_CONFIDENCE_SINGLE_TOOL : ROUTER_MIN_CONFIDENCE;
+  if (route.confidence < bar) return agent('router-low-confidence');
   if (route.tool === undefined || !toolNames.includes(route.tool)) return agent('router-tool-not-offered');
   return { kind: 'plan', tool: route.tool, confidence: route.confidence, ms };
 }
