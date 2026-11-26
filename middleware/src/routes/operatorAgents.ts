@@ -4729,9 +4729,16 @@ export function createOperatorAgentsRouter(
       }
       if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
+      // #1873 — the stored set, so the editor reseeds from what the server
+      // kept rather than from page props a refresh has not replaced yet.
+      const stored = await live.store.listAgentPlugins(existing.id);
       // S3c — say which held grants were invalid and are gone, so a client
       // that listed one is not left believing it was kept.
-      res.json({ ok: true, ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}) });
+      res.json({
+        ok: true,
+        plugins: stored.map((p) => ({ id: p.pluginId, config: p.config, enabled: p.enabled })),
+        ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}),
+      });
     } catch (err) {
       badRequest(res, err);
     }

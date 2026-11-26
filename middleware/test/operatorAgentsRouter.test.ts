@@ -1418,6 +1418,18 @@ describe('createOperatorAgentsRouter', () => {
     const remaining = await store.listAgentPlugins(agent.id);
     const ids = remaining.map((p) => p.pluginId).sort();
     assert.deepEqual(ids, ['@omadia/a', '@omadia/b']);
+    // #1873 — the answer carries the stored set, so the editor reseeds from
+    // it instead of from page props a refresh has not replaced yet.
+    const body = (await res.json()) as {
+      plugins: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.deepEqual(
+      body.plugins.map((p) => [p.id, p.enabled]).sort(),
+      [
+        ['@omadia/a', true],
+        ['@omadia/b', false],
+      ],
+    );
   });
 
   it('GET /:slug/plugins reads the assignment (W0c #861)', async () => {

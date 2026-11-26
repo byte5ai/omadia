@@ -11,7 +11,9 @@ import {
   replaceAgentPlugins,
   toggleAgentPlugin,
   type OperatorAgentDto,
+  type OperatorAgentPluginDto,
   type PluginCatalogEntryDto,
+  type ReplaceAgentPluginsResponse,
 } from '../../../../_lib/agents';
 import { AgentReachPanel } from '@/app/_components/agents/AgentReach';
 import { useBroadReachConfirm } from '@/app/_components/agents/useBroadReachConfirm';
@@ -46,6 +48,12 @@ import { FacilitatorDetail } from './FacilitatorDetail';
  * {@link AgentIdentity} below. Two concerns, two surfaces, no link between
  * them.
  */
+interface EditorSeed {
+  readonly plugins: OperatorAgentPluginDto[];
+  /** The `agent.plugins` the save was made over (compared by reference). */
+  readonly basis: readonly OperatorAgentPluginDto[];
+}
+
 interface AgentDetailProps {
   readonly agent: OperatorAgentDto;
   /** The tab `?tab=` names, read by the page on the server. */
@@ -66,9 +74,12 @@ interface AgentDetailProps {
  *    replace-set PUT) — spec says extend, not duplicate.
  *
  * After every successful write `router.refresh()` re-runs the parent RSC
- * fetch. PluginsDnd is remounted (reseeding its local state from fresh props)
- * only after ITS OWN save — see `editorRevision` — so an instant toggle above
- * never discards unsaved edits in the editor below.
+ * fetch. PluginsDnd is remounted only after ITS OWN save — see
+ * `editorRevision` — so an instant toggle above never discards unsaved edits
+ * in the editor below. #1873: that remount happens BEFORE the refresh
+ * delivers new props, so it reseeds from the set the PUT answered with
+ * (`editorSeed`), not from the stale `agent.plugins`; reseeding from those
+ * let a second "Save" silently restore a grant the first one revoked.
  *
  * Error copy: the routes emit machine codes as `{ error: '<code>' }`.
  * `parseOperatorAgentErrorCode` narrows them and each code maps to a
@@ -114,6 +125,17 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
    * reseeds from the fresh props (same contract as the dashboard).
    */
   const [editorRevision, setEditorRevision] = useState(0);
+  /**
+   * #1873 — the set the editor's last save stored, tied to the props it was
+   * saved over. It seeds the remounted editor only while those props are
+   * still the current ones; once the refresh delivers a new `agent.plugins`
+   * (or a toggle changes it), the props are the truth again.
+   */
+  const [editorSeed, setEditorSeed] = useState<EditorSeed | null>(null);
+  const editorAgent: OperatorAgentDto =
+    editorSeed !== null && editorSeed.basis === props.agent.plugins
+      ? { ...props.agent, plugins: editorSeed.plugins }
+      : props.agent;
 
   useEffect(() => {
     let cancelled = false;
@@ -158,22 +180,33 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
       : t('detailErrors.unknown', { detail: humanizeApiError(err) });
   }
 
-  function run(
+  function run<T>(
     label: string,
-    op: () => Promise<unknown>,
-    opts?: { readonly remountEditor?: boolean },
+    op: () => Promise<T>,
+    onDone?: (result: T) => void,
   ): void {
     setError(null);
     setBusy(label);
     op()
-      .then(() => {
-        if (opts?.remountEditor) setEditorRevision((r) => r + 1);
+      .then((result) => {
+        onDone?.(result);
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
         setError(localizeError(err));
       })
       .finally(() => setBusy(null));
+  }
+
+  /** Remount the editor on the set the server stored. A cancelled broad-reach
+   *  confirm wrote nothing, so the editor keeps the operator's edits. */
+  function reseedEditor(
+    stored: ReplaceAgentPluginsResponse | undefined,
+    basis: readonly OperatorAgentPluginDto[],
+  ): void {
+    if (stored === undefined) return;
+    setEditorSeed({ plugins: stored.plugins, basis });
+    setEditorRevision((r) => r + 1);
   }
 
   // The plugin tab: the assigned list (instant toggle) above the dnd editor
@@ -237,7 +270,7 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
         {catalog ? (
           <PluginsDnd
             key={`${props.agent.id}:${editorRevision}`}
-            agent={props.agent}
+            agent={editorAgent}
             catalog={catalog}
             disabled={disabled}
             onReplace={(plugins) =>
@@ -247,7 +280,7 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
                   broadReach.guard(props.agent.name, (confirm) =>
                     replaceAgentPlugins(props.agent.slug, plugins, { confirmBroadReach: confirm }),
                   ),
-                { remountEditor: true },
+                (stored) => reseedEditor(stored, props.agent.plugins),
               )
             }
           />

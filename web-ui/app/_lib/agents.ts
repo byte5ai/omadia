@@ -1378,12 +1378,20 @@ export function parseTeamsIdentityErrorCode(
   }
 }
 
+/** #1873 — what a replace-set PUT stored, as the server now holds it. */
+export interface ReplaceAgentPluginsResponse {
+  ok: boolean;
+  plugins: OperatorAgentPluginDto[];
+  /** Held grants of a foreign archetype plugin the replace removed (S3c). */
+  removed_invalid_grants?: string[];
+}
+
 export async function replaceAgentPlugins(
   slug: string,
   plugins: Array<{ id: string; config?: Record<string, unknown>; enabled?: boolean }>,
   opts?: GrantWriteOptions,
-): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}/plugins`, {
+): Promise<ReplaceAgentPluginsResponse> {
+  return callJson<ReplaceAgentPluginsResponse>(`/v1/operator/agents/${encodeURIComponent(slug)}/plugins`, {
     method: 'PUT',
     body: JSON.stringify({
       plugins,
