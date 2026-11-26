@@ -5679,6 +5679,7 @@ export async function publishConductorWorkflow(body: {
   description?: string;
   graph: unknown;
   enable?: boolean;
+  expectNew?: boolean;
 }): Promise<{
   workflow: ConductorWorkflow;
   version: { id: string; version: number };

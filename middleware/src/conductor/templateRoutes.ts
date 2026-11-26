@@ -27,7 +27,7 @@ import type {
   WorkflowGraph,
 } from '@omadia/conductor-core';
 
-import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
+import { reservedWorkflowSlugCode } from './workflowSlug.js';
 import { WorkflowSlugExistsError } from './workflowStore.js';
 import { TemplateIdExistsError, TemplateInvalidError } from './templateStore.js';
 import type { TemplateSummary } from './templateCatalog.js';
@@ -372,8 +372,9 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
     }
     // #330 — same reservation as 'POST /': the 'eph-' namespace belongs to
     // agent-generated ephemeral workflows and their reaper.
-    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
-      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `slug prefix '${EPHEMERAL_SLUG_PREFIX}' is reserved for ephemeral workflows` });
+    const slugCode = reservedWorkflowSlugCode(slug);
+    if (slugCode) {
+      res.status(400).json({ code: slugCode, message: `workflow slug '${slug}' is reserved` });
       return;
     }
     try {

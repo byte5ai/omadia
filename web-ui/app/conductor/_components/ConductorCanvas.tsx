@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import {
   addEdge,
@@ -49,7 +49,11 @@ import { PersonPicker } from './PersonPicker';
 // node.id is a stable internal id; data.stepId is the user-facing (renameable)
 // step id used in the serialized graph, so renaming never breaks edges.
 
-type StepKind = 'agent' | 'action' | 'human';
+type StepKind = 'agent' | 'action' | 'human' | 'timer';
+const TRIGGER_KINDS = ['manual', 'event', 'cron', 'webhook', 'channel', 'agent', 'workflow'] as const;
+type TriggerKind = typeof TRIGGER_KINDS[number];
+type Trigger = Record<string, unknown> & { id: string; kind: TriggerKind };
+const NEW_TRIGGER: Trigger = { id: 'tr', kind: 'manual' };
 
 /** #1698 — the guards a new edge out of a human step starts with: approval, then rejection. */
 const APPROVED_GUARD = JSON.stringify({ op: 'eq', path: 'stepResult.approved', value: true });
@@ -62,6 +66,9 @@ interface StepNodeData extends Record<string, unknown> {
   prompt: string;
   actionId: string;
   actionServerName?: string;
+  original?: Record<string, unknown>;
+  initialPosition?: Node['position'];
+  timerDuration: string;
   input: string; // JSON string
   human: {
     principalKind: 'user' | 'role';
@@ -85,7 +92,9 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Elemen
   const t = useTranslations('conductor');
   const action = data.kind === 'action' ? describeActionId(data.actionId, data.actionServerName) : null;
   const primary =
-    data.kind === 'agent' ? data.agentId || '—' : data.kind === 'action' ? action?.label || '—' : data.human.principalRef || '—';
+    data.kind === 'agent' ? data.agentId || '—'
+      : data.kind === 'action' ? action?.label || '—'
+      : data.kind === 'timer' ? data.timerDuration || '—' : data.human.principalRef || '—';
   return (
     <div
       style={{ borderColor: selected ? 'var(--fg-strong)' : KIND_COLOR[data.kind] }}
@@ -97,11 +106,11 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Elemen
           className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
           style={{ background: KIND_COLOR[data.kind], color: KIND_BADGE_FG }}
         >
-          {data.kind}
+          {t(`stepKinds.${data.kind}`)}
         </span>
         {data.isEntry && (
           <span className="rounded bg-[color:var(--fg-strong)] px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--card)]">
-            entry
+            {t('entryLabel')}
           </span>
         )}
       </div>
@@ -117,13 +126,14 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Elemen
 
 const nodeTypes: NodeTypes = { step: StepNodeView };
 
-function emptyData(kind: StepKind, n: number): StepNodeData {
+function emptyData(kind: StepKind, n: number, defaultPrompt = ''): StepNodeData {
   return {
     stepId: `${kind}-${n}`,
     kind,
     agentId: kind === 'agent' ? 'fallback' : '',
-    prompt: kind === 'agent' ? 'Do your task.' : '',
+    prompt: kind === 'agent' ? defaultPrompt : '',
     actionId: '',
+    timerDuration: '',
     input: '',
     human: {
       principalKind: 'role',
@@ -201,11 +211,76 @@ function CanvasInner({
 
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
+  const [description, setDescription] = useState<string | null>(null);
   // Auto-derive the slug from the name until the user edits the slug directly (or a workflow loads).
   const slugEdited = useRef(false);
-  const [triggerKind, setTriggerKind] = useState<'manual' | 'event' | 'cron'>('manual');
-  const [triggerEventId, setTriggerEventId] = useState('');
-  const [triggerCron, setTriggerCron] = useState('');
+  const [triggers, setTriggers] = useState<Trigger[] | undefined>([NEW_TRIGGER]);
+  const originalGraph = useRef<Record<string, unknown>>({});
+  const activeTrigger = triggers?.[0] ?? NEW_TRIGGER;
+  const triggerKind = activeTrigger.kind;
+  const triggerEventId = String(activeTrigger.eventId ?? '');
+  const triggerCron = String(activeTrigger.cron ?? '');
+  const dirty = useRef(false);
+  const revision = useRef(0);
+  const loadToken = useRef(0);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [undoDeletion, setUndoDeletion] = useState<{ nodes: StepNode[]; edges: Edge[]; wasDirty: boolean } | null>(null);
+
+  const setDirty = useCallback((value: boolean) => {
+    dirty.current = value;
+    setHasUnsavedChanges(value);
+  }, []);
+  const markEdited = useCallback(() => {
+    revision.current += 1;
+    setDirty(true);
+    setUndoDeletion(null);
+  }, [setDirty]);
+  const allowDiscard = useCallback(() => !dirty.current || window.confirm(t('discardCanvasChanges')), [t]);
+  const patchTrigger = useCallback((patch: Partial<Trigger>) => {
+    markEdited();
+    setTriggers((current) => {
+      const [first = NEW_TRIGGER, ...rest] = current ?? [];
+      const next = { ...first, ...patch };
+      if (next.kind !== first.kind) {
+        if (next.kind !== 'event' && next.kind !== 'webhook') delete next.eventId;
+        if (next.kind !== 'cron') delete next.cron;
+        if (next.kind !== 'event' && next.kind !== 'webhook') delete next.filter;
+      }
+      return [next, ...rest];
+    });
+  }, [markEdited]);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    let confirmedLink = false;
+    const onUnload = (event: BeforeUnloadEvent) => {
+      if (confirmedLink) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    const onLink = (event: MouseEvent) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
+      if (!link || link.download || (link.target && link.target !== '_self')) return;
+      const url = new URL(link.href);
+      // Full-document navigation uses beforeunload. The app's same-origin links can navigate
+      // client-side, so guard those before their click handlers run.
+      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+      if (!allowDiscard()) {
+        event.preventDefault();
+        event.stopPropagation();
+      } else {
+        confirmedLink = true;
+        window.setTimeout(() => { confirmedLink = false; }, 0);
+      }
+    };
+    window.addEventListener('beforeunload', onUnload);
+    document.addEventListener('click', onLink, true);
+    return () => {
+      window.removeEventListener('beforeunload', onUnload);
+      document.removeEventListener('click', onLink, true);
+    };
+  }, [allowDiscard, hasUnsavedChanges]);
   // Declared emittable events (US4 / FR-028) — the Designer sources the event-trigger picker from the
   // live catalog. Best-effort: an empty catalog just falls back to free-text entry.
   const [eventCatalog, setEventCatalog] = useState<string[]>([]);
@@ -280,14 +355,17 @@ function CanvasInner({
   const [previewing, setPreviewing] = useState(false);
 
   const onNodesChange = useCallback((changes: NodeChangeset<StepNode>) => {
+    if (changes.getByType('position').some((change) => change.position)) markEdited();
     setNodes((ns) => changes.applyTo(ns));
-  }, []);
+  }, [markEdited]);
   const onEdgesChange = useCallback((changes: EdgeChangeset) => {
     setEdges((es) => changes.applyTo(es));
   }, []);
   const onConnect = useCallback((c: Connection) => {
     if (!c.source || !c.target) return;
+    markEdited();
     nextId.current += 1;
+    while (edges.some((edge) => edge.id === `t-${String(nextId.current)}`)) nextId.current += 1;
     const id = `t-${String(nextId.current)}`;
     // #1698 — an edge drawn OUT OF A HUMAN STEP is pre-filled with a guard. An unguarded edge
     // can no longer carry a rejection (the engine refuses to take it), so an empty guard here
@@ -304,7 +382,7 @@ function CanvasInner({
         : '';
       return addEdge({ ...c, id, data: { guard } }, es);
     });
-  }, []);
+  }, [edges, markEdited]);
 
   const addStep = useCallback((kind: StepKind) => {
     // Swallow a double-fired click (synthetic input / accidental double-click) so a
@@ -312,7 +390,11 @@ function CanvasInner({
     const now = Date.now();
     if (now - lastAction.current < 350) return;
     lastAction.current = now;
+    markEdited();
     nextId.current += 1;
+    while (nodes.some((node) => node.id === `node-${nextId.current}` || node.data.stepId === `${kind}-${nextId.current}`)) {
+      nextId.current += 1;
+    }
     const n = nextId.current;
     const id = `node-${String(n)}`;
     setNodes((ns) => [
@@ -321,20 +403,26 @@ function CanvasInner({
         id,
         type: 'step',
         position: { x: 80 + (ns.length % 4) * 200, y: 80 + Math.floor(ns.length / 4) * 130 },
-        data: { ...emptyData(kind, n), isEntry: ns.length === 0 },
+        data: { ...emptyData(kind, n, t('defaultAgentPrompt')), isEntry: ns.length === 0 },
       },
     ]);
-  }, []);
+  }, [markEdited, nodes, t]);
 
   const patchNode = useCallback((nodeId: string, patch: Partial<StepNodeData>) => {
+    markEdited();
     setNodes((ns) => ns.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node)));
-  }, []);
+  }, [markEdited]);
 
   const setEntry = useCallback((nodeId: string) => {
+    markEdited();
     setNodes((ns) => ns.map((node) => ({ ...node, data: { ...node.data, isEntry: node.id === nodeId } })));
-  }, []);
+  }, [markEdited]);
 
   const deleteSelected = useCallback(() => {
+    if (!selectedNode && !selectedEdge) return;
+    setUndoDeletion({ nodes, edges, wasDirty: dirty.current });
+    revision.current += 1;
+    setDirty(true);
     if (selectedNode) {
       setNodes((ns) => ns.filter((n) => n.id !== selectedNode));
       setEdges((es) => es.filter((e) => e.source !== selectedNode && e.target !== selectedNode));
@@ -343,7 +431,16 @@ function CanvasInner({
       setEdges((es) => es.filter((e) => e.id !== selectedEdge));
       setSelectedEdge(null);
     }
-  }, [selectedNode, selectedEdge]);
+  }, [edges, nodes, selectedNode, selectedEdge, setDirty]);
+
+  const undoDelete = useCallback(() => {
+    if (!undoDeletion) return;
+    revision.current += 1;
+    setNodes(undoDeletion.nodes);
+    setEdges(undoDeletion.edges);
+    setDirty(undoDeletion.wasDirty);
+    setUndoDeletion(null);
+  }, [setDirty, undoDeletion]);
 
   // ── serialize canvas → graph JSON ─────────────────────────────────────────
   const buildGraph = useCallback((): { graph: unknown; error?: string } => {
@@ -352,71 +449,97 @@ function CanvasInner({
 
     const transitions = edges.map((e) => {
       const tr: Record<string, unknown> = {
+        ...(e.data?.original as Record<string, unknown> | undefined),
         id: e.id,
         source: idMap.get(e.source) ?? e.source,
         target: idMap.get(e.target) ?? e.target,
       };
       const guard = (e.data?.guard as string | undefined)?.trim();
       if (guard) tr.guard = JSON.parse(guard);
+      else delete tr.guard;
       return tr;
     });
 
     const steps = nodes.map((n) => {
       const d = n.data;
-      const s: Record<string, unknown> = { id: d.stepId, kind: d.kind, position: n.position };
+      const s: Record<string, unknown> = { ...d.original, id: d.stepId, kind: d.kind };
+      if (!d.initialPosition || n.position.x !== d.initialPosition.x || n.position.y !== d.initialPosition.y) {
+        s.position = { ...(s.position as Record<string, unknown> | undefined), ...n.position };
+      }
       if (d.kind === 'agent') {
         s.agentId = d.agentId;
-        if (d.prompt.trim()) s.prompt = d.prompt;
+        if (d.prompt || s.prompt !== undefined) s.prompt = d.prompt;
       } else if (d.kind === 'action') {
         s.actionId = d.actionId;
         if (d.input.trim()) s.input = JSON.parse(d.input);
+        else delete s.input;
+      } else if (d.kind === 'timer') {
+        s.timer = { ...(s.timer as Record<string, unknown> | undefined), duration: d.timerDuration };
       } else {
-        s.human = {
-          principal: { kind: d.human.principalKind, ref: d.human.principalRef },
+        const human: Record<string, unknown> = {
+          ...(s.human as Record<string, unknown> | undefined),
           channel: d.human.channel,
           message: d.human.message,
-          ...(d.human.reminderInterval.trim() ? { reminderInterval: d.human.reminderInterval } : {}),
-          ...(d.human.deadline.trim() ? { deadline: d.human.deadline } : {}),
-          quorum: d.human.quorum,
-          ...(d.human.strictApproval ? { strictApproval: true } : {}),
         };
+        human.principal = { ...(human.principal as Record<string, unknown> | undefined), kind: d.human.principalKind, ref: d.human.principalRef };
+        for (const key of ['reminderInterval', 'deadline'] as const) {
+          if (d.human[key].trim()) human[key] = d.human[key];
+          else if (human[key] != null) delete human[key];
+        }
+        if (human.quorum !== undefined || d.human.quorum !== 'any') human.quorum = d.human.quorum;
+        if (human.strictApproval !== undefined || d.human.strictApproval) human.strictApproval = d.human.strictApproval;
+        s.human = human;
       }
       if (d.postcondition.trim()) s.postcondition = JSON.parse(d.postcondition);
+      else delete s.postcondition;
       if (d.fallbackTransitionId.trim()) s.fallbackTransitionId = d.fallbackTransitionId;
+      else delete s.fallbackTransitionId;
       return s;
     });
 
     const entry = nodes.find((n) => n.data.isEntry) ?? nodes[0];
-    const trigger: Record<string, unknown> = { id: 'tr', kind: triggerKind };
-    if (triggerKind === 'event' && triggerEventId.trim()) trigger.eventId = triggerEventId;
-    if (triggerKind === 'cron' && triggerCron.trim()) trigger.cron = triggerCron;
 
     return {
       graph: {
+        ...originalGraph.current,
         entryStepId: entry?.data.stepId ?? '',
         steps,
         transitions,
-        triggers: [trigger],
+        ...(triggers === undefined ? {} : { triggers }),
       },
     };
-  }, [nodes, edges, triggerKind, triggerEventId, triggerCron]);
+  }, [nodes, edges, triggers]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
     setValidationErrors([]);
+    setValidationWarnings([]);
+    const savedRevision = revision.current;
     let graph: unknown;
     try {
       graph = buildGraph().graph;
-    } catch (err) {
-      setSaveError(`JSON field error: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+      setSaveError(t('invalidGraphJson'));
       setSaving(false);
       return;
     }
     try {
-      const out = await publishConductorWorkflow({ slug, name, graph, enable: publishEnable.current });
+      const body = { slug, name, graph, enable: publishEnable.current, ...(description !== null ? { description } : {}) };
+      let out;
+      try {
+        out = await publishConductorWorkflow({ ...body, expectNew: true });
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.code !== 'conductor.slug_exists') throw err;
+        if (!window.confirm(t('confirmPublishVersion', { slug }))) return;
+        out = await publishConductorWorkflow(body);
+      }
       // #759 — surface non-blocking validator warnings on a successful publish.
       setValidationWarnings(out.warnings ?? []);
+      if (savedRevision === revision.current) {
+        setDirty(false);
+        setUndoDeletion(null);
+      }
       onSaved();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -426,12 +549,16 @@ function CanvasInner({
         } catch {
           /* not json */
         }
-        setSaveError(err.message);
-      } else setSaveError(String(err));
+        if (err.code === 'conductor.reserved_slug' || err.code === 'conductor.reserved_slug_prefix') {
+          setSaveError(t('reservedWorkflowSlug', { slug }));
+        } else if (err.code !== 'conductor.invalid_graph') {
+          setSaveError(t('publishWorkflowFailed'));
+        }
+      } else setSaveError(t('publishWorkflowFailed'));
     } finally {
       setSaving(false);
     }
-  }, [buildGraph, slug, name, onSaved]);
+  }, [buildGraph, slug, name, description, onSaved, setDirty, t]);
 
   // Rehydrate the canvas (nodes/edges/trigger) from a serialized WorkflowGraph. Shared by the
   // "Load existing workflow" path and the conversational builder (US7), which pushes its evolving
@@ -441,9 +568,10 @@ function CanvasInner({
       entryStepId: string;
       steps: Array<Record<string, unknown>>;
       transitions?: Array<Record<string, unknown>>;
-      triggers?: Array<Record<string, unknown>>;
+      triggers?: Trigger[];
     };
     if (!g || !Array.isArray(g.steps)) return;
+    originalGraph.current = g;
     const transitionsIn = Array.isArray(g.transitions) ? g.transitions : [];
     {
       const newNodes: StepNode[] = g.steps.map((step, i) => {
@@ -458,12 +586,15 @@ function CanvasInner({
           position: pos,
           data: {
             ...base,
+            original: step,
+            initialPosition: pos,
             stepId: String(step.id),
             kind,
             agentId: String(step.agentId ?? ''),
             prompt: String(step.prompt ?? ''),
             actionId: String(step.actionId ?? ''),
             input: step.input !== undefined ? JSON.stringify(step.input, null, 2) : '',
+            timerDuration: String((step.timer as { duration?: string } | undefined)?.duration ?? ''),
             human: {
               principalKind: (principal.kind as 'user' | 'role') ?? 'role',
               principalRef: String(principal.ref ?? ''),
@@ -484,34 +615,39 @@ function CanvasInner({
         id: String(tr.id),
         source: String(tr.source),
         target: String(tr.target),
-        data: { guard: tr.guard !== undefined ? JSON.stringify(tr.guard) : '' },
+        data: { original: tr, guard: tr.guard !== undefined ? JSON.stringify(tr.guard) : '' },
       }));
       setNodes(newNodes);
       setEdges(newEdges);
+      setSelectedNode(null);
+      setSelectedEdge(null);
+      setUndoDeletion(null);
       nextId.current += g.steps.length + transitionsIn.length;
-      const trig = g.triggers?.[0];
-      if (trig) {
-        setTriggerKind((trig.kind as 'manual' | 'event' | 'cron') ?? 'manual');
-        setTriggerEventId(String(trig.eventId ?? ''));
-        setTriggerCron(String(trig.cron ?? ''));
-      }
+      setTriggers(g.triggers);
     }
   }, []);
 
   const loadWorkflow = useCallback(
     async (wfSlug: string) => {
+      if (!allowDiscard()) return;
+      const token = ++loadToken.current;
+      const atRevision = revision.current;
       try {
         const { workflow, graph } = await getConductorWorkflowGraph(wfSlug);
+        if (token !== loadToken.current || atRevision !== revision.current) return;
+        revision.current += 1;
         slugEdited.current = true; // a loaded workflow keeps its slug; don't auto-rewrite from the name
         publishEnable.current = true; // back to the ordinary save semantics (no-op for existing slugs)
         setSlug(workflow.slug);
         setName(workflow.name);
+        setDescription(workflow.description);
         hydrateFromGraph(graph);
+        setDirty(false);
       } catch (err) {
         setSaveError(err instanceof ApiError ? err.message : String(err));
       }
     },
-    [hydrateFromGraph],
+    [allowDiscard, hydrateFromGraph, setDirty],
   );
 
   // Load the workflow the parent asked us to edit. The parent hands us a fresh
@@ -528,16 +664,27 @@ function CanvasInner({
   // becomes the publish flag for Save. Requests without `enable` (chat drafts) reset to the
   // ordinary enabled-on-save behaviour so a stale template flag never leaks into a later draft.
   useEffect(() => {
-    if (!loadGraphRequest) return;
+    if (!loadGraphRequest || !allowDiscard()) return;
+    loadToken.current += 1;
+    revision.current += 1;
     publishEnable.current = loadGraphRequest.enable ?? true;
+    slugEdited.current = loadGraphRequest.slug !== undefined;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- prop-nonce-triggered imperative load
-    if (loadGraphRequest.slug !== undefined) {
-      slugEdited.current = true; // an explicit slug is authoritative; don't auto-rewrite from the name
-      setSlug(loadGraphRequest.slug);
-    }
-    if (loadGraphRequest.name !== undefined) setName(loadGraphRequest.name);
+    setSlug(loadGraphRequest.slug ?? '');
+    setName(loadGraphRequest.name ?? '');
+    setDescription(null);
     hydrateFromGraph(loadGraphRequest.graph);
-  }, [loadGraphRequest, hydrateFromGraph]);
+    setDirty(true);
+  }, [loadGraphRequest, hydrateFromGraph, allowDiscard, setDirty]);
+
+  const onCanvasDeleteKey = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Backspace' && event.key !== 'Delete') return;
+    if (!(event.target instanceof Element) || event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (selectedNode || selectedEdge) {
+      event.preventDefault();
+      deleteSelected();
+    }
+  }, [deleteSelected, selectedNode, selectedEdge]);
 
   const handleRun = useCallback(async () => {
     if (!slug) return;
@@ -595,6 +742,7 @@ function CanvasInner({
             className={input}
             value={name}
             onChange={(e) => {
+              markEdited();
               setName(e.target.value);
               if (!slugEdited.current) setSlug(slugify(e.target.value));
             }}
@@ -607,6 +755,7 @@ function CanvasInner({
             className={`${input} font-mono`}
             value={slug}
             onChange={(e) => {
+              markEdited();
               slugEdited.current = true;
               setSlug(slugifyLive(e.target.value));
             }}
@@ -615,13 +764,15 @@ function CanvasInner({
         </label>
         <label className={lbl}>
           {t('triggerLabel')}
-          <select className={input} value={triggerKind} onChange={(e) => setTriggerKind(e.target.value as 'manual' | 'event' | 'cron')}>
-            <option value="manual">manual</option>
-            <option value="event">event</option>
-            <option value="cron">cron</option>
+          <select className={input} value={triggerKind} onChange={(e) => patchTrigger({ kind: e.target.value as TriggerKind })}>
+            {TRIGGER_KINDS.map((kind) => (
+              <option key={kind} value={kind} disabled={kind === 'channel' || kind === 'agent' || kind === 'workflow'}>
+                {t(`triggerKinds.${kind}`)}
+              </option>
+            ))}
           </select>
         </label>
-        {triggerKind === 'event' && (
+        {(triggerKind === 'event' || triggerKind === 'webhook') && (
           <label className={lbl}>
             {t('eventIdLabel')}
             {/* Pick a known id from the live catalog (datalist), or type the id senders will post. */}
@@ -629,7 +780,7 @@ function CanvasInner({
               className={input}
               list={eventListId}
               value={triggerEventId}
-              onChange={(e) => setTriggerEventId(e.target.value)}
+              onChange={(e) => patchTrigger({ eventId: e.target.value })}
               placeholder="github.pull_request.merged"
             />
             <datalist id={eventListId}>
@@ -643,7 +794,7 @@ function CanvasInner({
           </label>
         )}
         {triggerKind === 'cron' && (
-          <ScheduleBuilder label={t('scheduleLabel')} value={triggerCron} onChange={setTriggerCron} />
+          <ScheduleBuilder label={t('scheduleLabel')} value={triggerCron} onChange={(cron) => patchTrigger({ cron })} />
         )}
         <label className={lbl}>
           {t('loadLabel')}
@@ -704,21 +855,26 @@ function CanvasInner({
         <Button variant="ghost" onClick={() => addStep('human')}>
           + {t('addHuman')}
         </Button>
+        <Button variant="ghost" onClick={() => addStep('timer')}>
+          + {t('addTimer')}
+        </Button>
         {(selectedNode || selectedEdge) && (
           <Button variant="ghost" onClick={deleteSelected}>
             {t('deleteSelected')}
           </Button>
         )}
+        {undoDeletion && <Button variant="ghost" onClick={undoDelete}>{t('undoDeletion')}</Button>}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         {/* Canvas */}
-        <div className="h-[480px] rounded-lg border border-[color:var(--border)]">
+        <div className="h-[480px] rounded-lg border border-[color:var(--border)]" onKeyDown={onCanvasDeleteKey}>
           <ReactFlow
             className="conductor-canvas"
             nodes={displayNodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            deleteKeyCode={null}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -748,7 +904,7 @@ function CanvasInner({
           {sel && (
             <div className="grid gap-3">
               <div className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-                {sel.data.kind} {t('stepLabel')}
+                {t(`stepKinds.${sel.data.kind}`)} {t('stepLabel')}
               </div>
               <label className={lbl}>
                 {t('stepIdLabel')}
@@ -816,8 +972,8 @@ function CanvasInner({
                         value={sel.data.human.principalKind}
                         onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, principalKind: e.target.value as 'user' | 'role' } })}
                       >
-                        <option value="role">role</option>
-                        <option value="user">user</option>
+                        <option value="role">{t('principalKinds.role')}</option>
+                        <option value="user">{t('principalKinds.user')}</option>
                       </select>
                       <div className="min-w-0">
                         {sel.data.human.principalKind === 'role' ? (
@@ -887,6 +1043,10 @@ function CanvasInner({
                   </label>
                 </>
               )}
+              {sel.data.kind === 'timer' && (
+                <DurationInput label={t('timerDuration')} value={sel.data.timerDuration}
+                  onChange={(timerDuration) => patchNode(sel.id, { timerDuration })} />
+              )}
               <ConditionBuilder
                 label={t('postconditionLabel')}
                 value={sel.data.postcondition}
@@ -917,7 +1077,10 @@ function CanvasInner({
               <ConditionBuilder
                 label={t('guardLabel')}
                 value={(selEdge.data?.guard as string) ?? ''}
-                onChange={(v) => setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: v } } : ed)))}
+                onChange={(v) => {
+                  markEdited();
+                  setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: v } } : ed)));
+                }}
               />
               {/* #1698 — only for an edge out of a human step: an empty guard here is the
                   shape that strands a rejected approval, so say so where it is editable. */}

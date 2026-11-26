@@ -720,16 +720,24 @@ describe('POST /templates/:id/instantiate', () => {
     assert.equal(h.instantiations.length, 0); // no telemetry for a failed publish
   });
 
-  it("does not leak create-only semantics into POST / — the designer's upsert stays", async () => {
+  it('keeps default upserts for POST / and supports explicit create-only publishing', async () => {
     const h = await makeHarness();
     const res = await post(h.baseUrl, {
       slug: 'existing-or-not',
       name: 'Ordinary publish',
-      graph: fixtureManifest().graph, // structurally valid; placeholders are plain strings for POST /
+      graph: applyTemplateSlots(fixtureManifest(), completeMapping()),
     });
     assert.equal(res.status, 201);
     assert.equal(h.publishCalls.length, 1);
     assert.equal(h.publishCalls[0]!.expectNew, undefined);
+    const createOnly = await post(h.baseUrl, {
+      slug: 'fresh',
+      name: 'Create only',
+      graph: applyTemplateSlots(fixtureManifest(), completeMapping()),
+      expectNew: true,
+    });
+    assert.equal(createOnly.status, 201);
+    assert.equal(h.publishCalls[1]!.expectNew, true);
   });
 
   it('400s on a missing slug', async () => {

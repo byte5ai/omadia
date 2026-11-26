@@ -532,7 +532,7 @@ function buildPrompt(
     "    - kind 'human': set human = { principal: {kind:'user'|'role', ref}, channel, message, reminderInterval?, deadline?, quorum?:'any'|'all', strictApproval?:boolean }.",
     '    - An approval that gates an action needs strictApproval: true so only an explicit {approved:true} approves. Set a separate timeout fallback that does not run the approved action.',
     '    - Use positive ISO-8601 durations for deadline and reminderInterval, e.g. PT24H or PT3M. A deadline needs a fallbackTransitionId.',
-    "    - kind 'timer' exists for curated ephemeral patterns (#330 C3) but is NOT yet supported by the Designer canvas — do NOT emit timer steps in proposals.",
+    "    - kind 'timer': set timer = { duration: 'PT3M' } (positive ISO-8601) and fallbackTransitionId to the edge taken on expiry.",
     '  Transition = { id: string, source: stepId, target: stepId, guard? }',
     "  Trigger = { id: string, kind: 'manual'|'event'|'cron', eventId?, cron? }",
     '  Predicate (for guard/postcondition) is a JSON AST, e.g. {"op":"eq","path":"stepResult.approved","value":true}. NEVER write code; only this AST.',

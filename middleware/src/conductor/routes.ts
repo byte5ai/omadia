@@ -11,6 +11,7 @@ import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
 import { emptyGraph } from './graphPatch.js';
 import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
+import { reservedWorkflowSlugCode } from './workflowSlug.js';
 import { WorkflowSlugExistsError } from './workflowStore.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
@@ -237,8 +238,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
     // #330 — 'eph-' is the agent-generated namespace (createEphemeralRun); a manual
     // workflow squatting on it would collide with the reaper's lifecycle.
-    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
-      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `slug prefix '${EPHEMERAL_SLUG_PREFIX}' is reserved for ephemeral workflows` });
+    const slugCode = reservedWorkflowSlugCode(slug);
+    if (slugCode) {
+      res.status(400).json({ code: slugCode, message: `workflow slug '${slug}' is reserved` });
       return;
     }
     const graph = body.graph as unknown as WorkflowGraph;
@@ -254,6 +256,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         description: typeof body.description === 'string' ? body.description : null,
         graph,
         enable: body.enable === true,
+        ...(body.expectNew === true ? { expectNew: true } : {}),
         // Reconcile cron schedules atomically with the publish: a reconcile failure rolls the whole
         // publish back rather than leaving stale schedules firing (e.g. a just-removed cron trigger).
         onPublished: (client, workflowId) => deps.scheduleStore.reconcileOnClient(client, workflowId, graph),
