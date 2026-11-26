@@ -11605,9 +11605,11 @@ export class Orchestrator {
 const FILE_ANNOUNCE_RE =
   /\b(baue|erstelle|erzeuge|generiere|exportiere)\b[^.!?\n]{0,100}\b(excel|xlsx|datei|word|docx|arbeitsmappe|workbook)\b/i;
 
-/** Injected as a user turn to force the model to actually call the file tool. */
+/** Injected as a user turn to force the model to actually call the file tool.
+ *  #1219 — English, without shouted caps; the one sentence to the user is in
+ *  the conversation's language. */
 const FILE_RETRY_NUDGE =
-  'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
+  'You said you would build a file (Excel or Word), but you did not call `create_xlsx` or `create_docx`, so the user received nothing. Do not describe the plan again. Call the matching tool in this step and build the file. If you cannot build it, tell the user in one sentence, in the language of the conversation, that you cannot and why.';
 
 /**
  * Appended to the per-turn system hint (see {@link withFinalizeHint}) on the

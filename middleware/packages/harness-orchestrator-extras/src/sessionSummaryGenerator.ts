@@ -72,25 +72,30 @@ const DEFAULT_MAX_TOKENS = 400;
  *  (no recursion: a Briefing must not see itself). */
 export const SESSION_SUMMARY_MARKER = '<session-summary>';
 
-const SYSTEM_PROMPT = `You are a session-continuity summarizer for an AI assistant.
+/**
+ * #1219 (prompt audit) — English, no numeric caps, and written in the
+ * conversation's own language rather than always German. The size is stated
+ * by its reader ("scan at a glance") instead of a bullet/character count;
+ * `maxTokens` still bounds the call.
+ */
+const SYSTEM_PROMPT = `You summarize a chat session so that the assistant can pick it up again later.
 
-You are given the recent turns of a chat session. Produce a concise
-German Markdown bullet list (max 8 bullets) covering:
+You are given the recent turns of the session. Write a short Markdown bullet list covering:
 
-  • **Entscheidungen** — was wurde beschlossen / vereinbart?
-  • **Outputs** — welche konkreten Ergebnisse wurden produziert?
-  • **Offene Tasks** — was bleibt zu erledigen?
+  • **Decisions** — what was decided or agreed?
+  • **Outputs** — which concrete results were produced?
+  • **Open tasks** — what is still to be done?
+
+Write in the language the conversation was held in. Keep it short enough to scan at a glance: one line per bullet, only what someone resuming the session needs.
 
 Rules:
   - Bullets only. No prose, no headings, no closing summary.
-  - Max 100 chars per bullet.
-  - If a category has nothing, omit it (don't write "(keine)").
-  - Preserve specific names, IDs, dates, numbers verbatim.
-  - Drop greetings / chit-chat / clarification turns.
-  - DO NOT echo any 'palaia-hint' / privacy markers — they have been
-    stripped pre-input but if you see them, ignore them.
+  - Leave out a category that has nothing (do not write "none").
+  - Preserve specific names, IDs, dates and numbers verbatim.
+  - Drop greetings, chit-chat and clarification turns.
+  - Ignore any 'palaia-hint' or privacy markers; they are stripped before input.
 
-Return ONLY the Markdown bullets — no fences, no commentary.`;
+Return only the Markdown bullets, without fences or commentary.`;
 
 /** Build a `SessionSummaryGenerator` backed by an Anthropic Haiku call. */
 export function createHaikuSessionSummaryGenerator(
