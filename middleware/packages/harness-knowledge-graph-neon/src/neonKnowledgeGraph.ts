@@ -3228,6 +3228,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     for (const row of rows.rows) {
       const before = Array.isArray(row.owners) ? (row.owners as string[]) : [];
       const after = before.filter((id) => id !== owner);
+      // ADR-0181 — like removeOwner: the entry leaves the person's list too.
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1 AND type = 'INVOLVED' AND from_node = $2
+            AND to_node = (SELECT id FROM graph_nodes
+                            WHERE tenant_id = $1 AND external_id = $3 AND type = 'User')`,
+        [this.tenantId, row.id, userNodeId(owner)],
+      );
       await client.query(
         `UPDATE graph_nodes
             SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)

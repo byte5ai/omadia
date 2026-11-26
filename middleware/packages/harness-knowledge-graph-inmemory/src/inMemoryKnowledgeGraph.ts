@@ -1553,9 +1553,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     filter: MemorableKnowledgePurgeFilter,
   ): Promise<MemorableKnowledgePurgeResult> {
     const { remove, deown } = this.memorableKnowledgePurgeSets(filter);
+    const removedUser = filter.aclOwner !== undefined ? userNodeId(filter.aclOwner) : undefined;
     for (const node of deown) {
       const before = ownersOf(node);
       const after = before.filter((id) => id !== filter.aclOwner);
+      // ADR-0181 — like removeOwner: the entry leaves the person's list too.
+      for (const [key, edge] of this.edges.entries()) {
+        if (edge.type === 'INVOLVED' && edge.from === node.id && edge.to === removedUser) {
+          this.edges.delete(key);
+        }
+      }
       this.upsertNode({ id: node.id, type: 'MemorableKnowledge', props: { ...node.props, acl_owners: after } });
       this.appendAclAudit({
         memoryExternalId: node.id,
