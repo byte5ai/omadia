@@ -37,7 +37,7 @@ runContract('InMemoryKnowledgeGraph', async () => {
   const kg = new InMemoryKnowledgeGraph();
   return seed(kg, async (id) => {
     kg.setEmbedding(id, VECTOR);
-  });
+  }, 'default');
 });
 
 // --- The retriever and the writers ------------------------------------------

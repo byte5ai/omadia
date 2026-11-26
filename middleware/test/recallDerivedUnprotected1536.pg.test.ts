@@ -41,7 +41,7 @@ runContract('NeonKnowledgeGraph (real PG)', async () => {
         'UPDATE graph_nodes SET embedding = $1::vector WHERE tenant_id = $2 AND external_id = $3',
         [`[${VECTOR.join(',')}]`, TENANT, id],
       );
-    });
+    }, TENANT);
   })();
   return seeded;
 });
