@@ -40,7 +40,6 @@ import {
   neighborsOfType,
   scopeBelongsToAgent,
   type EditProcessInput,
-  type ChannelKind,
   type EditProcessResult,
   type EntityIngest,
   type FactIngest,
@@ -68,6 +67,7 @@ import {
 } from '@omadia/orchestrator';
 
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { isKernelReservedSystem } from './kernelNodeNamespaces.js';
 import { neighborsForPlugin } from './shieldedNeighbors.js';
 
 // ---------------------------------------------------------------------------
@@ -163,49 +163,6 @@ function systemOfEntityId(externalId: string): string {
 const FACT_ID_PREFIX = 'fact:';
 
 /**
- * Channel identities are `<channelKind>:<channelUserId>` (`channelIdentityNodeId`),
- * and a channel user id can itself hold a colon (Teams `29:…`). Keyed by
- * `ChannelKind`, so a new channel kind must be added here to compile.
- */
-const CHANNEL_KIND_NAMESPACES: { readonly [K in ChannelKind]: true } = {
-  teams: true,
-  telegram: true,
-  slack: true,
-  discord: true,
-  whatsapp: true,
-  imessage: true,
-  email: true,
-  web: true,
-  api: true,
-};
-
-/**
- * The node-id namespaces the kernel writes itself (the `*NodeId` helpers in
- * plugin-api, process ids, the `dataset` entity system). Never an entity
- * system of a plugin: the providers upsert by id whatever the node type.
- */
-const KERNEL_NODE_NAMESPACES: ReadonlySet<string> = new Set([
-  'session',
-  'turn',
-  'plan',
-  'planstep',
-  'user',
-  'mk',
-  'excerpt',
-  'inconsistency',
-  'merge',
-  'excerpt-merge',
-  'topic',
-  'run',
-  'agent',
-  'tool',
-  'fact',
-  'process',
-  'dataset',
-  ...Object.keys(CHANNEL_KIND_NAMESPACES),
-]);
-
-/**
  * ADR-0167 — the check on a plugin's entity and fact writes: an entity's
  * `system`, and the system prefix of every id a fact mentions, must be one
  * of the plugin's declared `permissions.graph.entity_systems`. A fact's own
@@ -216,12 +173,9 @@ const KERNEL_NODE_NAMESPACES: ReadonlySet<string> = new Set([
 export function entityWriteGuard(pluginId: string, entitySystems: readonly string[] | 'undeclared') {
   const allowed = entitySystems === 'undeclared' ? undefined : new Set(entitySystems);
   const assertSystem = (system: string): void => {
-    // The kernel's own node namespaces are never an entity system: the
-    // providers upsert by id whatever the node type, so `turn` + model/id
-    // would merge `extras` into another user's turn.
-    // A colon in the system would let the node id start with another
-    // namespace (`turn:atlas:` + model + id), so a system is one segment.
-    if (system.includes(':') || KERNEL_NODE_NAMESPACES.has(system)) {
+    // The kernel's own node namespaces (and any system with a colon) are
+    // never an entity system, declared or not (kernelNodeNamespaces.ts).
+    if (isKernelReservedSystem(system)) {
       throw new KgEntityNamespaceError(pluginId, system);
     }
     // ADR-0167 transition: an undeclared writer is held to the kernel check only.

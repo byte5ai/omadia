@@ -1045,8 +1045,10 @@ The surfaces that boundary must cover, and how each one does:
   trees are read-only; plan reads and writes reach only the turn's own
   conversation, process writes only this agent's scopes, entity and fact
   writes only the plugin's declared `graph.entity_systems` (ADR-0167;
-  undeclared writers pass with a warning during the transition, whose end is
-  open; the kernel's own node namespaces are refused for everyone), and only a
+  undeclared writers pass with a warning until the transition ends, #2244;
+  `odoo`/`confluence` are declared like any system, so any plugin may declare
+  them and the operator is the bound, the store does not show the declaration
+  yet, #2245; the kernel's own node namespaces are refused for everyone), and only a
   boundary implementer may `replace` these services. `topicClustering@1`
   is kernel-only for plugins: its reads take any viewer id, and `recluster`
   rebuilds every account's topics. Only the

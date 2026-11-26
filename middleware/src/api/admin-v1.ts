@@ -275,9 +275,10 @@ export interface PluginPermissionsSummary {
   sub_agents_calls_per_invocation?: number;
   /** OB-29-2: free-form system-namespace strings this plugin may use as
    *  `EntityIngest.system` when writing PluginEntity nodes via
-   *  `ctx.knowledgeGraph.ingestEntities`. Reserved: `'odoo'`, `'confluence'`
-   *  (host integrations) — entries matching these are stripped at load
-   *  time. Empty/missing → `ctx.knowledgeGraph` is `undefined`. */
+   *  `ctx.knowledgeGraph.ingestEntities` and the bounded `knowledgeGraph@1`
+   *  writes (ADR-0167). `'odoo'` / `'confluence'` are declared like any other
+   *  system; the kernel's node namespaces (`turn`, `session`, … and any value
+   *  with a colon) are stripped at load time. Empty/missing → `ctx.knowledgeGraph` is `undefined`. */
   graph_entity_systems?: string[];
   /** OB-29-3: model whitelist this plugin may call via `ctx.llm.complete`.
    *  Glob suffix `*` is supported (`'claude-haiku-4-5*'`). Empty/missing

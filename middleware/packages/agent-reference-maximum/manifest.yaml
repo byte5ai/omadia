@@ -128,8 +128,8 @@ permissions:
     writes: []
     # OB-29-2 — Plugin-owned entity namespace. ctx.knowledgeGraph.ingestEntities
     # accepts only these system-strings; anything else throws
-    # KgEntityNamespaceError. 'odoo' and 'confluence' are reserved (host-only)
-    # and are stripped here by the manifestLoader if anyone lists them.
+    # KgEntityNamespaceError. The kernel's node namespaces ('turn', 'session',
+    # …) are stripped by the manifestLoader if anyone lists them (ADR-0167).
     entity_systems:
       - "personal-notes"
   network:
