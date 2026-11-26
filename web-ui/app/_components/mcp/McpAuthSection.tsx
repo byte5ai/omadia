@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
+import { mcpRouteErrorKey } from '@/app/admin/mcp/mcpErrors';
 import { Button } from '@/app/_components/ui/Button';
 import {
   authorizeMcpServer,
@@ -15,7 +16,7 @@ import {
   type McpRevocationOutcome,
 } from '@/app/_lib/agentBuilder';
 
-function errText(err: unknown): string {
+function rawErrText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -42,6 +43,11 @@ export function McpAuthSection({
   showDelegation?: boolean;
 }): React.ReactElement | null {
   const t = useTranslations('adminMcp');
+  /** W09-10 — route refusals in the catalog's words, not the English body. */
+  const errText = (err: unknown): string => {
+    const routeKey = mcpRouteErrorKey(err);
+    return routeKey ? t(`routeErrors.${routeKey}`, { detail: rawErrText(err) }) : rawErrText(err);
+  };
   const [status, setStatus] = useState<McpAuthStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +108,8 @@ export function McpAuthSection({
   const providerHost = status.issuerHost ?? status.issuer ?? '?';
 
   async function connect(confirmed = false): Promise<void> {
-    if (status?.sharedAuthorization && !confirmed) {
+    // #1933 — only when Connect replaces a stored shared authorization.
+    if (status?.sharedAuthorization && (status.connected || Boolean(status.tokenInvalid)) && !confirmed) {
       setPending('connect');
       return;
     }

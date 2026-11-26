@@ -44,10 +44,14 @@ Chosen option: **A**.
   masks the server's results: the shield cannot check its contents. Turning an image into a
   provider image block (downscaled) is allowed only for a server whose bypass is in force
   (ADR-0092), and is a follow-up that needs the tool-result path to carry non-text parts.
-- **One cap.** A tool result the shield does not intern — operator bypass, a sub-agent's
-  bypassed narration, no privacy guard installed — is cut to `MAX_TOOL_RESULT_CHARS`
-  (200 000, the shield's own intern cap) with a notice telling the model it was cut
-  (`capToolResultText`). An interned result keeps the shield's bound.
+- **One cap on the orchestrator dispatch path.** A tool result the shield does not intern —
+  operator bypass, a sub-agent's bypassed narration, no privacy guard installed — is cut to
+  `MAX_TOOL_RESULT_CHARS` (200 000, the shield's own intern cap) with a notice telling the
+  model it was cut (`capToolResultText`). An interned result keeps the shield's bound. A
+  kernel or plugin tool's `_pending*` directive (canvas, choice card) is left whole, since
+  the kernel parses it after the call; an MCP server's text is never exempt. Not covered yet:
+  intern-exempt kernel tools under a guard, and the standalone `ToolDispatchService` path
+  (sub-agent CLI, public MCP), which keeps its own bounds.
 
 ### Consequences
 

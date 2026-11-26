@@ -5603,6 +5603,12 @@
         "delegationButton": "Service-Delegation aktivieren"
       },
       "initialServerMissing": "Der verbundene Server ist nicht mehr verfügbar – wähle oder erstelle einen."
+    },
+    "routeErrors": {
+      "toolListEmpty": "Der Server hat keine Tools gemeldet. Die bisherige Tool-Liste bleibt erhalten; Discover erneut ausführen, sobald der Server wieder da ist.",
+      "oauthDiscoveryFailed": "Die OAuth-Konfiguration des Anbieters ist nicht nutzbar, daher kann Verbinden nicht starten. Details: {detail}",
+      "delegationConfirmationRequired": "Die Umstellung auf eine gemeinsame Service-Identität muss bestätigt werden. Erneut versuchen und den Dialog bestätigen.",
+      "toolNameCollision": "Zwei Tools dieses Servers bekommen denselben Tool-Namen, daher kann nur eines davon freigegeben werden. Details: {detail}"
     }
   },
   "adminRegistries": {

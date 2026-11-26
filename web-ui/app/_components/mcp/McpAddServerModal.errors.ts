@@ -4,7 +4,7 @@ import { useCallback } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { ApiError } from '@/app/_lib/api';
-import { apiErrorBodyMessage, mcpGuardCode } from '@/app/admin/mcp/mcpErrors';
+import { apiErrorBodyMessage, mcpGuardCode, mcpRouteErrorKey } from '@/app/admin/mcp/mcpErrors';
 
 export type McpDiscoveryIssue =
   | { kind: 'needs-auth' }
@@ -58,6 +58,8 @@ export function useMcpAddErrorText(): (err: unknown) => string {
       const code = mcpGuardCode(err);
       if (code === 'blocked_host') return t('guard.blockedHost', { detail });
       if (code === 'stdio_disabled') return t('guard.stdioDisabled', { detail });
+      const routeKey = mcpRouteErrorKey(err);
+      if (routeKey) return t(`routeErrors.${routeKey}`, { detail });
       return detail;
     },
     [t],

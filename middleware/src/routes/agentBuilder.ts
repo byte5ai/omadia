@@ -199,6 +199,8 @@ export interface AgentBuilderRouterOptions {
     }>;
     /** #1947 — drop the stored client of an issuer no server uses any more. */
     forgetClient(issuer: string): Promise<boolean>;
+    /** #1947 — a server's issuer; `undefined` when it cannot be told now. */
+    issuerUse(server: McpServerRow): Promise<string | null | undefined>;
     beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
     /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
      *  validated against the flow-bound issuer before any exchange. */
@@ -530,9 +532,12 @@ export function createAgentBuilderRouter(
   const forgetIssuerClientIfUnused = async (l: Live, issuer: string): Promise<void> => {
     if (!options.mcpOAuth) return;
     try {
+      // Fail closed: a server whose issuer cannot be told right now (its
+      // metadata is down, a placeholder does not resolve) may be using it.
       for (const other of await l.graph.listMcpServers()) {
         if (other.transport === 'stdio' || (await oauthEndpointRefusal(other)) !== null) continue;
-        if ((await options.mcpOAuth.issuerFor(other).catch(() => null)) === issuer) return;
+        const used = await options.mcpOAuth.issuerUse(other).catch(() => undefined);
+        if (used === undefined || used === issuer) return;
       }
       if (await options.mcpOAuth.forgetClient(issuer)) {
         console.log(`[mcp] oauth client removed: issuer=${JSON.stringify(issuer)} (no server uses it)`);
@@ -2496,6 +2501,19 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
+      // #1933 — same rule as PUT /mcp-servers/:id/delegation: switching to a
+      // shared service identity is confirmed, before anything is written.
+      if (
+        delegation === 'service' &&
+        server.delegation !== 'service' &&
+        req.body?.confirm !== true
+      ) {
+        res.status(409).json({
+          error: 'delegation_confirmation_required',
+          affects: ['chats', 'routines', 'workflows'],
+        });
+        return;
+      }
       // Normalize first, gate later. `mcpToolNameFromRef` strips an optional
       // '<serverName>:' prefix — the same normalization `assertMcpToolAllowed`
       // applies — so the diff below compares names, never raw refs.
@@ -2561,6 +2579,7 @@ export function createAgentBuilderRouter(
       }
       if (delegation !== undefined && delegation !== server.delegation) {
         await l.graph.setMcpServerDelegation(mcpServerId, delegation);
+        await recordDelegationChange(req, server, delegation);
       }
       if (diff.toGrant.length > 0 || toRevoke.length > 0) {
         // Same recipe as server status/ack changes: policy refresh + epoch

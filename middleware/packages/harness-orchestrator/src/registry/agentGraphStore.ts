@@ -2518,7 +2518,7 @@ export class AgentGraphStore {
       input.config ? JSON.stringify(input.config) : null,
     ];
     // #1939 — a sub-agent grant (agent_id NULL, subagent_id set) is
-    // idempotent through its own unique index (migration 0115); a top-level
+    // idempotent through its own unique index (migration 0117); a top-level
     // MCP grant through 0014. A repeat returns the existing row either way.
     const helperGrant = input.subAgentId !== undefined && input.subAgentId !== null && !input.agentId;
     const conflict = helperGrant

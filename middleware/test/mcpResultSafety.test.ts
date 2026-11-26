@@ -16,6 +16,12 @@ describe('capToolResultText (#1920)', () => {
     assert.equal(capToolResultText(exact), exact);
   });
 
+  it('leaves a kernel directive whole, which the kernel parses after the call', () => {
+    const directive = JSON.stringify({ _pendingCanvas: true, rows: 'z'.repeat(MAX_TOOL_RESULT_CHARS) });
+    assert.equal(capToolResultText(directive, { keepDirectives: true }), directive);
+    assert.notEqual(capToolResultText(directive), directive, 'an MCP result is never exempt');
+  });
+
   it('cuts a larger result and tells the model', () => {
     const out = capToolResultText('y'.repeat(MAX_TOOL_RESULT_CHARS + 50));
     assert.ok(out.startsWith('y'.repeat(MAX_TOOL_RESULT_CHARS)));

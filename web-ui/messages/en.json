@@ -5603,6 +5603,12 @@
         "delegationButton": "Enable service delegation"
       },
       "initialServerMissing": "The connected server is no longer available — pick or create one."
+    },
+    "routeErrors": {
+      "toolListEmpty": "The server listed no tools. The previous tool list was kept; run Discover again once the server is back.",
+      "oauthDiscoveryFailed": "The server's OAuth provider configuration can't be used, so Connect can't start. Details: {detail}",
+      "delegationConfirmationRequired": "Switching to a shared service identity has to be confirmed. Try again and confirm the dialog.",
+      "toolNameCollision": "Two tools of this server get the same tool name, so only one of them can be granted. Details: {detail}"
     }
   },
   "adminRegistries": {

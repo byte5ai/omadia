@@ -9955,7 +9955,9 @@ export class Orchestrator {
         // #1544 — bypass passes the tool's DATA raw; the user's own masked
         // values it was handed (and may echo) stay masked. #1920 — bounded
         // like a masked result (ADR-0207).
-        return capToolResultText(remaskEchoedValues(privacy, result));
+        return capToolResultText(remaskEchoedValues(privacy, result), {
+          keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+        });
       }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
@@ -9980,7 +9982,9 @@ export class Orchestrator {
       // agent's LLM read them directly), so re-interning the prose would
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
-        return capToolResultText(remaskEchoedValues(privacy, result));
+        return capToolResultText(remaskEchoedValues(privacy, result), {
+          keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+        });
       }
       // Canvas sentinel tap: interning is about the LLM wire — the surface
       // synthesis is server-side and must compose from the RAW directive
@@ -10047,7 +10051,9 @@ export class Orchestrator {
       }
     }
     // #1920 — no privacy guard: nothing else bounds the result (ADR-0207).
-    return capToolResultText(result);
+    return capToolResultText(result, {
+      keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+    });
   }
 
   /**

@@ -321,6 +321,7 @@ describe('MCP operator routes on discovery failures', () => {
         disconnect: (s, u, o) => service.disconnect(s, u, o),
         disconnectAll: (s, o) => service.disconnectAll(s, o),
         forgetClient: (i) => service.forgetClient(i),
+        issuerUse: (sv) => service.issuerUse(sv),
       },
       auditMcpDelegationChange: (entry) => {
         audits.push({ ...entry });

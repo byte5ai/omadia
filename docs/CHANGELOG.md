@@ -133,14 +133,16 @@ Contract: ADR-0230 (Proposed).
 - **#1929** An MCP server off public https that refuses a call for authorization gets "OAuth
   only for public https servers" (ADR-0108) instead of a raw 401. `McpAuthProvider.onAuthFailure`
   now receives the failure text.
-- **#1933** `PUT /mcp-servers/:id/delegation` to `service` needs `confirm: true` (else 409
-  `delegation_confirmation_required`), is written to the admin audit
+- **#1933** `PUT /mcp-servers/:id/delegation` and the `delegation` field of `PUT
+  /mcp-grants` to `service` need `confirm: true` (else 409
+  `delegation_confirmation_required`), are written to the admin audit
   (`mcp_server.delegation_change`) and answers 404 for a malformed id. The UI asks first and
   shows a shared authorization under `service`; Connect/Disconnect there ask before replacing
   or removing it for all callers. The Conductor dialog says the switch covers the whole server.
 - **#1947** Viewing a server no longer registers an OAuth client at the provider (DCR is
   reported as advertised; registration happens on Connect). Deleting the last server of an
-  issuer removes its stored client and vault secret. The registration hint shows only when
+  issuer removes its automatically acquired client (DCR/CIMD) and vault secret; a manual
+  client is kept, and nothing is removed while another server's issuer cannot be read. The registration hint shows only when
   Connect opens the client form.
 - **#1906 (UI part)** The delegation switch is shown for MCP servers without OAuth too.
 
@@ -167,12 +169,14 @@ Contract: ADR-0230 (Proposed).
   failure). Pruning keeps hash-bound acknowledgements. A granted tool the discovered
   server no longer lists is not handed to a model.
 - **#1939** A repeated canvas drop is a no-op: core migration
-  `0115_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
+  `0117_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
   unique index `agent_tool_grants_subagent_uidx`; `createToolGrant` binds only the
   parameters its conflict query uses (the agent node answered 500). Hydration builds one
   tool per granted tool.
 - **#1948** Native MCP tool names longer than 64 characters end in a stable `_<8 hex>`
-  suffix instead of a plain cut; names that fit are unchanged. Grants whose native names
+  suffix instead of a plain cut; names that fit are unchanged. **A long tool's native name
+  therefore changes**: a per-tool privacy setting, API-key tool binding or allowlist entry
+  saved under the old cut name no longer matches (fails closed) and has to be saved again. Grants whose native names
   collide after character replacement are refused (`mcp_tool_name_collision`). A tool name
   may contain `:`; only a `<server>:` prefix is stripped from a grant ref.
 - **#1932** Replaying an answered MCP input request uses `mcpRowToConfig` (endpoint

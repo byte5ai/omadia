@@ -828,7 +828,9 @@ export class McpOAuthService {
    */
   async forgetClient(issuer: string): Promise<boolean> {
     const row = await this.deps.graph.getMcpOAuthClient(issuer);
-    if (!row) return false;
+    // An operator-entered client (Entra ID, Okta) is kept: its secret cannot
+    // be re-acquired without the operator, and a new server may reuse it.
+    if (!row || row.registeredVia === 'manual') return false;
     if (row.clientSecretRef) {
       try {
         await this.deps.vault.deleteKey(VAULT_NS, row.clientSecretRef);
@@ -853,6 +855,21 @@ export class McpOAuthService {
       registeredVia: 'manual',
       clientMetadataUrl: null,
     });
+  }
+
+  /**
+   * #1947 — the issuer a server uses, `null` when it uses none (no OAuth), and
+   * `undefined` when that cannot be told right now (metadata unreadable). The
+   * client cleanup keeps a client whenever any answer is `undefined`.
+   */
+  async issuerUse(server: McpServerRow): Promise<string | null | undefined> {
+    if (!server.endpoint || server.transport === 'stdio') return null;
+    try {
+      const d = await this.discovery.discover(this.resolveEndpoint(server));
+      return d?.server.issuer ?? null;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Resolve the issuer for a server (for the manual-client UI to know which

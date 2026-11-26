@@ -115,6 +115,7 @@ async function makeHarness(
       disconnect: refuseOauth('disconnect'),
       disconnectAll: refuseOauth('disconnectAll'),
       forgetClient: refuseOauth('forgetClient'),
+      issuerUse: refuseOauth('issuerUse'),
     },
     mcpOAuthUserKey: 'operator',
   };

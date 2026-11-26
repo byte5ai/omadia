@@ -61,6 +61,7 @@ import {
   apiErrorBodyMessage,
   catalogErrorKind,
   mcpGuardCode,
+  mcpRouteErrorKey,
   type CatalogErrorKind,
 } from './mcpErrors';
 
@@ -135,6 +136,8 @@ function useMcpErrorText(): (err: unknown) => string {
       const code = mcpGuardCode(err);
       if (code === 'blocked_host') return t('guard.blockedHost', { detail: errText(err) });
       if (code === 'stdio_disabled') return t('guard.stdioDisabled', { detail: errText(err) });
+      const routeKey = mcpRouteErrorKey(err);
+      if (routeKey) return t(`routeErrors.${routeKey}`, { detail: errText(err) });
       return errText(err);
     },
     [t],

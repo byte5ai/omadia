@@ -777,6 +777,13 @@ This keeps the supply chain explicit:
   none of them again (a sub-agent whose data the shield interned runs again,
   with its own calls replayed, §7c); a turn without that replay ledger keeps
   the same single retry, so an MCP write whose reply was lost can run twice.
+  MCP `service` delegation (one authorization for every caller of a server) is
+  switched on only with an explicit confirmation and is written to the admin
+  audit (`mcp_server.delegation_change`, ADR-0208). Reading a server's OAuth
+  status never registers a client at the provider; an automatically acquired
+  client and its vault secret are removed with the last server of its issuer.
+  Binary MCP content never reaches a model as base64 text, and a result the
+  shield does not intern is capped at the shield's intern size (ADR-0207).
   Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).
