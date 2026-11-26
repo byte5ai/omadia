@@ -1183,6 +1183,13 @@ export type ChatStreamEvent =
        */
       degraded?: true;
       /**
+       * #1896 — the agent chose not to answer (`NO_REPLY`). `answer` is then
+       * empty and the stream carried no preview of the sentinel; a client
+       * shows no assistant message for this turn. Set by
+       * `suppressNoReplyStream` on the stream routes. Additive and optional.
+       */
+      silent?: true;
+      /**
        * #1094 — the tools that committed before the throw. DISTINCT names in
        * first-commit order, NOT a call count: two calls to the same tool
        * appear once (the orchestrator deduplicates while collecting them).

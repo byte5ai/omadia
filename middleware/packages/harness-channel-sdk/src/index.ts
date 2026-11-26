@@ -352,6 +352,7 @@ export {
 // NO_REPLY sentinel: agent emits this literal when it has nothing to say,
 // channel adapters drop the message before forwarding to the provider.
 export { NO_REPLY_SENTINEL, isNoReply, logNoReplyDrop } from './noReply.js';
+export { suppressNoReplyStream } from './noReplyStream.js';
 
 // Phase B+ — channel-key discovery for the /operator/channels dashboard.
 // Each channel-kind plugin contributes a ChannelKeyDirectory during

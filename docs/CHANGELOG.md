@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — web chat shows no internal sentinels or notes; Delete session removes it (2026-11-26)
+
+- **#1896** — a bare `NO_REPLY` no longer reaches streamed turns as text. `suppressNoReplyStream`
+  (`@omadia/channel-sdk` 0.3.16) holds `text_delta` while the text can still become the sentinel and turns
+  a no-reply `done` into `answer: ''` + `silent: true`. Wired into `/api/chat/stream` and the public
+  API channel (`harness-channel-api` `chatRouter`). The web chat renders no bubble for a silent
+  turn; the session schema keeps `silent`.
+- **#1956** — the session logger mirrors the user-facing answer into the web-chat document: the
+  `<!-- orchestrator:rendered_table … -->` and `rendered_attachments` notes are stripped
+  (`stripOrchestratorNotes`), so a reload shows no note text and the client's PUT matches the
+  mirror (no duplicate turn). A NO_REPLY turn is mirrored silent and empty.
+- **#1900** — the web chat no longer renders process-promotion nudge cards (decision after the
+  recommendation, ADR-0021: a decoration needs a working next action; the card's buttons only
+  logged to the console and its text was written for the model). `NudgeCard` and its `nudgeCard`
+  catalog keys are gone; the `<nudge>` parser stays for the tool trace.
+- **#1886** — "Delete session" in the agent-unavailable banner removes the session from the list
+  and resets the picked agent instead of clearing it (the clear's PUT recreated the session).
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

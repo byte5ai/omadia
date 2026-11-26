@@ -1693,11 +1693,6 @@
   "markdownTable": {
     "scrollRegionLabel": "Scrollbare Tabelle"
   },
-  "nudgeCard": {
-    "kicker": "Vorschlag",
-    "ackTriggered": "✓ ausgelöst",
-    "suppress": "Nicht mehr anzeigen"
-  },
   "agentUsagePills": {
     "ariaLabel": "Verwendete Agents in dieser Session",
     "label": "Agents",

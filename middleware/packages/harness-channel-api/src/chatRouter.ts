@@ -31,6 +31,7 @@ import {
   AI_PROVENANCE_HEADER,
   AI_PROVENANCE_HEADER_VALUE,
   ENVELOPE_PROVENANCE,
+  suppressNoReplyStream,
 } from '@omadia/channel-sdk';
 import type { ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
 import { CHAT_WRITE_SCOPE, requireApiKey } from '@omadia/api-key-auth';
@@ -314,7 +315,10 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         // Track whether one was seen so we don't record 'ok' for a turn that
         // actually failed (same bug class as issue #403).
         let sawInBandError = false;
-        for await (const event of deps.core.handleTurnStream(turn)) {
+        // #1896 — a bare NO_REPLY ends as a silent `done`, never as text.
+        for await (const event of suppressNoReplyStream(
+          deps.core.handleTurnStream(turn),
+        )) {
           if (isErrorEvent(event)) sawInBandError = true;
           // #1094 — a `done` marked `degraded` is a turn that threw after a
           // tool had already committed. It stays `done` on the wire (#506),
