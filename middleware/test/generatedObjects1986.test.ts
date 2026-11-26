@@ -95,7 +95,8 @@ describe('#1986 · chat deletion releases its generated files', () => {
       (req as unknown as { session: unknown }).session = { omadia_user_id: BEA };
       next();
     });
-    const store = { delete: () => Promise.resolve() };
+    // A chat the store no longer has: the delete is idempotent (W01 ownership check passes).
+    const store = { fileExistsFor: () => Promise.resolve(false), delete: () => Promise.resolve() };
     app.use(
       '/api/chat',
       createChatSessionsRouter({
