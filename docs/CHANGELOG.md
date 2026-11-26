@@ -111,6 +111,131 @@ changelog.
 - **#1886** — "Delete session" in the agent-unavailable banner removes the session from the list
   and resets the picked agent instead of clearing it (the clear's PUT recreated the session).
 
+### Security — web, routine and API turns are one-person rooms; memories private by default (#1774, #1826, #1823, ADR-0182, ADR-0183) (2026-11-26)
+
+- Web chat turns carry `TurnOrigin { channelType: 'http', scope: personal(<omadia user id>) }`,
+  built only from the session (`webTurnOrigin`, `routes/chat.ts`); web routines carry the same
+  origin from `routine.userId`; Public API turns carry `{ channelType: 'api', scope:
+  personal('key:<keyId>') }` (`apiKeyOrigin`). In `enforce` / `enforce-strict` each account and
+  each key gets its own `user` tier, in `members` a one-person audience (`isWebAccountTurn`).
+  `off` keeps one shared tree (ADR-0116). A channel plugin can no longer state `http`, and only
+  `@omadia/channel-api` may state `api` (`readTurnOrigin`; such a turn runs context-free).
+- The `[security-audit] effectiveMemoryScope` line names the mode that is set (`members` was
+  logged as `enforce-strict`). The memory tab texts (en/de) say what each mode does for web
+  accounts and API keys.
+- `createMemorableKnowledge` stores `private` when no visibility is given (both backends,
+  matching the plugin-api doc). "Save as memory" writes `private` and stamps `originAgent` from
+  its source turn. **Graph migration `0037_memorable_knowledge_private_by_default`** moves every
+  defaulted `team` MemorableKnowledge row that has owners to `private`; durable rules
+  (`system:rules-hook`), owner-less rows and `public` rows stay shared. plugin-api **1.99.0**
+  records the behaviour change (and `addOwner`/`removeOwner` from #1821). Recall's `teamVisibility` stays on and now only admits knowledge
+  shared on purpose.
+- **Upgrade note:** on `enforce-strict` / `members` agents, web and API turns no longer read
+  notes written to the agent tree before this change. A hand-set `team` row becomes private and
+  must be re-shared.
+
+### Security — memory owners are real users, chosen only by the saver (#1821, #1852, ADR-0181) (2026-11-26)
+
+- `POST /api/v1/memory` makes the saver the only owner and involved user. `aclOwners` or
+  `involvedOmadiaUserIds` naming anyone else answer `400 memory.foreign_owner`;
+  `derivedFromTurnIds` keeps only turns the saver sent (others are dropped and counted in
+  `droppedSourceTurns`).
+- `POST /api/v1/memory/:id/owners` refuses an id with no user behind it
+  (`400 memory.unknown_user`) and writes the `INVOLVED` edge, so the new owner finds the entry in
+  `GET /api/v1/memory` and `/memories`; `DELETE …/owners/:userId` drops the edge again.
+  `KnowledgeGraph.addOwner` throws `user_not_found` on both backends (plugin-api doc updated).
+
+### Security — web chats belong to the account that created them (#1762, ADR-0180) (2026-11-26)
+
+- `ChatSession.ownerUserId` (the session's `sub`) is stamped by the server on the first
+  `PUT /api/chat/sessions/:id`; a body cannot set or move it and `GET` does not return it.
+- `GET /api/chat/sessions` lists only the caller's chats. `GET`, `PUT`, `DELETE`,
+  `POST …/reset` and `POST …/re-snapshot` on another account's chat answer `404 not_found`;
+  a request without an account saves nothing (`401 no_account`).
+- `POST /api/chat`, `/api/chat/stream` and `/api/chat/steer` with another account's
+  `sessionId` answer 404 before an agent resolves, so its tail, pin and routines stay with
+  the owner; a web routine therefore only delivers into its creator's chat.
+- **Upgrade note:** chats written before this change have no owner. On an instance with exactly
+  one account they belong to it; with several accounts they are hidden from everyone (kept
+  under `/memories/chat-sessions/`, not deleted). The canary HTTP sweep's `#1762` todo is now
+  an assertion.
+
+### Security — process write tools bounded to the turn's agent (#2223, #2224) (2026-11-26)
+
+- `edit_process` loads the record first and changes only a process the turn may read
+  (`currentProcessReadFilter`): another agent's process, or any process in a context-bound
+  `enforce-strict` / `members` turn or outside a bounded turn, answers like a missing id.
+- `write_process` stores only in this agent's scopes (`processWriteScope`,
+  `@omadia/orchestrator`): an unqualified scope is qualified with the agent, another agent's
+  scope is refused, and nothing is written in a context-bound turn or without a boundary. The
+  bounded `processMemory@1` write for plugins applies the same rule.
+- `InMemoryKnowledgeGraph` returns no memorable knowledge and no excerpt for an empty
+  `audienceOwners`, like Neon (#2224); the `empty-audience-inmemory` divergence is gone.
+- The canary sweep (Neon) gained a write probe: every viewer edits every process of its tenant
+  and writes into another agent's scope through a dry store; only processes the oracle lets it
+  read and its own qualified scope may reach the store.
+
+### Fixed — MCP and Builder audit coverage (#1740, #1951) (2026-11-26)
+
+- MCP server administration, tool discovery, verdict acknowledgements, grants,
+  registries, OAuth and public bindings write operator audit rows. The audit
+  page offers a common MCP filter for these and existing MCP events.
+- Core migration `0115_mcp_oauth_flow_audit_actor` retains the signed-in
+  initiator until the OAuth flow is consumed. Callbacks that pass the
+  completer check and persist a token record that initiator (ADRs 0175, 0246).
+- Local ZIP uploads and Builder publishes record package version and source.
+  The owner's Builder history shows manual spec and slot edits and groups
+  consecutive saves from one editing burst (ADR-0245).
+
+### Fixed — routine and operator audit coverage (#1752, #1764) (2026-11-26)
+
+- Routine pause, resume, trigger, template changes and deletion identify the
+  routine owner separately from the acting operator. Deletes retain the name,
+  cron and channel. Template rows describe format and section types.
+- Agent, helper, working-mode, model, provider, binding and plugin setting
+  changes use the signed-in operator's audit identity. Plugin credentials,
+  arbitrary configuration values and agent instructions stay out of the trail.
+- Agent status transitions retain the existing `agent.disable` event in both
+  directions. The end-of-service action runs only when disabling.
+
+### Fixed — audit test and orb setup (#2185, #2186) (2026-11-26)
+
+- The role-holders PostgreSQL test runs the auth migrator and deletes only its own audit rows.
+- Orb dependency installation skips the unused ONNX Runtime CUDA download and keeps CPU support.
+
+### Security — the last standalone grandfather row is gone (#838) (2026-11-26)
+
+- `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` is empty. Its last row,
+  `@omadia/channel-teams` → `graphPool`, was the C7 SQL ramp. Teams 0.46.0 declares
+  `permissions.sql` with its own migrations, the channel runtime honours the operator grant
+  (#2254), and the grant is given on the instance. Without a grant, Teams runs without a
+  database instead of failing.
+
+### Fixed — Conductor schedule zones and suppressed triggers (#1714, #1715)
+
+- Conductor evaluates each schedule in its stored IANA zone through the scheduler helper shared with routines. Republishing an unchanged expression keeps the original zone.
+- Migration `0016_schedule_poll_cursor.sql` records evaluated minutes across restarts. Missed slots expire and produce a bounded suppression summary. Disabled live slots and disabled event subscribers are logged. The emit response includes a `suppressed` list. See ADR-0250 and ADR-0251.
+
+### Fixed — Conductor role and template governance (#1708, #1718, #1719, #1725)
+
+- Role creation rejects duplicate keys, label updates are separate, and unknown role assignments return 404. Role deletion refuses roles with active holders or references in active workflow versions. Create, edit and delete write admin audit rows. Soft-deleting a workflow removes its schedules.
+- The role-holder audit regression test distinguishes the session email and account UUID from the routing subject and knowledge-graph ID.
+- Derived templates use person slots for user principals, suggest an available slug based on the template name, and flag action inputs containing HTTP(S) URLs. See ADR-0252.
+- Template submissions and reviews write admin audit rows. Authors can approve their own version on a single-operator install. New versions start private and require review before sharing. See ADR-0253.
+
+### Fixed — Conductor Designer round-trip and editing safeguards (#1716, #1717, #1720)
+
+- The visual designer preserves existing triggers, filters, IDs and graph fields on save. Timer steps have a duration and expiry edge in the inspector. Trigger and principal labels and the default agent prompt are localized.
+- Regenerated the shared plugin UI stylesheet to include the timer color token.
+- Deleting a selection offers a one-step undo. The canvas prompts before leaving or replacing an unsaved draft. Publishing a new version for an existing slug requires confirmation. Operator route segments are reserved workflow slugs.
+
+### Fixed — Conductor publish validation and builder diagnostics (#1722, #1723, #1724, #1928)
+
+- Workflow publish and template resolution check live agent, action and role references, reject internal operator account UUIDs in human steps, check required plugin and MCP action inputs and validate static `webhook.post` URLs. The builder can still draft unconnected actions for inline setup.
+- Human deadlines and reminder intervals must be positive ISO-8601 durations. The builder describes strict approvals and shows validation warnings in chat and after publishing.
+- The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
+- The webhook validation fixtures use the graph's JSON object type, resolving a TypeScript error in the test gate.
+
 ### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
 
 - `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the

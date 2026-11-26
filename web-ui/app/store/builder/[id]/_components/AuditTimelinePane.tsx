@@ -25,6 +25,8 @@ const ACTION_LABEL_KEY: Readonly<Record<string, string>> = {
   quality_updated: 'actionQualityUpdated',
   spec_patched: 'actionSpecPatched',
   slot_filled: 'actionSlotFilled',
+  spec_edited: 'actionSpecEdited',
+  slot_edited: 'actionSlotEdited',
 };
 
 const ACTION_ICON: Readonly<Record<string, string>> = {
@@ -32,6 +34,8 @@ const ACTION_ICON: Readonly<Record<string, string>> = {
   quality_updated: '🛡',
   spec_patched: '🔧',
   slot_filled: '📝',
+  spec_edited: '🔧',
+  slot_edited: '📝',
 };
 
 function relTime(ts: number, t: AuditT): string {
@@ -69,7 +73,10 @@ function detailSummary(ev: BuilderAuditEvent, t: AuditT): string {
       const ops = Array.isArray(d['ops']) ? d['ops'] : [];
       return t('detailOperations', { count: ops.length });
     }
-    case 'slot_filled': {
+    case 'spec_edited':
+      return t('detailOperations', { count: Number(d['operationCount'] ?? 0) });
+    case 'slot_filled':
+    case 'slot_edited': {
       const slot = typeof d['slotKey'] === 'string' ? d['slotKey'] : '?';
       const bytes = typeof d['bytes'] === 'number' ? d['bytes'] : 0;
       return t('detailSlotBytes', { slot, bytes });

@@ -2491,6 +2491,7 @@
   --step-kind-agent: #6AB7FF;
   --step-kind-action: #8B9CFF;
   --step-kind-human: #F2B95E;
+  --step-kind-timer: #6BD5B2;
   --step-kind-badge-fg: #0B0B0B;
   --canvas-edge: light-dark(#B1B1B7, #8D919C);
   --canvas-edge-selected: light-dark(#555555, #D2D5DD);

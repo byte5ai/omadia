@@ -131,6 +131,44 @@ export interface ChatSession {
    * it (`mergeServerProactiveMessages` carries the stored value over).
    */
   resetAt?: number;
+  /**
+   * #1762 (ADR-0180) — the account (`users.id`, the session's `sub`) that
+   * created the chat. Server-owned: stamped on the first client PUT, never
+   * taken from a request body, never changed. Only this account lists, reads,
+   * writes, resets or deletes the chat. Absent on chats written before the
+   * owner existed; see {@link chatSessionOwner} for how those resolve.
+   */
+  ownerUserId?: string;
+}
+
+/**
+ * #1762 (ADR-0180) — who owns `session`. A chat without a stamped owner
+ * (written before #1762) belongs to `legacyOwner`: the instance's only
+ * account when there is exactly one, otherwise nobody, so it is hidden from
+ * every account instead of shown to all of them.
+ */
+export function chatSessionOwner(
+  session: Pick<ChatSession, 'ownerUserId'>,
+  legacyOwner: string | undefined,
+): string | undefined {
+  return session.ownerUserId ?? legacyOwner;
+}
+
+/** Does `viewer` own `session`? No viewer owns nothing. */
+export function chatSessionOwnedBy(
+  session: Pick<ChatSession, 'ownerUserId'>,
+  viewer: string | undefined,
+  legacyOwner: string | undefined,
+): boolean {
+  return viewer !== undefined && viewer.length > 0 && chatSessionOwner(session, legacyOwner) === viewer;
+}
+
+/** #1762 — a client PUT for a chat another account owns. Answered as 404. */
+export class ChatSessionNotOwnedError extends Error {
+  constructor(id: string) {
+    super(`chat session ${id} belongs to another account`);
+    this.name = 'ChatSessionNotOwnedError';
+  }
 }
 
 export interface ChatSessionSummary {
@@ -260,8 +298,12 @@ export class ChatSessionStore {
     return withSessionLock(id, fn);
   }
 
-  /** Summary of all persisted sessions, newest `updatedAt` first. */
-  async list(): Promise<ChatSessionSummary[]> {
+  /**
+   * Summary of persisted sessions, newest `updatedAt` first. With `owner`
+   * (#1762), only the chats that account owns (`chatSessionOwnedBy`);
+   * without it every chat, for kernel callers such as force-invalidate.
+   */
+  async list(owner?: { viewer: string | undefined; legacyOwner: string | undefined }): Promise<ChatSessionSummary[]> {
     // Before the existence check: the purge may remove the directory's last
     // file (and with it the directory), and it must count as run even when
     // there was nothing to sweep yet.
@@ -277,6 +319,7 @@ export class ChatSessionStore {
       try {
         const raw = await this.store.readFile(entry.virtualPath);
         const parsed = JSON.parse(raw) as ChatSession;
+        if (owner && !chatSessionOwnedBy(parsed, owner.viewer, owner.legacyOwner)) continue;
         summaries.push({
           id: parsed.id,
           title: parsed.title,
@@ -471,7 +514,10 @@ export class ChatSessionStore {
    * #1071 — persist a client PUT without dropping server-written proactive
    * messages the client has not seen yet. Returns the document as stored.
    */
-  async saveFromClient(session: ChatSession): Promise<ChatSession> {
+  async saveFromClient(
+    session: ChatSession,
+    owner?: { viewer: string; legacyOwner: string | undefined },
+  ): Promise<ChatSession> {
     if (!ID_RE.test(session.id)) throw new InvalidSessionIdError(session.id);
     return this.withLock(session.id, async () => {
       // A corrupt stored file (unparseable JSON) must not turn every PUT into
@@ -484,6 +530,11 @@ export class ChatSessionStore {
         existing = await this.get(session.id);
       } catch (err) {
         if (!(err instanceof SyntaxError)) throw err;
+        // #1762 — an unreadable chat has no readable owner: it counts as a
+        // legacy chat, so only its resolved owner may overwrite it.
+        if (owner && owner.legacyOwner !== owner.viewer) {
+          throw new ChatSessionNotOwnedError(session.id);
+        }
         console.warn(
           `[chat-sessions] unreadable session ${session.id}, overwriting from client:`,
           err.message,
@@ -494,9 +545,19 @@ export class ChatSessionStore {
       if (!existing && isServerMirroredSession(session)) {
         throw new ServerMirroredSessionError(session.id);
       }
+      // #1762 — an existing chat of another account is not overwritten; a
+      // new one, or a legacy one its resolved owner writes, is stamped.
+      if (owner && existing && !chatSessionOwnedBy(existing, owner.viewer, owner.legacyOwner)) {
+        throw new ChatSessionNotOwnedError(session.id);
+      }
       const merged = mergeServerProactiveMessages(existing, session);
-      await this.save(merged);
-      return merged;
+      const ownerUserId = existing?.ownerUserId ?? owner?.viewer;
+      const stamped: ChatSession = {
+        ...merged,
+        ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+      };
+      await this.save(stamped);
+      return stamped;
     });
   }
 
@@ -621,6 +682,11 @@ export class ChatSessionStore {
       messages: [...existing.messages, userMsg, assistantMsg],
     };
     await this.save(updated);
+  }
+
+  /** Is a document stored under `id` (readable or not)? */
+  async fileExistsFor(id: string): Promise<boolean> {
+    return this.store.fileExists(this.pathFor(id));
   }
 
   private pathFor(id: string): string {
