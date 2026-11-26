@@ -3734,6 +3734,8 @@ async function main(): Promise<void> {
         ownBotRefusal(conversationRef, agentSlug, channel, (slug, type) =>
           serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.channelIdentityFor(slug, type)?.channelKey,
         ),
+      // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
+      defaultTimeZone: config.PROACTIVE_TIMEZONE,
       // #1598 — the routine's own orchestrator, with its plugin grants.
       // #2045 / #2046 — with the agent's emitter and speaker, so a routine's
       // answer passes the same identity guard and carries the same speaker.

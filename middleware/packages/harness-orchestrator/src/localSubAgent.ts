@@ -8,7 +8,7 @@ import { appendLimitSignalNote, isUnknownOutcomeToolErrorNotice } from '@omadia/
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js';
 import { throwIfAskAborted, type AskObserver, type AskOptions } from './tools/domainQueryTool.js';
-import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import { fieldExemptModelCopy, internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -718,6 +718,13 @@ export class LocalSubAgent {
           };
         }
         return { output: remaskEchoedValues(privacy, result), ...carried };
+      }
+      // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
+      const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)
+        ? undefined
+        : fieldExemptModelCopy(toolName, result);
+      if (fieldExempt !== undefined) {
+        return { output: remaskEchoedValues(privacy, fieldExempt), ...carried };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,

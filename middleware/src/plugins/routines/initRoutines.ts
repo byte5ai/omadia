@@ -62,6 +62,9 @@ export interface InitRoutinesOptions {
    * The structural type keeps this layer free of a hard import on the
    * orchestrator package.
    */
+  /** #1743 / ADR 0240 — the instance zone (`PROACTIVE_TIMEZONE`) a routine
+   *  gets when its creator's zone is unknown. */
+  defaultTimeZone?: string;
   /** #1598 — see `RoutineRunnerOptions.getOrchestrator`. */
   getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   /**
@@ -145,8 +148,15 @@ export async function initRoutines(
       if (!ctx) return undefined;
       // The CLI runtime has no orchestrator turn scope, only its dispatcher.
       const agentSlug = turnContext.currentAgentSlug() ?? currentDispatchCaller()?.agentSlug;
-      return agentSlug ? { ...ctx, agentSlug } : ctx;
+      // #1743 — the creator's zone when the channel reported one.
+      const timeZone = turnContext.current()?.userTimeZone;
+      return {
+        ...ctx,
+        ...(agentSlug ? { agentSlug } : {}),
+        ...(timeZone ? { timeZone } : {}),
+      };
     },
+    ...(opts.defaultTimeZone ? { defaultTimeZone: opts.defaultTimeZone } : {}),
   });
 
   const disposeTool = opts.registerNativeTool(

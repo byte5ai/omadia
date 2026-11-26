@@ -62,7 +62,7 @@
  */
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
-import { isInternExemptTool } from '@omadia/orchestrator';
+import { hasInternFieldExemption, isInternExemptTool } from '@omadia/orchestrator';
 import { describeThrownError } from '@omadia/plugin-api';
 
 /**
@@ -230,5 +230,7 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
  * warning AND the tool stays unreachable.
  */
 export function isPubliclyServableTool(name: string): boolean {
-  return !isInternExemptTool(name);
+  // #1768 / ADR 0241 — a field-exempt tool hands its operational state over in
+  // clear too: the same reasoning, the same closed door (ADR 0142).
+  return !isInternExemptTool(name) && !hasInternFieldExemption(name);
 }

@@ -238,7 +238,7 @@ import type {
   CliRecalledContext,
   CliTurnRecord,
 } from './cliTurnRecord.js';
-import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import { fieldExemptModelCopy, internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -5924,6 +5924,8 @@ export class Orchestrator {
           : {}),
         // #1747 — an outer caller's cancellation (routine timeout, pause).
         ...(parent?.abortSignal ? { abortSignal: parent.abortSignal } : {}),
+        // #1743 — the user's zone for `manage_routine` (ADR 0240).
+        ...(input.userTimeZone ? { userTimeZone: input.userTimeZone } : {}),
         // Canvas sentinel tap — installed by the ui-orchestrator in its
         // OUTER scope before this turn scope exists; must survive into the
         // turn so dispatchTool can hand raw sentinels past the privacy guard.
@@ -9870,6 +9872,13 @@ export class Orchestrator {
         // back to the model as the placeholders it wrote.
         return remaskEchoedValues(privacy, result);
       }
+      // #1768 / ADR 0241 — a field-exempt tool's operational state in clear,
+      // its user-entered free text withheld. Its `Error:` text took the
+      // control-flow guard above like any tool's (not exempt there).
+      const fieldExempt = isGuardedControlFlowResult(result, mcpAuthPromptMint)
+        ? undefined
+        : fieldExemptModelCopy(name, result);
+      if (fieldExempt !== undefined) return remaskEchoedValues(privacy, fieldExempt);
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default

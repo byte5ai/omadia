@@ -24,7 +24,10 @@ import type { JobSchedulerLike } from '../plugins/routines/routineRunner.js';
 import type { Routine } from '../plugins/routines/routineStore.js';
 import { createCron } from '../scheduler/cronerCompat.js';
 import type { TurnOutcome } from './triggerChain.js';
-import { cronMinGapSeconds, type TriggerLimits } from './triggerPolicy.js';
+import { ToolRefusalError } from '@omadia/plugin-api';
+
+import { checkCronSchedule, UTC_ZONE } from '../scheduler/zonedCron.js';
+import type { TriggerLimits } from './triggerPolicy.js';
 import type { TriggerService } from './triggerService.js';
 import { routineLang, routineTexts } from './routineTexts.js';
 import type { Trigger } from './types.js';
@@ -69,9 +72,23 @@ export interface RoutineTriggerScheduler extends JobSchedulerLike {
 
 const ownerKey = (r: Routine): string => `${r.tenant}\n${r.userId}`;
 
+/**
+ * #1750 — a routine's schedule the harness refuses (never fires, fires once,
+ * too often, unsupported syntax, unknown zone). Written for the model, so
+ * `manage_routine` passes it on (ADR 0078) and the create is rolled back.
+ */
+export class RoutineScheduleRefusedError extends ToolRefusalError {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** How many times `cron` fires between now and `until` (at most `cap`). */
-export function cronRunsUntil(cron: string, until: Date, from: Date, cap: number): number {
-  const job = createCron(cron, {});
+export function cronRunsUntil(cron: string, until: Date, from: Date, cap: number, timeZone: string = UTC_ZONE): number {
+  const job = createCron(cron, { timezone: timeZone });
   let count = 0;
   let cursor: Date | null = from;
   while (count < cap) {
@@ -130,8 +147,10 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
       {
         purpose: routine.name,
         cron: routine.cron,
+        // #1743 / ADR 0240 — the routine's zone; rows from before it stay UTC.
+        timezone: routine.timezone ?? UTC_ZONE,
         until: until.toISOString(),
-        max_runs: cronRunsUntil(routine.cron, until, now, limits.maxRunsCap),
+        max_runs: cronRunsUntil(routine.cron, until, now, limits.maxRunsCap, routine.timezone ?? UTC_ZONE),
         actions: [{ type: 'turn', instruction: routine.prompt }],
         budget: {
           per_firing_usd: limits.perFiringUsdMax,
@@ -193,22 +212,24 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
   };
 
   return {
-    register(_agentId: string, spec: JobSpec, handler: JobHandler): () => void {
+    register(_agentId: string, spec: JobSpec, handler: JobHandler, opts?: { readonly timeZone?: string }): () => void {
       const routineId = spec.name;
       const cron = 'cron' in spec.schedule ? spec.schedule.cron : undefined;
       if (!cron) throw new Error('a routine runs on a cron pattern');
-      // Synchronous, so the runner rolls a refused routine back.
-      const gap = cronMinGapSeconds(cron, undefined, clock());
+      // #1750 / ADR 0240 — synchronous and complete (the same rules the
+      // trigger engine applies when it schedules), so the runner rolls a
+      // refused routine back and the model reads why.
       const min = deps.limits().minIntervalSeconds;
-      if (gap === undefined) throw new Error(`invalid cron pattern '${cron}'`);
-      if (gap < min) {
-        // An existing routine that ran more often stops here on upgrade: its
-        // owner sees why on the row instead of a silent "active".
-        void deps
-          .routines()
-          ?.markExpired(routineId, routineTexts.tooFrequent(lang(), min / 60))
-          .catch(report(`marking ${routineId}`));
-        throw new Error(`a routine runs at most every ${String(min / 60)} minutes`);
+      const check = checkCronSchedule(cron, opts?.timeZone ?? UTC_ZONE, clock(), { minGapSeconds: min });
+      if (!check.ok) {
+        // An existing routine that does not pass (ran more often, legacy
+        // syntax the engine never scheduled) stops here on boot: its owner
+        // sees why on the row instead of a silent "active".
+        const why = check.code === 'too_frequent'
+          ? routineTexts.tooFrequent(lang(), min / 60)
+          : routineTexts.notScheduled(lang(), check.message);
+        void deps.routines()?.markExpired(routineId, why).catch(report(`marking ${routineId}`));
+        throw new RoutineScheduleRefusedError(check.code, check.message);
       }
       armed.set(routineId, { handler, timeoutMs: spec.timeoutMs ?? 600_000 });
       void ensure(routineId).catch(report(`scheduling ${routineId}`));

@@ -46,6 +46,8 @@ export interface JobSchedulerLike {
     agentId: string,
     spec: JobSpec,
     handler: JobHandler,
+    /** #1743 — the zone the cron pattern is evaluated in (ADR 0240); absent = UTC. */
+    opts?: { readonly timeZone?: string },
   ): () => void;
   stopForPlugin(agentId: string): void;
 }
@@ -660,6 +662,7 @@ export class RoutineRunner {
       ROUTINES_AGENT_ID,
       spec,
       (signal) => this.runOnce(routine, signal, 'cron'),
+      routine.timezone ? { timeZone: routine.timezone } : {},
     );
     this.disposers.set(routine.id, dispose);
   }

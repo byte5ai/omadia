@@ -61,6 +61,64 @@ export function isInternExemptTool(toolName: string): boolean {
 }
 
 /**
+ * #1768 / ADR 0241 — field-level interning exemption.
+ *
+ * Some kernel tools return the agent's own operational state (ids, names,
+ * schedules, status, timestamps) mixed with text a user typed in (a routine's
+ * prompt, the error a run recorded). Interning the whole result blinds the
+ * agent to state it must act on (find a routine by name, confirm a pause);
+ * exempting it whole would hand user-entered free text to the model as
+ * trusted state. A tool listed here gets a MODEL COPY: its JSON result with
+ * the listed keys removed at every depth, handed over in clear like an
+ * exempt tool's. Everything not listed is operational state by the tool's
+ * own contract. A result that is not a JSON object is not projected: it falls
+ * through to normal interning (fail closed).
+ *
+ * Keep this map as narrow as {@link INTERN_EXEMPT_TOOLS}: only kernel tools
+ * whose result shape the kernel itself writes.
+ */
+export const INTERN_FIELD_EXEMPT_TOOLS: ReadonlyMap<string, readonly string[]> = new Map([
+  // The user's own routines: `prompt` and `lastRunError` are free text; the
+  // `_pendingRoutineList` sidecar repeats prompts and is read from the raw
+  // result by the smart-card path, never by the model.
+  ['manage_routine', ['prompt', 'lastRunError', '_pendingRoutineList']],
+]);
+
+/** True when a tool's result reaches the model as a projected clear copy. */
+export function hasInternFieldExemption(toolName: string): boolean {
+  return INTERN_FIELD_EXEMPT_TOOLS.has(toolName);
+}
+
+/**
+ * The model copy of a field-exempt tool's result: its JSON with the withheld
+ * keys removed at every depth, or undefined when the tool has no field
+ * exemption or its result is not a JSON object or array (then it is
+ * interned as usual).
+ */
+export function fieldExemptModelCopy(toolName: string, result: string): string | undefined {
+  const withheld = INTERN_FIELD_EXEMPT_TOOLS.get(toolName);
+  if (withheld === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const drop = new Set(withheld);
+  const project = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(project);
+    if (typeof v !== 'object' || v === null) return v;
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>)
+        .filter(([k]) => !drop.has(k))
+        .map(([k, inner]) => [k, project(inner)]),
+    );
+  };
+  return JSON.stringify(project(parsed));
+}
+
+/**
  * What a model gets in place of a tool result the Privacy Shield could not
  * intern (`internToolResultV4` threw). Every seam that interns fails closed —
  * the orchestrator's dispatch, `LocalSubAgent`, `ToolDispatchService` and the

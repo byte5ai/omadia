@@ -72,3 +72,40 @@ describe('privacyInternPolicy', () => {
     assert.equal(isInternExemptTool('totally_unknown_tool'), false);
   });
 });
+
+describe('#1768 / ADR 0241 — field-level interning exemption', () => {
+  it('lists manage_routine only, withholding its free text', async () => {
+    const { INTERN_FIELD_EXEMPT_TOOLS } = await import('@omadia/orchestrator/dist/privacyInternPolicy.js');
+    assert.deepEqual([...INTERN_FIELD_EXEMPT_TOOLS.keys()], ['manage_routine']);
+    assert.equal(isInternExemptTool('manage_routine'), false, 'not exempt as a whole');
+  });
+
+  it('hands the operational state over in clear and drops prompt/lastRunError at every depth', async () => {
+    const { fieldExemptModelCopy } = await import('@omadia/orchestrator/dist/privacyInternPolicy.js');
+    const raw = JSON.stringify({
+      action: 'list',
+      routines: [
+        { id: 'r1', name: 'report-alt', cron: '0 3 1 1 *', status: 'paused', prompt: 'Sag Hallo an Max Mustermann', lastRunError: 'max@example.com unreachable' },
+      ],
+      _pendingRoutineList: { routines: [{ prompt: 'Sag Hallo an Max Mustermann' }] },
+    });
+    const copy = fieldExemptModelCopy('manage_routine', raw);
+    assert.ok(copy);
+    const parsed = JSON.parse(copy) as { action: string; routines: Array<Record<string, unknown>> };
+    assert.equal(parsed.action, 'list');
+    assert.deepEqual(parsed.routines[0], { id: 'r1', name: 'report-alt', cron: '0 3 1 1 *', status: 'paused' });
+    assert.doesNotMatch(copy, /Mustermann|example\.com|_pendingRoutineList/);
+  });
+
+  it('does not project a non-JSON result or another tool (they are interned as usual)', async () => {
+    const { fieldExemptModelCopy } = await import('@omadia/orchestrator/dist/privacyInternPolicy.js');
+    assert.equal(fieldExemptModelCopy('manage_routine', 'Error: routine not found'), undefined);
+    assert.equal(fieldExemptModelCopy('manage_routine', '"just a string"'), undefined);
+    assert.equal(fieldExemptModelCopy('odoo_search', '{"name":"x"}'), undefined);
+  });
+
+  it('keeps a field-exempt tool off the public MCP endpoint (ADR 0142)', async () => {
+    const { isPubliclyServableTool } = await import('../src/mcp/publicMcpPrivacy.js');
+    assert.equal(isPubliclyServableTool('manage_routine'), false);
+  });
+});

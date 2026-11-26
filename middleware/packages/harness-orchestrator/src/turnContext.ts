@@ -191,6 +191,12 @@ export interface TurnContextValue {
    */
   abortSignal?: AbortSignal;
   /**
+   * #1743 — the calling user's IANA zone, when the channel reported one
+   * (`ChatTurnInput.userTimeZone`). Read by `manage_routine` so a routine is
+   * evaluated in its creator's zone (ADR 0240). Never reaches the model.
+   */
+  userTimeZone?: string;
+  /**
    * Canvas sentinel tap (Omadia UI). Set by the ui-orchestrator around a
    * canvas turn: every dispatch site hands a sentinel-bearing RAW tool
    * result (`_pending*` canvas directives) here BEFORE the privacy guard

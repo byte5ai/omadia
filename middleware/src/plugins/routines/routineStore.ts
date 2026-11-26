@@ -42,6 +42,8 @@ export interface Routine {
   until?: Date | null;
   /** #2082 — when the owner was asked whether the routine should go on. */
   renewalAskedAt?: Date | null;
+  /** #1743 / ADR 0240 — IANA zone of the cron pattern (migration 0008); null = UTC. */
+  timezone?: string | null;
 }
 
 export interface CreateRoutineInput {
@@ -57,6 +59,8 @@ export interface CreateRoutineInput {
   outputTemplate?: RoutineOutputTemplate | null;
   /** #1598 — see Routine.agentSlug. */
   agentSlug?: string | null;
+  /** #1743 — see Routine.timezone. */
+  timezone?: string | null;
 }
 
 export interface RecordRunInput {
@@ -117,13 +121,15 @@ interface RoutineRow {
   /** #2082 — migration 0006. */
   until: Date | null;
   renewal_asked_at: Date | null;
+  /** #1743 — migration 0008. */
+  timezone: string | null;
 }
 
 const SELECT_COLUMNS = `
   id, tenant, user_id, name, cron, prompt, channel, conversation_ref,
   status, timeout_ms, created_at, updated_at,
   last_run_at, last_run_status, last_run_error,
-  output_template, agent_slug, until, renewal_asked_at
+  output_template, agent_slug, until, renewal_asked_at, timezone
 `;
 
 function rowToRoutine(row: RoutineRow): Routine {
@@ -161,6 +167,7 @@ function rowToRoutine(row: RoutineRow): Routine {
     agentSlug: row.agent_slug ?? null,
     until: row.until ?? null,
     renewalAskedAt: row.renewal_asked_at ?? null,
+    timezone: row.timezone ?? null,
   };
 }
 
@@ -202,8 +209,8 @@ export class RoutineStore {
       const result = await this.pool.query<RoutineRow>(
         `INSERT INTO routines
            (tenant, user_id, name, cron, prompt, channel,
-            conversation_ref, timeout_ms, output_template, agent_slug)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10)
+            conversation_ref, timeout_ms, output_template, agent_slug, timezone)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11)
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.tenant,
@@ -218,6 +225,7 @@ export class RoutineStore {
             ? JSON.stringify(input.outputTemplate)
             : null,
           input.agentSlug ?? null,
+          input.timezone ?? null,
         ],
       );
       const row = result.rows[0];

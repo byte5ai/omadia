@@ -11,7 +11,7 @@
  * closed and what is still deliberately orchestrator-only.
  */
 
-import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import { fieldExemptModelCopy, internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
   isNativeToolResult,
   isUnknownOutcomeToolErrorNotice,
@@ -568,6 +568,11 @@ export class ToolDispatchService {
       }
       return fromTool(result);
     }
+    // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
+    const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)
+      ? undefined
+      : fieldExemptModelCopy(name, result);
+    if (fieldExempt !== undefined) return fromTool(fieldExempt);
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.

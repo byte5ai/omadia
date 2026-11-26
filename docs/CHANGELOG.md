@@ -55,6 +55,24 @@ changelog.
   tool-less in-process orchestrator, so it no longer fails on every run. Raw tool results for
   output templates are captured on that path too; tool calls and iterations are recorded as
   unknown there.
+- **Time zone and schedule checks** (#1743, #1750, ADR 0240): `middleware/src/scheduler/zonedCron.ts`
+  evaluates cron patterns in a named IANA zone and checks a recurring schedule before it is
+  stored (`checkCronSchedule`: plain 5-field pattern, no `?`, no `@daily`/`L`/`W`/`#`, at
+  least two upcoming runs, minimum gap). A routine stores its zone (routines migration
+  `0008_routines_timezone`): the creator's (`ChatTurnInput.userTimeZone`, now also on the
+  turn context) or `PROACTIVE_TIMEZONE`; its trigger runs in it; rows without one stay UTC.
+  `manage_routine` results name `timeZone` and `nextRun` (`2026-11-27 09:00 (Europe/Berlin)`).
+  Existing routines whose pattern no longer passes are paused on boot with the reason.
+- **`manage_routine` refusals reach the model** (#1767, #1751): schedule refusals, a web
+  routine outside a saved chat and other `ToolRefusalError`s pass `formatError` (ADR 0078)
+  instead of "outcome unknown"; invalid input is a short `field: problem` list, not a zod
+  dump. `targetEmail` is no longer advertised, and its refusal says this deployment cannot
+  message other people instead of sending the user to an operator.
+- **Field-level interning exemption** (#1768, ADR 0241, decided after recommendation,
+  reversible): `manage_routine` results reach the model in clear minus `prompt`,
+  `lastRunError` and the smart-card sidecar (`INTERN_FIELD_EXEMPT_TOOLS`,
+  `fieldExemptModelCopy`, all three dispatch seams); the tool is not served on the public MCP
+  endpoint.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
