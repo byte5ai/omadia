@@ -35,6 +35,8 @@ import { ApiError, getPluginGrants, setPluginGrants } from '../../_lib/api';
 import type { PluginGrantsView } from '../../_lib/api';
 import { Button } from '../ui/Button';
 import { ErrorHelp } from '../ErrorHelp';
+import { EntitySystemOverlapNotice } from './EntitySystemOverlapNotice';
+import type { EntitySystemOverlap } from '../../_lib/entitySystemOverlap';
 import { GrantChecklist, GrantState, initialSelection } from './GrantChecklist';
 import type { GrantSelection } from './GrantChecklist';
 
@@ -51,9 +53,14 @@ type Status =
 
 export function PermissionsStep({
   grants: view,
+  entitySystemOverlaps = [],
   onFinish,
 }: {
   grants: PluginGrantsView;
+  /** #2245 / ADR-0167 — entity systems an installed plugin already writes.
+   *  Not a grant (nothing to tick), so shown as a highlighted line above the
+   *  checklist rather than inside it. */
+  entitySystemOverlaps?: readonly EntitySystemOverlap[];
   /** Called when the operator closes the step. The caller refreshes. */
   onFinish: () => void;
 }): React.ReactElement {
@@ -132,6 +139,8 @@ export function PermissionsStep({
           {t('stepIntro')}
         </p>
       </div>
+
+      <EntitySystemOverlapNotice overlaps={entitySystemOverlaps} />
 
       <GrantChecklist
         view={view}

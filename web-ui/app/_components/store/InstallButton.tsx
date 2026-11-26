@@ -42,6 +42,8 @@ import {
 import { PostInstallNextSteps } from './PostInstallNextSteps';
 import { PrivacyModePicker } from './PrivacyModePicker';
 import { PermissionsStep, hasGrantsToAsk } from './PermissionsStep';
+import { EntitySystemOverlapNotice } from './EntitySystemOverlapNotice';
+import type { EntitySystemOverlap } from '../../_lib/entitySystemOverlap';
 import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
 import {
@@ -101,6 +103,10 @@ interface InstallButtonProps {
   /** #1492 — names of the orchestrators this plugin is enabled on; `null`
    *  when unknown (not an attachable kind, or the lookup failed). */
   attachedTo?: string[] | null;
+  /** #2245 / ADR-0167 — entity systems this plugin declares that another
+   *  installed plugin already declares. Shown in the drawer before the
+   *  operator commits the install, and again in the grants step. */
+  entitySystemOverlaps?: EntitySystemOverlap[];
 }
 
 /** The Privacy Shield capability (`PRIVACY_REDACT_CAPABILITY` in plugin-api). */
@@ -149,6 +155,7 @@ export function InstallButton({
   removablePackage = false,
   kind,
   attachedTo,
+  entitySystemOverlaps = [],
 }: InstallButtonProps): React.ReactElement {
   const t = useTranslations('store.install');
   const tRoot = useTranslations();
@@ -268,6 +275,7 @@ export function InstallButton({
           onClose={handleClose}
           onSubmit={handleSubmit}
           onConfirmArchetype={handleConfirmArchetype}
+          entitySystemOverlaps={entitySystemOverlaps}
           {...(setupGuideText ? { setupGuide: setupGuideText } : {})}
         />
       ) : null}
@@ -989,6 +997,8 @@ interface InstallDrawerProps {
   onConfirmArchetype: () => void | Promise<void>;
   /** Markdown setup guide rendered above the fields. */
   setupGuide?: string;
+  /** #2245 — see `InstallButtonProps.entitySystemOverlaps`. */
+  entitySystemOverlaps: EntitySystemOverlap[];
 }
 
 /** #1401 — keep only string-valued params; the body is untrusted JSON. */
@@ -1036,6 +1046,7 @@ function InstallDrawer({
   onSubmit,
   onConfirmArchetype,
   setupGuide,
+  entitySystemOverlaps,
 }: InstallDrawerProps): React.ReactElement {
   const t = useTranslations('store.install');
   const tStep = useTranslations('store.install.steps');
@@ -1124,7 +1135,11 @@ function InstallDrawer({
              it: the credentials are already committed and re-showing them
              would invite an edit the wizard can no longer apply. */
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
-            <PermissionsStep grants={phase.grants} onFinish={onClose} />
+            <PermissionsStep
+              grants={phase.grants}
+              entitySystemOverlaps={entitySystemOverlaps}
+              onFinish={onClose}
+            />
           </div>
         ) : phase.kind === 'confirm_archetype' ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
@@ -1178,6 +1193,11 @@ function InstallDrawer({
             }}
           >
             <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+              {entitySystemOverlaps.length > 0 ? (
+                <div className="mb-6">
+                  <EntitySystemOverlapNotice overlaps={entitySystemOverlaps} />
+                </div>
+              ) : null}
               {setupGuide ? (
                 <div className="mb-6 border-b border-[color:var(--rule)] pb-6">
                   <div className="mb-3 text-[11px] uppercase tracking-[0.22em] text-[color:var(--faint-ink)]">
