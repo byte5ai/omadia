@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Added — memory completeness guards (memory-ACL test plan, step 4) (2026-11-26)
+
+- **Surface inventory** (`middleware/test/memoryAccess/surfaceInventory.test.ts`). Every
+  mounted route (94), native tool registration (33) and `PluginContext` method (59) is read
+  from the source (TypeScript AST) and must appear in the hand-written table
+  `surfaceClassification.ts` as `no-memory`, `viewer-scoped`, `operator-only` or `dev-only`,
+  each with a reason. A viewer-scoped entry names the test that proves its filter, and the
+  canary-sweep entry point where one covers it. A new route or tool fails until classified.
+  `ctx.sql` is classified operator-only: a non-archetype plugin with a granted
+  `permissions.sql` runs on the shared pool, where memory tables are readable.
+- **Lint rule against viewer-less graph reads** (`middleware/eslint/viewerlessGraphReads.mjs`,
+  wired into `eslint.config.mjs` as `no-restricted-syntax`). `listSessions`, `getNeighbors`,
+  `listMemoriesForScope`, the topic and issue lists, the subgraph walk, the owner-less list,
+  and `getSession` / `getMemorableKnowledge` without their viewer argument are errors outside
+  an allowlist of 20 files, each with a reason. `viewerlessGraphReads.test.ts` proves the rule
+  fires on a new file and that no allowlist entry has gone stale.
+- **Memory defaults pinned** (`memoryAccess/memoryDefaults.test.ts`): `KG_ACL_AUTO_PROMOTE`
+  (on, 0.7), `KG_DURABLE_AUTOPROMOTE` (on, 0.85), `KG_RECALL_TEAM_VISIBILITY` (on), auto-merge
+  (on, 0.9), the scratch reaper (on, 24 h, keeps unpromoted scratch),
+  `OMADIA_INJECTIVE_SCOPE_KEYS` (off), memory visibility without a value (`private`, both
+  backends), `agents.context_memory` (`members`) and the orchestrator fallback (`off`). A
+  changed default fails until the pin, this CHANGELOG and the oracle change together.
+- **ACL contract after migrations** (`memoryAccess/aclAfterMigrations.pg.test.ts`). The world
+  is written into a schema migrated up to graph migration 0036, with defaulted memories stored
+  `team` as the code before #1823 did; the boot migrator then applies the rest. Memorable
+  knowledge and excerpts must equal the oracle for the world as the migrations are documented
+  to leave it (`migrated()`, written from 0037's intent). A migration that widened visibility
+  showed 18,036 leaks. `PG_TEST_FLOOR` 795 → 798.
+
 ### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
 
 - With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
