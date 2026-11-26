@@ -253,6 +253,7 @@ export type {
   ResolvedModelPolicy,
 } from './registry/modelPolicy.js';
 export {
+  AGENT_SLUG_RE,
   ConfigStore,
   ConfigValidationError,
   validateModelRef,

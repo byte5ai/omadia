@@ -9,6 +9,7 @@ import type { AgentEndOfService, EndOfServiceReport } from '../platform/agentEnd
 
 import { formatPrincipal, parsePrincipal } from '@omadia/channel-sdk';
 import {
+  AGENT_SLUG_RE,
   ChannelResolver,
   ConfigValidationError,
   mcpToolNameFromRef,
@@ -228,7 +229,12 @@ interface AgentPluginCatalogEntry {
  */
 
 const AgentCreateSchema = z.object({
-  slug: z.string().min(1).max(64),
+  // #1885 — a malformed slug is a 400 on the field, not a 409 conflict.
+  slug: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(AGENT_SLUG_RE, 'lowercase letters, digits and hyphens; no hyphen at the start or end'),
   name: z.string().min(1).max(120),
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
@@ -2596,6 +2602,15 @@ export function createOperatorAgentsRouter(
         throw new ConfigValidationError(`archetype "${archetype}" is not registered on this instance`);
       }
       if (refuseErroredArchetypePlugin(res, archetype)) return;
+      // #1885 — a taken slug has its own code, so the form can say so.
+      if (await live.store.getAgentBySlug(body.slug)) {
+        res.status(409).json({
+          error: 'slug_taken',
+          slug: body.slug,
+          message: `agent slug "${body.slug}" already exists`,
+        });
+        return;
+      }
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,

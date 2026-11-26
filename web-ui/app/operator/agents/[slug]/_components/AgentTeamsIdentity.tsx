@@ -34,6 +34,7 @@ import {
   type TeamsTargetKind,
 } from '@/app/_lib/teamsInstallTarget';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
+import { TEAMS_BOT_SLUG_PATTERN } from '../../../../_lib/agentSlug';
 import {
   Fact,
   formatTimestamp,
@@ -337,7 +338,7 @@ export function AgentTeamsIdentity(
             hint={t('teamsIdentity.fieldBotSlugHint')}
             value={botSlug}
             onChange={setBotSlug}
-            pattern="^[a-z0-9][a-z0-9-]*$"
+            pattern={TEAMS_BOT_SLUG_PATTERN}
           />
           <TextField
             label={t('teamsIdentity.fieldDisplayName')}

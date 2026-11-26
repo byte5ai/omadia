@@ -1324,6 +1324,17 @@ describe('createOperatorAgentsRouter', () => {
   });
 
   it('POST / surfaces a ConfigValidationError as HTTP 409', async () => {
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'deleted', name: 'Reserved' }),
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, 'config_validation');
+  });
+
+  it('#1885: POST / answers a taken slug with 409 slug_taken', async () => {
     await store.createAgent({ slug: 'pub', name: 'Pub' });
     const res = await fetch(baseUrl, {
       method: 'POST',
@@ -1331,8 +1342,21 @@ describe('createOperatorAgentsRouter', () => {
       body: JSON.stringify({ slug: 'pub', name: 'Dup' }),
     });
     assert.equal(res.status, 409);
-    const body = (await res.json()) as { error: string };
-    assert.equal(body.error, 'config_validation');
+    assert.deepEqual(await res.json(), { error: 'slug_taken', slug: 'pub', message: 'agent slug "pub" already exists' });
+  });
+
+  it('#1885: POST / answers a malformed slug with 400 on the slug field', async () => {
+    for (const slug of ['p07-x-', '-p07', 'Test X', 'a'.repeat(65)]) {
+      const res = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug, name: 'x' }),
+      });
+      assert.equal(res.status, 400, slug);
+      const body = (await res.json()) as { error: string; issues: Array<{ path: string }> };
+      assert.equal(body.error, 'invalid_body');
+      assert.deepEqual([...new Set(body.issues.map((i) => i.path))], ['slug']);
+    }
   });
 
   it('GET / returns the agent list with runtime memory_scope', async () => {

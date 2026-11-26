@@ -2273,7 +2273,7 @@
       "payload_too_large": "Das Bild ist zu groß — es sind höchstens 2 MB erlaubt.",
       "unsupported_media_type": "Dieser Dateityp geht nicht — erlaubt sind PNG, JPEG und WebP.",
       "agent_graph_store_unavailable": "Die Agent-Registry ist gerade nicht erreichbar. Versuch es gleich nochmal.",
-      "config_validation": "Der Server hat die Plugin-Konfiguration abgelehnt.",
+      "config_validation": "Der Server hat die Änderung abgelehnt, weil ein Wert ungültig ist.",
       "invalid_body": "Der Server hat den Request-Payload abgelehnt.",
       "invalid_slug": "Dieser Agent-Slug ist ungültig.",
       "multi_orchestrator_unavailable": "Die Multi-Agent-Laufzeit ist nicht verfügbar.",
@@ -3459,7 +3459,21 @@
     },
     "drainConfirm": "Alle Web-Chats lösen, die an „{slug}“ gebunden sind? Der Verlauf bleibt; die nächste Nachricht in jedem Chat wählt den Agenten neu.",
     "drainResult": "{count, plural, =0 {An „{slug}“ ist kein Web-Chat gebunden.} one {# Web-Chat von „{slug}“ gelöst.} other {# Web-Chats von „{slug}“ gelöst.}}",
-    "killResult": "{count, plural, =0 {An „{slug}“ ist kein Web-Chat gebunden.} one {# Web-Chat von „{slug}“ gelöscht.} other {# Web-Chats von „{slug}“ gelöscht.}}"
+    "killResult": "{count, plural, =0 {An „{slug}“ ist kein Web-Chat gebunden.} one {# Web-Chat von „{slug}“ gelöscht.} other {# Web-Chats von „{slug}“ gelöscht.}}",
+    "fieldSlugRule": "Kleinbuchstaben, Ziffern und Bindestriche, bis zu 64 Zeichen; kein Bindestrich am Anfang oder Ende.",
+    "apiErrors": {
+      "slugTaken": "Ein Agent mit dem Slug „{slug}“ existiert schon. Wähle einen anderen Slug.",
+      "unknownChannelType": "Kein installierter Kanal nutzt den Kanaltyp „{type}“. Kanaltypen dieser Instanz: {known}.",
+      "invalidFields": "Der Server hat die Eingabe abgelehnt. {fields}",
+      "refused": "Der Server hat die Änderung abgelehnt: {detail}",
+      "fields": {
+        "slug": "Slug: Kleinbuchstaben, Ziffern und Bindestriche, bis zu 64 Zeichen; kein Bindestrich am Anfang oder Ende.",
+        "name": "Name: 1 bis 120 Zeichen.",
+        "description": "Beschreibung: höchstens 2000 Zeichen.",
+        "channel_type": "Kanaltyp: wähle einen der angebotenen Typen.",
+        "channel_key": "Kanal-Schlüssel: 1 bis 500 Zeichen."
+      }
+    }
   },
   "builder": {
     "issueReport": {

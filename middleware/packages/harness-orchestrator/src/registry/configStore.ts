@@ -308,7 +308,9 @@ export class ConfigValidationError extends Error {
   }
 }
 
-const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+/** An agent slug: URL-safe, 1..64 chars, no hyphen at either end. */
+export const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const SLUG_RE = AGENT_SLUG_RE;
 
 /**
  * Validate persisted `model_routing` JSON before write. Shape:

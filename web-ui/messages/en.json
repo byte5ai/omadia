@@ -2273,7 +2273,7 @@
       "payload_too_large": "The image is too large — 2 MB is the limit.",
       "unsupported_media_type": "That file type does not work here — PNG, JPEG and WebP are accepted.",
       "agent_graph_store_unavailable": "The agent registry is unavailable right now. Try again in a moment.",
-      "config_validation": "The server rejected the plugin configuration.",
+      "config_validation": "The server refused this change because a value is not valid.",
       "invalid_body": "The server rejected the request payload.",
       "invalid_slug": "This agent slug is not valid.",
       "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
@@ -3459,7 +3459,21 @@
     },
     "drainConfirm": "Release all web chats pinned to \"{slug}\"? Their history stays; the next message in each chat picks the agent again.",
     "drainResult": "{count, plural, =0 {No web chat is pinned to \"{slug}\".} one {# web chat released from \"{slug}\".} other {# web chats released from \"{slug}\".}}",
-    "killResult": "{count, plural, =0 {No web chat is pinned to \"{slug}\".} one {# web chat of \"{slug}\" deleted.} other {# web chats of \"{slug}\" deleted.}}"
+    "killResult": "{count, plural, =0 {No web chat is pinned to \"{slug}\".} one {# web chat of \"{slug}\" deleted.} other {# web chats of \"{slug}\" deleted.}}",
+    "fieldSlugRule": "Lowercase letters, digits and hyphens, up to 64 characters; no hyphen at the start or end.",
+    "apiErrors": {
+      "slugTaken": "An agent with the slug \"{slug}\" already exists. Choose another slug.",
+      "unknownChannelType": "No installed channel uses the channel type \"{type}\". Channel types on this instance: {known}.",
+      "invalidFields": "The server rejected the input. {fields}",
+      "refused": "The server refused the change: {detail}",
+      "fields": {
+        "slug": "Slug: lowercase letters, digits and hyphens, up to 64 characters; no hyphen at the start or end.",
+        "name": "Name: 1 to 120 characters.",
+        "description": "Description: at most 2000 characters.",
+        "channel_type": "Channel type: pick one of the listed types.",
+        "channel_key": "Channel key: 1 to 500 characters."
+      }
+    }
   },
   "builder": {
     "issueReport": {

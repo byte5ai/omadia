@@ -4793,6 +4793,14 @@ verloren, und `drain`/`kill` fanden nie einen Chat. Grenze: ein Browser, der ein
 gelöschten Chat noch lokal hat, legt ihn beim nächsten Laden wieder an (ohne
 Bindung); der Bestätigungstext sagt das.
 
+**Agent anlegen: Fehlercodes** (`POST /api/v1/operator/agents`, #1885). Ein
+Slug, der nicht `AGENT_SLUG_RE` entspricht (exportiert von `@omadia/orchestrator`,
+`configStore.ts`), ist `400 invalid_body` mit `issues[].path = 'slug'` statt
+`409 config_validation`; ein vergebener Slug ist `409 slug_taken` (`slug`). Die
+Agenten-Seite übersetzt diese Codes (`useAgentApiErrorText.ts`), behält die
+Formularwerte bis zur Antwort, und das `pattern` der Slug-Felder kompiliert unter
+dem `v`-Flag der Browser (`web-ui/app/_lib/agentSlug.ts`).
+
 **Entfernt** (ohne Kompatibilitätsschicht)
 - `POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
   zurücksetzen“, #2054).
