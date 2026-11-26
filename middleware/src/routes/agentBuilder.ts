@@ -67,6 +67,7 @@ import {
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import {
   auditIdentity,
+  delegationBlockedMessage,
   parseDelegation,
   resolveMcpUserKey,
 } from '../services/mcpDelegation.js';
@@ -440,6 +441,23 @@ export function createAgentBuilderRouter(
           : undefined;
         if (!server) return null;
         return auditIdentity(server, turnContext.current()?.mcpUserKey, options.mcpOAuthUserKey);
+      },
+      // #1906 — same rule as the runtime manager: a `per_user` OAuth server
+      // with no identity to act as gets no request from a test call either.
+      blockedReason: async (cfg: McpServerConfig): Promise<string | null> => {
+        if (!options.mcpOAuth) return null;
+        const graph = options.getGraphStore();
+        const server = graph
+          ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
+          : undefined;
+        if (!server) return null;
+        const userKey = resolveMcpUserKey(
+          server,
+          turnContext.current()?.mcpUserKey,
+          options.mcpOAuthUserKey,
+        );
+        if (userKey !== null) return null;
+        return (await options.mcpOAuth.isProtected(server)) ? delegationBlockedMessage(server.name) : null;
       },
       // Discover/test-call surface needs-auth via the route's describeAuth path,
       // so the manager itself doesn't need to synthesize a prompt here.
@@ -3258,12 +3276,15 @@ export function createAgentBuilderRouter(
             ? (req.body.args as Record<string, unknown>)
             : {};
         const startedAt = Date.now();
-        const result = await mcp.callTool(toMcpConfig(server), toolName, args);
+        // #1944 — `ok` is the call's outcome, not a reading of its text: a
+        // delivered result whose text starts with "Error:" is still a result.
+        const outcome = await mcp.callToolResult(toMcpConfig(server), toolName, args);
         res.json({
           serverId: id,
           toolName,
-          result,
-          ok: !result.startsWith('Error:'),
+          result: outcome.text,
+          ok: outcome.status === 'ok',
+          status: outcome.status,
           durationMs: Date.now() - startedAt,
         });
       } catch (err) {

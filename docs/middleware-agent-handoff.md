@@ -2576,6 +2576,35 @@ Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzh
 (`reconcileConfigSchema`), verschwundene Felder samt Vault-Secret gelöscht. UI:
 `web-ui/app/admin/mcp/ServerHeadersForm.tsx`.
 
+### MCP-Laufzeit: Re-Send-Regel, typisierte Ergebnisse, unbeaufsichtigte Aufrufer (Welle 5, ADR-0205/0206)
+
+- **Re-Send (ADR-0205):** `McpManager.callTool` sendet einen Call ohne Antwort
+  (Timeout, Verbindungsabbruch, HTTP 5xx) nur erneut, wenn der Server das Tool
+  `readOnlyHint`/`idempotentHint` deklariert (Discovery speichert beide), oder
+  wenn der Server ihn nachweislich nie bekam (Connect-Fehler, HTTP 404 auf
+  `Mcp-Session-Id` → neue Session). Sonst `Error: outcome unknown — …`. Jeder
+  Versuch bekommt eine `mcp_call_log`-Zeile. Ein gepoolter Eintrag fällt nur,
+  wenn die Verbindung wirklich weg ist, und nur unter seinem exakten Key
+  (`dropEntryIfCurrent`). Jeder `tools/call` trägt einen Progress-Token.
+- **Typisiert (ADR-0206):** `callToolResult(cfg, tool, args, replay?, { unattended })`
+  → `{ text, status }` mit `ok | tool_error | failed | auth_required |
+  input_required | blocked | outcome_unknown`. `callTool` liefert weiter nur
+  `text` (Plugin-Vertrag unverändert). Conductor-Invoker und Test-Call-Route
+  (`status`-Feld in der Antwort) lesen den Status, nie den Text.
+- **Unbeaufsichtigt:** `turnContext.mcpUnattended` (Routinen, Trigger, deren
+  Data-Actions) bzw. `opts.unattended` (Conductor) → kein OAuth-Flow, kein
+  geparkter Input, sondern typisierte Ablehnung. Wird in jedem neu gebauten
+  Scope mitgetragen wie `mcpUserKey`.
+- **Blockiert:** `McpAuthProvider.blockedReason(cfg)` — `per_user`-OAuth-Server
+  ohne Identität bekommen keinen Request. Server ohne OAuth laufen wie bisher.
+- **Routinen:** `routines.mcp_user_key` (Routines-Migration 0007) = `mcpUserKey`
+  des anlegenden Turns; der Lauf handelt als Owner.
+- **Audit-Caller:** `auditCaller` — Sub-Agent (`mcpSubAgentName`), API-Key
+  (`principalKind: 'api_key'`), Platzhalter-Turn (`turnIdIsPlaceholder`) = kein Turn.
+- **Data-Actions:** `readOnlyHint`-MCP-Tools sind eigene Read-Tools für
+  `deliver_data`; Zeilen kommen aus `structuredContent` (`mcpReadToolInvoker`,
+  `captureMcpStructured`).
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:

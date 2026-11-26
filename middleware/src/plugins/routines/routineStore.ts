@@ -38,6 +38,12 @@ export interface Routine {
    * plugins its orchestrator is granted. `null` = the standard orchestrator.
    */
   agentSlug?: string | null;
+  /**
+   * #1907 / ADR-0206 — the MCP OAuth user key of the turn that created the
+   * routine (migration 0007). The run acts as it on `per_user` MCP servers.
+   * `null` = no identity; such a routine fails closed there.
+   */
+  mcpUserKey?: string | null;
   /** #2082 — the deadline of the routine's trigger (migration 0006). */
   until?: Date | null;
   /** #2082 — when the owner was asked whether the routine should go on. */
@@ -57,6 +63,8 @@ export interface CreateRoutineInput {
   outputTemplate?: RoutineOutputTemplate | null;
   /** #1598 — see Routine.agentSlug. */
   agentSlug?: string | null;
+  /** #1907 — see Routine.mcpUserKey. */
+  mcpUserKey?: string | null;
 }
 
 export interface RecordRunInput {
@@ -114,6 +122,8 @@ interface RoutineRow {
   output_template: unknown;
   /** #1598 — migration 0005. */
   agent_slug: string | null;
+  /** #1907 — migration 0007. */
+  mcp_user_key: string | null;
   /** #2082 — migration 0006. */
   until: Date | null;
   renewal_asked_at: Date | null;
@@ -123,7 +133,7 @@ const SELECT_COLUMNS = `
   id, tenant, user_id, name, cron, prompt, channel, conversation_ref,
   status, timeout_ms, created_at, updated_at,
   last_run_at, last_run_status, last_run_error,
-  output_template, agent_slug, until, renewal_asked_at
+  output_template, agent_slug, until, renewal_asked_at, mcp_user_key
 `;
 
 function rowToRoutine(row: RoutineRow): Routine {
@@ -159,6 +169,7 @@ function rowToRoutine(row: RoutineRow): Routine {
     lastRunError: row.last_run_error,
     outputTemplate,
     agentSlug: row.agent_slug ?? null,
+    mcpUserKey: row.mcp_user_key ?? null,
     until: row.until ?? null,
     renewalAskedAt: row.renewal_asked_at ?? null,
   };
@@ -202,8 +213,8 @@ export class RoutineStore {
       const result = await this.pool.query<RoutineRow>(
         `INSERT INTO routines
            (tenant, user_id, name, cron, prompt, channel,
-            conversation_ref, timeout_ms, output_template, agent_slug)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10)
+            conversation_ref, timeout_ms, output_template, agent_slug, mcp_user_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11)
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.tenant,
@@ -218,6 +229,7 @@ export class RoutineStore {
             ? JSON.stringify(input.outputTemplate)
             : null,
           input.agentSlug ?? null,
+          input.mcpUserKey ?? null,
         ],
       );
       const row = result.rows[0];

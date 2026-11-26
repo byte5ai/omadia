@@ -592,6 +592,57 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Added — MCP `structuredContent` feeds the data side channel (#547, ADR-0021) (2026-11-26)
+
+- MCP tools their server declares `readOnlyHint` are now data-action read tools for
+  `deliver_data`. The table is built from the call's `structuredContent` (captured for that
+  one call, `captureMcpStructured` / `mcpReadToolInvoker`) instead of the model-facing text,
+  which is often prose. The model still gets only the status (ADR-0021, ADR-0094). A call
+  without an attributable caller (a trigger firing) is refused by the fast-path invoker.
+
+### Fixed — typed MCP call outcomes, no interaction from unattended runs (ADR-0206) (2026-11-26)
+
+- **#1909** Conductor MCP action steps fail on an authorization request or an
+  `input_required` answer instead of storing the prompt as the step result. Unattended
+  calls (Conductor, routines, triggers) start no OAuth flow and park no input request.
+  New `McpManager.callToolResult` returns `{ text, status }`; `callTool` is unchanged.
+- **#1944** The Control Center test call reports `ok` from the call's status, so a
+  delivered result whose text starts with `Error:` is no longer shown as failed. The
+  response also carries `status`.
+- **#1906** A `per_user` OAuth-protected MCP server with no caller identity receives
+  nothing (new `McpAuthProvider.blockedReason`, runtime and Builder router). Servers
+  without OAuth are called as before: they hold no per-user credential. A tool error the
+  server answered is reported as that error, not as "Nothing was sent to the server". The
+  delegation switch for servers without OAuth follows in the OAuth-UX change.
+- **#1907** Routines record the creating turn's MCP identity (routines migration
+  `0007_routines_mcp_user_key.sql`, column `routines.mcp_user_key`) and run as their owner
+  on `per_user` servers. Older routines keep failing closed there, with a message that fits
+  an unattended run.
+- **#1921** The MCP call audit names sub-agents (not the orchestrator), API-key calls of
+  the public MCP endpoint (caller kind `api_key`; acting identity `apikey:<id>` when no
+  user resolved), and records no turn instead of the web chat's `http-chat-<scope>`
+  placeholder; a subscription-CLI turn under the web chat records its own turn id.
+- Unattended mode is carried through plugin `ctx.mcp`, skill-bound MCP tools and
+  consultations, and trigger data actions run unattended.
+
+### Fixed — MCP calls are re-sent only when safe; one failure ends only its own request (ADR-0205) (2026-11-26)
+
+- **#1904** `McpManager.callTool` no longer re-sends an answerless `tools/call` (timeout,
+  dropped connection, socket reset) unless the server declared the tool `readOnlyHint` or
+  `idempotentHint`. Otherwise the model gets `Error: outcome unknown — …` and is told to
+  have the user check before trying again. Every attempt that reached the server gets its
+  own `mcp_call_log` row. Discovery now keeps `idempotentHint` on the descriptor.
+- **#1905** A failed call drops the pooled connection only when it is really gone
+  (transport closed, session lost), under its exact key and only if it still holds the
+  connection the call used. One user's timeout no longer closes the shared stdio /
+  token-less HTTP client under other users' in-flight calls.
+- **#1919** Every `tools/call` carries a progress token, so a server that reports progress
+  keeps its call alive past `OMADIA_MCP_CALL_TIMEOUT_MS` (up to the total ceiling).
+- **#1945** An HTTP 404 on a request with an `Mcp-Session-Id` starts a new session and
+  sends the call once more.
+- Drift fix: the agent-reach view read `annotations.readOnlyHint` from persisted
+  descriptors, which store the hint flat; it now reads both.
+- ADR-0205 (Proposed) supersedes ADR-0008's "dropped on a failed tool call" rule.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
