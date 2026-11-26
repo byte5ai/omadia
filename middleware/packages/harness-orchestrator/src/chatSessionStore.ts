@@ -678,6 +678,42 @@ export class ChatSessionStore {
     await this.save(updated);
   }
 
+  /**
+   * #1762 follow-up (ADR-0184) — stamp `owner` on every chat that has no
+   * owner yet. Only owner-less, readable chats change; a chat with an owner
+   * is never touched, so the call is idempotent. `dryRun` counts and changes
+   * nothing. Unreadable files are counted apart and left as they are.
+   */
+  async assignOrphans(
+    owner: string,
+    options: { dryRun: boolean },
+  ): Promise<{ assigned: string[]; unreadable: number }> {
+    if (owner.length === 0) throw new Error('assignOrphans: empty owner');
+    if (!(await this.store.directoryExists(DIR))) return { assigned: [], unreadable: 0 };
+    const assigned: string[] = [];
+    let unreadable = 0;
+    for (const entry of await this.store.list(DIR)) {
+      if (entry.isDirectory || !entry.virtualPath.endsWith('.json')) continue;
+      const id = entry.virtualPath.slice(DIR.length + 1, -'.json'.length);
+      if (!ID_RE.test(id)) continue;
+      const outcome = await this.withLock(id, async () => {
+        let session: ChatSession | null;
+        try {
+          session = await this.get(id);
+        } catch (err) {
+          if (err instanceof SyntaxError) return 'unreadable' as const;
+          throw err;
+        }
+        if (!session || session.ownerUserId !== undefined || session.id !== id) return 'skip' as const;
+        if (!options.dryRun) await this.save({ ...session, ownerUserId: owner });
+        return 'assigned' as const;
+      });
+      if (outcome === 'assigned') assigned.push(id);
+      if (outcome === 'unreadable') unreadable += 1;
+    }
+    return { assigned, unreadable };
+  }
+
   /** Is a document stored under `id` (readable or not)? */
   async fileExistsFor(id: string): Promise<boolean> {
     return this.store.fileExists(this.pathFor(id));

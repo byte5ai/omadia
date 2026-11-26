@@ -7652,6 +7652,9 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
 Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 
+- **Alt-Chats ohne Owner zuordnen (ADR-0184):** `POST /api/v1/admin/chats/assign-orphans`
+  `{ userId: <users.id>, dryRun? }` stempelt allen besitzerlosen Chats die `providerUserId` des
+  Kontos (= Session-`sub`); erst Dry-run, Audit-Zeile `chat.assign_orphans` vor der Änderung.
 - ~~**Per-User-Ownership der Chat-Sessions.**~~ Erledigt mit #1762 (ADR-0180): der Server
   stempelt `ownerUserId` (Session-`sub`) beim ersten PUT, alle Routen unter
   `/api/chat/sessions` und Chat-Turns/Steer mit fremder `sessionId` antworten 404. Eine

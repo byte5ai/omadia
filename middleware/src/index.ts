@@ -417,6 +417,7 @@ import {
 } from './http/requestTrust.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuditRouter } from './routes/adminAudit.js';
+import { createAdminChatsRouter } from './routes/adminChats.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
 import {
@@ -6281,6 +6282,16 @@ async function main(): Promise<void> {
     );
     // #1315 — the read side of the audit trail (admin UI: /admin/audit).
     app.use('/api/v1/admin/audit', requireAuth, createAdminAuditRouter({ audit: adminAudit }));
+    // #1762 follow-up (ADR-0184) — give owner-less legacy web chats to one account.
+    app.use(
+      '/api/v1/admin/chats',
+      requireAuth,
+      createAdminChatsRouter({
+        getStore: getChatSessionStore,
+        findUser: (id) => userStore.findById(id),
+        audit: adminAudit,
+      }),
+    );
     app.use(
       '/api/v1/admin/auth',
       requireAuth,

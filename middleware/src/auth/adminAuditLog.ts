@@ -230,6 +230,9 @@ export type AuditAction =
   // in the same transaction as its `memory_purge_audit` row (which then gets
   // the outcome); `target` is `memory-purge:<that row's id>`.
   | 'memory.purge'
+  // #1762 follow-up (ADR-0184) — owner-less web chats assigned to one account.
+  // Written before anything changes; `after` carries the count.
+  | 'chat.assign_orphans'
   | 'api_key.create'
   | 'api_key.revoke'
   | 'api_key.delete'
