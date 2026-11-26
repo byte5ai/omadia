@@ -7934,6 +7934,10 @@ async function main(): Promise<void> {
     operatorAuth,
     eventCatalogRegistry,
     resolver: channelPluginResolver,
+    // omadia#838 — channels that declare `permissions.sql` get the grant
+    // check and kernel-run migrations of ADR-0050, like the tool runtime.
+    sqlGrantStore,
+    packagePathOf: (agentId) => channelPluginResolver.packagePathOf(agentId),
     coreApi: channelCoreApi,
     routes: routeRegistry,
     webSockets: webSocketRegistry,
