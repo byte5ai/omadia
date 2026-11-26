@@ -692,6 +692,7 @@
     "chatAssistant": "Builder",
     "chatValidationOk": "Entwurf ist gültig.",
     "chatValidationFailed": "Validierungsprobleme:",
+    "chatValidationWarnings": "Warnungen zum Entwurf",
     "chatDraftHeading": "Entwurf",
     "chatDraftSummary": "{steps} Step(s) · Trigger: {trigger}",
     "chatPublish": "Entwurf veröffentlichen",

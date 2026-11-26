@@ -258,6 +258,7 @@ export type ValidationCode =
   | 'unreachable_step'
   | 'unguarded_cycle'
   | 'deadline_without_fallback'
+  | 'human_step_invalid_duration'
   | 'timer_step_invalid_duration'
   | 'timer_requires_fallback'
   | 'quorum_all_requires_deadline_fallback'
@@ -268,6 +269,8 @@ export type ValidationCode =
   | 'unknown_agent_ref'
   | 'unknown_action_ref'
   | 'unknown_role_ref'
+  | 'invalid_user_ref'
+  | 'invalid_action_input'
   | 'unknown_event_ref'
   // Template-manifest integrity codes (checkTemplateManifest in template.ts).
   | 'template_missing_metadata'

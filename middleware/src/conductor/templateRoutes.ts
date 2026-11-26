@@ -17,7 +17,6 @@ import {
   missingSlotMappings,
   resolveLocalizedText,
   templateManifestVersion,
-  validate,
 } from '@omadia/conductor-core';
 import type {
   JsonObject,
@@ -33,6 +32,7 @@ import { WorkflowSlugExistsError } from './workflowStore.js';
 import { TemplateIdExistsError, TemplateInvalidError } from './templateStore.js';
 import type { TemplateSummary } from './templateCatalog.js';
 import type { ConductorRouterDeps } from './routes.js';
+import { validatePublishGraph } from './publishValidation.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -87,10 +87,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
   }
 
   // Shared resolution path of resolve/instantiate (#429): manifest lookup → mapping
-  // completeness gate → slot substitution → validation with LIVE KnownRefs. Deliberately
-  // stricter than 'POST /' (structural only): a template instance must be runnable against
-  // this install's agents/actions/roles/events, not merely well-formed. Writes the error
-  // response and returns null on any failure.
+  // completeness gate → slot substitution → the same validation as ordinary publish.
   async function resolveTemplateGraph(
     id: string,
     body: JsonObject,
@@ -108,8 +105,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
       return null;
     }
     const graph = applyTemplateSlots(manifest, mapping);
-    const knownRefs = deps.templateKnownRefs ? await deps.templateKnownRefs() : undefined;
-    const result = validate(graph, knownRefs);
+    const result = await validatePublishGraph(graph, deps);
     if (!result.ok) {
       res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
       return null;

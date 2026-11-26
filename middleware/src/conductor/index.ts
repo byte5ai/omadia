@@ -46,6 +46,8 @@ import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
 import type { ConductorRouterDeps } from './routes.js';
+import { UserStore } from '../auth/userStore.js';
+import { actionCatalogId, type ActionCatalogEntry } from './mcpActionInvoker.js';
 import { ConductorDiscussionAdmin } from './discussionAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
@@ -255,7 +257,7 @@ export async function wireConductor(deps: {
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** lists registered deterministic-action / tool ids (incl. `mcp:<serverId>:<tool>`) for the
    *  Designer's action-step picker and the builder's capability check. May be async. */
-  listActions?: () => string[] | Promise<string[]>;
+  listActions?: () => ActionCatalogEntry[] | Promise<ActionCatalogEntry[]>;
   /** People-directory union (kernel `PeopleDirectoryRegistry.search`) — builder person
    *  suggestions + `GET /people`. Omit on hosts without channel plugins. */
   searchPeople?: ConductorPeopleSearch;
@@ -669,15 +671,14 @@ export async function wireConductor(deps: {
     return [...ids].sort();
   };
 
-  // Live known-reference sets, shared by the STRICT template validation on the
-  // resolve/instantiate routes AND the builder's proposal-prefill vetting (#478 B4)
-  // — one definition so the two gates can never drift apart.
+  // One live catalog for publish, template resolution and builder proposal prefills.
   const templateKnownRefs = async (): Promise<KnownRefs> => ({
     agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
-    actionIds: (await deps.listActions?.()) ?? [],
+    actionIds: (await deps.listActions?.())?.map(actionCatalogId) ?? [],
     roleKeys: (await roleStore.listRoles()).map((r) => r.key),
     eventIds: await knownEventIds(),
   });
+  const users = new UserStore(deps.pool);
 
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
   // refs are sourced live from the event catalog so the builder + validate can flag unknown events.
@@ -729,9 +730,8 @@ export async function wireConductor(deps: {
       // Composite workflow-template catalog (#429 bundled + #478 user/plugin) + DB store.
       templateCatalog,
       templateStore,
-      // Live known-reference sets for the STRICT template validation (stricter than 'POST /'
-      // on purpose: a template instance must be runnable, not merely well-formed).
       templateKnownRefs,
+      isOperatorAccountId: async (id) => (await users.findById(id)) !== null,
       webhookEndpoints,
       webhookSubscriptions,
       ...(deps.auditRoleChange ? { auditRoleChange: deps.auditRoleChange } : {}),

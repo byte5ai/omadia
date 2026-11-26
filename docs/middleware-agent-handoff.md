@@ -1396,11 +1396,11 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `description` defaulten aufs Manifest (en-aufgelöst) →
   `201 { workflow, version, warnings? }` (die `warnings` wie bei `resolve`, #1713).
 
-**Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
-**live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
-Event-Ids — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
-strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
-nur wohlgeformt.
+**Publish-Validierung:** beide Template-Routen und `POST /` teilen
+`validatePublishGraph` mit Live-Referenzen aus `templateKnownRefs` (Agent-Slugs,
+Action-IDs, Role-Keys, Event-Vorschläge). Statische `webhook.post`-URLs werden auf
+HTTP(S) geprüft. UUIDs aus der Operator-Kontentabelle werden in Personen-Referenzen
+abgelehnt. Builder-Entwürfe dürfen fehlende Actions für die Inline-Einrichtung behalten.
 
 **Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
 `POST /conductors/emit` nimmt jede Id, und ein eingehender Webhook-Endpoint

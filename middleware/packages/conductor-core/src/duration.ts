@@ -10,5 +10,5 @@ export function parseIsoDurationMs(iso: string | null | undefined): number | nul
   if (!m) return null;
   const [, d, h, min, s] = m;
   const ms = (Number(d ?? 0) * 86400 + Number(h ?? 0) * 3600 + Number(min ?? 0) * 60 + Number(s ?? 0)) * 1000;
-  return ms > 0 ? ms : null;
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : null;
 }

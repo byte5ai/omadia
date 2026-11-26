@@ -5,7 +5,6 @@ import { auditActorFromRequest } from '../auth/adminAuditLog.js';
 import type { WebhookAuditEntryInput } from '../auth/adminAuditLog.js';
 import type { ConductorWebhookPosture } from './webhookRoutes.js';
 
-import { validate } from '@omadia/conductor-core';
 import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-core';
 
 import { ConductorBuilderUnavailableError } from './builderAgent.js';
@@ -45,6 +44,8 @@ import type { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import type { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 import { registerWebhookRoutes } from './webhookRoutes.js';
 import { requireUuidParam } from '../http/uuidParam.js';
+import { validatePublishGraph } from './publishValidation.js';
+import { actionCatalogId, type ActionCatalogEntry } from './mcpActionInvoker.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -77,7 +78,7 @@ export interface ConductorRouterDeps {
   agentCatalog?: () => Array<{ slug: string; name: string }>;
   /** Registered deterministic-action / tool ids (incl. `mcp:<serverId>:<tool>`) — powers the
    *  Designer's action-step picker. May be async: the MCP part reads the server store. */
-  actionCatalog?: () => string[] | Promise<string[]>;
+  actionCatalog?: () => ActionCatalogEntry[] | Promise<ActionCatalogEntry[]>;
   /** People-directory union over the channel plugins (Conductor human-step principal
    *  resolution). Optional: absent on hosts without the kernel registry. */
   searchPeople?: (
@@ -101,8 +102,9 @@ export interface ConductorRouterDeps {
   };
   /** DB-backed user-template store (#478) — CRUD + immutable versions + telemetry. */
   templateStore?: ConductorTemplateStore;
-  /** Live known-reference sets for strict template validation. */
+  /** Live known-reference sets for workflow publish, template resolution and builder prefills. */
   templateKnownRefs?: () => Promise<KnownRefs>;
+  isOperatorAccountId?: (id: string) => Promise<boolean>;
   /** Issue #437 — inbound webhook endpoints (`/api/hooks/:endpointId` reads these) and
    *  outbound subscriptions (the run-lifecycle dispatcher reads these). Optional: absent
    *  on hosts without a Postgres pool (conductor inert), same as the other stores. */
@@ -240,12 +242,12 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       return;
     }
     const graph = body.graph as unknown as WorkflowGraph;
-    const result = validate(graph);
-    if (!result.ok) {
-      res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
-      return;
-    }
     try {
+      const result = await validatePublishGraph(graph, deps);
+      if (!result.ok) {
+        res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
+        return;
+      }
       const out = await deps.workflowStore.createOrPublish({
         slug,
         name,
@@ -336,7 +338,11 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   // Action catalog — registered deterministic-action / tool ids for the Designer's action-step dropdown.
   router.get('/actions', async (_req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ actions: (await deps.actionCatalog?.()) ?? [] });
+      const entries = (await deps.actionCatalog?.()) ?? [];
+      const serverNames = Object.fromEntries(entries.flatMap((entry) =>
+        typeof entry === 'string' ? [] : [[entry.id, entry.serverName]],
+      ));
+      res.json({ actions: entries.map(actionCatalogId), ...(Object.keys(serverNames).length > 0 ? { serverNames } : {}) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.action_catalog_failed', message: errMsg(err) });
     }

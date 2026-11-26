@@ -61,6 +61,7 @@ interface StepNodeData extends Record<string, unknown> {
   agentId: string;
   prompt: string;
   actionId: string;
+  actionServerName?: string;
   input: string; // JSON string
   human: {
     principalKind: 'user' | 'role';
@@ -82,7 +83,7 @@ type StepNode = Node<StepNodeData>;
 
 function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Element {
   const t = useTranslations('conductor');
-  const action = data.kind === 'action' ? describeActionId(data.actionId) : null;
+  const action = data.kind === 'action' ? describeActionId(data.actionId, data.actionServerName) : null;
   const primary =
     data.kind === 'agent' ? data.agentId || '—' : data.kind === 'action' ? action?.label || '—' : data.human.principalRef || '—';
   return (
@@ -213,6 +214,13 @@ function CanvasInner({
   // Live agent + action catalogs — real dropdowns for the agent/action steps. Best-effort.
   const [agentCatalog, setAgentCatalog] = useState<Array<{ slug: string; name: string }>>([]);
   const [actionCatalog, setActionCatalog] = useState<string[]>([]);
+  const [actionServerNames, setActionServerNames] = useState<Record<string, string>>({});
+  const displayNodes = useMemo(() => nodes.map((node) => {
+    const actionServerName = actionServerNames[node.data.actionId];
+    return node.data.kind === 'action' && actionServerName
+      ? { ...node, data: { ...node.data, actionServerName } }
+      : node;
+  }), [nodes, actionServerNames]);
   const eventListId = useId(); // unique per canvas instance — no datalist id collision on double-mount
 
   useEffect(() => {
@@ -241,7 +249,10 @@ function CanvasInner({
       .catch(() => undefined);
     void getConductorActions()
       .then((r) => {
-        if (!cancelled) setActionCatalog(Array.isArray(r?.actions) ? r.actions.filter(Boolean) : []);
+        if (!cancelled) {
+          setActionCatalog(Array.isArray(r?.actions) ? r.actions.filter(Boolean) : []);
+          setActionServerNames(r?.serverNames ?? {});
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -705,7 +716,7 @@ function CanvasInner({
         <div className="h-[480px] rounded-lg border border-[color:var(--border)]">
           <ReactFlow
             className="conductor-canvas"
-            nodes={nodes}
+            nodes={displayNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
@@ -777,7 +788,7 @@ function CanvasInner({
                       label={t('actionIdLabel')}
                       value={sel.data.actionId}
                       onChange={(v) => patchNode(sel.id, { actionId: v })}
-                      options={actionCatalog.map((a) => ({ value: a, label: a }))}
+                      options={actionCatalog.map((a) => ({ value: a, label: describeActionId(a, actionServerNames[a]).label }))}
                       emptyLabel={t('actionPick')}
                       hint={t('actionIdHint')}
                     />

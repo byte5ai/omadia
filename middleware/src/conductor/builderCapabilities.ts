@@ -23,6 +23,7 @@ export interface KnownIds {
   /** undefined ⇒ unknown set ⇒ nothing is reported missing (validate()'s KnownRefs rule). */
   actionIds?: readonly string[];
   agentIds?: readonly string[];
+  actionServerNames?: ReadonlyMap<string, string>;
 }
 
 /** Caps: bound the response (a runaway draft) and the prompt (third-party tool names). */
@@ -57,11 +58,19 @@ export function suggestedQuery(ref: string): string {
 }
 
 /** One prompt block listing known ids (sanitized, capped, with a remainder note); empty when the set is unknown. */
-export function renderKnownIdsBlock(title: string, ids: readonly string[] | undefined): string {
+export function renderKnownIdsBlock(
+  title: string,
+  ids: readonly string[] | undefined,
+  serverNames?: ReadonlyMap<string, string>,
+): string {
   if (!ids) return '';
   const safe = ids.filter((id) => SAFE_ID.test(id) && id.length <= MAX_ID_CHARS);
   if (safe.length === 0) return `${title}: (none registered)`;
   const shown = safe.slice(0, MAX_PROMPT_IDS);
   const more = safe.length > shown.length ? ` (+${String(safe.length - shown.length)} more not shown)` : '';
-  return `${title}: ${shown.join(', ')}${more}`;
+  const labels = shown.map((id) => {
+    const server = serverNames?.get(id)?.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, MAX_ID_CHARS);
+    return server ? `${id} (server ${JSON.stringify(server)})` : id;
+  });
+  return `${title}: ${labels.join(', ')}${more}`;
 }

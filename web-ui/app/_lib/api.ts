@@ -5610,7 +5610,7 @@ export async function getConductorAgents(): Promise<{ agents: Array<{ slug: stri
 }
 
 /** Registered deterministic-action / tool ids, for the Designer's action-step dropdown. */
-export async function getConductorActions(): Promise<{ actions: string[] }> {
+export async function getConductorActions(): Promise<{ actions: string[]; serverNames?: Record<string, string> }> {
   return getJson(`${CONDUCTOR_BASE}/actions`);
 }
 
@@ -6009,6 +6009,7 @@ export interface ConductorValidationError {
 export interface ConductorValidationResult {
   ok: boolean;
   errors: ConductorValidationError[];
+  warnings?: ConductorValidationWarning[];
 }
 
 export interface ConductorGraphPatch {

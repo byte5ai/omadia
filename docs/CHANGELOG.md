@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor publish validation and builder diagnostics (#1722, #1723, #1724, #1928)
+
+- Workflow publish and template resolution check live agent, action and role references, reject internal operator account UUIDs in human steps and check static `webhook.post` URLs. The builder can still draft unconnected actions for inline setup.
+- Human deadlines and reminder intervals must be positive ISO-8601 durations. The builder describes strict approvals and shows validation warnings in chat and after publishing.
+- The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

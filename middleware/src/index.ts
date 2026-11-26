@@ -364,7 +364,7 @@ import {
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { parseMcpActionId } from './conductor/mcpActionId.js';
 import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
-import { createMcpActionInvoker, mcpActionIds } from './conductor/mcpActionInvoker.js';
+import { createMcpActionInvoker, listMcpActions } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -5771,7 +5771,7 @@ async function main(): Promise<void> {
       listActions: async () => [
         WEBHOOK_POST_ACTION_ID,
         ...deterministicActionRegistry.list(),
-        ...mcpActionIds(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
+        ...listMcpActions(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
       ],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt

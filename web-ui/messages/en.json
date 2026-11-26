@@ -692,6 +692,7 @@
     "chatAssistant": "Builder",
     "chatValidationOk": "Draft is valid.",
     "chatValidationFailed": "Validation issues:",
+    "chatValidationWarnings": "Draft warnings",
     "chatDraftHeading": "Draft",
     "chatDraftSummary": "{steps} step(s) · trigger: {trigger}",
     "chatPublish": "Publish draft",

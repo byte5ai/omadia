@@ -20,6 +20,7 @@ import {
   type ConductorTemplateSlotMapping,
   type ConductorValidationError,
   type ConductorValidationResult,
+  type ConductorValidationWarning,
 } from '@/app/_lib/api';
 import { isSendKey } from '../../_lib/composerKeys';
 import { MissingCapabilityCards, PersonSuggestionCards } from './ConductorChatCards';
@@ -87,6 +88,23 @@ function summarize(graph: unknown): DraftSummary {
   return { steps, trigger };
 }
 
+function ValidationWarnings({ warnings, heading }: {
+  warnings?: ConductorValidationWarning[];
+  heading: string;
+}): React.JSX.Element | null {
+  if (!warnings?.length) return null;
+  return (
+    <div role="status" className="mt-2 text-[12px] text-[color:var(--warning,#f5a623)]">
+      <p className="font-semibold">{heading}</p>
+      <ul className="list-inside list-disc">
+        {warnings.map((warning, i) => (
+          <li key={i}><code>{warning.code}</code>{' · '}{warning.message}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // `onShowInDesigner` pushes the CURRENT chat draft into the visual canvas on explicit user action
 // (a button), NOT automatically every turn — an auto-push would silently clobber any manual canvas
 // edits, since canvas edits don't flow back into this pane's draft. Explicit push matches the
@@ -119,6 +137,7 @@ export function ConductorChatPane({
   const [publishing, setPublishing] = useState(false);
   const [publishMsg, setPublishMsg] = useState<string | null>(null);
   const [publishErrors, setPublishErrors] = useState<ConductorValidationError[]>([]);
+  const [publishWarnings, setPublishWarnings] = useState<ConductorValidationWarning[]>([]);
   const lastAction = useRef(0);
   // Inline MCP connect (missing-capability card → modal → tool id written into the step).
   const [connectFor, setConnectFor] = useState<{ item: ConductorMissingCapability; serverId?: string } | null>(null);
@@ -161,6 +180,7 @@ export function ConductorChatPane({
     setConnectFor(null);
     setPublishMsg(null);
     setPublishErrors([]);
+    setPublishWarnings([]);
     clearChatDraft();
   }, []);
 
@@ -286,8 +306,10 @@ export function ConductorChatPane({
     setPublishing(true);
     setPublishMsg(null);
     setPublishErrors([]);
+    setPublishWarnings([]);
     try {
-      await publishConductorWorkflow({ slug: slug.trim(), name: name.trim(), graph, enable: true });
+      const result = await publishConductorWorkflow({ slug: slug.trim(), name: name.trim(), graph, enable: true });
+      setPublishWarnings(result.warnings ?? []);
       setPublishMsg(t('chatPublished', { slug: slug.trim() }));
     } catch (err) {
       if (err instanceof ApiError) {
@@ -344,6 +366,7 @@ export function ConductorChatPane({
                     {it.validation.errors.map((e) => e.code).join(', ')}
                   </div>
                 )}
+                <ValidationWarnings warnings={it.validation?.warnings} heading={t('chatValidationWarnings')} />
                 {it.applyErrors && it.applyErrors.length > 0 && (
                   <div className="mt-1 text-[11px] text-[color:var(--danger,#e5484d)]">
                     {t('chatApplyIssues')} {it.applyErrors.join('; ')}
@@ -481,6 +504,7 @@ export function ConductorChatPane({
           {publishing ? t('chatPublishing') : t('chatPublish')}
         </Button>
         {publishMsg && <p className="text-[12px] text-[color:var(--fg-muted)]">{publishMsg}</p>}
+        <ValidationWarnings warnings={publishWarnings} heading={t('validationWarningsHeading')} />
         {publishErrors.length > 0 && (
           <ul className="list-inside list-disc text-[12px] text-[color:var(--danger,#e5484d)]">
             {publishErrors.map((v, i) => (
