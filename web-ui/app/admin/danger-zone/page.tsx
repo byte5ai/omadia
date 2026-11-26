@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { Fragment, useCallback, useMemo, useState } from 'react';
 
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
@@ -80,6 +80,9 @@ const WARNING_CODES: ReadonlySet<string> = new Set([
   'audit_unavailable',
   'audit_update_failed',
   'reseed_failed',
+  'user_selector_resolved',
+  'user_unknown',
+  'user_layers_unsupported',
 ]);
 const ERROR_CODES: ReadonlySet<string> = new Set([
   'invalid_selector',
@@ -94,6 +97,38 @@ const codeRich = {
     <code className="font-mono text-[color:var(--danger)]">{chunks}</code>
   ),
 };
+
+type ExtraCountKey = 'excerpts' | 'datasets' | 'processes' | 'identity' | 'deowned';
+
+const TONE_CLASS = {
+  danger: 'font-mono text-[color:var(--danger)]',
+  muted: 'font-mono text-[color:var(--fg-muted)]',
+  plain: 'font-mono',
+} as const;
+
+/** #1842/#1843 — the layers beyond scratch, facts and history; a row only
+ *  when the server counted something there. */
+function ExtraCounts({
+  rows,
+  tone,
+}: {
+  rows: ReadonlyArray<readonly [ExtraCountKey, number | undefined]>;
+  tone: keyof typeof TONE_CLASS;
+}): React.ReactElement {
+  const t = useTranslations('adminDangerZone.extraCounts');
+  return (
+    <>
+      {rows
+        .filter(([, value]) => (value ?? 0) > 0)
+        .map(([key, value]) => (
+          <Fragment key={key}>
+            <dt className="text-[color:var(--fg-muted)]">{t(key)}</dt>
+            <dd className={TONE_CLASS[tone]}>{value}</dd>
+          </Fragment>
+        ))}
+    </>
+  );
+}
 
 export default function DangerZonePage(): React.ReactElement {
   const t = useTranslations('adminDangerZone');
@@ -203,7 +238,14 @@ export default function DangerZonePage(): React.ReactElement {
 
   const nothingToDelete =
     preview !== null &&
-    preview.scratchCount + preview.kgCount + preview.conversationCount === 0;
+    preview.scratchCount +
+      preview.kgCount +
+      preview.conversationCount +
+      (preview.kgDeownedCount ?? 0) +
+      (preview.datasetCount ?? 0) +
+      (preview.processCount ?? 0) +
+      (preview.identityCount ?? 0) ===
+      0;
 
   const canDelete = preview !== null && !nothingToDelete && confirmMatches && !deleting;
 
@@ -382,7 +424,22 @@ export default function DangerZonePage(): React.ReactElement {
             <dd className="font-mono text-[color:var(--danger)]">
               {preview.conversationCount}
             </dd>
+            <ExtraCounts
+              tone="danger"
+              rows={[
+                ['excerpts', preview.kgExcerptCount],
+                ['datasets', preview.datasetCount],
+                ['processes', preview.processCount],
+                ['identity', preview.identityCount],
+              ]}
+            />
+            <ExtraCounts tone="muted" rows={[['deowned', preview.kgDeownedCount]]} />
           </dl>
+          {preview.resolvedUser !== undefined && (
+            <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
+              {t('resolvedUser', { omadiaUserId: preview.resolvedUser.omadiaUserId })}
+            </p>
+          )}
           {preview.reseedEntries.length > 0 && (
             <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
               {t('reseedPreview', { entries: preview.reseedEntries.join(', ') })}
@@ -462,6 +519,16 @@ export default function DangerZonePage(): React.ReactElement {
               {t('conversationHistory')}
             </dt>
             <dd className="font-mono">{result.conversationDeleted}</dd>
+            <ExtraCounts
+              tone="plain"
+              rows={[
+                ['excerpts', result.kgExcerptsDeleted],
+                ['datasets', result.datasetsDeleted],
+                ['processes', result.processesDeleted],
+                ['identity', result.identityDeleted],
+                ['deowned', result.kgDeowned],
+              ]}
+            />
           </dl>
           {result.reseededFiles !== undefined && (
             <p className="mt-2 text-sm text-[color:var(--fg-muted)]">

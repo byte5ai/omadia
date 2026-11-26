@@ -4454,6 +4454,7 @@ async function main(): Promise<void> {
       seedDir: config.MEMORY_SEED_DIR,
       tenantId: graphTenantId,
       ...(syncDurableRules ? { syncDurableRules } : {}),
+      processMemory: () => serviceRegistry.get<ProcessMemoryService>('processMemory'),
     }),
   );
 
@@ -6280,6 +6281,7 @@ async function main(): Promise<void> {
     );
     console.log('[middleware] admin auth endpoints ready at /api/v1/auth');
 
+    const findWebIdentity = knowledgeGraph.findOmadiaUserIdByChannelIdentity?.bind(knowledgeGraph);
     app.use(
       '/api/v1/admin/users',
       requireAuth,
@@ -6289,6 +6291,9 @@ async function main(): Promise<void> {
         sessions: sessionRevocation,
         loginLimiter: loginGuard.limiter,
         loginDevices: loginGuard.devices,
+        ...(findWebIdentity
+          ? { findOmadiaUserId: (usersId: string) => findWebIdentity('web', usersId) }
+          : {}),
       }),
     );
     // #1315 — the read side of the audit trail (admin UI: /admin/audit).

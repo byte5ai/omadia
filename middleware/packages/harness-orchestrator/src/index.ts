@@ -702,6 +702,7 @@ export {
 export {
   currentProcessBoundary,
   currentProcessReadFilter,
+  creatorOfCurrentTurn,
   type ProcessBoundary,
 } from './tools/processMemoryTool.js';
 

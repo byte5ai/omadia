@@ -9,6 +9,7 @@ import type {
   KnowledgeGraph,
   MemorableKnowledgePurgeFilter,
   MemoryStore,
+  ProcessMemoryService,
 } from '@omadia/plugin-api';
 
 import {
@@ -25,6 +26,13 @@ import {
   type MemoryPurgeAuditStore,
   type MemoryPurgeCounts,
 } from '../services/memoryPurgeAudit.js';
+import {
+  countUserData,
+  purgeUserData,
+  resolveUserSelector,
+  unsupportedUserLayers,
+  type ResolvedPurgeUser,
+} from '../services/memoryPurgeUser.js';
 
 /**
  * Danger-Zone memory purge — operator-facing admin endpoints.
@@ -96,6 +104,9 @@ export interface MemoryPurgeDeps {
   tenantId?: string;
   /** Clock for the preview-token TTL; tests pin it. */
   now?: () => number;
+  /** #1843 — the processes a person created go with a user purge. Resolved
+   *  per call: the provider can change at runtime. */
+  processMemory?: () => ProcessMemoryService | undefined;
   /** #1831 (ADR-0185) — re-derive the rule entries from the `_rules/` files
    *  after a purge removed memorable knowledge (axis `all` deletes the rule
    *  entries with everything else; the files stay or are re-seeded). */
@@ -111,7 +122,10 @@ export interface PurgeWarning {
     | 'user_axis_scratch_only'
     | 'audit_unavailable'
     | 'audit_update_failed'
-    | 'reseed_failed';
+    | 'reseed_failed'
+    | 'user_selector_resolved'
+    | 'user_unknown'
+    | 'user_layers_unsupported';
   params?: Record<string, string>;
 }
 
@@ -120,6 +134,8 @@ interface PurgePlan {
   mkFilter: MemorableKnowledgePurgeFilter | null;
   conversationFilter: ConversationHistoryPurgeFilter | null;
   reseedEntries: string[];
+  /** #1840/#1843 — the person a `user` selector names, when it names one. */
+  user: ResolvedPurgeUser | null;
 }
 
 /**
@@ -135,6 +151,7 @@ function kgFilters(
   axis: MemoryPurgeAxis,
   selector: string,
   tenantId: string,
+  actorOmadiaUserId?: string,
 ): Pick<PurgePlan, 'mkFilter' | 'conversationFilter'> {
   switch (axis) {
     case 'all':
@@ -145,8 +162,13 @@ function kgFilters(
         conversationFilter: { tenantId, agentSlug: selector },
       };
     case 'user':
+      // #1842 — `aclOwner` erases the owner: shared entries are de-owned.
       return {
-        mkFilter: { tenantId, aclOwner: selector },
+        mkFilter: {
+          tenantId,
+          aclOwner: selector,
+          ...(actorOmadiaUserId ? { actorOmadiaUserId } : {}),
+        },
         conversationFilter: { tenantId, userId: selector },
       };
     case 'team':
@@ -242,13 +264,43 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
     axis: MemoryPurgeAxis,
     selector: string,
     reseed: boolean,
+    actorOmadiaUserId?: string,
   ): Promise<PurgePlan> {
     const reseedEntries =
       axis === 'all' && reseed && deps.seedDir ? await bundledSeedEntries(deps.seedDir) : [];
     const scratchTargets = await resolvePurgeTargets(deps.store, axis, selector, {
       reseedEntries,
     });
-    return { scratchTargets, reseedEntries, ...kgFilters(axis, selector, tenantId) };
+    const user = axis === 'user' ? await resolveUserSelector(deps.knowledgeGraph, selector) : null;
+    // #1840 — an account id or channel identity reaches the person's member
+    // notes too, the same trees their omadia user id selects.
+    if (user && user.omadiaUserId !== selector) {
+      for (const target of await resolvePurgeTargets(deps.store, 'user', user.omadiaUserId)) {
+        if (!scratchTargets.includes(target)) scratchTargets.push(target);
+      }
+    }
+    return {
+      scratchTargets,
+      reseedEntries,
+      user,
+      ...kgFilters(axis, user?.omadiaUserId ?? selector, tenantId, actorOmadiaUserId),
+    };
+  }
+
+  function userDataDeps(): Parameters<typeof countUserData>[0] {
+    const processMemory = deps.processMemory?.();
+    return {
+      ...(deps.knowledgeGraph ? { kg: deps.knowledgeGraph } : {}),
+      ...(processMemory ? { processMemory } : {}),
+    };
+  }
+
+  /** The person's datasets, processes and identity nodes go with them. Also
+   *  for a uuid without a cluster: datasets and processes are keyed by the raw
+   *  id, so a person whose identity an earlier purge removed (and who kept
+   *  writing under the stale session id) is still reached. */
+  function erasesUserData(plan: PurgePlan): plan is PurgePlan & { user: ResolvedPurgeUser } {
+    return plan.user !== null;
   }
 
   /** The KG's conversation-history primitives, when its provider has both. */
@@ -266,13 +318,19 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
   async function countPlan(plan: PurgePlan): Promise<MemoryPurgeCounts> {
     const kg = deps.knowledgeGraph;
     const history = historyPrimitives();
+    const mk = kg && plan.mkFilter ? await kg.countMemorableKnowledge(plan.mkFilter) : undefined;
     return {
       scratch: plan.scratchTargets.length,
-      kg: kg && plan.mkFilter ? (await kg.countMemorableKnowledge(plan.mkFilter)).count : 0,
+      kg: mk?.count ?? 0,
+      kgDeowned: mk?.deowned ?? 0,
+      kgExcerpts: mk?.excerpts ?? 0,
       conversation:
         history && plan.conversationFilter
           ? (await history.countConversationHistory(plan.conversationFilter)).count
           : 0,
+      ...(erasesUserData(plan)
+        ? await countUserData(userDataDeps(), plan.user.omadiaUserId)
+        : { datasets: 0, processes: 0, identity: 0 }),
     };
   }
 
@@ -283,24 +341,60 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
     const history = historyPrimitives();
     deleted.scratch = await deletePurgeTargets(deps.store, plan.scratchTargets);
     if (kg && plan.mkFilter) {
-      deleted.kg = (await kg.purgeMemorableKnowledge(plan.mkFilter)).deletedNodes;
+      const mk = await kg.purgeMemorableKnowledge(plan.mkFilter);
+      deleted.kg = mk.deletedNodes;
+      deleted.kgDeowned = mk.deownedNodes ?? 0;
+      deleted.kgExcerpts = mk.deletedExcerpts ?? 0;
     }
     if (history && plan.conversationFilter) {
       deleted.conversation = (
         await history.purgeConversationHistory(plan.conversationFilter)
       ).deletedNodes;
     }
+    if (erasesUserData(plan)) {
+      const userData = { datasets: 0, processes: 0, identity: 0 };
+      try {
+        await purgeUserData(userDataDeps(), plan.user.omadiaUserId, userData);
+      } finally {
+        Object.assign(deleted, userData);
+      }
+    }
   }
 
-  function planWarnings(axis: MemoryPurgeAxis, counts: MemoryPurgeCounts): PurgeWarning[] {
+  function planWarnings(
+    axis: MemoryPurgeAxis,
+    counts: MemoryPurgeCounts,
+    plan?: PurgePlan,
+  ): PurgeWarning[] {
     const warnings: PurgeWarning[] = [];
+    const user = plan?.user;
+    if (user && user.via !== 'omadia_user_id' && user.via !== 'unresolved') {
+      warnings.push({
+        code: 'user_selector_resolved',
+        params: { via: user.via, omadiaUserId: user.omadiaUserId },
+      });
+    }
+    if (user?.via === 'unresolved') warnings.push({ code: 'user_unknown' });
+    if (plan && erasesUserData(plan)) {
+      const missing = unsupportedUserLayers(userDataDeps());
+      if (missing.length > 0) {
+        warnings.push({ code: 'user_layers_unsupported', params: { layers: missing.join(', ') } });
+      }
+    }
     if (axis === 'team' || axis === 'channel') {
       warnings.push({ code: 'kg_not_modelled', params: { axis } });
     } else if (deps.knowledgeGraph && !historyPrimitives()) {
       warnings.push({ code: 'kg_history_unsupported' });
     }
     if (axis === 'user') {
-      const w = userAxisWarning(counts.scratch, counts.kg + counts.conversation);
+      const graphSide =
+        counts.kg +
+        counts.conversation +
+        (counts.kgDeowned ?? 0) +
+        (counts.datasets ?? 0) +
+        (counts.processes ?? 0) +
+        (counts.identity ?? 0);
+      const w = userAxisWarning(counts.scratch, graphSide);
       if (w) warnings.push(w);
     }
     if (!auditStore) warnings.push({ code: 'audit_unavailable' });
@@ -324,9 +418,15 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       res.json({
         scratchCount: counts.scratch,
         kgCount: counts.kg,
+        kgDeownedCount: counts.kgDeowned ?? 0,
+        kgExcerptCount: counts.kgExcerpts ?? 0,
         conversationCount: counts.conversation,
+        datasetCount: counts.datasets ?? 0,
+        processCount: counts.processes ?? 0,
+        identityCount: counts.identity ?? 0,
+        ...(plan.user ? { resolvedUser: plan.user } : {}),
         reseedEntries: plan.reseedEntries,
-        warnings: planWarnings(axis, counts),
+        warnings: planWarnings(axis, counts, plan),
         previewToken: token,
         previewExpiresAt: new Date(expiresAt).toISOString(),
       });
@@ -383,7 +483,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
     let plan: PurgePlan;
     let planned: MemoryPurgeCounts;
     try {
-      plan = await planPurge(axis, selector, reseed);
+      plan = await planPurge(axis, selector, reseed, req.session?.omadia_user_id);
       planned = await countPlan(plan);
     } catch (err) {
       res.status(400).json({ error: errorCode(err) ?? 'memory_purge_failed', message: errorMessage(err) });
@@ -411,7 +511,16 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
         `[memory-purge] no audit store — purge axis=${axis} by ${actor.email ?? actor.id} is NOT recorded`,
       );
     }
-    const deleted: MemoryPurgeCounts = { scratch: 0, kg: 0, conversation: 0 };
+    const deleted: MemoryPurgeCounts = {
+      scratch: 0,
+      kg: 0,
+      kgDeowned: 0,
+      kgExcerpts: 0,
+      conversation: 0,
+      datasets: 0,
+      processes: 0,
+      identity: 0,
+    };
     try {
       await executePlan(plan, deleted);
     } catch (err) {
@@ -426,7 +535,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       return;
     }
 
-    const warnings = planWarnings(axis, deleted);
+    const warnings = planWarnings(axis, deleted, plan);
     let reseededFiles: number | undefined;
     let reseedError: string | undefined;
     if (plan.reseedEntries.length > 0 && deps.seedDir) {
@@ -461,7 +570,12 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
     res.json({
       scratchDeleted: deleted.scratch,
       kgDeleted: deleted.kg,
+      kgDeowned: deleted.kgDeowned ?? 0,
+      kgExcerptsDeleted: deleted.kgExcerpts ?? 0,
       conversationDeleted: deleted.conversation,
+      datasetsDeleted: deleted.datasets ?? 0,
+      processesDeleted: deleted.processes ?? 0,
+      identityDeleted: deleted.identity ?? 0,
       ...(reseededFiles !== undefined ? { reseededFiles } : {}),
       ...(auditId ? { auditId } : {}),
       warnings,

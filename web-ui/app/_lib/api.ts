@@ -2127,6 +2127,9 @@ export interface AdminUser {
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
+  /** #1840 — the knowledge-graph id the memory purge and owner lists use.
+   *  Only on the detail response; null when the account has none yet. */
+  omadiaUserId?: string | null;
 }
 
 export interface AdminUsersListResponse {
@@ -4587,6 +4590,16 @@ export interface MemoryPurgePreviewResult {
   /** Knowledge-Graph conversation history: turns, sessions, runs, tool
    *  calls, plans and derived facts (#1334). */
   conversationCount: number;
+  /** #1842 — remembered facts shared with others: they only lose the user. */
+  kgDeownedCount?: number;
+  /** #1842 — excerpts deleted with the remembered facts. */
+  kgExcerptCount?: number;
+  /** #1843 — the user's datasets, processes and identity nodes. */
+  datasetCount?: number;
+  processCount?: number;
+  identityCount?: number;
+  /** #1840 — the person a user-axis selector resolved to. */
+  resolvedUser?: { omadiaUserId: string; via: string };
   /** Top-level entries a re-seed resets and writes back (#1335). */
   reseedEntries: string[];
   warnings: MemoryPurgeWarning[];
@@ -4598,7 +4611,12 @@ export interface MemoryPurgePreviewResult {
 export interface MemoryPurgeResult {
   scratchDeleted: number;
   kgDeleted: number;
+  kgDeowned?: number;
+  kgExcerptsDeleted?: number;
   conversationDeleted: number;
+  datasetsDeleted?: number;
+  processesDeleted?: number;
+  identityDeleted?: number;
   /** Files the re-seed wrote back; present only on a re-seed purge. */
   reseededFiles?: number;
   /** `memory_purge_audit` row id; absent when the purge was not recorded. */

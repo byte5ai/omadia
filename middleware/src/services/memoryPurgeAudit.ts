@@ -28,8 +28,17 @@ export type MemoryPurgeActor = AuditActor;
 
 export interface MemoryPurgeCounts {
   scratch: number;
+  /** MemorableKnowledge deleted. */
   kg: number;
+  /** #1842 — MemorableKnowledge that only lost the purged person as owner. */
+  kgDeowned?: number;
+  /** #1842 — PalaiaExcerpt nodes deleted with the MemorableKnowledge. */
+  kgExcerpts?: number;
   conversation: number;
+  /** #1843 — the person's datasets, processes and identity nodes. */
+  datasets?: number;
+  processes?: number;
+  identity?: number;
 }
 
 export interface MemoryPurgeAuditStart {
@@ -76,6 +85,9 @@ const SCHEMA_STATEMENTS = [
      ADD COLUMN IF NOT EXISTS planned jsonb,
      ADD COLUMN IF NOT EXISTS error text,
      ADD COLUMN IF NOT EXISTS completed_at timestamptz`,
+  // #1842/#1843 — the layers beyond the three counter columns.
+  `ALTER TABLE memory_purge_audit
+     ADD COLUMN IF NOT EXISTS deleted_detail jsonb`,
 ];
 
 export function createMemoryPurgeAuditStore(pool: Pool): MemoryPurgeAuditStore {
@@ -145,7 +157,8 @@ export function createMemoryPurgeAuditStore(pool: Pool): MemoryPurgeAuditStore {
       await pool.query(
         `UPDATE memory_purge_audit
             SET status = $2, scratch_deleted = $3, kg_deleted = $4,
-                conversation_deleted = $5, error = $6, completed_at = now()
+                conversation_deleted = $5, error = $6, deleted_detail = $7::jsonb,
+                completed_at = now()
           WHERE id = $1`,
         [
           id,
@@ -154,6 +167,7 @@ export function createMemoryPurgeAuditStore(pool: Pool): MemoryPurgeAuditStore {
           outcome.deleted.kg,
           outcome.deleted.conversation,
           outcome.error ?? null,
+          JSON.stringify(outcome.deleted),
         ],
       );
     },

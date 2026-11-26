@@ -264,6 +264,12 @@ function recordToBrief(record: ProcessRecord): {
   };
 }
 
+/** #1843 — the canonical omadia user id of the turn's caller, when known. */
+export function creatorOfCurrentTurn(): { createdByOmadiaUserId?: string } {
+  const id = turnContext.current()?.resolvedOmadiaUserId;
+  return id ? { createdByOmadiaUserId: id } : {};
+}
+
 export function createWriteProcessHandler(
   service: ProcessMemoryService,
 ): NativeTextToolHandler {
@@ -283,6 +289,7 @@ export function createWriteProcessHandler(
         ? { visibility: parsed.data.visibility }
         : {}),
       ...(isCurrentTurnUnprotected() ? { unprotected: true } : {}),
+      ...creatorOfCurrentTurn(),
     };
     const result = await service.write(writeInput);
     if (result.ok) {

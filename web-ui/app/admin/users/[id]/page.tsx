@@ -177,6 +177,12 @@ export default function AdminUserEditPage(): React.ReactElement {
         <p className="mt-1 text-xs uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
           {t('edit.providerAndId', { provider: state.user.provider, id: state.user.id })}
         </p>
+        {/* #1840 — the id the memory purge (axis User) and the owner lists use. */}
+        <p className="mt-1 text-xs text-[color:var(--fg-muted)]">
+          {state.user.omadiaUserId
+            ? t('edit.omadiaUserId', { id: state.user.omadiaUserId })
+            : t('edit.omadiaUserIdNone')}
+        </p>
       </header>
 
       <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">

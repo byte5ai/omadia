@@ -21,7 +21,20 @@ Additive.
   writes an ACL audit row and refuses an entry that has an owner
   (`has_owners`). Both bundled providers implement them; the bounded
   `knowledgeGraph@1` classifies them `kernel-only`.
-- **`ListOwnerlessMemorableKnowledgeOptions`**.
+- **`ListOwnerlessMemorableKnowledgeOptions`**, **`SYSTEM_ACTOR_OMADIA_USER_ID`** (nil UUID).
+- **`KnowledgeGraph.findOmadiaUserIdByChannelIdentity?`**, **`countUserIdentity?`**,
+  **`purgeUserIdentity?`** (optional, ADR-0186): resolve a channel identity to its person,
+  count/delete the `User` cluster root and its `ChannelIdentity` nodes.
+- **`ProcessMemoryService.countByCreator?` / `purgeByCreator?`** and
+  **`WriteProcessInput.createdByOmadiaUserId`** (#1843).
+- **`MemorableKnowledgeCount`** / **`MemorableKnowledgePurgeResult`**: the count and purge
+  results gain optional `deowned` / `excerpts` and `deownedNodes` / `deletedExcerpts`.
+  `MemorableKnowledgePurgeFilter.actorOmadiaUserId?`.
+
+### Changed (behaviour)
+
+- `MemorableKnowledgePurgeFilter.aclOwner` erases the owner (#1842): an entry with other
+  owners is de-owned (ACL audit `shrink`), only entries the person owns alone are deleted.
 
 ## 1.98.0 — 2026-11-25
 

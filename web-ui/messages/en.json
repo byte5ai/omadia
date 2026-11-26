@@ -5963,10 +5963,12 @@
       "reset": "Reset",
       "resetting": "Resetting …",
       "dangerHeading": "Danger zone",
-      "dangerHelp": "Deleting removes the user permanently. The audit log keeps the entry.",
-      "confirmDelete": "Really delete this user? This action cannot be undone.",
+      "dangerHelp": "Deleting removes the account permanently. The audit log keeps the entry. The account’s memory and data (remembered facts, conversations, datasets, processes) are NOT deleted with it: purge them first in the Danger Zone, axis User, with the omadia user id above.",
+      "confirmDelete": "Really delete this account? This cannot be undone. Its memory and data stay unless you purged them in the Danger Zone first.",
       "delete": "Delete user",
-      "deleting": "Deleting …"
+      "deleting": "Deleting …",
+      "omadiaUserId": "omadia user id: {id} — use it for the memory purge (axis User).",
+      "omadiaUserIdNone": "No omadia user id yet: the account has not signed in."
     }
   },
   "adminAudit": {
@@ -6233,7 +6235,7 @@
     "forbiddenError": "Not authorized (403) — memory purge requires admin rights.",
     "selectorHint": {
       "agent": "Agent slug. Deletes the agent’s scratch tree, its context trees under /memories/contexts, its remembered facts and its conversation history.",
-      "user": "Always <code>channelType~id</code> (raw user id or the key from the memory browser), e.g. <code>teams~AAD-OBJECT-ID</code> — deletes the user tier across all agents. Or an omadia user id: deletes that person’s member notes, remembered facts and conversation turns.",
+      "user": "Always <code>channelType~id</code> (raw user id or the key from the memory browser), e.g. <code>teams~AAD-OBJECT-ID</code> — deletes the user tier across all agents and, when the channel identity is known, everything below. Or the person’s omadia user id or account id (both on the user page): deletes their member notes, the remembered facts they own alone (shared facts only lose them as owner), their conversation turns, datasets, stored processes and identity nodes. Conversation transcripts under /memories/sessions and chat tabs are kept.",
       "team": "Always <code>channelType~id</code> (raw team id or the key from the memory browser), e.g. <code>teams~19:abc@thread.tacv2</code>. Deletes the team tier across all agents.",
       "channel": "Always <code>channelType~id</code> (raw conversation id or the key from the memory browser), e.g. <code>telegram~-1001234567890</code>. Deletes the channel tier across all agents."
     },
@@ -6246,10 +6248,13 @@
       "kg_not_modelled": "The knowledge graph has no {axis, select, team {team} channel {channel} other {such}} scoping yet: remembered facts and conversation history stay untouched. Only the context trees under /memories/contexts are deleted.",
       "kg_history_unsupported": "This knowledge-graph provider cannot delete conversation history: turns, sessions and runs stay. Only remembered facts and scratch memory are deleted.",
       "user_axis_kg_only": "The selector matched knowledge-graph data but no context tree under /memories/contexts — the user’s scratch memory is not deleted.",
-      "user_axis_scratch_only": "The selector matched context trees but no knowledge-graph data — remembered facts and conversation turns are matched by omadia user id, not by a channelType~id key.",
+      "user_axis_scratch_only": "The selector matched context trees but no knowledge-graph data or other stored data of a person (remembered facts, turns, datasets, processes) — check whether the selector names a person: an omadia user id, an account id or a known channelType~id.",
       "audit_unavailable": "No audit store is configured (no Postgres) — this purge is not recorded.",
       "audit_update_failed": "The purge ran, but its audit record {auditId} could not be completed and still shows as started.",
-      "reseed_failed": "The defaults could not be written back; they return at the next restart unless MEMORY_SEED_MODE is skip."
+      "reseed_failed": "The defaults could not be written back; they return at the next restart unless MEMORY_SEED_MODE is skip.",
+      "user_selector_resolved": "The selector is {via, select, account_id {an account id} channel_identity {a channel identity} other {not an omadia user id}}; the purge works on that person’s omadia user id {omadiaUserId}.",
+      "user_unknown": "No person has this id: no knowledge-graph user and no account. Check whether you copied the omadia user id or the account id from the user page.",
+      "user_layers_unsupported": "This installation cannot delete the person’s {layers}; they stay."
     },
     "errors": {
       "invalid_selector": "The selector must be spelled channelType~id, e.g. teams~19:abc@thread.tacv2 (raw native id) or the key shown in the memory browser.",
@@ -6273,6 +6278,14 @@
       "errorNotFound": "This memory no longer exists.",
       "errorForbidden": "You are not allowed to delete this memory.",
       "errorGeneric": "The memories without an owner could not be loaded or deleted."
+    },
+    "resolvedUser": "Selected person: omadia user id {omadiaUserId}.",
+    "extraCounts": {
+      "excerpts": "Excerpts of those facts",
+      "datasets": "Datasets",
+      "processes": "Stored processes",
+      "identity": "Identity nodes (name, e-mail)",
+      "deowned": "Shared facts: only this person is removed as owner"
     }
   },
   "adminDuplicates": {

@@ -18,7 +18,7 @@
  * fire-and-forget caller (the write hook) can ignore the result.
  */
 import type { Pool } from 'pg';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import { SYSTEM_ACTOR_OMADIA_USER_ID, type KnowledgeGraph } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 
 import { isUnprotectedNote, stripUnprotectedNoteMarker } from './noteProvenance.js';
@@ -57,9 +57,7 @@ export interface PromoteRuleResult {
   mkId?: string;
 }
 
-/** The one actor id a system write records in `memory_acl_audit` (NOT NULL
- *  UUID column): the nil UUID. No omadia user ever has it. */
-export const SYSTEM_ACTOR_OMADIA_USER_ID = '00000000-0000-0000-0000-000000000000';
+export { SYSTEM_ACTOR_OMADIA_USER_ID };
 
 /** The `source-memory-path:` line a rule's rationale starts with. */
 function sourceMarker(virtualPath: string): string {

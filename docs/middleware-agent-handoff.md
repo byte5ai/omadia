@@ -9034,6 +9034,14 @@ derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditAc
 (`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
 Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
 
+Achse `user` seit ADR-0186 (#1840/#1842/#1843): `resolveUserSelector` (`services/memoryPurgeUser.ts`)
+liest omadia-User-ID, Konto-ID (`web:<users.id>`) oder `<kanal>~<id>`; geteilte
+`MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.99.0),
+dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migration 0037) und
+`User`/`ChannelIdentity`-Knoten. Response-Felder zusätzlich `kgDeownedCount|kgExcerptCount|
+datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
+`omadiaUserId`.
+
 **Ohne Eigentümer** (`GET|DELETE /api/v1/admin/memory/ownerless[/:id]`, ADR-0185, #1829/#1831,
 gleiches Gate): listet `MemorableKnowledge` mit leerem `acl_owners` (Scratch-Reaper, Regeln) und
 löscht einen Eintrag einzeln — `admin_audit` `memory.ownerless_delete` vorher (Fehler → 500,

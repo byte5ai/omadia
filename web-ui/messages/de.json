@@ -5963,10 +5963,12 @@
       "reset": "Zurücksetzen",
       "resetting": "Setze …",
       "dangerHeading": "Gefahrenzone",
-      "dangerHelp": "Löschen entfernt den Nutzer permanent. Audit-Log behält den Eintrag.",
-      "confirmDelete": "Diesen Nutzer wirklich löschen? Die Aktion ist nicht umkehrbar.",
+      "dangerHelp": "Löschen entfernt das Konto permanent. Das Audit-Log behält den Eintrag. Memory und Daten des Kontos (gemerkte Fakten, Gespräche, Datensätze, Prozesse) werden dabei NICHT gelöscht: zuerst in der Gefahrenzone, Achse User, mit der omadia-User-ID oben purgen.",
+      "confirmDelete": "Dieses Konto wirklich löschen? Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
       "delete": "Nutzer löschen",
-      "deleting": "Lösche …"
+      "deleting": "Lösche …",
+      "omadiaUserId": "omadia-User-ID: {id} — für den Memory-Purge (Achse User).",
+      "omadiaUserIdNone": "Noch keine omadia-User-ID: das Konto hat sich noch nicht angemeldet."
     }
   },
   "adminAudit": {
@@ -6233,7 +6235,7 @@
     "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.",
     "selectorHint": {
       "agent": "Agent-Slug. Löscht den Scratch-Baum des Agenten, seine Kontext-Bäume unter /memories/contexts, seine gemerkten Fakten und seinen Gesprächsverlauf.",
-      "user": "Immer <code>channelType~id</code> (rohe User-Id oder Key aus dem Memory-Browser), z. B. <code>teams~AAD-OBJECT-ID</code> — löscht das User-Tier über alle Agenten. Oder eine omadia-User-Id: löscht Member-Notizen, gemerkte Fakten und Gesprächs-Turns dieser Person.",
+      "user": "Immer <code>channelType~id</code> (rohe User-ID oder der Schlüssel aus dem Memory-Browser), z. B. <code>teams~AAD-OBJECT-ID</code> — löscht den User-Tier über alle Agenten und, wenn die Kanal-Identität bekannt ist, alles Folgende. Oder die omadia-User-ID bzw. Konto-ID der Person (beide auf der Nutzerseite): löscht ihre Member-Notizen, die gemerkten Fakten, die sie allein besitzt (geteilte verlieren nur diese Person als Eigentümer), ihre Gesprächsturns, Datensätze, gespeicherten Prozesse und Identitätsknoten. Transkripte unter /memories/sessions und Chat-Tabs bleiben.",
       "team": "Immer <code>channelType~id</code> (rohe Team-Id oder Key aus dem Memory-Browser), z. B. <code>teams~19:abc@thread.tacv2</code>. Löscht das Team-Tier über alle Agenten.",
       "channel": "Immer <code>channelType~id</code> (rohe Conversation-Id oder Key aus dem Memory-Browser), z. B. <code>telegram~-1001234567890</code>. Löscht das Kanal-Tier über alle Agenten."
     },
@@ -6246,10 +6248,13 @@
       "kg_not_modelled": "Der Knowledge-Graph kennt noch keine {axis, select, team {Team} channel {Channel} other {solche}}-Zuordnung: gemerkte Fakten und Gesprächsverlauf bleiben unberührt. Gelöscht werden nur die Kontext-Bäume unter /memories/contexts.",
       "kg_history_unsupported": "Dieser Knowledge-Graph-Provider kann den Gesprächsverlauf nicht löschen: Turns, Sessions und Runs bleiben erhalten. Gelöscht werden nur gemerkte Fakten und Scratch-Memory.",
       "user_axis_kg_only": "Der Selector hat Knowledge-Graph-Daten getroffen, aber keinen Kontext-Baum unter /memories/contexts — das Scratch-Memory des Users wird nicht gelöscht.",
-      "user_axis_scratch_only": "Der Selector hat Kontext-Bäume getroffen, aber keine Knowledge-Graph-Daten — gemerkte Fakten und Gesprächs-Turns werden über die omadia-User-Id gefunden, nicht über einen channelType~id-Key.",
+      "user_axis_scratch_only": "Der Selektor traf Kontextbäume, aber keine Knowledge-Graph-Daten oder anderen gespeicherten Daten einer Person (gemerkte Fakten, Turns, Datensätze, Prozesse) — prüfe, ob der Selektor eine Person benennt: omadia-User-ID, Konto-ID oder bekannte channelType~id.",
       "audit_unavailable": "Kein Audit-Speicher konfiguriert (kein Postgres) — dieser Purge wird nicht protokolliert.",
       "audit_update_failed": "Der Purge ist gelaufen, aber sein Audit-Eintrag {auditId} konnte nicht abgeschlossen werden und steht noch auf „gestartet“.",
-      "reseed_failed": "Die Defaults konnten nicht zurückgeschrieben werden; sie kommen beim nächsten Neustart zurück, außer MEMORY_SEED_MODE steht auf skip."
+      "reseed_failed": "Die Defaults konnten nicht zurückgeschrieben werden; sie kommen beim nächsten Neustart zurück, außer MEMORY_SEED_MODE steht auf skip.",
+      "user_selector_resolved": "Der Selektor ist {via, select, account_id {eine Konto-ID} channel_identity {eine Kanal-Identität} other {keine omadia-User-ID}}; der Purge arbeitet mit der omadia-User-ID {omadiaUserId} dieser Person.",
+      "user_unknown": "Zu dieser ID gibt es keine Person: keinen Knowledge-Graph-Nutzer und kein Konto. Prüfe, ob du die omadia-User-ID oder die Konto-ID von der Nutzerseite kopiert hast.",
+      "user_layers_unsupported": "Diese Installation kann {layers} der Person nicht löschen; sie bleiben."
     },
     "errors": {
       "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
@@ -6273,6 +6278,14 @@
       "errorNotFound": "Diese Erinnerung existiert nicht mehr.",
       "errorForbidden": "Du darfst diese Erinnerung nicht löschen.",
       "errorGeneric": "Die Erinnerungen ohne Eigentümer konnten nicht geladen oder gelöscht werden."
+    },
+    "resolvedUser": "Ausgewählte Person: omadia-User-ID {omadiaUserId}.",
+    "extraCounts": {
+      "excerpts": "Auszüge dieser Fakten",
+      "datasets": "Datensätze",
+      "processes": "Gespeicherte Prozesse",
+      "identity": "Identitätsknoten (Name, E-Mail)",
+      "deowned": "Geteilte Fakten: nur diese Person wird als Eigentümer entfernt"
     }
   },
   "adminDuplicates": {

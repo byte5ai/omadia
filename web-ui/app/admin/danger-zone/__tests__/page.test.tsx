@@ -110,6 +110,30 @@ describe('<DangerZonePage />', () => {
     expect(screen.queryByRole('button', { name: 'Delete irreversibly' })).toBeNull();
   });
 
+  it('#1840/#1842 — shows the resolved person, the shared facts and the extra layers', async () => {
+    mockPreview.mockResolvedValue(
+      previewResult({
+        kgDeownedCount: 3,
+        kgExcerptCount: 2,
+        datasetCount: 1,
+        identityCount: 2,
+        resolvedUser: { omadiaUserId: 'om-1', via: 'account_id' },
+        warnings: [{ code: 'user_selector_resolved', params: { via: 'account_id', omadiaUserId: 'om-1' } }],
+      }),
+    );
+    renderWithIntl(<DangerZonePage />);
+    chooseAxis('user');
+    typeSelector('teams~x');
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+
+    expect(await screen.findByText(/Shared facts: only this person is removed as owner/)).toBeInTheDocument();
+    expect(screen.getByText('Datasets')).toBeInTheDocument();
+    expect(screen.getByText(/Identity nodes/)).toBeInTheDocument();
+    expect(screen.getByText(/Selected person: omadia user id om-1/)).toBeInTheDocument();
+    expect(screen.getByText(/The selector is an account id/)).toBeInTheDocument();
+    expect(screen.queryByText('Stored processes')).toBeNull();
+  });
+
   it('counts the conversation history and sends the preview token with the delete', async () => {
     mockPreview.mockResolvedValue(previewResult());
     mockPurge.mockResolvedValue({ scratchDeleted: 2, kgDeleted: 1, conversationDeleted: 17, warnings: [] });

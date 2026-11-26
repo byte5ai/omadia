@@ -7216,7 +7216,26 @@ leave a record of who did it.
   everything = the
   tenant. Team and channel have no KG scoping yet and say so. Kept on purpose:
   the per-scope Q&A transcripts under `/memories/sessions` and the chat tabs
-  under `/memories/chat-sessions` (open point, see handoff §13).
+  under `/memories/chat-sessions` (open point, see handoff §13); the page's
+  user-axis hint says so.
+- **User axis = one person (ADR-0186, #1840, #1842, #1843).** The selector may
+  be the omadia user id, the account id the admin user page shows (`users.id`,
+  resolved through the `web:<id>` channel identity) or `<channel>~<id>` of a
+  known channel identity (a Telegram user without an account); the response
+  names the resolved id (`resolvedUser`, warning `user_selector_resolved`), and
+  a uuid nobody has gets `user_unknown` instead of a silent "nothing to
+  delete". Turns are matched by the identity's `<kind>:<id>` too. A remembered
+  fact the person owns alone is deleted with its excerpts; one shared with
+  other owners only loses the person (a `memory_acl_audit` `shrink` row with
+  the operator as actor). With a resolved person the purge also deletes their
+  datasets, the processes they created (`processes.created_by_omadia_user_id`,
+  migration 0037; processes stored before it have no creator and are not
+  selected) and their `User` / `ChannelIdentity` nodes (name, e-mail) — last,
+  so the earlier layers still resolve them. Preview and audit row carry the
+  extra counts (`deleted_detail`).
+- **Account deletion is separate.** Deleting an account in `/admin/users`
+  removes the `users` row only; the dialog and the page say that memory and
+  data stay and point to the purge with the omadia user id the page shows.
 - **One selection.** Preview and delete run the same plan (scratch targets +
   KG filters, one shared SQL CTE in the Neon backend), so both select by the
   same rules. The delete re-resolves the plan when it runs: data that arrived
@@ -7244,9 +7263,11 @@ leave a record of who did it.
 Residual: the preview token does not survive a restart or span several
 middleware processes; the outcome (counts, `completed`/`failed`) is only in
 `memory_purge_audit`, since `admin_audit` is append-only.
-A user purge misses a Turn whose `user_id` is a raw channel id (Telegram id,
-Teams `29:` id without an AAD id) when its run trace was never ingested, since
-the `BELONGS_TO` edge to the user cluster is the only other link.
+A user purge misses a Turn whose `user_id` is a raw channel id that matches
+neither the omadia id, an AAD id nor an identity's `<kind>:<id>` (a Teams `29:`
+id without an AAD id) when its run trace was never ingested, since the
+`BELONGS_TO` edge to the user cluster is the only other link. A login after an
+identity purge creates a new cluster with a new omadia user id.
 
 ## 10p. MCP outbound targets and stdio servers (#1341, #1342)
 

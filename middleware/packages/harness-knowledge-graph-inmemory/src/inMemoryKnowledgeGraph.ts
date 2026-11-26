@@ -4,6 +4,8 @@ import {
   agentInvocationNodeId,
   agentScopePrefix,
   channelIdentityNodeId,
+  SYSTEM_ACTOR_OMADIA_USER_ID,
+  type ChannelKind,
   CONVERSATION_HISTORY_NODE_TYPES,
   type ConversationHistoryPurgeFilter,
   entityNodeId,
@@ -53,6 +55,8 @@ import {
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
   type ListOwnerlessMemorableKnowledgeOptions,
+  type MemorableKnowledgeCount,
+  type MemorableKnowledgePurgeResult,
   type ListMergeCandidatesOptions,
   type CreateInconsistencyInput,
   type ExcerptSearchOptions,
@@ -1498,34 +1502,67 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return true;
   }
 
+  /**
+   * #1842 — split a purge selection: with `aclOwner`, an entry that has
+   * another owner is de-owned, only entries the person owns alone go.
+   */
+  private memorableKnowledgePurgeSets(filter: MemorableKnowledgePurgeFilter): {
+    remove: GraphNode[];
+    deown: GraphNode[];
+  } {
+    const remove: GraphNode[] = [];
+    const deown: GraphNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (!this.matchesMkPurgeFilter(node, filter)) continue;
+      const shared =
+        filter.aclOwner !== undefined && ownersOf(node).some((id) => id !== filter.aclOwner);
+      (shared ? deown : remove).push(node);
+    }
+    return { remove, deown };
+  }
+
+  private excerptIdsOf(mkIds: ReadonlySet<string>): string[] {
+    const ids = new Set<string>();
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'EXCERPT_OF' && mkIds.has(edge.to)) ids.add(edge.from);
+    }
+    return [...ids];
+  }
+
   async countMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ count: number }> {
-    let count = 0;
-    for (const node of this.nodes.values()) {
-      if (this.matchesMkPurgeFilter(node, filter)) count++;
-    }
-    return { count };
+  ): Promise<MemorableKnowledgeCount> {
+    const { remove, deown } = this.memorableKnowledgePurgeSets(filter);
+    return {
+      count: remove.length,
+      deowned: deown.length,
+      excerpts: this.excerptIdsOf(new Set(remove.map((n) => n.id))).length,
+    };
   }
 
   async purgeMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ deletedNodes: number }> {
-    const mkIds: string[] = [];
-    for (const node of this.nodes.values()) {
-      if (this.matchesMkPurgeFilter(node, filter)) mkIds.push(node.id);
+  ): Promise<MemorableKnowledgePurgeResult> {
+    const { remove, deown } = this.memorableKnowledgePurgeSets(filter);
+    for (const node of deown) {
+      const before = ownersOf(node);
+      const after = before.filter((id) => id !== filter.aclOwner);
+      this.upsertNode({ id: node.id, type: 'MemorableKnowledge', props: { ...node.props, acl_owners: after } });
+      this.appendAclAudit({
+        memoryExternalId: node.id,
+        actorOmadiaUserId: filter.actorOmadiaUserId ?? SYSTEM_ACTOR_OMADIA_USER_ID,
+        action: 'shrink',
+        beforeOwners: before,
+        afterOwners: after,
+        reason: 'memory purge, user axis',
+      });
     }
-    if (mkIds.length === 0) return { deletedNodes: 0 };
-    const mkIdSet = new Set(mkIds);
-    // Cascade-delete attached PalaiaExcerpt nodes BEFORE dropping parents
-    // + their edges (mirrors deleteMemory's Slice 6.5 cascade).
-    const excerptIds: string[] = [];
-    for (const edge of this.edges.values()) {
-      if (edge.type === 'EXCERPT_OF' && mkIdSet.has(edge.to)) {
-        excerptIds.push(edge.from);
-      }
-    }
-    const droppedIds = new Set<string>([...mkIds, ...excerptIds]);
+    const mkIdSet = new Set(remove.map((n) => n.id));
+    if (mkIdSet.size === 0) return { deletedNodes: 0, deownedNodes: deown.length, deletedExcerpts: 0 };
+    // Cascade-drop attached PalaiaExcerpt nodes with their parents
+    // (mirrors deleteMemory's Slice 6.5 cascade).
+    const excerptIds = this.excerptIdsOf(mkIdSet);
+    const droppedIds = new Set<string>([...mkIdSet, ...excerptIds]);
     for (const id of droppedIds) this.nodes.delete(id);
     for (const [key, edge] of this.edges.entries()) {
       if (droppedIds.has(edge.from) || droppedIds.has(edge.to)) {
@@ -1533,7 +1570,45 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       }
     }
     for (const id of droppedIds) this.embeddings.delete(id);
-    return { deletedNodes: mkIds.length };
+    return { deletedNodes: mkIdSet.size, deownedNodes: deown.length, deletedExcerpts: excerptIds.length };
+  }
+
+  async findOmadiaUserIdByChannelIdentity(
+    channelKind: ChannelKind,
+    channelUserId: string,
+  ): Promise<string | null> {
+    const identity = channelIdentityNodeId(channelKind, channelUserId);
+    if (this.nodes.get(identity)?.type !== 'ChannelIdentity') return null;
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'IS_IDENTITY_OF' || edge.from !== identity) continue;
+      const id = this.nodes.get(edge.to)?.props['omadiaUserId'];
+      if (typeof id === 'string') return id;
+    }
+    return null;
+  }
+
+  /** #1843 — the `User` cluster root plus its `ChannelIdentity` nodes. */
+  private userIdentityIds(omadiaUserId: string): string[] {
+    const root = userNodeId(omadiaUserId);
+    if (this.nodes.get(root)?.type !== 'User') return [];
+    const ids = [root];
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'IS_IDENTITY_OF' && edge.to === root) ids.push(edge.from);
+    }
+    return ids;
+  }
+
+  async countUserIdentity(omadiaUserId: string): Promise<{ count: number }> {
+    return { count: this.userIdentityIds(omadiaUserId).length };
+  }
+
+  async purgeUserIdentity(omadiaUserId: string): Promise<{ deletedNodes: number }> {
+    const ids = new Set(this.userIdentityIds(omadiaUserId));
+    for (const id of ids) this.nodes.delete(id);
+    for (const [key, edge] of this.edges.entries()) {
+      if (ids.has(edge.from) || ids.has(edge.to)) this.edges.delete(key);
+    }
+    return { deletedNodes: ids.size };
   }
 
   /**
@@ -1569,6 +1644,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       for (const identity of sources(userNode, 'IS_IDENTITY_OF')) {
         const aad = this.nodes.get(identity)?.props['aadObjectId'];
         if (typeof aad === 'string') userIds.add(aad);
+        // #1843 — a channel turn stores the identity's `<kind>:<id>`.
+        userIds.add(identity);
       }
     }
     const userMatches = (node: GraphNode): boolean =>
