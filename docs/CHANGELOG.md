@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — deleting an API key drops its public MCP binding (#2310, ADR-0273) (2026-11-27)
+
+- New kernel service `publicMcpKeyBindings` (`forgetDeletedKey(keyId)`) removes a binding only
+  when the vault no longer holds that key. `@omadia/channel-api` **0.1.1** declares it as
+  `optional_requires: publicMcpKeyBindings@1` and calls it after `DELETE /admin/keys/:id`.
+  Bindings of keys deleted earlier keep their `key_id_unknown` warning.
+
 ### Fixed — the MCP OAuth callback page follows the browser's language (#1959) (2026-11-27)
 
 - `GET /api/v1/operator/mcp-oauth/callback` renders its page in German or English from

@@ -117,6 +117,9 @@ export interface AdminKeysRouterOptions {
    *  list carries no `lastUsedAt`. */
   readonly usageLog?: AuditLog;
   readonly log?: (...args: unknown[]) => void;
+  /** #2310 — called after a key was deleted, so the kernel drops its public
+   *  MCP binding. A failure is logged; the delete stands. */
+  readonly onKeyDeleted?: (id: string) => Promise<void>;
 }
 
 export function createAdminKeysRouter(
@@ -291,6 +294,13 @@ export function createAdminKeysRouter(
       return;
     }
     await opts.usageLog?.forget(id);
+    if (opts.onKeyDeleted) {
+      try {
+        await opts.onKeyDeleted(id);
+      } catch (err) {
+        log(`[channel-api] dropping the public MCP binding of deleted key ${id} failed:`, err);
+      }
+    }
     await audit(req, {
       action: 'api_key.delete',
       target: `api-key:${id}`,

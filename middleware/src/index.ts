@@ -368,6 +368,10 @@ import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp
 // and nothing else.
 import { createPublicMcpKeyBindingAdminStore } from './mcp/publicMcpKeyBindingsAdmin.js';
 import {
+  PUBLIC_MCP_KEY_BINDINGS_SERVICE,
+  createPublicMcpKeyBindingCascade,
+} from './mcp/publicMcpKeyBindingCascade.js';
+import {
   PRIVACY_REDACT_SERVICE_NAME,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
@@ -1706,6 +1710,20 @@ async function main(): Promise<void> {
     },
   });
   serviceRegistry.provide(GENERATED_OBJECTS_SERVICE_NAME, generatedObjects);
+  // #2310 / ADR-0273 — `@omadia/channel-api` asks the kernel to drop the
+  // public MCP binding of a key it deleted. The pool is resolved per call (it
+  // arrives with the graph plugin); the vault check keeps live keys bound.
+  serviceRegistry.provide(
+    PUBLIC_MCP_KEY_BINDINGS_SERVICE,
+    createPublicMcpKeyBindingCascade({
+      bindings: () => {
+        const pool = serviceRegistry.get<Pool>('graphPool');
+        return pool ? createPublicMcpKeyBindingAdminStore(pool) : undefined;
+      },
+      keyIds: async () =>
+        new Set((await createVerifyOnlyApiKeyStore(secretVault).list()).map((k) => k.id)),
+    }),
+  );
   if (config.AUDIENCE_FLOOR_ENABLED) {
     const storedGrants = config.DATABASE_URL
       ? createLateBoundGrantStore(() => audienceGrantStoreRef)
