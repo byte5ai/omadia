@@ -1,0 +1,77 @@
+# Memory-ACL mutation run (memory testing plan, step 6).
+#
+# Stryker mutates the files that hold only memory access rules and runs the
+# in-memory memory-access suites against every mutant
+# (middleware/scripts/mutation/stryker.memory-acl.config.mjs). A surviving
+# mutant is an access rule no test checks. Too slow for every PR (one build,
+# then one suite run per mutant), so it runs weekly and on demand. No tokens,
+# no database. The hand-run proof over the Neon SQL and the in-memory graph is
+# docs/testing/memory-acl-mutation-record.md.
+#
+# Report only for now (`break: null` in the config): the first runs set the
+# baseline; the threshold is then raised, never lowered.
+
+name: memory-acl-mutation
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Sunday 02:30 UTC, away from the weekly eval crons (owner
+    # decision 2026-11-27: weekly + on demand, not nightly).
+    - cron: '30 2 * * 0'
+
+concurrency:
+  group: memory-acl-mutation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# Same reason as ci.yml: onnxruntime-node's install script fetches a CUDA
+# provider nothing here uses, and that download has failed before.
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
+jobs:
+  mutation:
+    name: memory ACL mutation (Stryker)
+    if: github.repository == 'byte5ai/omadia'
+    runs-on: ubuntu-latest
+    # No measured run yet: 120 is a ceiling, not an estimate. Tighten it to
+    # the measured time plus a margin after the first runs.
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: middleware
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: middleware/package-lock.json
+
+      - name: npm ci (middleware + workspaces)
+        run: npm ci --include=optional --no-audit --no-fund
+
+      # Mirrors ci.yml: the lockfile has no linux-x64 sharp entry.
+      - name: Install sharp linux-x64 native binary
+        run: npm install --no-save --no-audit --no-fund --os=linux --cpu=x64 sharp
+
+      # @stryker-mutator/core is a pinned devDependency in package-lock.json
+      # (integrity hash, no install at run time; owner decision 2026-11-27).
+
+      - name: Build workspace packages
+        run: npm run build
+
+      - name: Run Stryker over the memory ACL files
+        run: npx stryker run scripts/mutation/stryker.memory-acl.config.mjs
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: memory-acl-mutation-report
+          path: middleware/reports/mutation/
+          if-no-files-found: ignore

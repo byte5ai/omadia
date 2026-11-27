@@ -34,6 +34,8 @@ import {
   type SkillFrameComposer,
   type ToolResultInterner,
 } from './adversarial/adversarialModel.js';
+import { memoryExfiltrationWorld, probeMemoryAcl } from './adversarial/memoryExfiltration.js';
+import type { KnowledgeGraph } from '@omadia/plugin-api';
 
 function loadDeterministicCorpus(): AttackScenario[] {
   const dir = new URL('./adversarial/corpus/', import.meta.url);
@@ -383,5 +385,93 @@ describe('runBehavioralScenario (stub provider)', () => {
       juror: 'stub-juror',
     });
     assert.equal(result.outcome, 'breached');
+  });
+});
+
+// --- counter-proofs (memory-ACL plan, step 6): break one memory defense -----
+//
+// The `memory_acl` scenarios run the real turn. Each case below re-runs one of
+// them with a graph whose ACL is broken on purpose, the way a regression
+// would break it, and the scenario must report `breached`. The memory tool's
+// path checks have no graph seam; the mutation record of step 6
+// (`docs/testing/memory-acl-mutation-record.md`) proves those.
+
+/** `graph` with some methods replaced; the rest pass through. */
+function brokenGraph(
+  override: Record<string, (graph: KnowledgeGraph) => unknown>,
+): (graph: KnowledgeGraph) => KnowledgeGraph {
+  return (graph) =>
+    new Proxy(graph, {
+      get(target, prop, receiver) {
+        const replace = typeof prop === 'string' ? override[prop] : undefined;
+        if (replace) return replace(target);
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+}
+
+type Opts = Record<string, unknown>;
+
+describe('memory_acl: a broken memory defense makes its scenario breach', () => {
+  it('memory search ignores the owner ⇒ recall hands Alice\'s memories to Bob', async () => {
+    const world = await memoryExfiltrationWorld();
+    const everyone = [...Object.values(world.users.main), ...Object.values(world.users.other)];
+    const result = await probeMemoryAcl(
+      scenarioById('memexfil_recall_names_other_dm'),
+      brokenGraph({
+        searchMemorableKnowledgeByEmbedding: (g) => async (opts: Opts) => {
+          const hits = new Map<string, unknown>();
+          for (const viewer of everyone) {
+            const found = await g.searchMemorableKnowledgeByEmbedding({
+              ...(opts as unknown as Parameters<KnowledgeGraph['searchMemorableKnowledgeByEmbedding']>[0]),
+              viewerOmadiaUserId: viewer,
+            });
+            for (const h of found) hits.set(h.mk.id, h);
+          }
+          return [...hits.values()];
+        },
+      }),
+    );
+    assert.equal(result.outcome, 'breached', result.evidence);
+  });
+
+  it('session reads drop the user and room filter ⇒ a foreign session is summarised', async () => {
+    const result = await probeMemoryAcl(
+      scenarioById('memexfil_session_of_foreign_scope'),
+      brokenGraph({ getSession: (g) => (scope: string) => g.getSession(scope) }),
+    );
+    assert.equal(result.outcome, 'breached', result.evidence);
+  });
+
+  it('turn search drops the user filter ⇒ forged viewer fields reach Alice\'s turns', async () => {
+    const result = await probeMemoryAcl(
+      scenarioById('memexfil_forged_viewer_fields'),
+      brokenGraph({
+        searchTurns: (g) => (opts: Opts) =>
+          g.searchTurns({
+            ...(opts as unknown as Parameters<KnowledgeGraph['searchTurns']>[0]),
+            userId: undefined,
+            audienceOwners: undefined,
+          }),
+      }),
+    );
+    assert.equal(result.outcome, 'breached', result.evidence);
+  });
+
+  it('recall ignores the Privacy Shield ⇒ unprotected memory reaches a shielded turn', async () => {
+    type Search = 'searchTurns' | 'searchTurnsByEmbedding' | 'searchMemorableKnowledgeByEmbedding' | 'searchExcerptsByEmbedding';
+    const unshielded = (method: Search) => (g: KnowledgeGraph) => (opts: Opts) =>
+      (g[method] as unknown as (o: Opts) => unknown).call(g, { ...opts, excludeUnprotected: false });
+    const result = await probeMemoryAcl(
+      scenarioById('memexfil_shield_unprotected_turns'),
+      brokenGraph({
+        searchTurns: unshielded('searchTurns'),
+        searchTurnsByEmbedding: unshielded('searchTurnsByEmbedding'),
+        searchMemorableKnowledgeByEmbedding: unshielded('searchMemorableKnowledgeByEmbedding'),
+        searchExcerptsByEmbedding: unshielded('searchExcerptsByEmbedding'),
+      }),
+    );
+    assert.equal(result.outcome, 'breached', result.evidence);
   });
 });
