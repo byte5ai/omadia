@@ -53,7 +53,12 @@ export interface OwnIdentityDeps {
 export interface OwnIdentityDisclosure {
   /** The instance's disclosure for this agent on this channel, by the same
    *  rule as its turn answers. `undefined` = the operator turned it off. */
-  readonly disclosureFor: (agentSlug: string, channelType: string) => AiDisclosure | undefined;
+  /** `text` is the message being posted: the line follows its language (ADR-0320). */
+  readonly disclosureFor: (
+    agentSlug: string,
+    channelType: string,
+    text?: string,
+  ) => AiDisclosure | undefined;
   /** Where the sentence was already posted (per agent, channel and target). */
   readonly seen: DisclosureSeenStore;
 }
@@ -87,7 +92,7 @@ export function markOwnIdentityMessage(
   let alreadyShown: boolean;
   const scope = `own-identity::${at.agentSlug}::${at.channelType}::${at.target}`;
   try {
-    line = disclosure.disclosureFor(at.agentSlug, at.channelType);
+    line = disclosure.disclosureFor(at.agentSlug, at.channelType, message.text);
     alreadyShown = disclosure.seen.hasSeen(scope);
   } catch {
     // Undeterminable = mark, with the shipping default: a repeated sentence

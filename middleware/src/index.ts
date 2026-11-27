@@ -8221,8 +8221,8 @@ async function main(): Promise<void> {
     // The AI marking of own-identity posts, by the rule of the agent's turn
     // answers; folded only where the channel has no AI label of its own.
     disclosure: {
-      disclosureFor: (agentSlug: string, channelType: string) =>
-        getRegistry()?.get(agentSlug)?.built.orchestrator.disclosureForChannel(channelType),
+      disclosureFor: (agentSlug: string, channelType: string, text?: string) =>
+        getRegistry()?.get(agentSlug)?.built.orchestrator.disclosureForChannel(channelType, text),
       seen: new InMemoryDisclosureSeenStore(),
     },
   };

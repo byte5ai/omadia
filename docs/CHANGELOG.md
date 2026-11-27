@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — AI disclosure line follows the answer language (#2353) (2026-11-27)
+
+- The AI-disclosure line is composed in the language of the answer it is appended to (German or
+  English, `detectAnswerLocale`), on every path: buffered, streaming, subscription CLI, fast path
+  and own-identity posts. `ai_disclosure_locale` is now the fallback for answers whose language is
+  undecided (ADR-0320, supersedes ADR-0220 in part).
+
 ### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
 
 - `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows

@@ -16,6 +16,7 @@ import {
 } from './answerVerbosity.js';
 import {
   DEFAULT_ANSWER_LANGUAGE,
+  detectAnswerLocale,
   type AnswerLanguage,
 } from './answerLanguage.js';
 import {
@@ -5314,8 +5315,11 @@ export class Orchestrator {
    * the system prompt: the marking lives behind the model precisely so a
    * branded or human-sounding persona cannot suppress it (AC2 regression).
    */
-  private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
-    return this.disclosureForChannel(turnChannelKind(input));
+  private resolveTurnDisclosure(
+    input: ChatTurnInput,
+    answer?: string,
+  ): AiDisclosure | undefined {
+    return this.disclosureForChannel(turnChannelKind(input), answer);
   }
 
   /**
@@ -5325,8 +5329,16 @@ export class Orchestrator {
    * answer of the same Agent on the same channel can never be marked by
    * different rules.
    */
-  disclosureForChannel(channelKind: string | undefined): AiDisclosure | undefined {
+  disclosureForChannel(
+    channelKind: string | undefined,
+    answer?: string,
+  ): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
+    // #2353 / ADR-0320 — the line is written in the language of the answer it
+    // is appended to (the answer follows the user, ADR-0220). The operator's
+    // `ai_disclosure_locale` decides only when the answer shows no clear
+    // German or English.
+    const locale = detectAnswerLocale(answer) ?? setup?.locale;
     // #648 — the precedence lives in ONE place now. `/health`, the boot log and
     // the operator dashboard project the same function over every channel; a
     // second copy of these rules here would let the reported posture disagree
@@ -5365,7 +5377,7 @@ export class Orchestrator {
     const assistantName = this.identityName ?? setup?.assistantName;
     return resolveAiDisclosure({
       policy,
-      ...(setup?.locale ? { locale: setup.locale } : {}),
+      ...(locale ? { locale } : {}),
       ...(assistantName ? { assistantName } : {}),
       ...(setup?.operatorNote ? { operatorNote: setup.operatorNote } : {}),
     });
@@ -5431,7 +5443,7 @@ export class Orchestrator {
       answerVerbosity: this.resolveAnswerVerbosity(input),
       ...(captureDisclosure ? { captureDisclosure } : {}),
     };
-    const aiDisclosure = this.resolveTurnDisclosure(input);
+    const aiDisclosure = this.resolveTurnDisclosure(input, delivered.answer);
     if (!aiDisclosure) return withTextWithoutData(delivered, data);
     const applied = applyAiDisclosure(delivered.answer, {
       disclosure: aiDisclosure,
@@ -5492,7 +5504,7 @@ export class Orchestrator {
     answer: string,
     input: ChatTurnInput,
   ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
-    const aiDisclosure = this.resolveTurnDisclosure(input);
+    const aiDisclosure = this.resolveTurnDisclosure(input, answer);
     if (!aiDisclosure) return { answer };
     const applied = applyAiDisclosure(answer, {
       disclosure: aiDisclosure,
@@ -5878,7 +5890,7 @@ export class Orchestrator {
       const notice = this.modelUnavailableNotice(input, err.reason);
       return { answer: notice.text, toolCalls: 0, iterations: 0, systemNotice: notice };
     }
-    const aiDisclosure = this.resolveTurnDisclosure(input);
+    const aiDisclosure = this.resolveTurnDisclosure(input, result.answer);
     return aiDisclosure ? { ...result, aiDisclosure } : result;
   }
 

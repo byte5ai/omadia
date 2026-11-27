@@ -816,6 +816,7 @@ export {
   ANSWER_LANGUAGES,
   DEFAULT_ANSWER_LANGUAGE,
   buildAnswerLanguageRule,
+  detectAnswerLocale,
   parseAnswerLanguage,
   type AnswerLanguage,
 } from './answerLanguage.js';
