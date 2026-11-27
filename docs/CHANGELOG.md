@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Fix — kernel notices in a turn follow the user message's language (#2372, ADR-0332) (2026-11-27)
+
+Refusal, withheld-answer, degraded-turn and CLI force-guarded notices took their language from
+`Orchestrator.turnLocale`, which only resolved the operator's `ai_disclosure_locale` (default
+German): an English user got an English answer and a German notice. `turnLocale` (and
+`noticeLocale`) now use `detectAnswerLocale(input.userMessage)` first. ADR-0332 supersedes
+ADR-0220's neutral consequence on notices; it also records that the code never read the channel
+locale there (drift).
+
 ### Fix — an undecided answer's disclosure line follows the user message (#2367, ADR-0331) (2026-11-27)
 
 The short English routine answer "It's 4:42 PM … on Friday, …" got the German AI-disclosure

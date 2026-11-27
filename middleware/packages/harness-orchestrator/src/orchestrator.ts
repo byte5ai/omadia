@@ -16,6 +16,7 @@ import {
 } from './answerVerbosity.js';
 import {
   DEFAULT_ANSWER_LANGUAGE,
+  detectAnswerLocale,
   disclosureLocaleOf,
   type AnswerLanguage,
 } from './answerLanguage.js';
@@ -5336,13 +5337,8 @@ export class Orchestrator {
     input: ChatTurnInput,
     answer?: string,
   ): AiDisclosure | undefined {
-    // #2367 — the user's message decides an undecided answer's language; a
-    // call without an answer (a notice locale) keeps the operator's locale.
-    return this.disclosureForChannel(
-      turnChannelKind(input),
-      answer,
-      answer !== undefined ? input.userMessage : undefined,
-    );
+    // #2367 — the user's message decides an undecided answer's language.
+    return this.disclosureForChannel(turnChannelKind(input), answer, input.userMessage);
   }
 
   /**
@@ -5566,10 +5562,12 @@ export class Orchestrator {
    * replacing that table with "your question is still unanswered" would drop
    * a real answer. The event stays flagged `degraded` for audit/health/verifier.
    */
-  /** The language a delivered notice is written in: the turn's disclosure
-   *  locale, else the operator's configured one (composers default to `de`). */
+  /** The language a delivered notice (refusal, withheld answer, degraded
+   *  turn, privacy and verifier notices) is written in. #2372 / ADR-0332 —
+   *  the language of the user's message, as the answer would be (ADR-0220);
+   *  else the operator's configured one (composers default to `de`). */
   private turnLocale(input: ChatTurnInput): string | undefined {
-    return this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+    return detectAnswerLocale(input.userMessage) ?? this.aiDisclosure?.locale;
   }
 
   /** {@link turnLocale} for a runtime outside this loop: the subscription
