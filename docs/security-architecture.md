@@ -1752,17 +1752,45 @@ cluster id, principal and IdP subject, so also its `per_user` MCP tokens. What g
 - **Kernel-only graph write.** `KnowledgeGraph.linkChannelIdentity` is `kernel-only` in the
   bounded graph services (ADR-0044).
 
-Accepted residual risks (ADR-0280):
+Closed by #2324 (ADR-0302), formerly accepted residual risks of ADR-0280:
 
-- **Turn attestation stays the channel plugin's.** The turn path reads the link from the
-  identity a plugin channel turn states through `origin` + `userId`. The kernel does not check
-  that the calling plugin holds `origin.channelType`, exactly as it already trusts a channel's
-  `userRef` for Teams identities (`handleTurnStream`, see the `mcpUserKey` comment in
-  `orchestrator.ts`). A malicious installed channel plugin could therefore speak as a linked
-  account. Follow-up #2324: stamp or check the origin channel type per plugin in the kernel.
-- **Disabling an account does not unlink it.** Its linked channel accounts keep running as the
-  account (and its `per_user` keys) until an operator unlinks them in the channel's admin UI.
-  The user purge (ADR-0186) removes linked identities with the cluster.
+- **The origin channel type is checked per plugin.** `chatAgent@1` and `channelResolver@1`
+  are handed out per calling plugin (`turnOriginGuard.ts`); `chat` / `chatStream` drop an
+  `origin` whose channel type the caller does not hold (`http` never, `api` only
+  `@omadia/channel-api`), and a `channelIdentity` of a kind it does not hold, with a
+  `[security-audit]` line. Plugins get only the guarded `agent` of the bundle, never `raw`. The scoped `CoreApi.handleTurnStream`
+  stamps the plugin's own `channelId`, drops a foreign origin and refuses a `userRef` of another
+  plugin's channel kind. Residual: the first plugin to claim a channel type owns it (ADR-0135).
+- **A link to a disabled account is not applied.** The turn path asks `turnIdentityDirectory@1`
+  (`isAccountActive`, handed to the orchestrator only); a disabled or deleted account, or a
+  failed lookup, runs an origin-stated turn as the raw channel id and gives a dispatcher-minted
+  identity no turn identity at all. The link stays and applies again after re-enabling. The user purge (ADR-0186)
+  removes linked identities with the cluster.
+
+## 5b-3. Entra directory people and per-person tokens (#2335, ADR-0300)
+
+Colleagues of the Entra tenant without a web login are directory people
+(`directory_people`, migration 0123), not accounts: no session, no role, no admin area.
+
+- **Source.** Only a channel plugin contributes a tenant's directory
+  (`CoreApi.registerDirectorySource`, Teams: Graph `/users/delta`, members only); the kernel
+  holds no Graph credentials. First registrant owns a tenant; the scoped CoreApi files the
+  source under the calling plugin.
+- **Person key = AAD object id**, the same key an Entra web login's session `sub` carries. A
+  Teams turn keys `per_user` MCP tokens on it only while the sender is an `active` person;
+  the origin check above limits that to the plugin holding `teams`.
+- **Deprovisioning** (removed, `accountEnabled = false`, or missing from a completed full read):
+  `directory_person.deprovision` audit row (a failed write is logged, not blocking), every MCP
+  token under the person key is revoked at the provider and deleted server by server (a failure
+  sets `revoke_pending`, retried before each later sync run), operator links to the
+  person are removed, then the row turns `deprovisioned`. Lag: up to one sync interval (6 h)
+  unless an operator syncs. Memories stay until the user purge.
+- **Links from other channels** (Telegram, …) use the ADR-0280 offer with a `directory:<id>`
+  picker value; the identity node records `linkedDirectoryPersonId`, and turns key on the person
+  only while the person is active.
+- **Admin surface** `/api/v1/admin/directory` (session-gated): list, "Sync now"
+  (`directory.sync`), unlink (`channel_identity.unlink`), revoke a connection
+  (`directory_person.revoke_connection`), each audited first.
 
 ## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
 

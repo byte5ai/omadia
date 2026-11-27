@@ -119,6 +119,14 @@ export type AuditAction =
   // `before`/`after` the linked `users.id`.
   | 'channel_identity.link'
   | 'channel_identity.unlink'
+  // ADR-0300 — the Entra-fed directory of people. `deprovision` is written by
+  // the sync (`system:directory-sync`) before a leaver's tokens and links go;
+  // `sync` is an operator's "Sync now"; `revoke_connection` an operator
+  // removing one person's MCP connection. `target` is `directory_person:<id>`
+  // (sync: `directory:<source>:<tenant>`).
+  | 'directory_person.deprovision'
+  | 'directory_person.revoke_connection'
+  | 'directory.sync'
   | 'plugin.grants_change'
   // #1347 — a plugin finished its install wizard / was removed. The uninstall
   // row lists the grants that left with it.

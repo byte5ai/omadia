@@ -7061,10 +7061,11 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ## 13. Offene Roadmap
 
 - **MCP Welle 6 — Reste (2026-11-27):** #2312 Per-User-OAuth-Connect für Kanal-Nutzer ohne
-  omadia-Login (braucht Kanal-Flow + Owner-Entscheidung zum Link-Risiko, ADR-0175); MCP-Bilder
+  omadia-Login — Owner-Entscheidung: kein Bearer-Link, Connect gebunden an Teams-SSO des
+  Verzeichnis-Principals (ADR-0300, W40 zweiter PR); MCP-Bilder
   auch für Sub-Agenten/CLI/Public MCP (ADR-0272); stdio-Kinder teilen einen OS-User (ADR-0270).
-- **Kanal-Konto-Links (W35, ADR-0280) — Reste (#2324):** Origin-Kanaltyp pro Plugin prüfen statt Adapter-Attestierung; Deaktivieren eines Kontos entknüpft seine
-  Kanal-Identitäten nicht (Turns laufen bis zum Unlink weiter als Konto-Cluster); Slack, Discord
+- **Kanal-Konto-Links (W35, ADR-0280) — Reste:** (#2324 erledigt, ADR-0302: Origin-Kanaltyp pro
+  Plugin geprüft, Links auf deaktivierte Konten gelten nicht); Slack, Discord
   und WhatsApp sollten `CoreApi.channelIdentityLinks` statt reiner Allow-Listen nutzen;
   Cross-Channel-Memory (`docs/cross-channel-memory.md`) entscheidet, ob ein verknüpftes Konto die
   Memory-Tiers des Web-Kontos sieht.
@@ -12190,3 +12191,30 @@ Ersetzt den Platzhalter aus #2007.
   löscht ein optionales Enum, ein Pflicht-Enum kann nicht geleert werden.
 - **Web-Chat:** keine Nudge-Karte mehr (#1900, ADR-0021); der Session-Mirror
   speichert Antworten ohne `<!-- orchestrator:… -->`-Notizen (#1956).
+
+## Entra-Verzeichnis: Personen ohne Web-Login als Anker (W40, #2335 / #2324, 2026-11-27)
+
+ADR-0300, ADR-0302. Kolleginnen und Kollegen des Entra-Mandanten sind **Verzeichnis-Personen**,
+keine Konten (jedes Konto ist Admin, ADR-0113).
+
+- **Store:** `middleware/src/directory/` — `directoryStore.ts` (Migration 0123
+  `directory_people`, `directory_sync_state`), `directorySync.ts` (ein Lauf: Vollread ohne
+  Cursor, sonst Delta; Cursor erst nach der letzten Seite; nur ein abgeschlossener Vollread
+  deprovisioniert Fehlende), `directoryService.ts` (Quellen pro Mandant, 6-h-Takt,
+  Deprovisionierung: Audit → MCP-Tokens widerrufen → Links lösen → Status),
+  `directoryLinks.ts` (Cluster einer Person = Cluster ihrer Teams-Identität).
+- **Quelle:** nur ein Channel-Plugin, `CoreApi.registerDirectorySource` (channel-sdk 0.3.22,
+  `DirectorySource`); Teams liest Graph `/users/delta`. Der Kernel ruft Graph nie selbst.
+- **Turn-Pfad:** Kernel-Service `turnIdentityDirectory@1` (`TurnIdentityDirectory` in
+  `@omadia/orchestrator`, `optional_requires`): Teams-Sender, die aktive Person sind, bekommen
+  den `per_user`-MCP-Key = AAD-Object-Id; Links auf deaktivierte Konten gelten nicht (#2324).
+- **Origin-Prüfung (#2324):** `src/channels/turnOriginGuard.ts` — `chatAgent@1` und
+  `channelResolver@1` pro aufrufendem Plugin (`decorateOnProvide` + `perCallerService`),
+  `scopedCoreApi.handleTurnStream` stempelt `channelId`.
+- **Linking:** Telegram & Co. verknüpfen über ADR-0280 auch auf `directory:<id>`
+  (`LinkableAccount.kind = 'person'`, Knoten-Prop `linkedDirectoryPersonId`, plugin-api 1.113.0).
+- **Routen:** `GET /api/v1/admin/directory`, `POST …/sync`, `GET …/people/:id`,
+  `POST …/people/:id/unlink`, `POST …/people/:id/connections/:serverId/revoke` (Session).
+  Web-UI: `/admin/directory`.
+- **Offen (§13):** Connect ohne Web-Session per Teams-SSO (#2312, ADR-0301, zweiter PR);
+  Teams-Plugin-Quelle `teamsDirectorySource.ts` (Plugin-PR).

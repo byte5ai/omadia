@@ -228,6 +228,8 @@ const ChannelIdentityPropsSchema = z
     /** ADR-0225 — an operator linked this identity to the account
      *  `linkedUserId` (`users.id`); `linkedBy` is the operator's `users.id`. */
     linkedUserId: z.string().min(1).optional(),
+    /** ADR-0300 — a directory person (`directory_people.id`) instead of an account. */
+    linkedDirectoryPersonId: z.string().min(1).optional(),
     linkedBy: z.string().min(1).optional(),
     linkedAt: z.string().datetime().optional(),
     firstSeenAt: z.string().datetime(),

@@ -1156,7 +1156,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const previousCluster = identity ? this.identityClusterOf(identity.id) : undefined;
 
     if (input.target === null) {
-      if (!identity || typeof identity.props['linkedUserId'] !== 'string') {
+      if (!identity || !hasLink(identity.props)) {
         throw Object.assign(new Error('not_linked'), { code: 'not_linked' });
       }
       const omadiaUserId = randomUUID();
@@ -1188,7 +1188,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
     }
     const linkProps = {
-      linkedUserId: input.target.userId,
+      ...linkTargetProps(input.target),
       linkedAt: now,
       ...(input.target.linkedBy ? { linkedBy: input.target.linkedBy } : {}),
     };
@@ -4204,10 +4204,27 @@ function isEmptyAudience(audience: readonly string[] | undefined): boolean {
   return audience !== undefined && canonicalOwners(audience).length === 0;
 }
 
-/** `{ linkedUserId }` when the identity carries an operator link (ADR-0225). */
-function linkedUserIdOf(props: Record<string, unknown>): { linkedUserId?: string } {
+/** `{ linkedUserId }` / `{ linkedDirectoryPersonId }` when the identity carries an operator link (ADR-0225, ADR-0300). */
+function linkedUserIdOf(props: Record<string, unknown>): { linkedUserId?: string; linkedDirectoryPersonId?: string } {
   const linked = props['linkedUserId'];
-  return typeof linked === 'string' && linked !== '' ? { linkedUserId: linked } : {};
+  if (typeof linked === 'string' && linked !== '') return { linkedUserId: linked };
+  const person = props['linkedDirectoryPersonId'];
+  return typeof person === 'string' && person !== '' ? { linkedDirectoryPersonId: person } : {};
+}
+
+/** Whether the identity carries an operator link of either kind. */
+function hasLink(props: Record<string, unknown>): boolean {
+  return Object.keys(linkedUserIdOf(props)).length > 0;
+}
+
+/** The link props of a link target; refuses a target that names neither or both. */
+function linkTargetProps(target: { userId?: string; directoryPersonId?: string }): Record<string, string> {
+  const userId = target.userId?.trim() ?? '';
+  const personId = target.directoryPersonId?.trim() ?? '';
+  if ((userId === '') === (personId === '')) {
+    throw Object.assign(new Error('invalid_link_target'), { code: 'invalid_link_target' });
+  }
+  return userId !== '' ? { linkedUserId: userId } : { linkedDirectoryPersonId: personId };
 }
 
 /** The props without the operator-link keys. */

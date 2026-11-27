@@ -35,6 +35,7 @@ import type {
   ConversationMessageEvent,
   CoreApi,
   DefaultChannelKeyProvider,
+  DirectorySource,
   IncomingTurn,
   MeetingSourceProvider,
   SessionEvent,
@@ -98,6 +99,13 @@ export function scopeCoreApiToChannel(
   };
 
   const scoped: CoreApi = { ...core };
+
+  // ADR-0300 — a directory source is registered under this channel, whatever
+  // id the plugin passes, so deactivation drops exactly its own.
+  if (core.registerDirectorySource) {
+    const register = core.registerDirectorySource.bind(core);
+    scoped.registerDirectorySource = (_channelId: string, source: DirectorySource): void => register(channelId, source);
+  }
 
   // #2324 / ADR-0302 — a turn is this channel's own: its id is stamped (the
   // dispatcher reads it for the manifest block and the reserved `api` origin),
