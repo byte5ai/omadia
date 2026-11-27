@@ -209,6 +209,14 @@ src/
   geclaimt hat, sonst `deriveChannelType` der ID; der API-Kanal bindet bewusst unter
   `@omadia/channel-api`). Default-Agent-Tabelle, Binding-Formular und Routing-Tester
   bieten nur diese an (`web-ui/app/_lib/channelTypes.ts`), nie eine geratene Plugin-ID.
+  Der Server prüft dieselbe Liste (#1879, `routes/registeredChannelTypes.ts`):
+  `PUT /api/v1/operator/agents/:slug/bindings` lehnt ein **neues** Binding unter einem
+  Typ, den kein installiertes Kanal-Plugin routet, mit `400 unknown_channel_type`
+  (`channel_type`, `known_channel_types`) ab; ein Binding, das der Agent schon hat,
+  darf bleiben. `POST /resolve-channel` antwortet für einen unbekannten Typ ebenso
+  mit 400 statt mit „fallback“. Migration `0117_channel_api_binding_type` schreibt
+  alte `channel-api`-Bindings mit `key:`-Schlüssel auf `@omadia/channel-api` um,
+  wenn kein Binding desselben Schlüssels unter dem echten Typ existiert.
 - **Sprache der Notices:** `ChatTurnInput.locale` (additiv). Der Management-Layer
   füllt sie aus der Resolve-Locale; der Identity-Guard formuliert seine Notice darin
   vor der Agent- bzw. Instanzsprache.
@@ -266,6 +274,43 @@ src/
 - **System-Prompt:** Spricht Deutsch, liest zu Turn-Start `/memories/_rules`,
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
+
+### Identitätsschicht eines Agenten (#1878)
+
+`assembleAgentIdentity` (`harness-orchestrator/src/agentIdentityLayers.ts`)
+baut den Identitätsabschnitt jedes Agenten in fester Reihenfolge: Basis
+(plattformweite `assistant_identity`, sonst `DEFAULT_AGENT_IDENTITY`) →
+Steckbrief → Name → Identitätsregeln (#2056) → Rollenvertrag des Archetyps
+(#2060). Die Basis wird **nur** durch eigenen Verhaltenstext des Agenten
+ersetzt (`agent_identities.instructions` nicht leer). Hat der Agent nur
+Charakter, Grenzen oder Schmeichel-Bremse, hängt der kompilierte
+`composed_prompt` **hinter** die Basis (`AgentRow.identityHasOwnInstructions`
+= `false` → `identityReplacesBase: false`); vorher ersetzte schon eine einzelne
+Grenze die Plattform-Identität. Die Varianten pro Modellfamilie (#1033) laufen
+durch dieselbe Funktion und behalten damit Basis, Name und Steckbrief.
+
+**Prompt-Vorschau (#1890):** `identityPreamble` (gleiche Datei) hängt an den
+Identitätsabschnitt die Sprachzeile, die Zeile gegen angekündigte Tool-Aufrufe
+und den Antwortumfang-Block; `buildSystemPrompt` beginnt mit genau diesem Text.
+Der gebaute Agent trägt ihn als `BuiltOrchestrator.identityPrompt`, und
+`GET/PUT /api/v1/operator/agents/:slug/identity` liefern ihn als
+`identity_prompt` (`null`, solange der Agent nicht gebaut ist; die Web-UI zeigt
+dann nur `composed_prompt` mit Hinweis). Die Vorschau liest also den laufenden
+Agenten, kein zweites Rendering. Davor steht im Turn nur der
+Quality-Guard-Block; ein Arbeitsmodus folgt direkt auf die Identität,
+Werkzeuge, Datum und Gesprächskontext danach (ADR-0077).
+
+**Charakter-Regler gegen die Modell-Grundhaltung (#1893, ADR-0217):** Ein
+Reglerwert ist eine Zielstufe; `personaDelta.ts` schreibt nur den Abstand zur
+Grundhaltung der Modellfamilie, auf der der Agent läuft. Die Familie liefert
+`inferPersonaFamily` (`harness-orchestrator/src/personaFamily.ts`, auch
+`Orchestrator.familyOf`): `haiku`/`sonnet`/`opus`/`fable`, die Anbieter-Familien
+aus `basePersonas.ts`, sonst `unknown` — nicht mehr pauschal Sonnet. Bei
+„Auto" löst `OrchestratorRegistry.runModelFor` (= `resolveAgentRunModel`, die
+Auflösung des Builds) das Modell auf. Fable hat eine eigene, von Opus
+abgeleitete Grundhaltung. Die Identity-Routen liefern
+`persona_baseline: { family, axes }`; der Editor zeigt sie als
+„Modell-Standard"-Punkt und Radar-Referenz, eine ungesetzte Achse steht darauf.
 
 ### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
 
@@ -674,7 +719,13 @@ Credential-Änderung automatisch mit.
   sie (`PackagelessEntries.tsx`). Abgeleitet bei jedem Lesen: die Registry wird
   nicht umgeschrieben, nichts wird automatisch gelöscht; „Paket“ heißt
   Uploaded- oder Built-in-Store, nicht Katalog (ein Manifest ohne Code zählt
-  nicht).
+  nicht). Seit #1942 auch auf der Agenten-Seite: die Plugin-Listen des
+  Operator-Agent-Routers (`GET /api/v1/operator/agents`, `GET …/:slug/plugins`)
+  tragen pro Zuweisung `package_missing` (Option `hasPackage`, dieselbe Prüfung),
+  „Zugewiesene Plugins“ zeigt dafür „Paket fehlt — läuft nicht“. Die Boot-Warnung
+  nennt für die Canvas-IDs (`@omadia/ui-orchestrator`, `@omadia/ui-channel`,
+  `@omadia/canvas-core`, `RELOCATED_PACKAGES`) die Quelle
+  `byte5ai/omadia-ui-support`.
 - **Eigener Readiness-State.** `computeReadiness` (`plugins/readiness.ts`)
   liest zusätzlich die gepushte Status-Lage und liefert
   **`connection_failed`**, wenn `ctx.status` auf `error` steht — egal ob aus
@@ -4860,6 +4911,31 @@ Operator-Jobs: die Routentabelle steht in `platform/operatorJobRoutes.ts`
 (Agent-Builder-Skill-Verdict, Plugin-Builder-Turn/-Preview, Workflow-Designer,
 Memory- und Issue-Tools).
 
+### Slug-gebundener Zustand eines gelöschten Agenten (#1881, ADR-0218)
+
+Memory, Graph-Scopes und Public-MCP-Key-Bindings hängen am Slug, der Delete gibt
+den Slug frei. `platform/agentSlugState.ts` (Option `slugState` des
+Operator-Agents-Routers, verdrahtet in `src/index.ts`):
+
+- **`DELETE /api/v1/operator/agents/:slug`** verschiebt nach dem Registry-Reload
+  `/memories/orchestrators/<slug>` und `/memories/contexts/<slug>` unter den
+  Platzhalter-Slug des Tombstones (`deleted-<id>`, über `LabelledMemoryStore`,
+  damit Discretion-Labels mitwandern) und löscht die `public_mcp_key_bindings`
+  des Slugs. Antwort (`slug_state`) und Audit `agent.slug_state_moved` nennen,
+  was passiert ist (`moved_to_slug`, `memory_moved`, `mcp_bindings_removed`,
+  `failures`). Ein Fehler blockiert den Delete nicht.
+- **Danach purgebar** über den Danger-Zone-Purge (ADR-0120), Achse `agent`,
+  Selektor = Platzhalter-Slug.
+- **`POST /api/v1/operator/agents`** und **`POST …/onboarding/first-agent`**
+  lehnen einen Slug ab, unter dem noch Zustand liegt (Graph-Verlauf `<slug>::…`,
+  `MemorableKnowledge` mit `origin_agent`, Memory-Baum, Binding):
+  `409 slug_state_remains` mit `remaining`; Prüfung nicht möglich →
+  `503 slug_state_unverifiable`. Der Graph wird nicht verschoben (externe IDs
+  enthalten den Scope); Abhilfe ist der Purge des alten Slugs.
+- Nicht abgedeckt (ADR-0218): Web-Chat-Tabs des alten Agenten, Quality-Guard
+  `agent_overrides`, Routinen (#1745), slug-gebundene Tuning-Tabellen des
+  Graph-Providers.
+
 ### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
 
 Router `routes/operatorAgents.ts` unter `/api/v1/operator/agents`, der
@@ -4922,6 +4998,25 @@ Bestätigung gilt, wenn ein solcher Agent Default-Agent wird
 /:slug/plugins`) antworten auf einen **neuen** Grant eines Plugins, das kein
 Capability-Plugin ist, mit `400 not_a_capability_plugin`. Bestehende Zeilen
 bleiben und lassen sich weiter umschalten.
+
+**Sitzungen lösen/löschen** (`POST /:slug/drain`, `POST /:slug/kill`, #1884).
+Beide wirken auf die Web-Chats, die an den Agenten gebunden sind (`snapshot`,
+ADR-0146): `drain` löst die Bindung und behält den Verlauf, `kill` löscht den Chat
+auf dem Server. Unbekannter Slug → `404 not_found`; Antwort `{ ok, affected }`, die
+Agenten-Seite zeigt die Zahl. Die Bindung ist server-eigen wie `resetAt`: ein
+Client-`PUT /api/chat/sessions/:id` kann sie weder setzen noch entfernen
+(`mergeServerProactiveMessages`); vorher ging sie mit dem ersten Client-PUT
+verloren, und `drain`/`kill` fanden nie einen Chat. Grenze: ein Browser, der einen
+gelöschten Chat noch lokal hat, legt ihn beim nächsten Laden wieder an (ohne
+Bindung); der Bestätigungstext sagt das.
+
+**Agent anlegen: Fehlercodes** (`POST /api/v1/operator/agents`, #1885). Ein
+Slug, der nicht `AGENT_SLUG_RE` entspricht (exportiert von `@omadia/orchestrator`,
+`configStore.ts`), ist `400 invalid_body` mit `issues[].path = 'slug'` statt
+`409 config_validation`; ein vergebener Slug ist `409 slug_taken` (`slug`). Die
+Agenten-Seite übersetzt diese Codes (`useAgentApiErrorText.ts`), behält die
+Formularwerte bis zur Antwort, und das `pattern` der Slug-Felder kompiliert unter
+dem `v`-Flag der Browser (`web-ui/app/_lib/agentSlug.ts`).
 
 **Entfernt** (ohne Kompatibilitätsschicht)
 - `POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
@@ -6010,7 +6105,9 @@ getrennt: sie steuert den Ton relativ zur Modell-Baseline, nicht den Umfang.
 **Pro Agent (Phase 2, Migration `0063_agent_identity_verbosity.sql`):**
 `agent_identities.verbosity` (gleiche fünf Werte, CHECK-Constraint, `NULL` =
 installationsweite Einstellung übernehmen). Gepflegt im Identity-Tab der
-Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` mit
+Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` (seit #1889 /
+ADR-0216 mit optionalem `expected_revision`: veraltete Revision → `409
+identity_revision_conflict`, nichts geschrieben; die Web-UI sendet es immer) mit
 zod-Enum, Store `agentIdentityStore.ts`. Der Registry-Join
 (`AGENT_SELECT` → `identity_verbosity` → `AgentRow.answerVerbosity`) reicht ihn
 als `AgentRuntimeConfig.answerVerbosity` an `buildOrchestratorForAgent`, wo er
@@ -10056,6 +10153,16 @@ Zwei Grenzen, die bewusst offen bleiben:
   Routinen gehören dort dem Key.
 
 ## Quality Guard: Grenzen stapeln sich, sie überschreiben nicht (#1104, 2026-09-21)
+
+> **Überholt seit #1569/#1610, UI-Text korrigiert mit #1894 (2026-11-26):** Ein Feld, das der
+> Agent selbst setzt (eigene Grenzen bzw. eigene Stufe der Schmeichel-Bremse), **ersetzt** den
+> Quality-Guard-Wert für dieses Feld — `responseGuardProfileFor`
+> (`harness-orchestrator/src/agentQuality.ts`) sagt dem Guard „nichts von dir“ für jedes
+> eigene Feld. Nur offen gelassene Felder kommen vom Guard. Der Limits-Tab bietet dafür
+> „Nicht gesetzt (Vorgabe des Quality Guard gilt)“ getrennt von „Aus“; ein Wechsel des
+> `quality`-Blocks lädt die Registry neu (`PUT /:slug/identity`, `qualityChanged`), weil
+> „nicht gesetzt“ → „aus“ denselben Prompt kompiliert, aber den Guard-Default abschaltet.
+> Der folgende Abschnitt beschreibt den Stand vor #1569.
 
 Boundaries sind an **zwei** unabhängigen Stellen konfigurierbar, und beide landen
 zusammen im System-Prompt — das ist kein Bug, aber es war nirgends dokumentiert.

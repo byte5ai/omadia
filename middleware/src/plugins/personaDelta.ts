@@ -1,3 +1,9 @@
+import {
+  inferPersonaFamily,
+  type ClaudePersonaTier,
+  type PersonaModelFamily,
+} from '@omadia/orchestrator';
+
 import { getBaseProfile } from './basePersonas.js';
 import {
   CORE_PERSONA_AXES,
@@ -8,7 +14,7 @@ import {
 /**
  * Phase 3 / OB-67 Slice 8 — model-family persona defaults + delta-compute.
  *
- * Each Anthropic model family (Sonnet 4.6, Opus 4.7, Haiku 4.5) ships
+ * Each Anthropic model family (Sonnet, Opus, Haiku, Fable) ships
  * with its own baseline behaviour: Sonnet defaults to balanced and
  * mildly diplomatic, Opus is more expansive + reflective, Haiku is
  * tighter and more direct. When the operator sets `persona.directness:
@@ -29,12 +35,13 @@ import {
  */
 
 /**
- * Anthropic model-family identifiers as we group them in the orchestrator.
- * The Builder lets users pick `haiku | sonnet | opus`; the runtime maps
- * those onto the actual model id (sonnet → claude-sonnet-5, …) but
- * persona-delta only cares about the family tier.
+ * #1893 — the family a persona is measured against: one of the Anthropic
+ * tiers below, or a vendor family from `basePersonas.ts` (`unknown` for a
+ * model nobody profiled). Defined in the orchestrator package next to the one
+ * mapper ({@link inferFamilyFromModel}), because the turn loop picks the
+ * per-family prompt by the same keys.
  */
-export type PersonaModelFamily = 'sonnet' | 'opus' | 'haiku';
+export type { PersonaModelFamily } from '@omadia/orchestrator';
 
 /**
  * Per-family baseline. Every axis carries a 0–100 estimate of the
@@ -42,7 +49,7 @@ export type PersonaModelFamily = 'sonnet' | 'opus' | 'haiku';
  * comparison ("Opus is noticeably more expansive than Haiku at the same
  * prompt") — refine with empirical data later.
  */
-export const FAMILY_DEFAULTS: Record<PersonaModelFamily, Required<PersonaAxes>> = {
+export const FAMILY_DEFAULTS: Record<ClaudePersonaTier, Required<PersonaAxes>> = {
   sonnet: {
     formality: 50,
     directness: 55,
@@ -85,6 +92,27 @@ export const FAMILY_DEFAULTS: Record<PersonaModelFamily, Required<PersonaAxes>> 
     drama: 30,
     philosophy: 35,
   },
+  /**
+   * #1893 / ADR-0217 — Fable, estimated: derived from Opus (the closest
+   * profiled tier: expansive, reflective, autonomous) with no measured
+   * deviation yet, so it starts as Opus's values. Its own bucket means a
+   * Fable agent is no longer compiled against the Sonnet baseline, and a
+   * later measurement changes only this entry.
+   */
+  fable: {
+    formality: 55,
+    directness: 50,
+    warmth: 55,
+    humor: 40,
+    sarcasm: 15,
+    conciseness: 35,
+    proactivity: 50,
+    autonomy: 60,
+    risk_tolerance: 45,
+    creativity: 65,
+    drama: 40,
+    philosophy: 60,
+  },
 };
 
 export const NEUTRAL_THRESHOLD = 15;
@@ -118,8 +146,8 @@ export interface PersonaAxisDelta {
  * Issue #58 — callers may also pass a `string` family id (e.g.
  * `'openai-gpt'`) to opt into the multi-family `BASE_PROFILES` registry
  * from `basePersonas.ts`. Unknown ids fall back to the `'unknown'`
- * profile. This is preparation only — omadia's runtime still resolves
- * exclusively to Claude, so no existing call site uses the string path.
+ * profile. Since #1893 the runtime passes them: a non-Anthropic model is
+ * measured against its vendor profile, an unprofiled one against `unknown`.
  */
 export function computePersonaDeltas(
   axes: PersonaAxes | undefined,
@@ -172,25 +200,32 @@ export function significantDeltas(
  * other string consults the new registry, and an unknown id falls back
  * to the `unknown` profile.
  */
+function isClaudeTier(family: string): family is ClaudePersonaTier {
+  return Object.prototype.hasOwnProperty.call(FAMILY_DEFAULTS, family);
+}
+
 function resolveBaseAxes(family: PersonaModelFamily | string): Required<PersonaAxes> {
-  if (family === 'haiku' || family === 'sonnet' || family === 'opus') {
-    return FAMILY_DEFAULTS[family];
-  }
-  return getBaseProfile(family).dimensions;
+  return isClaudeTier(family) ? FAMILY_DEFAULTS[family] : getBaseProfile(family).dimensions;
 }
 
 /**
- * Map an Anthropic model id (e.g. `claude-sonnet-4-6`) to one of the three
- * persona-family buckets. Unknown / mis-spelled models default to Sonnet —
- * the safe middle ground for the per-family delta math.
- *
- * Lives HERE, next to {@link FAMILY_DEFAULTS}, because the family decides
- * which axes are emitted at all: a second mapper elsewhere would let a
- * preview and the running agent describe different characters.
+ * #1893 / ADR-0217 — the natural level of every axis for `family`: what an
+ * unset slider means and what the editor draws as the "model default" tick.
+ * A slider set to this value emits nothing.
  */
-export function inferFamilyFromModel(modelId: string): PersonaModelFamily {
-  const lower = modelId.toLowerCase();
-  if (lower.includes('haiku')) return 'haiku';
-  if (lower.includes('opus')) return 'opus';
-  return 'sonnet';
+export function personaBaseline(family: PersonaModelFamily | string): Required<PersonaAxes> {
+  return resolveBaseAxes(family);
 }
+
+/**
+ * Map a concrete model id to its persona family (#1893): the Anthropic tiers
+ * (`haiku`, `sonnet`, `opus`, `fable`), the vendor families of
+ * `basePersonas.ts`, else `unknown`. A class ref or `auto` is not a model and
+ * maps to `unknown` — resolve it first (`OrchestratorRegistry.runModelFor`).
+ *
+ * The orchestrator package's {@link inferPersonaFamily}, re-exported under
+ * this name: the family decides which axes are emitted at all, and the turn
+ * loop picks the per-family prompt by the same keys, so a second mapper would
+ * let the preview, the stored prompt and the running agent disagree.
+ */
+export const inferFamilyFromModel = inferPersonaFamily;

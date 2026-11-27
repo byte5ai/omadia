@@ -258,6 +258,7 @@ export type {
   ResolvedModelPolicy,
 } from './registry/modelPolicy.js';
 export {
+  AGENT_SLUG_RE,
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
@@ -463,6 +464,17 @@ export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 // callers (CLI, tests) can build Orchestrators without going through the
 // plugin's activate path.
 export { buildOrchestratorForAgent, rosterAgentNames } from './buildOrchestrator.js';
+export {
+  CLAUDE_PERSONA_TIERS,
+  VENDOR_PERSONA_FAMILIES,
+  UNKNOWN_PERSONA_FAMILY,
+  inferPersonaFamily,
+} from './personaFamily.js';
+export type {
+  ClaudePersonaTier,
+  PersonaModelFamily,
+  VendorPersonaFamily,
+} from './personaFamily.js';
 export type {
   AgentRuntimeConfig,
   BuiltOrchestrator,
@@ -1129,6 +1141,8 @@ export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';
 export * from './discretion/toolFlow.js';
 export * from './discretion/labelledProcessMemory.js';
+// #1881 — a deleted agent's memory moves with its discretion labels.
+export { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
 
 // #1983 / #1987 — stored form of transcript entries (marker + chunking).
 export {

@@ -118,6 +118,7 @@ vi.mock('../../_components/PluginsDnd', async () => {
     // drafts) so the remount contract is testable: a remount resets
     // "dirty" back to "clean", a preserved mount keeps it.
     PluginsDnd: (props: {
+      agent: OperatorAgentDto;
       onReplace: (
         plugins: Array<{
           id: string;
@@ -127,9 +128,15 @@ vi.mock('../../_components/PluginsDnd', async () => {
       ) => void;
     }) => {
       const [dirty, setDirty] = useState(false);
+      // Seeded ONCE from props, like the real editor's `selected` map (#1873):
+      // a remount over stale props shows the stale set.
+      const [seeded] = useState(() =>
+        props.agent.plugins.map((p) => `${p.id}:${String(p.enabled)}`).join(','),
+      );
       return (
         <div>
           <span data-testid="plugins-dnd-state">{dirty ? 'dirty' : 'clean'}</span>
+          <span data-testid="plugins-dnd-seed">{seeded}</span>
           {/* eslint-disable-next-line no-restricted-syntax -- test stub standing in for the dnd editor, not a §4.2 CTA */}
           <button
             type="button"
@@ -226,7 +233,10 @@ beforeEach(() => {
     ok: true,
     plugin: { id: '@omadia/odoo', enabled: false },
   });
-  mockReplace.mockResolvedValue(undefined);
+  mockReplace.mockResolvedValue({
+    ok: true,
+    plugins: [{ id: '@omadia/odoo', config: {}, enabled: true }],
+  });
 });
 
 describe('AgentDetail plugin assignment', () => {
@@ -242,6 +252,23 @@ describe('AgentDetail plugin assignment', () => {
     });
     expect(odoo).toBeChecked();
     expect(confluence).not.toBeChecked();
+  });
+
+  it('#1942 — marks an assigned plugin whose package is missing', async () => {
+    await renderOnPluginsTab(
+      <AgentDetail
+        agent={agent({
+          plugins: [
+            { id: '@omadia/ui-orchestrator', config: {}, enabled: true, package_missing: true },
+            { id: '@omadia/odoo', config: {}, enabled: true, package_missing: false },
+          ],
+        })}
+      />,
+    );
+    const badge = await screen.findByTestId('plugin-package-missing-@omadia/ui-orchestrator');
+    expect(badge.textContent).toBe('Package missing — not running');
+    expect(badge.getAttribute('title')).toContain('byte5ai/omadia-ui-support');
+    expect(screen.queryByTestId('plugin-package-missing-@omadia/odoo')).toBeNull();
   });
 
   it('renders the empty state when the agent has no plugins assigned', async () => {
@@ -370,6 +397,33 @@ describe('AgentDetail plugin assignment', () => {
     await waitFor(() =>
       expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('clean'),
     );
+  });
+
+  it('#1873 — after its save the editor shows the stored set, not the stale props', async () => {
+    const user = userEvent.setup();
+    // The refresh never delivers new props here: exactly the window in which
+    // the remount used to reseed from the pre-save `agent.plugins`.
+    mockReplace.mockResolvedValue({ ok: true, plugins: [] });
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
+    expect(await screen.findByTestId('plugins-dnd-seed')).toHaveTextContent(
+      '@omadia/confluence:false,@omadia/odoo:true',
+    );
+
+    await user.click(screen.getByTestId('plugins-dnd-save'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('plugins-dnd-seed').textContent).toBe(''),
+    );
+  });
+
+  it('#1873 — a cancelled broad-reach confirm keeps the unsaved edits', async () => {
+    const user = userEvent.setup();
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
+    await user.click(await screen.findByTestId('plugins-dnd-edit'));
+    mockReplace.mockResolvedValue(undefined);
+    await user.click(screen.getByTestId('plugins-dnd-save'));
+    await waitFor(() => expect(mockReplace).toHaveBeenCalled());
+    expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
   });
 });
 

@@ -58,11 +58,20 @@ export function mergeServerProactiveMessages(
     );
   }
 
+  // `resetAt` and the agent pin (`snapshot`, ADR-0146) are server-owned: a
+  // client PUT can neither set nor drop them. Losing the pin on every PUT
+  // unpinned web chats after their first turn, so drain/kill found none (#1884).
   // `ownerUserId` is server-owned too (#1762): the caller stamps it.
-  const { resetAt: _clientResetAt, ownerUserId: _clientOwner, ...incomingRest } = incoming;
+  const {
+    resetAt: _clientResetAt,
+    snapshot: _clientSnapshot,
+    ownerUserId: _clientOwner,
+    ...incomingRest
+  } = incoming;
   const base: ChatSession = {
     ...incomingRest,
     ...(existing?.resetAt !== undefined ? { resetAt: existing.resetAt } : {}),
+    ...(existing?.snapshot !== undefined ? { snapshot: existing.snapshot } : {}),
   };
   const incomingIds = new Set(messages.map((m) => m.id));
   const missing = [...serverProactive.values()].filter((m) => !incomingIds.has(m.id));

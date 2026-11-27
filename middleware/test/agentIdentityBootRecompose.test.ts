@@ -116,6 +116,9 @@ function run(h: Harness, agents: readonly FakeAgent[]) {
       reload: async () => {
         h.reloads += 1;
       },
+      // #1893 — the live registry resolves an `auto` agent's model; these
+      // fixtures run on the platform default, a Sonnet model.
+      runModelFor: () => 'claude-sonnet-4-6',
     },
     log: (m) => h.logs.push(m),
   });

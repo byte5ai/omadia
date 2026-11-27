@@ -53,34 +53,16 @@ export interface PersonaConfig {
   custom_notes?: string;
 }
 
-/**
- * Slider label pair per axis. Mirrors Kemia's persona-dimensions.ts —
- * left = lower-end behaviour, right = upper-end behaviour. Range 0–100,
- * 50 = neutral / family-default. The per-axis one-line description
- * (slider title hint) lives in the i18n catalog under
- * `builder.persona.axes.<axisKey>.description`.
+/*
+ * #1887 — the axis names and slider end labels live in the message catalogue
+ * under `builder.persona.axes.<axisKey>.{name,left,right}` (read through
+ * `usePersonaAxisCopy`), next to the per-axis `description`. Left = lower-end
+ * behaviour, right = upper-end behaviour; range 0–100, 50 = neutral.
  */
-export const PERSONA_AXIS_LABELS: Record<
-  PersonaAxisKey,
-  { left: string; right: string }
-> = {
-  // Core (8) ──────────────────────────────────────────────────────────
-  formality: { left: 'CASUAL', right: 'FORMAL' },
-  directness: { left: 'DIPLOMATIC', right: 'DIRECT' },
-  warmth: { left: 'COOL', right: 'WARM' },
-  humor: { left: 'SERIOUS', right: 'PLAYFUL' },
-  sarcasm: { left: 'SINCERE', right: 'SARCASTIC' },
-  conciseness: { left: 'EXPANSIVE', right: 'TERSE' },
-  proactivity: { left: 'REACTIVE', right: 'PROACTIVE' },
-  autonomy: { left: 'CONSULTING', right: 'AUTONOMOUS' },
-  // Extended (4) ──────────────────────────────────────────────────────
-  risk_tolerance: { left: 'CAUTIOUS', right: 'BOLD' },
-  creativity: { left: 'CONVENTIONAL', right: 'INVENTIVE' },
-  drama: { left: 'UNDERSTATED', right: 'DRAMATIC' },
-  philosophy: { left: 'PRAGMATIC', right: 'PHILOSOPHICAL' },
-};
 
-/** Default value when an axis is unset — visual mid-point, no delta emission. */
+/** The scale's middle: where an unset axis is drawn when no model baseline is
+ *  known (#1893). Not "neutral" for the compiler, which measures against the
+ *  model family's own level. */
 export const PERSONA_AXIS_NEUTRAL = 50;
 
 /**

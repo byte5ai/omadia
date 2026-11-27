@@ -152,7 +152,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -494,6 +494,7 @@ import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService } from './platform/agentEndOfService.js';
+import { createAgentSlugState } from './platform/agentSlugState.js';
 import { createSystemNoticeOutbox } from './platform/systemNoticeOutbox.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
@@ -1231,6 +1232,9 @@ async function main(): Promise<void> {
       `[middleware] local-dev package store loaded (${localDevPackageStore.list().length} packages at ${localDevPackageStore.rootPath()})`,
     );
   }
+  // Every place a plugin's package can live — the catalog reads all three, so
+  // "has no package" must too (a PLUGIN_DEV_DIR plugin is not packageless).
+  const packageSources = [uploadedPackageStore, builtInPackageStore, localDevPackageStore] as const;
 
   // Resolution order on ID collision (PluginCatalog.load applies last-set-
   // wins): Local-Dev > Uploaded > Built-in > PLUGIN_MANIFEST_DIR (examples).
@@ -2654,7 +2658,7 @@ async function main(): Promise<void> {
   );
   // Entries of the registry whose package is gone are visited by no runtime
   // (each walks the packages), so nothing ever reports them. Once per boot.
-  warnPackagelessEntries(installedRegistry, [uploadedPackageStore, builtInPackageStore], (message) => {
+  warnPackagelessEntries(installedRegistry, packageSources, (message) => {
     console.warn(message);
   });
   // #1070 — the orchestrator (an extension) has now had its chance to provide
@@ -4711,6 +4715,19 @@ async function main(): Promise<void> {
   const releaseAgentChannelBots = agentChannelIdentities
     ? (agentId: string) => agentChannelIdentities.releaseAll(agentId)
     : undefined;
+  // #1881 (ADR-0218) — a delete moves the slug-keyed memory under the
+  // tombstone (with its discretion labels) and removes the slug's public MCP
+  // key bindings; a create refuses a slug that still has state, because the
+  // graph's scopes cannot be moved. Named here for the same lazy match.
+  const agentSlugState = createAgentSlugState({
+    memoryStore: () => memoryStore,
+    labelMoves: (store, agentSlug) =>
+      new LabelledMemoryStore(store, discretionStore, agentSlug, { labelReads: false }),
+    mcpBindings: () => (graphPool ? createPublicMcpKeyBindingAdminStore(graphPool) : undefined),
+    knowledgeGraph: () => knowledgeGraph,
+    tenantId: graphTenantId,
+    log: (m) => console.warn(m),
+  });
   app.use(
     '/api/v1/operator/agents',
     requireAuth,
@@ -4763,8 +4780,12 @@ async function main(): Promise<void> {
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // #1942 — an assigned plugin whose package is gone shows as such.
+      hasPackage: (id: string) => hasPackage(id, packageSources),
       // #2088 — end of service before a disable or a delete; the audit of both.
       endOfService: agentEndOfService,
+      // #1881 (ADR-0218) — see `agentSlugState` above.
+      slugState: agentSlugState,
       recordAudit: async (entry) => {
         await adminAudit?.record(entry);
       },
@@ -6899,7 +6920,7 @@ async function main(): Promise<void> {
       promptContributionRegistry,
       vault: secretVault,
       catalog: pluginCatalog,
-      hasPackage: (id) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
+      hasPackage: (id) => hasPackage(id, packageSources),
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),

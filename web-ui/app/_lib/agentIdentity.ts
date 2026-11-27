@@ -20,7 +20,7 @@
 
 import { ApiError, rscTimeoutSignal } from './api';
 import type { QualityConfig } from './builderTypes';
-import type { PersonaConfig } from './personaTypes';
+import type { PersonaAxisKey, PersonaConfig } from './personaTypes';
 
 function botApi(path: string): string {
   if (typeof window !== 'undefined') {
@@ -133,6 +133,27 @@ export interface AgentIdentityDto {
   composed_prompt: string | null;
   /** Model family the persona deltas were compiled against. */
   composed_family: string | null;
+  /**
+   * #1890 — the identity head of the system prompt as the RUNNING agent
+   * sends it: base identity, the compiled text above, description, name,
+   * identity rules, language and answer-size lines. `null` (or absent from an
+   * older server) while the agent is not built; the tab then shows
+   * {@link composed_prompt}.
+   */
+  identity_prompt?: string | null;
+  /**
+   * #1893 / ADR-0217 — the persona family of the model the agent runs on and
+   * that family's natural level per axis. A slider is a target level measured
+   * against it: an unset axis sits on it and a value on it adds nothing to the
+   * prompt. Absent from an older server.
+   */
+  persona_baseline?: PersonaBaselineDto | null;
+}
+
+/** #1893 — see {@link AgentIdentityDto.persona_baseline}. */
+export interface PersonaBaselineDto {
+  family: string;
+  axes: Partial<Record<PersonaAxisKey, number>>;
 }
 
 /** What a write did to the agent's published Teams package. */
@@ -184,6 +205,10 @@ export interface AgentIdentityInput {
   language?: string | null;
   persona: PersonaConfig | null;
   quality: QualityConfig | null;
+  /** #1889 / ADR-0216 — the `identity.revision` the form was read at (`0` =
+   *  no identity saved yet); the server refuses a stale one with 409
+   *  `identity_revision_conflict`. The web UI always sends it. */
+  expected_revision?: number;
 }
 
 // ---------------------------------------------------------------------------

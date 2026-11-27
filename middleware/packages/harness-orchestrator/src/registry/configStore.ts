@@ -139,6 +139,15 @@ export interface AgentRow {
    */
   readonly instructions?: string | null;
   /**
+   * #1878 — whether the operator authored behaviour text
+   * (`agent_identities.instructions` not blank). {@link instructions} is
+   * `COALESCE(composed_prompt, instructions)`, so without authored text it
+   * holds only the compiled character/limits sections, which are appended to
+   * the platform identity instead of replacing it. Absent (write paths that do
+   * not join, older fixtures) = treat {@link instructions} as authored.
+   */
+  readonly identityHasOwnInstructions?: boolean;
+  /**
    * #967 — the agent's authored NAME (`agent_identities.display_name`), joined
    * in beside {@link instructions} and read the same way: read-only here,
    * written through `platform/agentIdentityStore.ts`.
@@ -308,7 +317,9 @@ export class ConfigValidationError extends Error {
   }
 }
 
-const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+/** An agent slug: URL-safe, 1..64 chars, no hyphen at either end. */
+export const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const SLUG_RE = AGENT_SLUG_RE;
 
 /**
  * Validate persisted `model_routing` JSON before write. Shape:
@@ -420,6 +431,8 @@ interface AgentDbRow {
    *  not join: a write never changes the identity, and a caller that needs it
    *  re-reads. */
   identity_instructions?: string | null;
+  /** #1878 — `agent_identities.instructions` is not blank; same join / same absence. */
+  identity_has_own_instructions?: boolean | null;
   /** #967 — `agent_identities.display_name`, joined in by the same three read
    *  queries and absent on the same write paths as `identity_instructions`. */
   identity_display_name?: string | null;
@@ -536,6 +549,9 @@ function mapAgent(row: AgentDbRow): AgentRow {
         }
       : {}),
     instructions: row.identity_instructions ?? null,
+    ...(typeof row.identity_has_own_instructions === 'boolean'
+      ? { identityHasOwnInstructions: row.identity_has_own_instructions }
+      : {}),
     identityName: row.identity_display_name ?? null,
     identityShortDescription: row.identity_short_description ?? null,
     identityLongDescription: row.identity_long_description ?? null,
@@ -600,6 +616,8 @@ function mapBinding(row: ChannelBindingDbRow): ChannelBindingRow {
 const AGENT_SELECT =
   'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions, ' +
   'i.composed_prompts AS identity_composed_prompts, ' +
+  // #1878 — only authored behaviour text replaces the platform identity.
+  "(NULLIF(btrim(i.instructions), '') IS NOT NULL) AS identity_has_own_instructions, " +
   'i.display_name AS identity_display_name, ' +
   'i.short_description AS identity_short_description, ' +
   'i.long_description AS identity_long_description, ' +

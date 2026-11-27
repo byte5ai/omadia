@@ -2299,7 +2299,7 @@
     "createSubmit": "Create",
     "agentsHeading": "Standard agents",
     "agentsEmpty": "No agents yet. Create one above.",
-    "agentMeta": "id: {id} · privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime}",
+    "agentMeta": "ID: {id} · Privacy profile: {privacy} (not enforced) · Status: {status} · Runtime: {runtime}",
     "detailMetaTitle": "Agent: {slug} · omadia",
     "detailNotFoundMetaTitle": "Agent not found · omadia",
     "detailOpenLink": "Details",
@@ -2314,7 +2314,7 @@
       "payload_too_large": "The image is too large — 2 MB is the limit.",
       "unsupported_media_type": "That file type does not work here — PNG, JPEG and WebP are accepted.",
       "agent_graph_store_unavailable": "The agent registry is unavailable right now. Try again in a moment.",
-      "config_validation": "The server rejected the plugin configuration.",
+      "config_validation": "The server refused this change because a value is not valid.",
       "invalid_body": "The server rejected the request payload.",
       "invalid_slug": "This agent slug is not valid.",
       "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
@@ -2324,7 +2324,8 @@
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
       "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
-      "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation."
+      "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation.",
+      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again."
     },
     "statusEnabled": "enabled",
     "statusDisabled": "disabled",
@@ -2335,9 +2336,9 @@
     "actionDelete": "Delete",
     "actionDrain": "Drain sessions",
     "actionKill": "Kill sessions",
-    "drainTooltip": "Clear snapshot on every session bound to this agent — next turn re-captures from current config",
+    "drainTooltip": "Release every web chat pinned to this agent — the history stays, the next message picks the agent again",
     "deleteConfirm": "Delete agent \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good.",
-    "killConfirm": "Kill all sessions for \"{slug}\"? History will be lost.",
+    "killConfirm": "Delete all web chats pinned to \"{slug}\" from the server? Their history is lost. A browser that still has one of these chats open keeps its own copy until it is deleted there.",
     "memoryScopeHeading": "Memory scope",
     "memoryScopeEmpty": "No scope (runtime registry not active)",
     "pluginsHeading": "Plugins",
@@ -2388,7 +2389,7 @@
     "routingTesterRunning": "Testing…",
     "routingTesterMatched": "→ Agent \"{slug}\" (via {via})",
     "routingTesterNoMatch": "No match — no default agent applies; the sender would get a system notice.",
-    "agentCardSummary": "privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
+    "agentCardSummary": "Privacy profile: {privacy} (not enforced) · Status: {status} · Runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
     "agentCardModel": "model: {primary}{fallback, select, none {} other { · fallback: {fallback}}}",
     "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sessions:",
@@ -2407,7 +2408,7 @@
     "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column.",
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
-    "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
+    "orphanExplain": "Plugin ids that are not in the current catalog: a renamed id from an earlier seed (like de.byte5.agent.* → @omadia/*), or a package that is no longer installed (the canvas packages moved to byte5ai/omadia-ui-support). Reinstall a missing package in the store to keep using it. Dropped on next Save unless you tick \"Keep\".",
     "orphanKeep": "Keep",
     "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one.",
     "mcp": {
@@ -2815,16 +2816,17 @@
         "prompt": "Prompt"
       },
       "prompt": {
-        "hint": "This is the agent's own part of its system prompt, assembled from its behaviour, character axes, limits and anti-flattery guard. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
-        "hintWithFamily": "This is the agent's own part of its system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
+        "hint": "This is the opening of the agent's system prompt as the running agent sends it: the platform identity, or the agent's own behaviour text in its place, then character, limits and anti-flattery guard, description, name, identity rules, and the language and answer-size lines. In a turn, only the Quality Guard plugin's rules come before it. A working mode picked for the turn is inserted right after the identity; the tool descriptions, the date and the conversation's earlier context follow after this text.",
+        "hintWithFamily": "This is the opening of the agent's system prompt as the running agent sends it: the platform identity, or the agent's own behaviour text in its place, then character, limits and anti-flattery guard, description, name, identity rules, and the language and answer-size lines. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all. In a turn, only the Quality Guard plugin's rules come before it. A working mode picked for the turn is inserted right after the identity; the tool descriptions, the date and the conversation's earlier context follow after this text.",
         "stale": "Unsaved changes are not in here yet — save to see them.",
-        "empty": "Nothing set yet. This agent uses the platform-wide default text."
+        "empty": "Nothing set yet. This agent uses the platform-wide default text.",
+        "notRunning": "The agent is not running right now, so only its own compiled part is shown here, without the platform identity, name and the lines added around it."
       },
       "droppedPresets": "The server does not know these boundary presets: {ids}",
       "persona": {
         "template": {
           "heading": "Persona template",
-          "none": "No persona template picked — every axis sits at neutral.",
+          "none": "No persona template picked — every axis sits at the model's own default.",
           "active": "Persona template: {name}",
           "choose": "Pick a persona template",
           "clear": "Detach"
@@ -2844,12 +2846,15 @@
         "bounds": {
           "note": "A facilitator's character stays inside the bounds of the neutrality contract. Sliders, persona templates and industry presets stop at those bounds.",
           "axisRange": "Allowed for a facilitator: {min} to {max}"
+        },
+        "baseline": {
+          "hint": "Each slider is the level you want. The dot on the track is where the {family} model sits by itself; only a distance from that dot is written into the prompt, so an axis on its dot, or one you never moved, adds nothing."
         }
       },
       "boundaries": {
         "presetsHeading": "Limits from the library",
         "presetsHint": "Hard prohibitions. They land as their own prompt section, below the character.",
-        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
+        "pluginStackNote": "If the Quality Guard plugin is installed, what you set here replaces its value for that field: your own limits replace its default limits, and your own anti-flattery level replaces its default level. Only the fields you leave open here come from the Quality Guard.",
         "unknownPresets": "Unknown presets stay stored but do not apply: {ids}",
         "categories": {
           "data": "Data",
@@ -2868,13 +2873,16 @@
           "medium": "Medium",
           "high": "Strong"
         },
-        "sycophancyFacilitatorHint": "The guard is always on for a facilitator: a moderator who flatters one voice is partial."
+        "sycophancyFacilitatorHint": "The guard is always on for a facilitator: a moderator who flatters one voice is partial.",
+        "sycophancyUnset": "Not set (the Quality Guard default applies)"
       },
       "facilitator": {
         "issueOnTab": "{tab}: {issue}",
         "instructionsHint": "Opening section of the facilitator's prompt. Checked against the neutrality contract when saved: text that asks for partiality, an opinion, a vote or a hidden channel is refused.",
         "promptNote": "The neutrality contract is compiled in after these sections and cannot be removed or overridden from here."
-      }
+      },
+      "avatarRemoveConfirm": "Remove the agent's picture? Teams then shows the default icon.",
+      "conflictReload": "Reload the stored identity (discards your changes)"
     },
     "teamsIdentity": {
       "heading": "Teams identity",
@@ -3103,7 +3111,7 @@
       },
       "unavailable": {
         "teams": {
-          "connector_unavailable": "Without an active M365 connector there is no team list — type the id into the field below.",
+          "connector_unavailable": "Without an active Microsoft 365 connector there is no team list, and nothing can be provisioned. Install and activate the connector first.",
           "connector_unsupported": "The installed connector cannot list teams. A list appears here after an upgrade; until then type the id below.",
           "sign_in_required": "The team list needs the tenant sign-in. Sign in once, or type the id below.",
           "scope_missing": "The stored sign-in is missing a permission the team list needs. Signing in again unlocks the list.",
@@ -3114,7 +3122,7 @@
           "not_requested": "The team list was not requested."
         },
         "chats": {
-          "connector_unavailable": "Without an active M365 connector there is no chat list — type the id into the field below.",
+          "connector_unavailable": "Without an active Microsoft 365 connector there is no chat list, and nothing can be provisioned. Install and activate the connector first.",
           "connector_unsupported": "The installed connector cannot list chats. A list appears here after an upgrade; until then type the chat id below.",
           "sign_in_required": "Chats can only be listed with a tenant sign-in — Graph offers no app-only route for them. Sign in once, or type the chat id below.",
           "scope_missing": "The stored sign-in does not yet carry the {scope} permission and cannot pick it up by refreshing. One fresh sign-in unlocks the chat list; until then type the chat id below.",
@@ -3218,7 +3226,8 @@
       "tools": "Tools",
       "memory": "Memory",
       "engine": "Facilitation",
-      "moderation": "Methods"
+      "moderation": "Methods",
+      "unsavedLeaveConfirm": "This tab has unsaved changes. Leave it and discard them?"
     },
     "endOfService": {
       "disabled": "“{name}” is disabled.",
@@ -3478,7 +3487,47 @@
       "onHint": "On: quicker and cheaper for simple lookups.",
       "offHint": "Off: every question goes through the full agent loop.",
       "unavailable": "This kind of agent has no fast lane."
-    }
+    },
+    "pluginKinds": {
+      "agent": "Agent",
+      "integration": "Integration",
+      "channel": "Channel",
+      "tool": "Tool",
+      "extension": "Extension"
+    },
+    "routingTesterVia": {
+      "identity": "the agent's own bot",
+      "explicit": "explicit agent",
+      "selection": "user selection",
+      "binding": "channel binding",
+      "default": "default agent",
+      "none": "no match"
+    },
+    "privacyProfiles": {
+      "default": "default",
+      "strict": "strict"
+    },
+    "drainConfirm": "Release all web chats pinned to \"{slug}\"? Their history stays; the next message in each chat picks the agent again.",
+    "drainResult": "{count, plural, =0 {No web chat is pinned to \"{slug}\".} one {# web chat released from \"{slug}\".} other {# web chats released from \"{slug}\".}}",
+    "killResult": "{count, plural, =0 {No web chat is pinned to \"{slug}\".} one {# web chat of \"{slug}\" deleted.} other {# web chats of \"{slug}\" deleted.}}",
+    "fieldSlugRule": "Lowercase letters, digits and hyphens, up to 64 characters; no hyphen at the start or end.",
+    "apiErrors": {
+      "slugTaken": "An agent with the slug \"{slug}\" already exists. Choose another slug.",
+      "slugStateRemains": "Data of an earlier agent \"{slug}\" still exists (memory, conversation history or MCP key bindings). Purge it under Danger Zone → memory purge (axis \"agent\", selector \"{slug}\") and remove its MCP key bindings, or choose another slug.",
+      "slugStateUnverifiable": "Could not check whether data of an earlier agent \"{slug}\" remains. Try again.",
+      "unknownChannelType": "No installed channel uses the channel type \"{type}\". Channel types on this instance: {known}.",
+      "invalidFields": "The server rejected the input. {fields}",
+      "refused": "The server refused the change: {detail}",
+      "fields": {
+        "slug": "Slug: lowercase letters, digits and hyphens, up to 64 characters; no hyphen at the start or end.",
+        "name": "Name: 1 to 120 characters.",
+        "description": "Description: at most 2000 characters.",
+        "channel_type": "Channel type: pick one of the listed types.",
+        "channel_key": "Channel key: 1 to 500 characters."
+      }
+    },
+    "detailPackageMissing": "Package missing — not running",
+    "detailPackageMissingHint": "This plugin is assigned, but its package is not installed on this instance, so it does not run. Install the package again in the store (the canvas packages come from byte5ai/omadia-ui-support), or detach the plugin."
   },
   "builder": {
     "issueReport": {
@@ -3991,7 +4040,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} selected",
-        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
+        "pluginStackNote": "If the Quality Guard plugin is installed, what you set here replaces its value for that field: your own limits replace its default limits, and your own anti-flattery level replaces its default level. Only the fields you leave open here come from the Quality Guard.",
         "unknownPresets": "Unknown preset IDs: {ids}",
         "customLabel": "Custom boundaries (one per line)",
         "customHint": "Write each as a complete sentence — it reaches the agent exactly as typed.",
@@ -4068,7 +4117,8 @@
       "radar": {
         "title": "Persona Radar",
         "comparisonPrefix": "Persona vs.",
-        "comparisonNeutral": "Neutral (50)"
+        "comparisonNeutral": "Middle of the scale (50)",
+        "comparisonModelDefault": "Model default"
       },
       "conflicts": {
         "sycophancyHighDirectnessLow": "Sycophancy=high enforces devil's-advocate rules; directness ≤ 30 says \"diplomatic\". The model will ignore one of the two. Recommendation: directness ≥ 50 or sycophancy=medium.",
@@ -4079,40 +4129,76 @@
       },
       "axes": {
         "formality": {
-          "description": "Casual address & colloquial language vs. formal address & technical language."
+          "description": "Casual address & colloquial language vs. formal address & technical language.",
+          "name": "Formality",
+          "left": "Casual",
+          "right": "Formal"
         },
         "directness": {
-          "description": "Politeness buffer vs. key point first."
+          "description": "Politeness buffer vs. key point first.",
+          "name": "Directness",
+          "left": "Diplomatic",
+          "right": "Direct"
         },
         "warmth": {
-          "description": "Matter-of-fact and distanced vs. empathetic & appreciative."
+          "description": "Matter-of-fact and distanced vs. empathetic & appreciative.",
+          "name": "Warmth",
+          "left": "Cool",
+          "right": "Warm"
         },
         "humor": {
-          "description": "No jokes vs. playful (use sparingly)."
+          "description": "No jokes vs. playful (use sparingly).",
+          "name": "Humor",
+          "left": "Serious",
+          "right": "Playful"
         },
         "sarcasm": {
-          "description": "Honest and direct vs. ironic (rarely appropriate)."
+          "description": "Honest and direct vs. ironic (rarely appropriate).",
+          "name": "Sarcasm",
+          "left": "Sincere",
+          "right": "Sarcastic"
         },
         "conciseness": {
-          "description": "Detailed vs. minimal word output."
+          "description": "Detailed vs. minimal word output.",
+          "name": "Conciseness",
+          "left": "Expansive",
+          "right": "Terse"
         },
         "proactivity": {
-          "description": "Responds to requests vs. makes suggestions on its own."
+          "description": "Responds to requests vs. makes suggestions on its own.",
+          "name": "Proactivity",
+          "left": "Reactive",
+          "right": "Proactive"
         },
         "autonomy": {
-          "description": "Asks back vs. acts independently."
+          "description": "Asks back vs. acts independently.",
+          "name": "Autonomy",
+          "left": "Consulting",
+          "right": "Autonomous"
         },
         "risk_tolerance": {
-          "description": "Safety first vs. risk-tolerant."
+          "description": "Safety first vs. risk-tolerant.",
+          "name": "Risk tolerance",
+          "left": "Cautious",
+          "right": "Bold"
         },
         "creativity": {
-          "description": "Proven solutions vs. unconventional ideas."
+          "description": "Proven solutions vs. unconventional ideas.",
+          "name": "Creativity",
+          "left": "Conventional",
+          "right": "Inventive"
         },
         "drama": {
-          "description": "Matter-of-fact vs. emotionally charged."
+          "description": "Matter-of-fact vs. emotionally charged.",
+          "name": "Drama",
+          "left": "Understated",
+          "right": "Dramatic"
         },
         "philosophy": {
-          "description": "Solution-oriented vs. abstract and fundamental."
+          "description": "Solution-oriented vs. abstract and fundamental.",
+          "name": "Philosophy",
+          "left": "Pragmatic",
+          "right": "Philosophical"
         }
       }
     },
@@ -7759,7 +7845,8 @@
       "submit": "Create agent",
       "submitting": "Creating…",
       "failed": "The agent could not be created: {detail}",
-      "loadFailed": "The first-run setup could not be loaded: {detail}"
+      "loadFailed": "The first-run setup could not be loaded: {detail}",
+      "renameHint": "The slug is derived from the name, so a different name gives the agent a different slug."
     },
     "confirmDefaultTitle": "Make {agent} a default agent?",
     "confirmDefaultBody": "{agent} can reach all {count} connected systems. As a default agent it answers messages addressed to no agent, so everyone who writes without naming an agent reaches every one of these systems. The change is recorded in the audit log.",

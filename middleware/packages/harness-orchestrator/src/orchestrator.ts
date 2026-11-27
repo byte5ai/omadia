@@ -6,15 +6,15 @@ import {
   resolveMcpCallTimeouts,
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
+import { identityPreamble } from './agentIdentityLayers.js';
+import { inferPersonaFamily } from './personaFamily.js';
 import {
-  buildAnswerVerbosityBlock,
   buildAnswerVerbosityTurnBlock,
   DEFAULT_ANSWER_VERBOSITY,
   parseAnswerVerbosity,
   type AnswerVerbosity,
 } from './answerVerbosity.js';
 import {
-  buildAnswerLanguageRule,
   DEFAULT_ANSWER_LANGUAGE,
   type AnswerLanguage,
 } from './answerLanguage.js';
@@ -2667,10 +2667,9 @@ function buildSystemPrompt(
   /** #1992 — the operator's fallback answer language (ADR-0220). */
   answerLanguage: AnswerLanguage = DEFAULT_ANSWER_LANGUAGE,
 ): string {
+  // #1890 — identity, language line and the operator's answer-size contract
+  // come from `identityPreamble`, the same text the Prompt tab previews.
   const fileGenerationBlock = hasOfficeFileTools ? FILE_GENERATION_RULES_BLOCK : '';
-  // Operator's answer-size contract. `standard` is '' so the delivered state
-  // keeps the prompt (and its cache key) unchanged.
-  const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
   const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
@@ -2712,11 +2711,7 @@ function buildSystemPrompt(
   // join-back that re-attaches a masked identity column to an aggregate.
   const privacyV4Block = hasPrivacyV4 ? privacyV4Directive(hasFileExport) : '';
 
-  return `${assistantIdentity}
-
-${buildAnswerLanguageRule(answerLanguage)}
-Kündige Tool-Aufrufe nicht mit Zwischentext an (z.B. „Ich prüfe zuerst mein Memory.“) — solcher Text wird dem Nutzer nicht gezeigt. Schreib die Antwort, wenn die Daten da sind.
-${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
+  return `${identityPreamble(assistantIdentity, answerVerbosity, answerLanguage)}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
@@ -6568,13 +6563,10 @@ export class Orchestrator {
     this.turnAttribution.set(turnId, { model, provider: providerId, fallbackUsed });
   }
 
-  /** #1033 W3 — the persona family a model id belongs to (mirrors the
-   *  middleware's `inferFamilyFromModel`: unknown ids read as sonnet). */
+  /** #1033 W3 / #1893 — the persona family a model id belongs to: the one
+   *  mapper the middleware compiles the per-family prompts with. */
   private static familyOf(model: string): string {
-    const m = model.toLowerCase();
-    if (m.includes('opus')) return 'opus';
-    if (m.includes('haiku')) return 'haiku';
-    return 'sonnet';
+    return inferPersonaFamily(model);
   }
 
   /**
@@ -12042,9 +12034,11 @@ function candidateLabel(c: {
 const FILE_ANNOUNCE_RE =
   /\b(baue|erstelle|erzeuge|generiere|exportiere)\b[^.!?\n]{0,100}\b(excel|xlsx|datei|word|docx|arbeitsmappe|workbook)\b/i;
 
-/** Injected as a user turn to force the model to actually call the file tool. */
+/** Injected as a user turn to force the model to actually call the file tool.
+ *  #1219 — English, without shouted caps; the one sentence to the user is in
+ *  the conversation's language. */
 const FILE_RETRY_NUDGE =
-  'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
+  'You said you would build a file (Excel or Word), but you did not call `create_xlsx` or `create_docx`, so the user received nothing. Do not describe the plan again. Call the matching tool in this step and build the file. If you cannot build it, tell the user in one sentence, in the language of the conversation, that you cannot and why.';
 
 /**
  * Appended to the per-turn system hint (see {@link withFinalizeHint}) on the

@@ -138,6 +138,27 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('#1903: says up front that the M365 connector is missing and keeps submit disabled', async () => {
+    mockGet.mockRejectedValue(apiError(404, 'teams_identity_not_found'));
+    mockTargets.mockResolvedValue({
+      ok: true,
+      agent: 'sales-bot',
+      provisioner_installed: false,
+      teams: { available: false, reason: 'connector_unavailable' },
+      chats: { available: false, reason: 'connector_unavailable' },
+    });
+    renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
+
+    const notice = await screen.findByTestId('teams-identity-provisioner-missing');
+    expect(notice.textContent).toContain('Microsoft 365 connector');
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/Target ID/), CREATE_TEAM_ID);
+    const submit = screen.getByRole('button', { name: 'Start provisioning' });
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
   it('submits only the fields the operator filled in, then reloads the status', async () => {
     mockGet.mockRejectedValueOnce(apiError(404, 'teams_identity_not_found'));
     mockProvision.mockResolvedValue({

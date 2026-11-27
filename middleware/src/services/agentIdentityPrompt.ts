@@ -23,10 +23,16 @@
  * EMPTY IN, EMPTY OUT. An identity with nothing authored compiles to `''`,
  * and the caller stores NULL — which is what makes the platform-wide
  * assistant identity apply unchanged to every agent that never used this.
+ *
+ * ONLY THE INSTRUCTIONS REPLACE (#1878). The runtime replaces the platform
+ * identity with this text only when `instructions` is authored; otherwise the
+ * text holds only persona/boundaries/sycophancy and is appended after the
+ * platform identity (`assembleAgentIdentity` in the orchestrator package).
  */
 
 import {
   FACILITATOR_ARCHETYPE,
+  UNKNOWN_PERSONA_FAMILY,
   archetypeOf,
   isModelRef,
   applyArchetypeContract,
@@ -133,19 +139,25 @@ export interface AgentPersonaFamilySource {
 }
 
 /**
- * Which persona family this agent's persona deltas are computed against.
+ * Which persona family this agent's persona deltas are computed against
+ * (#1893 / ADR-0217): the family of the model the agent actually runs on.
  *
- * `model_routing.main` is the operator's per-agent model choice; without one
- * the agent runs on the platform default, which this module does not know —
- * and {@link inferFamilyFromModel} answers `sonnet` for an unknown id, the
- * documented safe middle ground for the delta math.
+ * An explicit primary in the model policy names it (#1033). Otherwise the
+ * agent runs on `autoModel` — the registry's own resolution
+ * (`OrchestratorRegistry.runModelFor`: `model_routing.main`, else the
+ * platform default, on the active provider). Without that, a concrete
+ * `model_routing.main` still names it; a class ref, "Auto" or nothing at all
+ * reads as `unknown`, never as a guessed Sonnet.
  */
-function agentPersonaFamily(agent: AgentPersonaFamilySource): PersonaModelFamily {
-  // #1033 — an explicit primary in the model policy outranks model_routing.
+function agentPersonaFamily(
+  agent: AgentPersonaFamilySource,
+  autoModel: string | undefined,
+): PersonaModelFamily {
   const primary = agent.modelPolicy?.primary;
   if (primary !== undefined && isModelRef(primary)) return inferFamilyFromModel(primary.model);
+  if (autoModel !== undefined && autoModel.trim().length > 0) return inferFamilyFromModel(autoModel);
   const main = agent.modelRouting?.['main'];
-  return inferFamilyFromModel(typeof main === 'string' ? main : '');
+  return typeof main === 'string' ? inferFamilyFromModel(main) : UNKNOWN_PERSONA_FAMILY;
 }
 
 /**
@@ -153,11 +165,13 @@ function agentPersonaFamily(agent: AgentPersonaFamilySource): PersonaModelFamily
  * plus the fallback's when the policy names one. The persona is compiled for
  * each, so a cross-family fallback never runs on a prompt whose deltas were
  * computed against the other family. The primary's family comes first.
+ * `autoModel`: the model the registry resolves for an `auto` primary.
  */
 export function agentPersonaFamilies(
   agent: AgentPersonaFamilySource,
+  autoModel?: string,
 ): readonly PersonaModelFamily[] {
-  const primary = agentPersonaFamily(agent);
+  const primary = agentPersonaFamily(agent, autoModel);
   const fallback = agent.modelPolicy?.fallback;
   if (fallback !== undefined && isModelRef(fallback)) {
     const fam = inferFamilyFromModel(fallback.model);
@@ -186,7 +200,7 @@ export function composeForFamilies(
     if (!primary) primary = composed;
     if (composed.text !== null) byFamily[family] = composed.text;
   }
-  const first = families[0] ?? 'sonnet';
+  const first = families[0] ?? UNKNOWN_PERSONA_FAMILY;
   return { primary: primary ?? composeAgentIdentityPrompt({ ...input, family: first }), family: first, byFamily };
 }
 
@@ -214,8 +228,15 @@ export interface RecomposeStaleIdentitiesDeps {
         >;
       }
     | undefined;
-  /** Rebuilt once when at least one stored prompt changed. */
-  readonly registry: { reload(): Promise<unknown> } | undefined;
+  /** Rebuilt once when at least one stored prompt changed. `runModelFor`
+   *  (#1893) resolves an `auto` agent's model so its persona is measured
+   *  against the family it really runs on. */
+  readonly registry:
+    | {
+        reload(): Promise<unknown>;
+        runModelFor?(agent: AgentPersonaFamilySource): string | undefined;
+      }
+    | undefined;
   readonly log: (message: string) => void;
 }
 
@@ -292,7 +313,7 @@ export async function recomposeStaleIdentities(
           quality: identity.quality,
           archetype: archetypeOf(agent),
         },
-        agentPersonaFamilies(agent),
+        agentPersonaFamilies(agent, deps.registry?.runModelFor?.(agent)),
       );
       if (
         (identity.composed.text ?? null) === (compiled.primary.text ?? null) &&

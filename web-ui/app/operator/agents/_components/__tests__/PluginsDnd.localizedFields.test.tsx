@@ -106,9 +106,27 @@ describe('PluginsDnd config drawer — localized setup fields', () => {
       'de',
     );
 
-    await user.click(screen.getByRole('button', { name: 'Config' }));
+    await user.click(screen.getByRole('button', { name: 'Konfiguration' }));
 
     expect(screen.getByText(/Confluence Basis-URL/)).toBeInTheDocument();
+  });
+
+  it('labels the plugin kind and the attach action in German (#1887)', () => {
+    const [entry] = catalog([]);
+    renderWithIntl(
+      <PluginsDnd
+        agent={agent()}
+        catalog={[{ ...entry!, kind: 'tool' }]}
+        disabled={false}
+        onReplace={vi.fn()}
+      />,
+      { locale: 'de' },
+    );
+    // The manifest kind is a value; the badge shows its catalogue name.
+    expect(screen.getAllByText('Werkzeug').length).toBeGreaterThan(0);
+    expect(screen.queryByText('tool')).toBeNull();
+    expect(screen.queryByText('Config')).toBeNull();
+    expect(screen.queryByText('Attach')).toBeNull();
   });
 
   it('still renders a bare string from a pre-#602 middleware', async () => {
