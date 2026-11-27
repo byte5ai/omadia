@@ -2350,7 +2350,8 @@
       "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
       "unknown": "Request fehlgeschlagen: {detail}",
       "broad_reach_confirmation_required": "Diese Änderung gäbe dem Agenten Zugriff auf alle angebundenen Systeme und braucht deine ausdrückliche Bestätigung.",
-      "identity_revision_conflict": "Diese Identität wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Stand zu sehen, und nimm deine Änderung dann erneut vor."
+      "identity_revision_conflict": "Diese Identität wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Stand zu sehen, und nimm deine Änderung dann erneut vor.",
+      "config_revision_conflict": "Diese Einstellung wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Wert zu sehen, und nimm deine Änderung dann erneut vor."
     },
     "statusEnabled": "aktiviert",
     "statusDisabled": "deaktiviert",

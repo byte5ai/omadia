@@ -258,13 +258,16 @@ export type {
   ResolvedModelPolicy,
 } from './registry/modelPolicy.js';
 export {
+  AGENT_CONFIG_RESOURCES,
   AGENT_SLUG_RE,
+  AgentConfigRevisionConflictError,
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
   validateModelRoutingShape,
 } from './registry/configStore.js';
 export type {
+  AgentConfigResource,
   AgentInput,
   AgentPatch,
   AgentPluginInput,

@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — stale agent config saves return 409 instead of overwriting (#2315, ADR-0277) (2026-11-27)
+
+`PUT /api/v1/operator/agents/:slug/{plugins,bindings,model-policy,context-memory,fast-lane,agent-to-agent,availability}`
+accept an optional `expected_revision`; a save based on an older revision is refused with
+`409 config_revision_conflict` and nothing is written. Migration **0120**
+(`0120_agent_config_revisions.sql`) adds `agents.config_revisions` (one counter per resource).
+The web UI's model policy, context memory, fast lane and agent-to-agent panels send it.
+
 ### Fixed — a web chat of a deleted agent no longer reaches the new agent with its slug (#2314, ADR-0276) (2026-11-27)
 
 The chat's agent pin now records the agent id. When the pinned agent was deleted and a new

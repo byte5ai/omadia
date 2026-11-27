@@ -2350,7 +2350,8 @@
       "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
       "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation.",
-      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again."
+      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again.",
+      "config_revision_conflict": "Someone changed this setting elsewhere since you opened it, so your save was not stored. Reload to see the current value, then make your change again."
     },
     "statusEnabled": "enabled",
     "statusDisabled": "disabled",

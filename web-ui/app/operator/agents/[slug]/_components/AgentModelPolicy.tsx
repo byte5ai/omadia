@@ -48,6 +48,8 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
   const t = useTranslations('operatorAgents.modelPolicy');
   const tErr = useTranslations('operatorAgents');
   const [saved, setSaved] = useState<ModelPolicy | null>(null);
+  /** #2315 — revision of the saved policy; sent as `expected_revision`. */
+  const [revision, setRevision] = useState<number | undefined>(undefined);
   const [draft, setDraft] = useState<ModelPolicy>(DEFAULT_MODEL_POLICY);
   const [effectiveModel, setEffectiveModel] = useState<string | null>(null);
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
@@ -81,6 +83,7 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
       ]);
       setSaved(policy.policy);
       setDraft(policy.policy);
+      setRevision(policy.revision);
       setEffectiveModel(policy.effectiveModel);
       setActiveProvider(policy.activeProvider);
       setDeferredProvider(policy.deferredProvider);
@@ -118,8 +121,9 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
   const save = useCallback(async (): Promise<void> => {
     setSaving(true);
     try {
-      const res = await setAgentModelPolicy(props.slug, draft);
+      const res = await setAgentModelPolicy(props.slug, draft, revision);
       setSaved(res.policy);
+      setRevision(res.revision);
       setDraft(res.policy);
       setVision(res.vision);
       setDeferredProvider(res.deferredProvider);
@@ -134,7 +138,7 @@ export function AgentModelPolicy(props: AgentModelPolicyProps): React.ReactEleme
     } finally {
       setSaving(false);
     }
-  }, [props.slug, draft, localizeError]);
+  }, [props.slug, draft, revision, localizeError]);
 
   const setSlot = (slot: Slot, value: ModelPolicy['fallback']): void => {
     setDraft((d) => (slot === 'primary' ? { ...d, primary: value as ModelPolicy['primary'] } : { ...d, fallback: value }));

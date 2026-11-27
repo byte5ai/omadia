@@ -64,6 +64,8 @@ export function AgentContextMemory(
   const t = useTranslations('operatorAgents');
   /** Mode as last confirmed by the server. `null` until the first load lands. */
   const [saved, setSaved] = useState<ContextMemoryMode | null>(null);
+  /** #2315 — revision of the saved mode; sent as `expected_revision`. */
+  const [revision, setRevision] = useState<number | undefined>(undefined);
   const [modes, setModes] =
     useState<readonly ContextMemoryMode[]>(CONTEXT_MEMORY_MODES);
   const [selected, setSelected] = useState<ContextMemoryMode | null>(null);
@@ -89,6 +91,7 @@ export function AgentContextMemory(
       const mode = parseContextMemoryMode(res.mode);
       setSaved(mode);
       setSelected(mode);
+      setRevision(res.revision);
       // Intersect, never union: an entry this bundle has no label for is
       // dropped rather than rendered. Falling back to the local constant when
       // nothing survives keeps an older or unexpected middleware from leaving
@@ -121,9 +124,10 @@ export function AgentContextMemory(
     if (selected === null) return;
     setSaving(true);
     try {
-      const res = await setAgentContextMemory(props.slug, selected);
+      const res = await setAgentContextMemory(props.slug, selected, revision);
       const applied = parseContextMemoryMode(res.mode);
       setSaved(applied);
+      setRevision(res.revision);
       setSelected(applied);
       setAcknowledged(false);
       setError(null);
@@ -135,7 +139,7 @@ export function AgentContextMemory(
     } finally {
       setSaving(false);
     }
-  }, [props.slug, selected, localizeError]);
+  }, [props.slug, selected, revision, localizeError]);
 
   return (
     <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">

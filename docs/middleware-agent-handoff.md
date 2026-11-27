@@ -7003,6 +7003,11 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Agent-Config-Revisionen, Rest (#2315, ADR-0277):** Dashboard-Editoren für Plugins/Bindings
+  und die Verfügbarkeits-Sektion senden noch kein `expected_revision` (Server bereit; `GET
+  /:slug/plugins` liefert `revision`); Agent-Anlage, Onboarding, Canvas und Templates bewegen die
+  Zähler nicht.
+
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
   pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
@@ -11982,6 +11987,13 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   vergeben), antwortet `POST /api/chat[/stream]` mit `503 agent_unavailable`, `reason:
   'agent_deleted'` (Option `agentIdForSlug`). Der Web-Chat zeigt das Recovery-Banner
   (`unavailableReplacedBody`) und setzt Pin und Auswahl beim Neu-Zuordnen zurück.
+- **Revisionen der Agent-Config-Writes (#2315, ADR-0277, Migration 0120):** `PUT /:slug/plugins`,
+  `/bindings`, `/model-policy`, `/context-memory`, `/fast-lane`, `/agent-to-agent`,
+  `/availability` nehmen optional `expected_revision`; ein Zähler pro Ressource in
+  `agents.config_revisions`, `ConfigStore.claimConfigRevision` vor dem ersten Write. Stale →
+  `409 config_revision_conflict` (mit `resource`). GETs und Writes liefern `revision`;
+  `GET /:slug/config-revisions` liefert alle Zähler. Web-UI
+  sendet es aus den vier Detail-Panels.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 

@@ -12,6 +12,7 @@ import express from 'express';
 
 import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
+import { FakeConfigRevisions } from './_helpers/fakeConfigRevisions.js';
 
 const AGENT = { id: 'a-1', slug: 'fallback', name: 'Standard', archetype: 'standard', status: 'enabled' };
 const ROWS = [
@@ -22,6 +23,7 @@ const ROWS = [
 const store = {
   getAgentBySlug: (slug: string) => Promise.resolve(slug === AGENT.slug ? AGENT : undefined),
   listAgentPlugins: () => Promise.resolve(ROWS),
+  ...(({ configRevisions, claimConfigRevision }) => ({ configRevisions, claimConfigRevision }))(new FakeConfigRevisions()),
 };
 
 async function pluginsOf(hasPackage?: (id: string) => boolean): Promise<Array<Record<string, unknown>>> {
