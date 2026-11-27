@@ -851,6 +851,65 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — MCP OAuth UX: honest reasons, confirmed service delegation, no DCR on status reads (ADR-0208) (2026-11-26)
+
+- **#1924** A provider configuration that cannot be used is reported with its reason:
+  `auth-status.discoveryError`, `POST /mcp-servers/:id/authorize` → `422
+  mcp_oauth_discovery_failed` (was 500), and a named chat message; only a missing client
+  registration gets the "one-time app registration" hint. The auth section says when the
+  metadata is unreadable instead of showing `?` placeholders.
+- **#1929** An MCP server off public https that refuses a call for authorization gets "OAuth
+  only for public https servers" (ADR-0108) instead of a raw 401. `McpAuthProvider.onAuthFailure`
+  now receives the failure text.
+- **#1933** `PUT /mcp-servers/:id/delegation` and the `delegation` field of `PUT
+  /mcp-grants` to `service` need `confirm: true` (else 409
+  `delegation_confirmation_required`), are written to the admin audit
+  (`mcp_server.delegation_change`) and answers 404 for a malformed id. The UI asks first and
+  shows a shared authorization under `service`; Connect/Disconnect there ask before replacing
+  or removing it for all callers. The Conductor dialog says the switch covers the whole server.
+- **#1947** Viewing a server no longer registers an OAuth client at the provider (DCR is
+  reported as advertised; registration happens on Connect). Deleting the last server of an
+  issuer removes its automatically acquired client (DCR/CIMD) and vault secret; a manual
+  client is kept, and nothing is removed while another server's issuer cannot be read. The registration hint shows only when
+  Connect opens the client form.
+- **#1906 (UI part)** The delegation switch is shown for MCP servers without OAuth too.
+
+### Fixed — MCP result safety: binary content, one result cap, KG ingest (ADR-0207) (2026-11-26)
+
+- **#1920** MCP `image`/`audio` blocks and blob resources reach the model as a type/size
+  placeholder, never as base64 text. A tool result the Privacy Shield does not intern
+  (operator bypass, bypassed sub-agent narration, no privacy guard) is cut to 200 000
+  characters with a notice (`capToolResultText`). Provider image blocks for unmasked
+  servers are a follow-up (ADR-0207).
+- **#1934** MCP → Knowledge-Graph ingest skips failed calls and the connect prompt; the
+  digest for a masked server holds counts only, no field names. The KG toggle's tooltip
+  (en/de) says that ingest needs an active Privacy Guard.
+
+### Fixed — MCP grants and hydration (W09-10) (2026-11-26)
+
+- **#1910** Sub-agent (helper) MCP tools carry the discovered description and input
+  schema, like top-level grants, instead of a placeholder and an empty schema.
+- **#1918** A rebuild's post-build hook reads the snapshot the agent is being built from
+  (`OrchestratorRegistry.currentSnapshot()` during a diff), so a re-scan, an enabled or a
+  disabled server reaches the agent's tools with that change, not one change later.
+- **#1917** An empty `tools/list` from a server that listed tools before is not stored
+  and prunes nothing (Discover answers 409 `mcp_tool_list_empty`, the re-scan reports a
+  failure). Pruning keeps hash-bound acknowledgements. A granted tool the discovered
+  server no longer lists is not handed to a model.
+- **#1939** A repeated canvas drop is a no-op: core migration
+  `0118_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
+  unique index `agent_tool_grants_subagent_uidx`; `createToolGrant` binds only the
+  parameters its conflict query uses (the agent node answered 500). Hydration builds one
+  tool per granted tool.
+- **#1948** Native MCP tool names longer than 64 characters end in a stable `_<8 hex>`
+  suffix instead of a plain cut; names that fit are unchanged. **A long tool's native name
+  therefore changes**: a per-tool privacy setting, API-key tool binding or allowlist entry
+  saved under the old cut name no longer matches (fails closed) and has to be saved again. Grants whose native names
+  collide after character replacement are refused (`mcp_tool_name_collision`). A tool name
+  may contain `:`; only a `<server>:` prefix is stripped from a grant ref.
+- **#1932** Replaying an answered MCP input request uses `mcpRowToConfig` (endpoint
+  placeholders, static headers), now in `src/services/mcpInputReplayer.ts`.
+
 ### Added — MCP `structuredContent` feeds the data side channel (#547, ADR-0021) (2026-11-26)
 
 - MCP tools their server declares `readOnlyHint` are now data-action read tools for

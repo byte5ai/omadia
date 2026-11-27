@@ -5514,7 +5514,7 @@
       "kg": {
         "on": "KG on",
         "off": "KG off",
-        "onHint": "Successful tool results from this server are ingested into your Knowledge Graph (recallable, owner-scoped). Raw values only if this server is also unmasked; otherwise a value-free digest. Click to stop ingesting.",
+        "onHint": "Successful tool results from this server are ingested into your Knowledge Graph (recallable, owner-scoped); failed calls are not. Needs an active Privacy Guard. Raw values only if this server is also unmasked; otherwise only counts, no names or values. Click to stop ingesting.",
         "offHint": "Tool results from this server are NOT written to the Knowledge Graph. Click to ingest them as recallable, owner-scoped observations."
       },
       "config": {
@@ -5624,7 +5624,17 @@
       "cimdUnreachable": "This server would accept a client ID metadata document, but this deployment cannot publish one it can fetch. That usually means omadia is not reachable from the internet — normal for an on-premises install, since the identity provider has to fetch the document itself.",
       "cimdUnreachableReason": "Reason",
       "manualStillSupported": "Nothing is broken: register a one-time OAuth app for this issuer below and connect as usual.",
-      "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form."
+      "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form.",
+      "connectedShared": "🔓 Authorized (shared service authorization)",
+      "discoveryUnavailable": "The provider's OAuth metadata can't be read right now. Try again later.",
+      "discoveryError": "The OAuth provider configuration can't be used: {reason}",
+      "cancel": "Cancel",
+      "delegationConfirmTitle": "Share one authorization for every caller?",
+      "delegationConfirmBody": "Under service delegation every chat, routine and workflow that calls this server acts under one shared authorization, the one connected here, instead of each user's own.",
+      "sharedConnectConfirmTitle": "Replace the shared authorization?",
+      "sharedConnectConfirmBody": "This server uses service delegation. Connecting replaces the authorization that every chat, routine and workflow uses.",
+      "sharedDisconnectConfirmTitle": "Remove the shared authorization?",
+      "sharedDisconnectConfirmBody": "This server uses service delegation. Disconnecting removes the authorization for every chat, routine and workflow."
     },
     "marketplace": {
       "registry": "Registry",
@@ -5807,10 +5817,16 @@
         "empty": "This server did not report any tools.",
         "match": "match",
         "noDescription": "No description available.",
-        "delegationNotice": "Conductor runs have no signed-in user, so this server must act under its service identity before a workflow can call its tools. Enable service delegation to continue.",
+        "delegationNotice": "Conductor runs have no signed-in user, so this server must act under its service identity before a workflow can call its tools. The switch applies to the whole server: every chat, routine and workflow that calls it then uses the one shared authorization. Enable service delegation to continue.",
         "delegationButton": "Enable service delegation"
       },
       "initialServerMissing": "The connected server is no longer available — pick or create one."
+    },
+    "routeErrors": {
+      "toolListEmpty": "The server listed no tools. The previous tool list was kept; run Discover again once the server is back.",
+      "oauthDiscoveryFailed": "The server's OAuth provider configuration can't be used, so Connect can't start. Details: {detail}",
+      "delegationConfirmationRequired": "Switching to a shared service identity has to be confirmed. Try again and confirm the dialog.",
+      "toolNameCollision": "Two tools of this server get the same tool name, so only one of them can be granted. Details: {detail}"
     },
     "input": {
       "nameRequired": "Enter a name.",

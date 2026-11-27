@@ -323,6 +323,8 @@ export {
   isInputRequiredResult,
   mcpNativeHandler,
   mcpNativeToolName,
+  mcpNativeToolNameCollision,
+  MCP_NATIVE_TOOL_NAME_PATTERN,
   // Exported so the no-collateral-invalidation rule of `McpManager.close(id)`
   // can be unit tested and reused by ops tooling (issue #563).
   mcpPoolScopeMatches,

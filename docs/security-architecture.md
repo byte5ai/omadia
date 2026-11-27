@@ -812,6 +812,13 @@ This keeps the supply chain explicit:
   callers (workflows, routines, triggers) never start an OAuth flow and never
   park an input request; they get a typed `auth_required` / `input_required`
   failure.
+- MCP `service` delegation (one authorization for every caller of a server) is
+  switched on only with an explicit confirmation and is written to the admin
+  audit (`mcp_server.delegation_change`, ADR-0208). Reading a server's OAuth
+  status never registers a client at the provider; an automatically acquired
+  client and its vault secret are removed with the last server of its issuer.
+  Binary MCP content never reaches a model as base64 text, and a result the
+  shield does not intern is capped at the shield's intern size (ADR-0207).
   Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).

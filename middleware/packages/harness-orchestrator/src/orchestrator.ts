@@ -224,6 +224,7 @@ import {
   toolsForTurn,
 } from './toolsOffTurn.js';
 import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
+import { capToolResultText } from './toolResultCap.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import {
   createPrivacyTurnHandle,
@@ -2962,16 +2963,17 @@ export function parseToolEmittedRoutineList(
 
 /**
  * Value-free structural digest of a raw MCP tool result for KG ingestion when
- * the server is NOT privacy-bypassed: records the SHAPE (top-level fields /
- * record count) without any PII/values, so recall knows the data exists and its
- * shape without persisting sensitive contents. */
-function mcpObservationDigest(raw: string): string {
+ * the server is NOT privacy-bypassed: counts only, so recall knows the data
+ * exists and its size without persisting any of it. #1934 — not the field
+ * names either: a result keyed by e-mail address put the addresses in clear
+ * into a "values masked" digest. */
+export function mcpObservationDigest(raw: string): string {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed)) return `${String(parsed.length)} records (values masked)`;
     if (parsed !== null && typeof parsed === 'object') {
-      const keys = Object.keys(parsed as Record<string, unknown>);
-      return `Fields: ${keys.slice(0, 40).join(', ')} (values masked)`;
+      const count = Object.keys(parsed as Record<string, unknown>).length;
+      return `${String(count)} fields (names and values masked)`;
     }
   } catch {
     /* not JSON — fall through to a byte-size note */
@@ -10270,11 +10272,14 @@ export class Orchestrator {
       // ACL-gated to the turn's user.
       const kgTool = this.domainToolsByName.get(name);
       // A replayed result was ingested by the run that produced it.
+      // #1934 — only a delivered result is knowledge: a failed call or the
+      // connect prompt (with its authorize URL) is never stored.
       if (
         replay === undefined &&
         kgTool?.mcpServerId !== undefined &&
         isMcpServerKgIngest(kgTool.mcpServerId) &&
-        this.knowledgeGraph !== undefined
+        this.knowledgeGraph !== undefined &&
+        !isGuardedControlFlowResult(result, mcpAuthPromptMint)
       ) {
         const tc = turnContext.current();
         const userId = tc?.userId;
@@ -10361,8 +10366,11 @@ export class Orchestrator {
           }
         }
         // #1544 — bypass passes the tool's DATA raw; the user's own masked
-        // values it was handed (and may echo) stay masked.
-        return remaskEchoedValues(privacy, result);
+        // values it was handed (and may echo) stay masked. #1920 — bounded
+        // like a masked result (ADR-0207).
+        return capToolResultText(remaskEchoedValues(privacy, result), {
+          keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+        });
       }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
@@ -10387,7 +10395,9 @@ export class Orchestrator {
       // agent's LLM read them directly), so re-interning the prose would
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
-        return remaskEchoedValues(privacy, result);
+        return capToolResultText(remaskEchoedValues(privacy, result), {
+          keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+        });
       }
       // Canvas sentinel tap: interning is about the LLM wire — the surface
       // synthesis is server-side and must compose from the RAW directive
@@ -10453,7 +10463,10 @@ export class Orchestrator {
           : internFailedNotice(name);
       }
     }
-    return result;
+    // #1920 — no privacy guard: nothing else bounds the result (ADR-0207).
+    return capToolResultText(result, {
+      keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+    });
   }
 
   /**

@@ -2671,6 +2671,25 @@ Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzh
   `deliver_data`; Zeilen kommen aus `structuredContent` (`mcpReadToolInvoker`,
   `captureMcpStructured`).
 
+### MCP-Grants, Result-Safety, OAuth-UX (Welle 5, ADR-0207/0208)
+
+- **Routen-Verträge:** `POST /mcp-servers/:id/discover` → 409 `mcp_tool_list_empty`, wenn
+  ein Server nach einer vollen Liste plötzlich keine Tools meldet (alte Liste bleibt);
+  `POST …/authorize` → 422 `mcp_oauth_discovery_failed` (`code`, `message`);
+  `PUT …/delegation` und `PUT /mcp-grants` mit `delegation: 'service'` → 409
+  `delegation_confirmation_required` ohne `confirm: true`, malformed id → 404; Admin-Audit
+  `mcp_server.delegation_change`. `auth-status` hat neu `discoveryError` und
+  `sharedAuthorization`.
+- **Grants:** Core-Migration (Unique-Index `agent_tool_grants_subagent_uidx`) macht
+  Sub-Agent-Grants idempotent; Helper bekommen die entdeckten Deskriptoren; nicht mehr
+  angebotene Tools gehen an kein Modell; native Namen >64 Zeichen bekommen `_<8hex>`,
+  Kollisionen → `mcp_tool_name_collision`.
+- **Result-Safety:** Bild/Audio/Blob → Platzhalter; `capToolResultText` (200k) auf den
+  nicht internierten Pfaden; KG-Ingest ohne Fehler/Auth-Prompts, Digest nur Anzahlen.
+- **OAuth:** `describeAuth` registriert nie (DCR wie beworben, Ablehnung beim Connect
+  gemerkt); `forgetClient` beim Löschen des letzten Servers eines Issuers (nur DCR/CIMD,
+  fail-closed); `onAuthFailure(cfg, failure)`.
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:

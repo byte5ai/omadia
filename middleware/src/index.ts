@@ -377,6 +377,7 @@ import {
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { parseMcpActionId } from './conductor/mcpActionId.js';
 import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
+import { createMcpInputReplayer } from './services/mcpInputReplayer.js';
 import { createMcpActionInvoker, listMcpActions } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
@@ -619,7 +620,6 @@ import {
 // W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
 // replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
 import {
-  planMcpInputReplay,
   setSharedMcpInputReplayer,
   sharedPendingMcpInputStore,
 } from '@omadia/orchestrator';
@@ -630,7 +630,12 @@ import {
   delegationBlockedUnattendedMessage,
   resolveMcpUserKey,
 } from './services/mcpDelegation.js';
-import { McpOAuthService } from './services/mcpOAuthService.js';
+import {
+  McpOAuthService,
+  isPublicHttpsEndpoint,
+  mcpOAuthConfigBrokenMessage,
+  mcpOAuthPublicHttpsOnlyMessage,
+} from './services/mcpOAuthService.js';
 import { CIMD_METADATA_PATH, cimdMetadataUrl } from './services/mcpCimd.js';
 import { createMcpClientMetadataRouter } from './routes/mcpClientMetadata.js';
 import { McpConfigService } from './services/mcpConfigService.js';
@@ -711,7 +716,7 @@ import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.
 import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
-import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
+import { currentDispatchCaller, looksUnauthorized, turnContext } from '@omadia/orchestrator';
 import { mcpReadToolInvoker } from './triggers/mcpReadTool.js';
 import { ConsultationStore } from './consultation/consultationStore.js';
 import { createConsultationBroker } from './consultation/consultationBroker.js';
@@ -3471,7 +3476,7 @@ async function main(): Promise<void> {
                   ? delegationBlockedUnattendedMessage(server.name)
                   : delegationBlockedMessage(server.name);
               },
-              onAuthFailure: async (cfg: McpServerConfig) => {
+              onAuthFailure: async (cfg: McpServerConfig, failure?: string) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                 if (!server) return null;
                 // W0-1 (D2): fail closed FIRST. A `per_user` server with no
@@ -3489,7 +3494,20 @@ async function main(): Promise<void> {
                 // discovery keeps this cheap per call). With the metadata
                 // unreadable there is nothing to prompt for: the raw failure
                 // is more honest than "isn't set up yet".
+                // #1929 / ADR-0108 — OAuth discovery talks only to public
+                // https hosts. A server elsewhere that refused the call for
+                // authorization gets that said plainly, not a raw 401.
+                if (
+                  server.transport !== 'stdio' &&
+                  failure !== undefined &&
+                  looksUnauthorized(failure) &&
+                  !(await isPublicHttpsEndpoint(mcpRowToConfig(server).endpoint))
+                ) {
+                  return mcpOAuthPublicHttpsOnlyMessage(server.name);
+                }
                 const desc = await mcpOAuthService.describeAuth(server);
+                // #1924 — an unusable provider configuration, named.
+                if (desc.discoveryError) return mcpOAuthConfigBrokenMessage(server.name, desc.discoveryError);
                 if (!desc.protected || desc.discoveryUnavailable) return null;
                 // Machine block the chat parses into an in-line "Connect" card
                 // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
@@ -3532,39 +3550,16 @@ async function main(): Promise<void> {
     // Publish the handle so the operator router can invalidate a changed
     // server and `shutdownBuilder` can close the pooled stdio children.
     runtimeMcpManager = mcpManager;
-    // W2-1 (#544) — the replayer. Registered here because this is the only
-    // place that holds BOTH the manager and the server registry: a replay is
-    // a fresh `tools/call`, so it needs the server's live config (endpoint,
-    // headers, Vault-resolved env) re-resolved rather than a snapshot taken
-    // when the call was parked.
-    //
-    // A server the operator deleted (or renamed away) between the two turns
-    // returns `undefined`, which the orchestrator surfaces to the user as
-    // "no longer reachable" instead of silently dropping their input.
+    // W2-1 (#544) — the replayer (see `createMcpInputReplayer`). Registered
+    // here because this is the only place that holds both the manager and the
+    // server registry.
     if (mcpAuditStore) {
-      setSharedMcpInputReplayer({
-        replay: async (record, inputResponses) => {
-          const server = (await mcpAuditStore.listMcpServers()).find(
-            (s) => s.id === record.serverId,
-          );
-          if (!server) return undefined;
-          const cfg: McpServerConfig = {
-            id: server.id,
-            name: server.name,
-            transport: server.transport,
-            endpoint: server.endpoint,
-            ...(server.privacyBypass ? { privacyBypass: true } : {}),
-          };
-          // #562 phase 3 — the RECORD decides which dialect the retry
-          // speaks: omadia's flat `inputResponses` argument for a 2025-era
-          // peer, the spec's per-request `inputResponses` param plus a
-          // verbatim `requestState` echo for a 2026-07-28 one. See
-          // `planMcpInputReplay` for why that is derived from the card
-          // rather than from the connection.
-          const plan = planMcpInputReplay(record, inputResponses);
-          return mcpManager.callTool(cfg, record.toolName, plan.args, plan.replay);
-        },
-      });
+      setSharedMcpInputReplayer(
+        createMcpInputReplayer({
+          listServers: () => mcpAuditStore.listMcpServers(),
+          manager: mcpManager,
+        }),
+      );
     }
     // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
     // resolved lazily by createPluginContext, exactly like the 'llm'

@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
+import { mcpRouteErrorKey } from '@/app/admin/mcp/mcpErrors';
 import { Button } from '@/app/_components/ui/Button';
 import {
   authorizeMcpServer,
@@ -14,7 +16,7 @@ import {
   type McpRevocationOutcome,
 } from '@/app/_lib/agentBuilder';
 
-function errText(err: unknown): string {
+function rawErrText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -41,6 +43,11 @@ export function McpAuthSection({
   showDelegation?: boolean;
 }): React.ReactElement | null {
   const t = useTranslations('adminMcp');
+  /** W09-10 — route refusals in the catalog's words, not the English body. */
+  const errText = (err: unknown): string => {
+    const routeKey = mcpRouteErrorKey(err);
+    return routeKey ? t(`routeErrors.${routeKey}`, { detail: rawErrText(err) }) : rawErrText(err);
+  };
   const [status, setStatus] = useState<McpAuthStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +61,9 @@ export function McpAuthSection({
   // What the last disconnect did at the provider. Shown until the next connect,
   // because "disconnected" alone does not say whether access is gone there too.
   const [revocation, setRevocation] = useState<McpRevocationOutcome | null>(null);
+  // #1933 — an action that changes what EVERY caller of the server uses waits
+  // here for the operator's confirmation.
+  const [pending, setPending] = useState<'service' | 'connect' | 'disconnect' | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -78,14 +88,31 @@ export function McpAuthSection({
     return () => window.removeEventListener('focus', onFocus);
   }, [authorizeUrl, connected, refresh]);
 
-  if (!status || !status.protected) return null;
+  if (!status) return null;
+  // #1906 — a server without OAuth still has a delegation mode that decides
+  // whether identity-less callers reach it; the switch is shown for it too.
+  if (!status.protected) {
+    if (!showDelegation || !status.delegation) return null;
+    return (
+      <div className="flex flex-col gap-2 rounded-md border border-[color:var(--border)] px-3 py-2.5">
+        {renderDelegation()}
+        {error ? <div className="text-xs text-[color:var(--danger)]">{error}</div> : null}
+        {renderConfirm()}
+      </div>
+    );
+  }
 
   // A token is stored but no longer works, which is not the same as never
   // having connected: the row says so and keeps the disconnect action.
   const tokenInvalid = !status.connected && Boolean(status.tokenInvalid);
   const providerHost = status.issuerHost ?? status.issuer ?? '?';
 
-  async function connect(): Promise<void> {
+  async function connect(confirmed = false): Promise<void> {
+    // #1933 — only when Connect replaces a stored shared authorization.
+    if (status?.sharedAuthorization && (status.connected || Boolean(status.tokenInvalid)) && !confirmed) {
+      setPending('connect');
+      return;
+    }
     setBusy(true);
     setError(null);
     setRevocation(null);
@@ -108,15 +135,17 @@ export function McpAuthSection({
   /** Flip the delegation mode (W0-1). Surfaced here because it decides WHOSE
    *  authorization every call to this server uses — the same question the rest
    *  of this panel is about. */
-  async function toggleDelegation(): Promise<void> {
+  async function toggleDelegation(confirmed = false): Promise<void> {
     if (!status?.delegation) return;
+    const next = status.delegation === 'per_user' ? 'service' : 'per_user';
+    if (next === 'service' && !confirmed) {
+      setPending('service');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      await setMcpServerDelegation(
-        serverId,
-        status.delegation === 'per_user' ? 'service' : 'per_user',
-      );
+      await setMcpServerDelegation(serverId, next, { confirm: next === 'service' });
       await refresh();
     } catch (err) {
       setError(errText(err));
@@ -125,7 +154,11 @@ export function McpAuthSection({
     }
   }
 
-  async function disconnect(): Promise<void> {
+  async function disconnect(confirmed = false): Promise<void> {
+    if (status?.sharedAuthorization && !confirmed) {
+      setPending('disconnect');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -148,7 +181,7 @@ export function McpAuthSection({
       setClientId('');
       setClientSecret('');
       await refresh();
-      await connect();
+      await connect(true);
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -156,12 +189,74 @@ export function McpAuthSection({
     }
   }
 
+  /** The delegation mode and its switch — for every server, OAuth or not. */
+  function renderDelegation(): React.ReactElement | null {
+    if (!status?.delegation) return null;
+    return (
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium">{t('auth.delegationLabel')}:</span>
+            <span className="text-[11px]">
+              {status.delegation === 'per_user'
+                ? t('auth.delegationPerUser')
+                : t('auth.delegationService')}
+            </span>
+            <Button size="sm" variant="ghost" busy={busy} onClick={() => void toggleDelegation()}>
+              {status.delegation === 'per_user'
+                ? t('auth.delegationSwitchToService')
+                : t('auth.delegationSwitchToPerUser')}
+            </Button>
+          </div>
+          <div className="text-[11px] text-[color:var(--fg-muted)]">
+            {status.delegation === 'per_user'
+              ? t('auth.delegationPerUserWhy')
+              : t('auth.delegationServiceWhy')}
+          </div>
+          {status.delegation === 'per_user' && status.identityResolved === false ? (
+            <div className="text-[11px] text-[color:var(--warning)]">
+              {t('auth.delegationIdentityMissing')}
+            </div>
+          ) : null}
+        </div>
+    );
+  }
+
+  /** #1933 — the confirmation for actions that affect every caller. */
+  function renderConfirm(): React.ReactElement {
+    const copy =
+      pending === 'service'
+        ? { title: t('auth.delegationConfirmTitle'), body: t('auth.delegationConfirmBody'), label: t('auth.delegationSwitchToService') }
+        : pending === 'connect'
+          ? { title: t('auth.sharedConnectConfirmTitle'), body: t('auth.sharedConnectConfirmBody'), label: t('auth.connect') }
+          : { title: t('auth.sharedDisconnectConfirmTitle'), body: t('auth.sharedDisconnectConfirmBody'), label: t('auth.disconnect') };
+    return (
+      <ConfirmDialog
+        open={pending !== null}
+        title={copy.title}
+        body={copy.body}
+        confirmLabel={copy.label}
+        cancelLabel={t('auth.cancel')}
+        tone={pending === 'disconnect' ? 'danger' : 'neutral'}
+        onCancel={() => setPending(null)}
+        onConfirm={() => {
+          const action = pending;
+          setPending(null);
+          if (action === 'service') void toggleDelegation(true);
+          else if (action === 'connect') void connect(true);
+          else if (action === 'disconnect') void disconnect(true);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm">
           {status.connected ? (
-            <span className="text-[color:var(--success)]">{t('auth.connected')}</span>
+            <span className="text-[color:var(--success)]">
+              {status.sharedAuthorization ? t('auth.connectedShared') : t('auth.connected')}
+            </span>
           ) : (
             <span className="text-[color:var(--warning)]">
               {tokenInvalid ? t('auth.expired') : t('auth.notConnected')}
@@ -222,13 +317,31 @@ export function McpAuthSection({
             : t('auth.disconnectFailed', { host: providerHost })}
         </div>
       ) : null}
-      {!status.connected && !tokenInvalid && !showClientForm ? (
+      {/* #1924 — the metadata can't be read, or is unusable: issuer and mode
+          are placeholders then, so say that instead of showing them. */}
+      {status.discoveryUnavailable ? (
+        <div className="text-[11px] text-[color:var(--warning)]">{t('auth.discoveryUnavailable')}</div>
+      ) : null}
+      {status.discoveryError ? (
+        <div className="text-[11px] text-[color:var(--danger)]">
+          {t('auth.discoveryError', { reason: status.discoveryError })}
+        </div>
+      ) : null}
+      {!status.connected &&
+      !tokenInvalid &&
+      !showClientForm &&
+      !status.discoveryUnavailable &&
+      !status.discoveryError ? (
         <div className="text-[11px] text-[color:var(--fg-muted)]">
           {status.acquisitionMode === 'cimd'
             ? t('auth.hintCimd')
             : status.brokered
               ? t('auth.hintBrokered')
-              : t('auth.hintDelegated', { host: status.issuerHost ?? status.issuer ?? '?' })}
+              : // #1947 — the registration hint only where Connect opens the
+                // form: a manual client is needed and none is stored yet.
+                status.needsClient
+                ? t('auth.hintDelegated', { host: providerHost })
+                : null}
         </div>
       ) : null}
       {/* W2-4 diagnostic: the authorization server WOULD accept a metadata
@@ -251,31 +364,7 @@ export function McpAuthSection({
         </div>
       ) : null}
       {showDelegation && status.delegation ? (
-        <div className="flex flex-col gap-1 border-t border-[color:var(--border)] pt-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-medium">{t('auth.delegationLabel')}:</span>
-            <span className="text-[11px]">
-              {status.delegation === 'per_user'
-                ? t('auth.delegationPerUser')
-                : t('auth.delegationService')}
-            </span>
-            <Button size="sm" variant="ghost" busy={busy} onClick={() => void toggleDelegation()}>
-              {status.delegation === 'per_user'
-                ? t('auth.delegationSwitchToService')
-                : t('auth.delegationSwitchToPerUser')}
-            </Button>
-          </div>
-          <div className="text-[11px] text-[color:var(--fg-muted)]">
-            {status.delegation === 'per_user'
-              ? t('auth.delegationPerUserWhy')
-              : t('auth.delegationServiceWhy')}
-          </div>
-          {status.delegation === 'per_user' && status.identityResolved === false ? (
-            <div className="text-[11px] text-[color:var(--warning)]">
-              {t('auth.delegationIdentityMissing')}
-            </div>
-          ) : null}
-        </div>
+        <div className="border-t border-[color:var(--border)] pt-2">{renderDelegation()}</div>
       ) : null}
       {showClientForm ? (
         <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2.5">
@@ -338,6 +427,7 @@ export function McpAuthSection({
         </div>
       ) : null}
       {error ? <div className="text-xs text-[color:var(--danger)]">{error}</div> : null}
+      {renderConfirm()}
     </div>
   );
 }
