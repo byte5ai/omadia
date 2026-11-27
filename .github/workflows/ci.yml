@@ -58,8 +58,10 @@ jobs:
     # 15 minutes was too tight: the unit suite alone runs 9 to 10 minutes on
     # the runner, and `test:pg` starts after it. Two runs were cancelled by
     # the limit in the middle of `test:pg` (2026-11-19), which reads as a hang
-    # and is not a test failure.
-    timeout-minutes: 25
+    # and is not a test failure. 25 → 40 on 2026-11-27: with the wave-6
+    # memory-ACL suites the job takes 17–21 minutes on a good runner, and main
+    # (5ddf9cbf) plus train #2337 were cancelled at 25 inside `test:pg`.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: middleware

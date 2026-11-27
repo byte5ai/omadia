@@ -29,6 +29,9 @@ import {
   userNodeId,
   canonicalOwners,
   type ChannelIdentityIngest,
+  type ChannelIdentityLinkInput,
+  type ChannelIdentityLinkResult,
+  CHANNEL_IDENTITY_LINK_PROPS,
   type SessionReadOptions,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
@@ -2409,11 +2412,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         identity_uuid: string;
         cluster_uuid: string;
         omadia_user_id: string;
+        linked_user_id: string | null;
       }>(
         `SELECT
            ci.id AS identity_uuid,
            u.id  AS cluster_uuid,
-           (u.properties->>'omadiaUserId') AS omadia_user_id
+           (u.properties->>'omadiaUserId') AS omadia_user_id,
+           (ci.properties->>'linkedUserId') AS linked_user_id
          FROM graph_nodes ci
          JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
          JOIN graph_nodes u ON u.id = e.to_node AND u.type = 'User'
@@ -2457,6 +2462,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           isNewIdentity: false,
           isNewCluster: false,
           ...clusterAuthSubject,
+          ...(existing.linked_user_id ? { linkedUserId: existing.linked_user_id } : {}),
         };
       }
 
@@ -2593,6 +2599,126 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         isNewCluster,
         ...clusterAuthSubject,
       };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * ADR-0225 — see {@link KnowledgeGraph.linkChannelIdentity}. One
+   * transaction: the identity row is locked, its IS_IDENTITY_OF edges are
+   * replaced by one to the target (or a fresh) cluster, and the link props
+   * are written or removed.
+   */
+  async linkChannelIdentity(input: ChannelIdentityLinkInput): Promise<ChannelIdentityLinkResult> {
+    const identityExtId = channelIdentityNodeId(input.channelKind, input.channelUserId);
+    const now = new Date().toISOString();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const found = await client.query<{
+        identity_uuid: string;
+        properties: Record<string, unknown>;
+        previous_omadia_user_id: string | null;
+      }>(
+        `SELECT ci.id AS identity_uuid, ci.properties,
+                (SELECT u.properties->>'omadiaUserId'
+                   FROM graph_edges e
+                   JOIN graph_nodes u ON u.id = e.to_node AND u.type = 'User'
+                  WHERE e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+                  LIMIT 1) AS previous_omadia_user_id
+           FROM graph_nodes ci
+          WHERE ci.tenant_id = $1 AND ci.external_id = $2 AND ci.type = 'ChannelIdentity'
+          FOR UPDATE`,
+        [this.tenantId, identityExtId],
+      );
+      const identity = found.rows[0];
+      const previous = identity?.previous_omadia_user_id
+        ? { previousOmadiaUserId: identity.previous_omadia_user_id }
+        : {};
+      const dropLink = new Set<string>(CHANNEL_IDENTITY_LINK_PROPS);
+      const keptProps = identity
+        ? Object.fromEntries(Object.entries(identity.properties).filter(([k]) => !dropLink.has(k)))
+        : undefined;
+
+      let clusterUuid: string;
+      let omadiaUserId: string;
+      let identityProps: Record<string, unknown>;
+      if (input.target === null) {
+        if (!identity || typeof identity.properties['linkedUserId'] !== 'string') {
+          throw Object.assign(new Error('not_linked'), { code: 'not_linked' });
+        }
+        omadiaUserId = randomUUID();
+        const displayName = identity.properties['displayName'];
+        clusterUuid = await this.upsertNode(client, {
+          externalId: userNodeId(omadiaUserId),
+          type: 'User',
+          scope: null,
+          userId: omadiaUserId,
+          props: validateNodeProps('User', {
+            omadiaUserId,
+            firstSeenAt: now,
+            lastSeenAt: now,
+            ...(typeof displayName === 'string' && displayName ? { displayName } : {}),
+          }),
+        });
+        identityProps = validateNodeProps('ChannelIdentity', keptProps ?? {});
+      } else {
+        const cluster = await client.query<{ id: string }>(
+          `SELECT id FROM graph_nodes WHERE tenant_id = $1 AND type = 'User' AND external_id = $2`,
+          [this.tenantId, userNodeId(input.target.omadiaUserId)],
+        );
+        const targetUuid = cluster.rows[0]?.id;
+        if (!targetUuid) {
+          throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+        }
+        clusterUuid = targetUuid;
+        omadiaUserId = input.target.omadiaUserId;
+        identityProps = validateNodeProps('ChannelIdentity', {
+          ...(keptProps ?? {
+            channelKind: input.channelKind,
+            channelUserId: input.channelUserId,
+            firstSeenAt: now,
+            ...(input.displayName ? { displayName: input.displayName } : {}),
+          }),
+          lastSeenAt: now,
+          linkedUserId: input.target.userId,
+          linkedAt: now,
+          ...(input.target.linkedBy ? { linkedBy: input.target.linkedBy } : {}),
+        });
+      }
+
+      let identityUuid: string;
+      if (identity) {
+        identityUuid = identity.identity_uuid;
+        // Replace, not merge: an unlink must drop the link props.
+        await client.query(`UPDATE graph_nodes SET properties = $2::jsonb WHERE id = $1`, [
+          identityUuid,
+          JSON.stringify(identityProps),
+        ]);
+        await client.query(
+          `DELETE FROM graph_edges WHERE from_node = $1 AND type = 'IS_IDENTITY_OF'`,
+          [identityUuid],
+        );
+      } else {
+        identityUuid = await this.upsertNode(client, {
+          externalId: identityExtId,
+          type: 'ChannelIdentity',
+          scope: null,
+          userId: null,
+          props: identityProps,
+        });
+      }
+      await this.upsertEdge(client, {
+        type: 'IS_IDENTITY_OF',
+        fromUuid: identityUuid,
+        toUuid: clusterUuid,
+      });
+      await client.query('COMMIT');
+      return { channelIdentityNodeId: identityExtId, omadiaUserId, ...previous };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;

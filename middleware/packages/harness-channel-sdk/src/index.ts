@@ -16,6 +16,17 @@ export type {
   ChannelSessionClaims,
 } from './coreApi.js';
 
+// ADR-0225 — kernel-owned link from a channel account to an omadia account.
+export {
+  MAX_LINK_OFFER_TTL_MS,
+  type ChannelAccountLink,
+  type ChannelIdentityLinkOutcome,
+  type ChannelIdentityLinkRefusal,
+  type ChannelIdentityLinks,
+  type LinkableAccount,
+  type LinkOffer,
+} from './channelIdentityLinks.js';
+
 // #330 B1 — group-conversation primitives: conversation type + roster,
 // membership lifecycle events, and Principal-addressed targeted delivery.
 // All optional capabilities; classic adapters are untouched.

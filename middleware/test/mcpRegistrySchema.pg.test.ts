@@ -338,6 +338,41 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
 
     await pool.query('DELETE FROM mcp_servers WHERE id = $1', [serverId]);
   });
+
+  it('records who stored a token on Connect and keeps it across a refresh (0120, #2308)', async () => {
+    const server = await pool.query<{ id: string }>(
+      `INSERT INTO mcp_servers (name, transport, endpoint)
+       VALUES ($1, 'http', 'https://stored-by.invalid/mcp') RETURNING id`,
+      [`${TENANT}stored-by-server`],
+    );
+    const serverId = server.rows[0]!.id;
+    const store = new AgentGraphStore(pool);
+    const base = {
+      serverId,
+      userKey: 'operator',
+      accessTokenRef: 'a',
+      refreshTokenRef: 'r',
+      expiresAt: null,
+      scopes: null,
+      issuer: 'https://issuer.invalid',
+    };
+    await store.upsertMcpOAuthToken({
+      ...base,
+      storedBy: { id: '00000000-0000-4000-8000-000000000001', email: 'operator@example.com' },
+    });
+    const stored = await store.getMcpOAuthToken(serverId, 'operator');
+    assert.equal(stored?.storedBy?.email, 'operator@example.com');
+    assert.equal(stored?.storedBy?.id, '00000000-0000-4000-8000-000000000001');
+    assert.ok(stored?.storedBy?.at instanceof Date);
+
+    // A refresh writes without `storedBy` and keeps the attribution.
+    await store.upsertMcpOAuthToken({ ...base, accessTokenRef: 'a2' });
+    const refreshed = await store.getMcpOAuthToken(serverId, 'operator');
+    assert.equal(refreshed?.accessTokenRef, 'a2');
+    assert.equal(refreshed?.storedBy?.email, 'operator@example.com');
+
+    await pool.query('DELETE FROM mcp_servers WHERE id = $1', [serverId]);
+  });
 });
 
 describe('middleware/migrations idempotency under data (pg)', { skip: !pgAvailable }, () => {

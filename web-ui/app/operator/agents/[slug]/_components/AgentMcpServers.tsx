@@ -294,7 +294,7 @@ export function AgentMcpServers({
                         {modeLabel(server.delegation)}
                       </span>
                       <Link
-                        href="/admin/mcp"
+                        href={`/admin/mcp?server=${encodeURIComponent(server.id)}`}
                         className="text-[11px] text-[color:var(--accent)] underline-offset-2 hover:underline"
                       >
                         {t('mcp.delegation.serverSettingsLink')}

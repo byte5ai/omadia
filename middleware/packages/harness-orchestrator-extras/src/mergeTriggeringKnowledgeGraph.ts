@@ -125,6 +125,8 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   readonly deleteOwnerlessMemory?: KnowledgeGraph['deleteOwnerlessMemory'];
   // #1840 / #1843 — identity lookups and the identity purge, forwarded too.
   readonly findOmadiaUserIdByChannelIdentity?: KnowledgeGraph['findOmadiaUserIdByChannelIdentity'];
+  // ADR-0225 — the operator link of a channel identity, forwarded too.
+  readonly linkChannelIdentity?: KnowledgeGraph['linkChannelIdentity'];
   readonly countUserIdentity?: KnowledgeGraph['countUserIdentity'];
   readonly listUserChannelIdentities?: KnowledgeGraph['listUserChannelIdentities'];
   readonly purgeUserIdentity?: KnowledgeGraph['purgeUserIdentity'];
@@ -145,6 +147,8 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
     if (innerDeleteOwnerless) this.deleteOwnerlessMemory = innerDeleteOwnerless;
     const innerFindByIdentity = opts.inner.findOmadiaUserIdByChannelIdentity?.bind(opts.inner);
     if (innerFindByIdentity) this.findOmadiaUserIdByChannelIdentity = innerFindByIdentity;
+    const innerLinkIdentity = opts.inner.linkChannelIdentity?.bind(opts.inner);
+    if (innerLinkIdentity) this.linkChannelIdentity = innerLinkIdentity;
     const innerCountIdentity = opts.inner.countUserIdentity?.bind(opts.inner);
     if (innerCountIdentity) this.countUserIdentity = innerCountIdentity;
     const innerListIdentities = opts.inner.listUserChannelIdentities?.bind(opts.inner);

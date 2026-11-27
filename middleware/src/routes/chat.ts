@@ -360,6 +360,10 @@ export interface CreateChatRouterOptions {
    *  must not offer "re-bind to default" in that state — the default is the
    *  very thing that is missing. Optional so older mounts keep the old code. */
   hasActiveAgents?: () => boolean;
+  /** #2314 — the id of the live agent holding `slug`, or undefined. A
+   *  session pinned to another id was opened with a deleted agent whose slug
+   *  was reused; its turns are refused (503 `agent_unavailable`). */
+  agentIdForSlug?: (slug: string) => string | undefined;
   /** Phase A — chat session store, for snapshot capture on the first
    *  turn of a session. */
   chatSessionStore?: ChatSessionStore;
@@ -375,6 +379,7 @@ export interface CreateChatRouterOptions {
   snapshotForAgent?: (slug: string) =>
     | {
         agentSlug: string;
+        agentId?: string;
         pluginIds: string[];
         toolIds: string[];
         memoryScope: string[];
@@ -498,6 +503,22 @@ async function resolveAgentForRequest(
       });
       return undefined;
     }
+    // #2314 (ADR-0218) — the pinned agent was deleted and a new agent took
+    // its slug: the old tab must not talk to the new agent with the old
+    // transcript. The web chat shows its recovery banner for this answer.
+    const pinnedId = session?.snapshot?.agentId;
+    if (pinnedSlug && pinnedId && options.agentIdForSlug) {
+      const liveId = options.agentIdForSlug(pinnedSlug);
+      if (liveId !== undefined && liveId !== pinnedId) {
+        res.status(503).json({
+          error: 'agent_unavailable',
+          reason: 'agent_deleted',
+          message: `the agent this chat was opened with was deleted; "${pinnedSlug}" is now another agent`,
+          slug: pinnedSlug,
+        });
+        return undefined;
+      }
+    }
   }
 
   if (options.hasActiveAgents?.() === false) {
@@ -579,7 +600,7 @@ export function createChatRouter(
               sessionScope,
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
-              ...(deliveriesHint ? { extraSystemHint: deliveriesHint } : {}),
+              ...(deliveriesHint ? { conversationContextHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),
@@ -839,7 +860,7 @@ export function createChatRouter(
               sessionScope: resolveScope(parsed.data, req),
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
-              ...(deliveriesHint ? { extraSystemHint: deliveriesHint } : {}),
+              ...(deliveriesHint ? { conversationContextHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),

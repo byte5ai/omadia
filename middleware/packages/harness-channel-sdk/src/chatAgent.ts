@@ -589,6 +589,15 @@ export interface ChatTurnInput {
    */
   extraSystemHint?: string;
   /**
+   * #2317 (ADR-0278) — data of the conversation the turn may need but did not
+   * ask for (today: the chat's recent routine deliveries, ADR-0244). Rendered
+   * next to `extraSystemHint`, masked like it, but with two differences: it
+   * does not make the fast path pass the turn through (it is context, not an
+   * instruction for this turn), and a block that cannot be masked is dropped
+   * from the turn instead of failing it.
+   */
+  conversationContextHint?: string;
+  /**
    * #332 Layer 3 — forced-delegation obligation. The tool name of a sub-agent
    * that MUST be invoked at least once during this turn. If the orchestrator
    * tries to end the turn (pure-text stop) without ever calling it, the harness

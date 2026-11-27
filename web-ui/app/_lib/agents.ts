@@ -566,6 +566,8 @@ export function parseModelPolicy(raw: unknown): ModelPolicy {
 export interface ModelPolicyDto {
   slug: string;
   policy: ModelPolicy;
+  /** #2315 (ADR-0277) — sent back as `expected_revision` on the next save. */
+  revision?: number;
   /** What `auto` currently resolves to (the registry's built model), or null. */
   effectiveModel: string | null;
   activeProvider: string | null;
@@ -588,6 +590,7 @@ export async function getAgentModelPolicy(slug: string): Promise<ModelPolicyDto>
 export interface SetModelPolicyResponse {
   ok: boolean;
   policy: ModelPolicy;
+  revision?: number;
   vision: { primary?: boolean; fallback?: boolean };
   deferredProvider?: string;
   primaryUnavailable?: string;
@@ -604,10 +607,11 @@ export interface SetModelPolicyResponse {
 export async function setAgentModelPolicy(
   slug: string,
   policy: ModelPolicy,
+  expectedRevision?: number,
 ): Promise<SetModelPolicyResponse> {
   const res = await callJson<SetModelPolicyResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/model-policy`,
-    { method: 'PUT', body: JSON.stringify(policy) },
+    { method: 'PUT', body: JSON.stringify({ ...policy, ...revisionField(expectedRevision) }) },
   );
   return { ...res, policy: parseModelPolicy(res.policy) };
 }
@@ -620,20 +624,28 @@ export interface AgentFastLaneDto {
   enabled: boolean;
   /** False for an archetype without one (a facilitator). */
   available: boolean;
+  /** #2315 (ADR-0277) — sent back as `expected_revision` on the next save. */
+  revision?: number;
 }
 
 export async function getAgentFastLane(slug: string): Promise<AgentFastLaneDto> {
   const res = await callJson<AgentFastLaneDto>(`/v1/operator/agents/${encodeURIComponent(slug)}/fast-lane`);
-  return { slug: res.slug, enabled: res.enabled === true, available: res.available === true };
+  return {
+    slug: res.slug,
+    enabled: res.enabled === true,
+    available: res.available === true,
+    ...(typeof res.revision === 'number' ? { revision: res.revision } : {}),
+  };
 }
 
 export async function setAgentFastLane(
   slug: string,
   enabled: boolean,
-): Promise<{ ok: boolean; enabled: boolean }> {
-  return callJson<{ ok: boolean; enabled: boolean }>(
+  expectedRevision?: number,
+): Promise<{ ok: boolean; enabled: boolean; revision?: number }> {
+  return callJson<{ ok: boolean; enabled: boolean; revision?: number }>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/fast-lane`,
-    { method: 'PUT', body: JSON.stringify({ enabled }) },
+    { method: 'PUT', body: JSON.stringify({ enabled, ...revisionField(expectedRevision) }) },
   );
 }
 
@@ -662,10 +674,11 @@ export async function getAgentAgentToAgent(slug: string): Promise<AgentToAgentDt
 export async function setAgentAgentToAgent(
   slug: string,
   mode: AgentToAgentMode,
-): Promise<{ ok: boolean; mode: AgentToAgentMode }> {
-  return callJson<{ ok: boolean; mode: AgentToAgentMode }>(
+  expectedRevision?: number,
+): Promise<{ ok: boolean; mode: AgentToAgentMode; revision?: number }> {
+  return callJson<{ ok: boolean; mode: AgentToAgentMode; revision?: number }>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/agent-to-agent`,
-    { method: 'PUT', body: JSON.stringify({ mode }) },
+    { method: 'PUT', body: JSON.stringify({ mode, ...revisionField(expectedRevision) }) },
   );
 }
 
@@ -694,6 +707,8 @@ export interface PeerChatCandidateDto {
 export interface PeerChannelsDto {
   slug: string;
   mode: AgentToAgentMode;
+  /** #2315 — revision of the agent-to-agent switch (`expected_revision`). */
+  revision?: number;
   channels: PeerChannelDto[];
   /** Channel kinds this agent owns a bot on; empty = no provisioned bot. */
   channelTypes: string[];
@@ -808,6 +823,8 @@ export function parseContextMemoryMode(raw: unknown): ContextMemoryMode {
 export interface ContextMemoryDto {
   slug: string;
   mode: ContextMemoryMode;
+  /** #2315 (ADR-0277) — sent back as `expected_revision` on the next save. */
+  revision?: number;
   /** The union the SERVER accepts. Rendered in preference to the local
    *  constant so the control follows the middleware, not the bundle. */
   modes: readonly string[];
@@ -837,12 +854,13 @@ export async function getAgentContextMemory(
 export async function setAgentContextMemory(
   slug: string,
   mode: ContextMemoryMode,
-): Promise<{ ok: boolean; mode: ContextMemoryMode }> {
+  expectedRevision?: number,
+): Promise<{ ok: boolean; mode: ContextMemoryMode; revision?: number }> {
   // #2290 / ADR-0261 — `off` makes this a shared agent (one memory for every
   // account and key); the server only accepts it with `shared: true`. The UI
   // asks for that acknowledgement before it calls this.
-  const body = mode === 'off' ? { mode, shared: true } : { mode };
-  return callJson<{ ok: boolean; mode: ContextMemoryMode }>(
+  const body = { mode, ...(mode === 'off' ? { shared: true } : {}), ...revisionField(expectedRevision) };
+  return callJson<{ ok: boolean; mode: ContextMemoryMode; revision?: number }>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/context-memory`,
     { method: 'PUT', body: JSON.stringify(body) },
   );
@@ -949,6 +967,8 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   // #1889 / ADR-0216 — `PUT …/identity` with an `expected_revision` the
   // stored identity has moved past (another tab or operator saved first).
   'identity_revision_conflict',
+  // #2315 / ADR-0277 — the same for the other agent config writes.
+  'config_revision_conflict',
 ] as const;
 
 export type OperatorAgentErrorCode = (typeof OPERATOR_AGENT_ERROR_CODES)[number];
@@ -2449,4 +2469,13 @@ export function parseTeamsAssignmentErrorCode(
   } catch {
     return null;
   }
+}
+
+/**
+ * #2315 (ADR-0277) — the `expected_revision` field of an agent config write:
+ * the revision the form was read at. Absent when the read carried none (an
+ * older middleware), which the server accepts unchecked.
+ */
+export function revisionField(expectedRevision: number | undefined): { expected_revision?: number } {
+  return expectedRevision === undefined ? {} : { expected_revision: expectedRevision };
 }

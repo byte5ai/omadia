@@ -63,7 +63,13 @@ export function cliOrchestratorConfig(
 
 /** Reads the private deps a `CliChatAgent` was constructed with. */
 export function agentDeps(agent: unknown): Record<string, unknown> | undefined {
-  // the published agent is the fast-path wrapper around the CliChatAgent
-  const inner = (agent as { inner?: unknown }).inner ?? agent;
-  return (inner as { deps?: Record<string, unknown> }).deps;
+  // the published agent wraps the CliChatAgent (conversation context #2316,
+  // fast path): unwrap every `inner` until the construction deps show up
+  let current: unknown = agent;
+  for (let depth = 0; depth < 5 && current !== undefined; depth += 1) {
+    const deps = (current as { deps?: Record<string, unknown> }).deps;
+    if (deps) return deps;
+    current = (current as { inner?: unknown }).inner;
+  }
+  return undefined;
 }

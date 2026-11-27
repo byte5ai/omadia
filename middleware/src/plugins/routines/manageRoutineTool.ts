@@ -4,6 +4,7 @@ import {
   modelReadableToolErrorMessage,
   toolErrorFromException,
 } from '@omadia/plugin-api';
+import { turnContext } from '@omadia/orchestrator';
 import { z } from 'zod';
 
 import { formatInTimeZone, nextCronRun, resolveTimeZone, UTC_ZONE } from '../../scheduler/zonedCron.js';
@@ -19,6 +20,19 @@ import {
   type RoutineActorScope,
   type RoutineRunner,
 } from './routineRunner.js';
+import { WEB_ROUTINE_CHANNEL } from './webChatProactiveSender.js';
+
+/**
+ * #2316 (ADR-0279) — the conversation a channel routine delivers into, as the
+ * session scope its turns run under, so those turns can see the deliveries.
+ * Only for a routine that writes back into the creating conversation (no
+ * `targetEmail`) on a channel; the web chat reads its own document.
+ */
+function originScopeFor(channel: string, deliversHere: boolean): string | undefined {
+  if (!deliversHere || channel === WEB_ROUTINE_CHANNEL) return undefined;
+  const scope = turnContext.current()?.sessionScope?.trim();
+  return scope ? scope : undefined;
+}
 
 export const MANAGE_ROUTINE_TOOL_NAME = 'manage_routine';
 
@@ -280,6 +294,7 @@ export class ManageRoutineTool {
       conversationRef = target;
     }
 
+    const originScope = originScopeFor(ctx.channel, conversationRef === ctx.conversationRef);
     const routine = await this.runner.createRoutine({
       tenant: ctx.tenant,
       userId: ctx.userId,
@@ -293,6 +308,7 @@ export class ManageRoutineTool {
       // #1743 / ADR 0240 — the creator's zone, else the instance's.
       timezone: resolveTimeZone(ctx.timeZone, this.defaultTimeZone),
       ...(ctx.mcpUserKey ? { mcpUserKey: ctx.mcpUserKey } : {}),
+      ...(originScope ? { originScope } : {}),
     });
     return JSON.stringify({
       action: 'created',

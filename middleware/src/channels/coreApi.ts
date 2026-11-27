@@ -2,6 +2,7 @@ import type { RequestHandler, Router } from 'express';
 
 import type {
   AgentIdentityProvider,
+  ChannelIdentityLinks,
   ChatStreamEvent,
   DefaultChannelKeyProvider,
   ChannelSocketHandler,
@@ -216,6 +217,12 @@ export interface CreateCoreApiOptions {
    * undefined and channels keep sending URLs.
    */
   readAttachment?: (url: string) => Promise<AttachmentReadResult>;
+  /**
+   * ADR-0225 — the kernel's channel-account links
+   * (`channelIdentityLinks.ts`). Absent → `CoreApi.channelIdentityLinks`
+   * stays undefined and channels claim no link.
+   */
+  channelIdentityLinks?: ChannelIdentityLinks;
   log?: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
 }
 
@@ -229,6 +236,7 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
   const log = opts.log ?? defaultLog;
 
   const api: CoreApi = {
+    ...(opts.channelIdentityLinks ? { channelIdentityLinks: opts.channelIdentityLinks } : {}),
     handleTurnStream(turn: IncomingTurn): AsyncIterable<ChatStreamEvent> {
       // Scope the orchestrator turn by the channel-specific conversation id.
       // v1 strategy: `${channelId}::${conversationId}` — stable, unique per

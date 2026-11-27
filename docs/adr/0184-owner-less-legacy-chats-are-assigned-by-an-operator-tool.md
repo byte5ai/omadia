@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** Owner decision (Marcel, 2026-11-26): on the Fly instance (five accounts) every

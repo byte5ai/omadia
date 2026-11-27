@@ -54,4 +54,19 @@ describe('<AgentUnavailableBanner />', () => {
     expect(link.getAttribute('href')).toBe('/admin/providers');
     expect(screen.getByText(/no agent is running/i)).toBeTruthy();
   });
+
+  it('agent_deleted (#2314) → says the slug now names another agent, keeps both actions', () => {
+    renderWithIntl(
+      <AgentUnavailableBanner
+        sessionId="s1"
+        unavailableSlug="myagent"
+        reason="agent_deleted"
+        onRecovered={noop}
+        onDeleted={noop}
+      />,
+    );
+    expect(screen.getByText(/"myagent" is now a different agent/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /re-bind to the default agent/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /delete session/i })).toBeTruthy();
+  });
 });

@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-api"
   name: "Public API Channel"
-  version: "0.1.0"
+  version: "0.1.1"
   kind: "channel"
   domain: "api"
   description:
@@ -58,6 +58,8 @@ channel:
 # dashboard listing is lost.
 optional_requires:
   - "channelDirectoryRegistry@1"
+  # #2310 — drops the public MCP binding of a deleted key (kernel-provided).
+  - "publicMcpKeyBindings@1"
 
 permissions:
   filesystem:

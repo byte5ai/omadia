@@ -111,6 +111,20 @@ export interface TurnOwnerIdentity {
    * over holders, which nothing about a single turn's caller can produce.
    */
   principal?: Principal;
+  /**
+   * ADR-0225 — the `users.id` an operator linked this turn's channel identity
+   * to. Set only for a plugin channel turn (identity stated through `origin`)
+   * whose identity carries such a link; {@link omadiaUserId}, `principal` and
+   * `authSubjectKey` then name that account's cluster, and the turn may key
+   * `per_user` MCP tokens on it ({@link channelTurnMcpUserKey}).
+   */
+  linkedUserId?: string;
+  /**
+   * The cluster of the identity a plugin channel turn states through `origin`,
+   * linked or not — resolved here once so the run-trace owner
+   * ({@link resolveRunTraceOwner}) does not resolve it a second time.
+   */
+  originClusterUserId?: string;
 }
 
 /**
@@ -127,9 +141,11 @@ function withPrincipal(identity: TurnOwnerIdentity): TurnOwnerIdentity {
 
 export async function resolveTurnOwnerIdentity(
   knowledgeGraph: KnowledgeGraph | undefined,
-  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'> & Partial<Pick<ChatTurnInput, 'origin'>>,
 ): Promise<TurnOwnerIdentity> {
   if (!input.channelIdentity) {
+    const implicit = originChannelIdentity(input);
+    if (implicit && knowledgeGraph) return resolveOriginTurnOwner(knowledgeGraph, input, implicit);
     // Non-channel turns carry no cluster to read a subject from; the HTTP
     // path produces its own `mcpUserKey` from the live session instead.
     return input.userId ? withPrincipal({ omadiaUserId: input.userId }) : {};
@@ -159,6 +175,58 @@ export async function resolveTurnOwnerIdentity(
     );
     return {};
   }
+}
+
+/**
+ * ADR-0225 — a plugin channel turn (Telegram, Teams, …) names its sender only
+ * through `origin` + `userId`. Unlinked, it keeps running as that raw id, as
+ * it always did: its datasets and keys were written under it. Linked by an
+ * operator, it runs as the account's cluster: canonical id, principal and IdP
+ * subject all come from the cluster the link joined. The channel attests the
+ * sender; only the kernel-recorded link decides the account.
+ */
+async function resolveOriginTurnOwner(
+  knowledgeGraph: KnowledgeGraph,
+  input: Pick<ChatTurnInput, 'userId'>,
+  implicit: ChannelIdentityIngest,
+): Promise<TurnOwnerIdentity> {
+  const legacy: TurnOwnerIdentity = input.userId ? withPrincipal({ omadiaUserId: input.userId }) : {};
+  try {
+    const resolved = await knowledgeGraph.resolveOrCreateChannelIdentity(implicit);
+    const originCluster = resolved.omadiaUserId ? { originClusterUserId: resolved.omadiaUserId } : {};
+    if (!resolved.linkedUserId || !resolved.omadiaUserId) return { ...legacy, ...originCluster };
+    return withPrincipal({
+      omadiaUserId: resolved.omadiaUserId,
+      ...(resolved.clusterAuthSubject
+        ? { authSubjectKey: resolved.clusterAuthSubject.providerUserId }
+        : {}),
+      linkedUserId: resolved.linkedUserId,
+      ...originCluster,
+    });
+  } catch (err) {
+    console.warn(
+      `[harness-orchestrator] resolveTurnOwnerIdentity: origin identity resolution failed — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return legacy;
+  }
+}
+
+/**
+ * The `mcpUserKey` a channel turn produces itself (the HTTP path sets its own
+ * in an outer scope, which always wins). A turn with a minted
+ * `channelIdentity`, or a plugin channel turn whose identity an operator
+ * linked (ADR-0225), keys on its cluster: the IdP subject when the cluster has
+ * one, else the canonical id. Any other turn produces none — its `userId` may
+ * come from a client-controlled header.
+ */
+export function channelTurnMcpUserKey(
+  input: Pick<ChatTurnInput, 'channelIdentity'>,
+  owner: TurnOwnerIdentity,
+): string | undefined {
+  if (!input.channelIdentity && !owner.linkedUserId) return undefined;
+  return owner.authSubjectKey || owner.omadiaUserId || undefined;
 }
 
 /**
@@ -209,10 +277,13 @@ export async function resolveRunTraceOwner(
   knowledgeGraph: KnowledgeGraph | undefined,
   input: Pick<ChatTurnInput, 'userId' | 'channelIdentity' | 'origin'>,
   resolvedOmadiaUserId: string | undefined,
+  originClusterUserId?: string,
 ): Promise<string | undefined> {
   const implicit = originChannelIdentity(input);
   if (!implicit) return runTraceOwnerId(input, resolvedOmadiaUserId);
   if (!knowledgeGraph) return undefined;
+  // Already resolved for the turn owner (same identity, same graph).
+  if (originClusterUserId) return originClusterUserId;
   try {
     const { omadiaUserId } = await knowledgeGraph.resolveOrCreateChannelIdentity(implicit);
     return omadiaUserId || undefined;

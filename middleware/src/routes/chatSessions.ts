@@ -9,10 +9,10 @@ import {
   chatSessionOwnedBy,
   isValidSessionId,
   isWebChatSessionId,
-  mcpInputReplyLabel,
-  parseMcpInputReply,
+  scrubMcpInputEnvelopes as scrubStoredEnvelopes,
 } from '@omadia/orchestrator';
 
+import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { LLM_SETUP_HINT } from '../llmSetupHint.js';
 import { chatViewer, type LegacyChatOwner } from './chatSessionAccess.js';
 
@@ -206,23 +206,9 @@ const SessionSchema = z.object({
 
 type ClientSession = z.infer<typeof SessionSchema>;
 
-/**
- * #1953 — a user message that is an MCP input reply envelope carries every
- * value the user typed into the input card, secret fields included. The web
- * UI no longer stores it, but an older tab still PUTs it back; it is replaced
- * by the field-names-only label the orchestrator uses for the turn log, so no
- * value is persisted. Ordinary messages are untouched.
- */
+/** #1953 — shared with the store's one-time sweep (#2311). */
 export function scrubMcpInputEnvelopes(session: ClientSession): ClientSession {
-  let changed = false;
-  const messages = session.messages.map((message) => {
-    if (message.role !== 'user') return message;
-    const reply = parseMcpInputReply(message.content);
-    if (reply === undefined) return message;
-    changed = true;
-    return { ...message, content: mcpInputReplyLabel(reply) };
-  });
-  return changed ? { ...session, messages } : session;
+  return scrubStoredEnvelopes(session);
 }
 
 interface ChatSessionDeps {
@@ -244,12 +230,19 @@ interface ChatSessionDeps {
   purgeTranscripts?: (sessionScope: string) => Promise<void>;
   /** #1757 — the routines that deliver into a chat; absent = no routines feature. */
   routines?: () => ChatRoutinesPort | undefined;
+  /**
+   * #2318 (ADR-0100) — the admin audit trail. Deleting an existing chat writes
+   * a `chat.delete` row after the fact (best-effort and loud: a failed write is
+   * logged, the delete stands). Absent = no row.
+   */
+  audit?: () => Pick<AdminAuditLog, 'record'> | undefined;
 }
 
 /** #1757 — what the chat routes need of the routines feature. */
 export interface ChatRoutinesPort {
   listForChat(sessionId: string): Promise<ReadonlyArray<{ id: string; name: string }>>;
-  pauseForChat(sessionId: string): Promise<number>;
+  /** Pauses the chat's active routines; resolves to the ids it paused. */
+  pauseForChat(sessionId: string): Promise<ReadonlyArray<string>>;
 }
 
 export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
@@ -290,6 +283,25 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     }
     return store;
   };
+
+  /**
+   * #2318 (ADR-0100) — one `chat.delete` row per deleted chat, with what the
+   * delete took along. Ids and counts only, never chat content.
+   */
+  const auditChatDelete = (
+    req: Request,
+    id: string,
+    after: { kind: 'web' | 'other'; routinesPaused: ReadonlyArray<string>; transcriptsPurged: boolean },
+  ): Promise<void> =>
+    recordOperatorAudit(deps.audit?.(), req, {
+      action: 'chat.delete',
+      target: `chat:${id}`,
+      after: {
+        kind: after.kind,
+        transcriptsPurged: after.transcriptsPurged,
+        routinesPaused: after.routinesPaused.map((routineId) => `routine:${routineId}`),
+      },
+    });
 
   router.get('/sessions', async (req: Request, res: Response) => {
     const store = resolveStore(res);
@@ -402,22 +414,35 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
         console.error('[chat-sessions] generated files not released:', err instanceof Error ? err.message : err);
       });
       if (!existed) {
+        // #2318 — a stored chat of another shape (no transcripts, no routines)
+        // is still a deletion of the caller's data; a missing id deleted nothing.
+        if (exists) await auditChatDelete(req, id, { kind: 'other', routinesPaused: [], transcriptsPurged: false });
         res.json({ ok: true, routinesPaused: 0 });
         return;
       }
       // #1753 — the chat's transcripts (`/memories/sessions/<id>/`) go with it:
       // the orchestrator is told to look there for earlier conversations.
-      await deps.purgeTranscripts?.(id).catch((err: unknown) => {
-        console.error(`[chat-sessions] removing the transcripts of chat ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+      let transcriptsPurged = false;
+      if (deps.purgeTranscripts) {
+        await deps.purgeTranscripts(id).then(
+          () => {
+            transcriptsPurged = true;
+          },
+          (err: unknown) => {
+            console.error(`[chat-sessions] removing the transcripts of chat ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
+          },
+        );
+      }
       // #1757 — routines that delivered into this chat are paused now, with
       // the reason, instead of each failing its next run first.
-      let routinesPaused = 0;
+      let pausedIds: ReadonlyArray<string> = [];
       try {
-        routinesPaused = (await deps.routines?.()?.pauseForChat(id)) ?? 0;
+        pausedIds = (await deps.routines?.()?.pauseForChat(id)) ?? [];
       } catch (err) {
         console.error(`[chat-sessions] pausing the routines of chat ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+      await auditChatDelete(req, id, { kind: 'web', routinesPaused: pausedIds, transcriptsPurged });
+      const routinesPaused = pausedIds.length;
       res.json({ ok: true, routinesPaused });
     } catch (err) {
       failure(res, err, '[chat-sessions] delete');

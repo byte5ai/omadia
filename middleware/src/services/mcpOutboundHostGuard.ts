@@ -23,6 +23,7 @@ import { isIP } from 'node:net';
 import type { McpServerConfig } from '@omadia/orchestrator';
 
 import { parseIpv6 } from '../platform/ssrfGuard.js';
+import type { McpStdioIsolationProbe } from './mcpStdioIsolationProbe.js';
 
 /** Hostname aliases for cloud-metadata endpoints — refused even before DNS,
  *  since a name can front a link-local address (codex fold). */
@@ -156,6 +157,21 @@ export async function checkOperatorOutboundUrl(
 export const MCP_STDIO_DISABLED_MESSAGE =
   'stdio MCP servers are disabled on this installation (MCP_STDIO_ENABLED=false)';
 
+/** #2306 / ADR-0270 — `MCP_STDIO_RUN_AS` is set but the user switch failed,
+ *  so no child is started under the middleware's own user. */
+export const MCP_STDIO_ISOLATION_UNAVAILABLE_MESSAGE =
+  'stdio MCP servers must run as their own OS user on this installation (MCP_STDIO_RUN_AS), ' +
+  'but the user switch is not available';
+
+/** The refusal codes of the connect guard. */
+export type McpEndpointRefusalCode = 'blocked_host' | 'stdio_disabled' | 'stdio_isolation_unavailable';
+
+const REFUSAL_CODES: ReadonlySet<string> = new Set<McpEndpointRefusalCode>([
+  'blocked_host',
+  'stdio_disabled',
+  'stdio_isolation_unavailable',
+]);
+
 /**
  * Thrown by the connect guard before any transport is built. Callers match on
  * `code` rather than `instanceof`, so the check survives the error crossing the
@@ -163,7 +179,7 @@ export const MCP_STDIO_DISABLED_MESSAGE =
  */
 export class McpEndpointRefusedError extends Error {
   constructor(
-    readonly code: 'blocked_host' | 'stdio_disabled',
+    readonly code: McpEndpointRefusalCode,
     message: string,
   ) {
     super(message);
@@ -175,10 +191,10 @@ export class McpEndpointRefusedError extends Error {
  *  above — `McpRegistryError` uses `blocked_host` too). */
 export function isMcpEndpointRefusal(
   err: unknown,
-): err is { readonly code: 'blocked_host' | 'stdio_disabled'; readonly message: string } {
+): err is { readonly code: McpEndpointRefusalCode; readonly message: string } {
   if (!(err instanceof Error) || err.name !== 'McpEndpointRefusedError') return false;
   const code = (err as { code?: unknown }).code;
-  return code === 'blocked_host' || code === 'stdio_disabled';
+  return typeof code === 'string' && REFUSAL_CODES.has(code);
 }
 
 /**
@@ -194,11 +210,23 @@ export function isMcpEndpointRefusal(
 export function createMcpConnectGuard(opts: {
   readonly stdioEnabled: boolean;
   readonly lookup?: OutboundLookupFn;
+  /** #2306 / ADR-0270 — set when `MCP_STDIO_RUN_AS` is configured: a stdio
+   *  connect is refused unless the user switch works. */
+  readonly stdioIsolationProbe?: McpStdioIsolationProbe;
 }): (cfg: McpServerConfig) => Promise<void> {
   return async (cfg) => {
     if (cfg.transport === 'stdio') {
       if (!opts.stdioEnabled) {
         throw new McpEndpointRefusedError('stdio_disabled', MCP_STDIO_DISABLED_MESSAGE);
+      }
+      if (opts.stdioIsolationProbe) {
+        const reason = await opts.stdioIsolationProbe();
+        if (reason !== null) {
+          throw new McpEndpointRefusedError(
+            'stdio_isolation_unavailable',
+            `${MCP_STDIO_ISOLATION_UNAVAILABLE_MESSAGE}: ${reason}`,
+          );
+        }
       }
       return;
     }

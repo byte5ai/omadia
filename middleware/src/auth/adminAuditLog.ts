@@ -113,6 +113,12 @@ export type AuditAction =
   // #1347 — operator consent for a plugin's unauthenticated public paths and
   // its SQL grant. `before`/`after` carry the granted set, so the history
   // survives a revoke that DELETEs the grant row.
+  // ADR-0225 — an operator linked a channel account (Telegram, …) to an
+  // omadia account, or removed that link. The actor is the operator who
+  // offered the link; `target` is `channel_identity:<kind>:<id>`,
+  // `before`/`after` the linked `users.id`.
+  | 'channel_identity.link'
+  | 'channel_identity.unlink'
   | 'plugin.grants_change'
   // #1347 — a plugin finished its install wizard / was removed. The uninstall
   // row lists the grants that left with it.
@@ -238,6 +244,10 @@ export type AuditAction =
   // #1762 follow-up (ADR-0184) — owner-less web chats assigned to one account.
   // Written before anything changes; `after` carries the count.
   | 'chat.assign_orphans'
+  // #2318 — a user deleted one of their chats. Written after the delete
+  // (best-effort, ADR-0100); `target` is `chat:<id>`, `after` names the
+  // routines it paused (`routine:<id>`) and whether its transcripts went.
+  | 'chat.delete'
   // ADR-0185 (#1829, #1831) — an operator deleted ONE memorable knowledge
   // entry without an owner. Written before the delete; `target` is
   // `memory:<mk id>`, `before` the optional reason.

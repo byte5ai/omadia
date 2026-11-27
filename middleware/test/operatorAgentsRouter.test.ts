@@ -87,6 +87,7 @@ import {
   TEAMS_BOTS_CONFIG_KEY,
 } from '../src/services/teamsBotsConfigSync.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
+import { FakeConfigRevisions } from './_helpers/fakeConfigRevisions.js';
 
 /** #1033 — the model catalogue the policy routes validate against. */
 const POLICY_CATALOG: Record<string, ModelInfo | undefined> = {
@@ -181,6 +182,10 @@ function newId(): string {
  * the router calls are implemented.
  */
 class FakeConfigStore {
+  /** #2315 — per-resource config revisions. */
+  private readonly revisionTwin = new FakeConfigRevisions();
+  configRevisions = this.revisionTwin.configRevisions;
+  claimConfigRevision = this.revisionTwin.claimConfigRevision;
   agents = new Map<string, AgentMem>();
   plugins = new Map<string, PluginMem>(); // key: agentId|pluginId
   bindings = new Map<string, BindingMem>(); // key: type|key
@@ -991,7 +996,7 @@ describe('createOperatorAgentsRouter', () => {
       await store.createAgent({ slug: 'public', name: 'Public' });
       const res = await fetch(`${baseUrl}/public/agent-to-agent`);
       assert.equal(res.status, 200);
-      assert.deepEqual(await res.json(), { slug: 'public', mode: 'off', modes: ['off', 'on'] });
+      assert.deepEqual(await res.json(), { slug: 'public', mode: 'off', modes: ['off', 'on'], revision: 0 });
     });
 
     it('GET /:slug/agent-to-agent reads an unknown persisted value as off', async () => {
@@ -1009,9 +1014,68 @@ describe('createOperatorAgentsRouter', () => {
         body: JSON.stringify({ mode: 'on' }),
       });
       assert.equal(res.status, 200);
-      assert.deepEqual(await res.json(), { ok: true, mode: 'on' });
+      assert.deepEqual(await res.json(), { ok: true, mode: 'on', revision: 1 });
       assert.equal((await store.getAgentBySlug('public'))?.agentToAgent, 'on');
       assert.equal(registry.reloadCalls, 1);
+    });
+
+    it('#2315 (ADR-0277): a stale expected_revision is refused with 409 and nothing is written; the current one passes', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const put = (body: unknown): Promise<Response> =>
+        fetch(`${baseUrl}/public/agent-to-agent`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      // Tab A and tab B both read revision 0; A saves first.
+      assert.equal((await put({ mode: 'on', expected_revision: 0 })).status, 200);
+      const stale = await put({ mode: 'off', expected_revision: 0 });
+      assert.equal(stale.status, 409);
+      assert.deepEqual(await stale.json(), {
+        error: 'config_revision_conflict',
+        code: 'operator_agents.config_revision_conflict',
+        message: "the agent's agent_to_agent is at revision 1, not the expected 0",
+        resource: 'agent_to_agent',
+        expected_revision: 0,
+        current_revision: 1,
+      });
+      assert.equal((await store.getAgentBySlug('public'))?.agentToAgent, 'on');
+      // The current revision passes; a client without the field is unchecked.
+      assert.equal((await put({ mode: 'off', expected_revision: 1 })).status, 200);
+      assert.equal((await put({ mode: 'on' })).status, 200);
+      const read = (await (await fetch(`${baseUrl}/public/agent-to-agent`)).json()) as { revision: number };
+      assert.equal(read.revision, 3);
+      // A malformed revision is a 400, not an unchecked write.
+      assert.equal((await put({ mode: 'off', expected_revision: 'x' })).status, 400);
+    });
+
+    it('#2315: the other config writes carry the same check (fast lane, context memory, plugins, bindings, availability)', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const cases: Array<{ path: string; body: Record<string, unknown> }> = [
+        { path: 'fast-lane', body: { enabled: false } },
+        { path: 'context-memory', body: { mode: 'members' } },
+        { path: 'plugins', body: { plugins: [] } },
+        { path: 'bindings', body: { bindings: [] } },
+        { path: 'availability', body: { everyone: true, channels: null, principals: [] } },
+      ];
+      for (const c of cases) {
+        const send = (expected: number): Promise<Response> =>
+          fetch(`${baseUrl}/public/${c.path}`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...c.body, expected_revision: expected }),
+          });
+        const first = await send(0);
+        assert.equal(first.status, 200, `${c.path}: ${await first.clone().text()}`);
+        assert.equal(((await first.json()) as { revision: number }).revision, 1, c.path);
+        const stale = await send(0);
+        assert.equal(stale.status, 409, c.path);
+        assert.equal(((await stale.json()) as { error: string }).error, 'config_revision_conflict', c.path);
+      }
+      const all = (await (await fetch(`${baseUrl}/public/config-revisions`)).json()) as { revisions: Record<string, number> };
+      assert.equal(all.revisions['bindings'], 1);
+      assert.equal(all.revisions['availability'], 1);
+      assert.equal(all.revisions['model_policy'], 0);
     });
 
     it('PUT /:slug/agent-to-agent rejects a mode outside the union with 400', async () => {
@@ -1263,7 +1327,7 @@ describe('createOperatorAgentsRouter', () => {
         body: JSON.stringify({ mode: 'enforce' }),
       });
       assert.equal(res.status, 200);
-      assert.deepEqual(await res.json(), { ok: true, mode: 'enforce' });
+      assert.deepEqual(await res.json(), { ok: true, mode: 'enforce', revision: 1 });
       assert.equal((await store.getAgentBySlug('public'))?.contextMemory, 'enforce');
       // Without the reload the switch would only take effect on the next
       // process restart, which is the shape of bug that reads as "it did

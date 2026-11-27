@@ -2177,6 +2177,7 @@
     "emptyCta": "Keine Agenten konfiguriert — öffne Operator → Agenten",
     "unavailableTitle": "Der Agent dieser Session ist nicht mehr verfügbar",
     "unavailableBody": "Der Agent „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
+    "unavailableReplacedBody": "Der Agent, mit dem dieser Chat begonnen wurde, wurde gelöscht. „{slug}“ ist jetzt ein anderer Agent, dieser Chat erreicht ihn nicht mehr. Chat neu zuordnen oder löschen.",
     "actionReSnapshot": "Auf den Standard-Ansprechpartner umbinden",
     "actionDelete": "Session löschen",
     "noAgentsTitle": "Es läuft kein Agent",
@@ -2350,7 +2351,8 @@
       "unknown": "Request fehlgeschlagen: {detail}",
       "broad_reach_confirmation_required": "Diese Änderung gäbe dem Agenten Zugriff auf alle angebundenen Systeme und braucht deine ausdrückliche Bestätigung.",
       "identity_revision_conflict": "Diese Identität wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Stand zu sehen, und nimm deine Änderung dann erneut vor.",
-      "context_memory_shared_required": "Aus macht diesen Agenten zu einem gemeinsamen Agenten: alle Konten und API-Keys nutzen ein Memory. Bestätige das vor dem Speichern."
+      "context_memory_shared_required": "Aus macht diesen Agenten zu einem gemeinsamen Agenten: alle Konten und API-Keys nutzen ein Memory. Bestätige das vor dem Speichern.",
+      "config_revision_conflict": "Diese Einstellung wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Wert zu sehen, und nimm deine Änderung dann erneut vor."
     },
     "statusEnabled": "aktiviert",
     "statusDisabled": "deaktiviert",
@@ -2466,7 +2468,7 @@
         "modeService": "Service",
         "modePerUser": "Pro Nutzer",
         "scopeHint": "Server-weite Einstellung — sie gilt für jeden Agenten, der diesen Server nutzt, nicht nur für diesen.",
-        "perUserFailClosed": "Pro-Nutzer-Aufrufe laufen unter der Identität des jeweiligen Nutzers und schlagen fail-closed fehl, wenn keine auflösbar ist.",
+        "perUserFailClosed": "Bei einem OAuth-geschützten Server läuft jeder Aufruf unter der Autorisierung des jeweiligen Nutzers; ohne zugeordnete Identität wird nichts gesendet. Ein Server ohne OAuth hat keine Zugangsdaten pro Nutzer und wird mit seiner gemeinsamen Konfiguration aufgerufen.",
         "serverSettingsLink": "In den MCP-Server-Einstellungen ändern"
       },
       "errors": {
@@ -5611,6 +5613,7 @@
       "transportDeprecated": "Veraltet",
       "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
       "stdioHint": "Ein stdio-Server läuft als Prozess im Middleware-Container, unter dem Benutzer der Middleware. Seine eigene Umgebung ist minimal, er kann aber die Umgebung und das Datenverzeichnis der Middleware lesen, darunter VAULT_KEY und DATABASE_URL, und damit jedes gespeicherte Secret. Füge nur Befehle hinzu, denen du vertraust. Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
+      "stdioHintIsolated": "Ein stdio-Server läuft als Prozess im Middleware-Container, unter einem eigenen OS-Benutzer. Er bekommt keine Umgebung der Middleware und kann weder ihr Datenverzeichnis noch ihre Secrets lesen. Alle stdio-Server teilen sich diesen einen Benutzer: Ein stdio-Server kann die Konfigurationswerte und Dateien der anderen stdio-Server lesen. Netz und CPU des Containers teilt er ebenfalls. Füge nur Befehle hinzu, denen du vertraust. Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
       "showDeprecatedTransports": "Veraltete Transports anzeigen",
       "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
@@ -5739,6 +5742,8 @@
       "delegationSwitchToPerUser": "Identität pro Nutzer verlangen",
       "delegationSwitchToService": "Gemeinsame Service-Identität nutzen",
       "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet.",
+      "delegationPerUserWhyShared": "Dieser Server nutzt kein OAuth und hat deshalb keine Zugangsdaten pro Nutzer. Jeder Aufruf geht mit der gemeinsamen Konfiguration des Servers hinaus (offen oder mit dem hinterlegten Schlüssel), auch ohne zugeordnete Nutzeridentität.",
+      "delegationIdentityMissingShared": "Diese Sitzung hat keine zugeordnete Nutzeridentität. Weil der Server kein OAuth nutzt, wird der Aufruf trotzdem mit seiner gemeinsamen Konfiguration gesendet.",
       "modeCimd": "Metadaten-Dokument",
       "modeDcr": "Automatisch registriert",
       "modeManual": "Registrierte App",
@@ -5751,6 +5756,8 @@
       "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
       "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen.",
       "connectedShared": "🔓 Autorisiert (gemeinsame Service-Autorisierung)",
+      "sharedStoredBy": "Hinterlegt von {who} am {when}",
+      "sharedStoredByUnknown": "einem nicht zugeordneten Konto",
       "discoveryUnavailable": "Die OAuth-Metadaten des Anbieters sind gerade nicht lesbar. Bitte später erneut versuchen.",
       "discoveryError": "Die OAuth-Konfiguration des Anbieters ist nicht nutzbar: {reason}",
       "cancel": "Abbrechen",
@@ -5773,6 +5780,7 @@
       "browseOnlyHint": "Dieser Registry-Eintrag hat keinen verbindbaren Endpoint — er verweist nur auf die Quelle (ein selbst gehosteter Server). Hoste ihn selbst und füge ihn dann manuell über „Server hinzufügen\" hinzu.",
       "authHintRemote": "🔒 braucht evtl. Autorisierung",
       "authHintLocal": "lokal (stdio): läuft in der Middleware und kann ihre Secrets lesen",
+      "authHintLocalIsolated": "lokal (stdio): eigener Benutzer, geteilt mit anderen stdio-Servern",
       "addRegistry": "Registry hinzufügen",
       "addRegistryConfirm": "Registry hinzufügen",
       "removeRegistry": "Registry entfernen",
@@ -5874,7 +5882,8 @@
     },
     "guard": {
       "blockedHost": "Diese Adresse ist aus Sicherheitsgründen gesperrt. Ein MCP-Server oder eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen; private und Intranet-Adressen sind erlaubt. Ändere die URL. Grund: {detail}",
-      "stdioDisabled": "stdio-MCP-Server sind auf dieser Installation deaktiviert (MCP_STDIO_ENABLED=false). Nutze stattdessen einen Remote-Server (http) oder setze MCP_STDIO_ENABLED=true für die Middleware und starte sie neu. Grund: {detail}"
+      "stdioDisabled": "stdio-MCP-Server sind auf dieser Installation deaktiviert (MCP_STDIO_ENABLED=false). Nutze stattdessen einen Remote-Server (http) oder setze MCP_STDIO_ENABLED=true für die Middleware und starte sie neu. Grund: {detail}",
+      "stdioIsolationUnavailable": "stdio-MCP-Server müssen auf dieser Installation unter einem eigenen OS-Benutzer laufen (MCP_STDIO_RUN_AS), der Benutzerwechsel funktioniert aber nicht, deshalb wurde kein Prozess gestartet. Behebe den Wechsel: Das Image braucht sudo, den Benutzer und seine sudoers-Regel, und der Container muss setuid erlauben (kein `no-new-privileges`). Nur als bewusste letzte Möglichkeit MCP_STDIO_RUN_AS leer setzen: stdio-Server laufen dann unter dem Benutzer der Middleware und können jedes gespeicherte Secret lesen. Grund: {detail}"
     },
     "addModal": {
       "title": "MCP-Server verbinden",

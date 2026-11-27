@@ -13,6 +13,7 @@ import { formatPrincipal, parsePrincipal } from '@omadia/channel-sdk';
 import {
   AGENT_SLUG_RE,
   ChannelResolver,
+  AgentConfigRevisionConflictError,
   ConfigValidationError,
   mcpToolNameFromRef,
   type AgentGraphStore,
@@ -38,6 +39,7 @@ import {
   type AgentToAgentMode,
   type ModelPolicyValidationContext,
   type ChatSessionStore,
+  type AgentConfigResource,
   type ConfigStore,
   type ContextMemoryMode,
   type AgentRow,
@@ -2351,9 +2353,40 @@ export function createOperatorAgentsRouter(
     return true;
   }
 
+  /**
+   * #2315 (ADR-0277) — claim the next revision of one config resource right
+   * before its write; a stale `expected_revision` throws the conflict that
+   * `badRequest` answers with 409.
+   */
+  const claimRevision = (
+    store: ConfigStore,
+    agentId: string,
+    resource: AgentConfigResource,
+    expected: number | undefined,
+  ): Promise<number> => store.claimConfigRevision(agentId, resource, expected);
+
+  /** #2315 — the current revision of one config resource, for a GET. */
+  const revisionOf = async (
+    store: ConfigStore,
+    agentId: string,
+    resource: AgentConfigResource,
+  ): Promise<number> => (await store.configRevisions(agentId))[resource];
+
   function badRequest(res: Response, err: unknown): void {
     // #2060 — one mapping for every facilitator refusal on this router.
     if (respondFacilitatorRefusal(res, err)) return;
+    // #2315 (ADR-0277) — the same contract for the other agent config writes.
+    if (err instanceof AgentConfigRevisionConflictError) {
+      res.status(409).json({
+        error: 'config_revision_conflict',
+        code: 'operator_agents.config_revision_conflict',
+        message: err.message,
+        resource: err.resource,
+        expected_revision: err.expectedRevision,
+        current_revision: err.currentRevision,
+      });
+      return;
+    }
     // #1889 / ADR-0216 — a write over a revision that moved on since.
     // `error` for this router's clients, `code`/`message` per ADR-0104.
     if (err instanceof AgentIdentityRevisionConflictError) {
@@ -2952,6 +2985,7 @@ export function createOperatorAgentsRouter(
         slug: agent.slug,
         mode,
         modes: CONTEXT_MEMORY_MODES,
+        revision: await revisionOf(live.store, agent.id, 'context_memory'),
         // #2290 / ADR-0261 — set while the agent runs on the `members` mode
         // migration 0122 switched it to and no operator has chosen since.
         switchedFromOffAt: agent.contextMemorySwitchedAt ?? null,
@@ -2965,7 +2999,8 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const body = ContextMemorySchema.parse(req.body);
+      const { expected, rest } = splitExpectedRevision(req.body);
+      const body = ContextMemorySchema.parse(rest);
       const slug = slugParam(req, res);
       if (!slug) return;
       const agent = await live.store.getAgentBySlug(slug);
@@ -3000,6 +3035,7 @@ export function createOperatorAgentsRouter(
           return;
         }
       }
+      const revision = await claimRevision(live.store, agent.id, 'context_memory', expected);
       await live.store.updateAgent(agent.id, { contextMemory: body.mode });
       // Same reload contract as every other write on this router: the running
       // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
@@ -3020,7 +3056,7 @@ export function createOperatorAgentsRouter(
           after: { mode: body.mode },
         });
       }
-      res.json({ ok: true, mode: body.mode });
+      res.json({ ok: true, mode: body.mode, revision });
     } catch (err) {
       badRequest(res, err);
     }
@@ -3043,7 +3079,12 @@ export function createOperatorAgentsRouter(
         return;
       }
       const mode: AgentToAgentMode = parseAgentToAgentMode(agent.agentToAgent);
-      res.json({ slug: agent.slug, mode, modes: AGENT_TO_AGENT_MODES });
+      res.json({
+        slug: agent.slug,
+        mode,
+        modes: AGENT_TO_AGENT_MODES,
+        revision: await revisionOf(live.store, agent.id, 'agent_to_agent'),
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -3053,7 +3094,8 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const body = AgentToAgentSchema.parse(req.body);
+      const { expected, rest } = splitExpectedRevision(req.body);
+      const body = AgentToAgentSchema.parse(rest);
       const slug = slugParam(req, res);
       if (!slug) return;
       const agent = await live.store.getAgentBySlug(slug);
@@ -3063,6 +3105,7 @@ export function createOperatorAgentsRouter(
       }
       const previous = parseAgentToAgentMode(agent.agentToAgent);
       if (body.mode === 'on') assertArchetypeAllows(agent, 'agent_to_agent');
+      const revision = await claimRevision(live.store, agent.id, 'agent_to_agent', expected);
       await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
       if (previous !== body.mode) {
         await auditAgent(req, agent.slug, 'agent.peer_mode_change', { mode: previous }, { mode: body.mode });
@@ -3075,7 +3118,7 @@ export function createOperatorAgentsRouter(
           `[security-audit] agent_to_agent ${previous} -> ${body.mode} for agent ${agent.slug}`,
         );
       }
-      res.json({ ok: true, mode: body.mode });
+      res.json({ ok: true, mode: body.mode, revision });
     } catch (err) {
       badRequest(res, err);
     }
@@ -3097,7 +3140,12 @@ export function createOperatorAgentsRouter(
         return;
       }
       const available = !archetypeOmits(agent, 'fast_path');
-      res.json({ slug: agent.slug, enabled: available && agent.fastLane !== false, available });
+      res.json({
+        slug: agent.slug,
+        enabled: available && agent.fastLane !== false,
+        available,
+        revision: await revisionOf(live.store, agent.id, 'fast_lane'),
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -3107,7 +3155,8 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const body = FastLaneSchema.parse(req.body);
+      const { expected, rest } = splitExpectedRevision(req.body);
+      const body = FastLaneSchema.parse(rest);
       const slug = slugParam(req, res);
       if (!slug) return;
       const agent = await live.store.getAgentBySlug(slug);
@@ -3117,6 +3166,7 @@ export function createOperatorAgentsRouter(
       }
       if (body.enabled) assertArchetypeAllows(agent, 'fast_path');
       const previous = agent.fastLane !== false;
+      const revision = await claimRevision(live.store, agent.id, 'fast_lane', expected);
       await live.store.updateAgent(agent.id, { fastLane: body.enabled });
       if (previous !== body.enabled) {
         await auditAgent(req, agent.slug, 'agent.fast_lane_change', { enabled: previous }, { enabled: body.enabled });
@@ -3125,7 +3175,7 @@ export function createOperatorAgentsRouter(
       if (previous !== body.enabled) {
         console.warn(`[security-audit] fast_lane ${String(previous)} -> ${String(body.enabled)} for agent ${agent.slug}`);
       }
-      res.json({ ok: true, enabled: body.enabled });
+      res.json({ ok: true, enabled: body.enabled, revision });
     } catch (err) {
       badRequest(res, err);
     }
@@ -3162,6 +3212,7 @@ export function createOperatorAgentsRouter(
       res.json({
         slug: agent.slug,
         policy,
+        revision: await revisionOf(live.store, agent.id, 'model_policy'),
         // What `auto` currently resolves to, so the UI can say "Auto (Opus 4.8)".
         effectiveModel: built?.effectiveModel ?? null,
         activeProvider: ctx?.activeProvider ?? null,
@@ -3195,7 +3246,8 @@ export function createOperatorAgentsRouter(
       return;
     }
     try {
-      const raw = ModelPolicySchema.parse(req.body);
+      const { expected, rest } = splitExpectedRevision(req.body);
+      const raw = ModelPolicySchema.parse(rest);
       const policy = {
         primary: raw.primary === 'auto' ? ('auto' as const) : parseModelRef(raw.primary)!,
         fallback:
@@ -3212,6 +3264,7 @@ export function createOperatorAgentsRouter(
       }
       const vision = await validateModelPolicy(policy, ctx);
       const previous = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
+      const revision = await claimRevision(live.store, agent.id, 'model_policy', expected);
       const updated = await live.store.updateAgent(agent.id, { modelPolicy: policy });
       if (!isDeepStrictEqual(previous, policy)) {
         await auditAgent(req, agent.slug, 'agent.model_policy_change',
@@ -3251,6 +3304,7 @@ export function createOperatorAgentsRouter(
       res.json({
         ok: true,
         policy,
+        revision,
         vision: {
           ...(vision.primaryVision !== undefined ? { primary: vision.primaryVision } : {}),
           ...(vision.fallbackVision !== undefined ? { fallback: vision.fallbackVision } : {}),
@@ -3283,6 +3337,8 @@ export function createOperatorAgentsRouter(
       res.json({
         slug: agent.slug,
         mode: parseAgentToAgentMode(agent.agentToAgent),
+        // #2315 — the agent-to-agent switch's revision, for its next write.
+        revision: await revisionOf(live.store, agent.id, 'agent_to_agent'),
         channels: policies.map((p) => ({
           channelType: p.channelType,
           channelKey: p.channelKey,
@@ -3761,6 +3817,25 @@ export function createOperatorAgentsRouter(
   // Per-agent read so the agent detail page can render the assignment
   // without filtering the full GET / dashboard payload. Same row shape as
   // the `plugins` array on GET /.
+  // #2315 (ADR-0277) — every config resource's revision, for editors whose
+  // resource has no GET of its own (bindings, availability).
+  router.get('/:slug/config-revisions', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({ slug: agent.slug, revisions: await live.store.configRevisions(agent.id) });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
   router.get('/:slug/plugins', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
@@ -3776,6 +3851,7 @@ export function createOperatorAgentsRouter(
       res.json({
         slug: existing.slug,
         plugins: plugins.map(assignedPluginView),
+        revision: await revisionOf(live.store, existing.id, 'plugins'),
       });
     } catch (err) {
       badRequest(res, err);
@@ -3827,6 +3903,9 @@ export function createOperatorAgentsRouter(
         actor: auditActorFromRequest(req),
       });
       if (refusedBroadReach(res, gate)) return;
+      // #2315 — a single-plugin flip changes the set a replace-style editor
+      // holds: it moves the revision (unchecked — the flip is not stale-prone).
+      await claimRevision(live.store, existing.id, 'plugins', undefined);
       await live.store.upsertAgentPlugin(existing.id, {
         pluginId: body.id,
         config,
@@ -4961,7 +5040,8 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const body = AgentPluginsSchema.parse(req.body);
+      const { expected, rest } = splitExpectedRevision(req.body);
+      const body = AgentPluginsSchema.parse(rest);
       const slug = slugParam(req, res);
       if (!slug) return;
       const existing = await live.store.getAgentBySlug(slug);
@@ -4996,6 +5076,7 @@ export function createOperatorAgentsRouter(
         actor: auditActorFromRequest(req),
       });
       if (refusedBroadReach(res, gate)) return;
+      const revision = await claimRevision(live.store, existing.id, 'plugins', expected);
       const desired = new Set(plugins.map((p) => p.id));
       for (const p of current) {
         if (!desired.has(p.pluginId)) {
@@ -5041,6 +5122,7 @@ export function createOperatorAgentsRouter(
       res.json({
         ok: true,
         plugins: stored.map((p) => ({ id: p.pluginId, config: p.config, enabled: p.enabled })),
+        revision,
         ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}),
       });
     } catch (err) {
@@ -5053,7 +5135,8 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const body = AgentBindingsSchema.parse(req.body);
+      const { expected, rest } = splitExpectedRevision(req.body);
+      const body = AgentBindingsSchema.parse(rest);
       const slug = slugParam(req, res);
       if (!slug) return;
       const existing = await live.store.getAgentBySlug(slug);
@@ -5072,6 +5155,7 @@ export function createOperatorAgentsRouter(
         res.status(400).json(unknownType);
         return;
       }
+      const revision = await claimRevision(live.store, existing.id, 'bindings', expected);
       const desired = new Set(
         body.bindings.map((b) => `${b.channel_type}|${b.channel_key}`),
       );
@@ -5114,7 +5198,7 @@ export function createOperatorAgentsRouter(
         }
       }
       await live.registry.reload();
-      res.json({ ok: true });
+      res.json({ ok: true, revision });
     } catch (err) {
       badRequest(res, err);
     }
@@ -5277,7 +5361,8 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const body = AvailabilitySchema.parse(req.body);
+      const { expected, rest } = splitExpectedRevision(req.body);
+      const body = AvailabilitySchema.parse(rest);
       const slug = slugParam(req, res);
       if (!slug) return;
       const existing = await live.store.getAgentBySlug(slug);
@@ -5289,6 +5374,7 @@ export function createOperatorAgentsRouter(
         existing,
         (await live.store.routing.listAvailabilityPrincipals()).filter((p) => p.agentId === existing.id),
       );
+      const revision = await claimRevision(live.store, existing.id, 'availability', expected);
       await live.store.routing.setAvailability(existing.id, {
         everyone: body.everyone,
         channels: body.channels,
@@ -5307,7 +5393,7 @@ export function createOperatorAgentsRouter(
         before,
         after,
       });
-      res.json({ ok: true, availability: after });
+      res.json({ ok: true, availability: after, revision });
     } catch (err) {
       badRequest(res, err);
     }
@@ -5359,4 +5445,19 @@ async function ownChannelIdentities(
     );
     return [];
   }
+}
+
+/**
+ * #2315 (ADR-0277) — take the optional `expected_revision` off a config write
+ * body, so each route's own (often strict) schema sees only its fields. A
+ * present value that is not a non-negative integer is a 400 like any other
+ * malformed field.
+ */
+export function splitExpectedRevision(body: unknown): { expected: number | undefined; rest: unknown } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body) || !('expected_revision' in body)) {
+    return { expected: undefined, rest: body };
+  }
+  const { expected_revision: raw, ...rest } = body as Record<string, unknown>;
+  const expected = z.number().int().nonnegative().parse(raw);
+  return { expected, rest };
 }
