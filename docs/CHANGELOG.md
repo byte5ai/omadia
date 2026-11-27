@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Telegram pairing links the chat to a real omadia account (#1995, ADR-0225, ADR-0280) (2026-11-27)
+
+- **`CoreApi.channelIdentityLinks`** (channel-sdk **0.3.19**): a channel plugin lists active
+  accounts for a picker, offers a link on behalf of the operator whose session cookie it passes
+  (the kernel resolves the operator), and redeems the single-use offer (≤ 15 min) with the sender
+  the platform attested. `linkOf` and `unlink` complete it. Bound per plugin to its own channel
+  types; `web`/`api` cannot be linked. Audit actions `channel_identity.link` / `.unlink`.
+- **`KnowledgeGraph.linkChannelIdentity?`** (plugin-api **1.107.0**, kernel-only) in both graph
+  backends: the `ChannelIdentity` joins the account's User-Cluster (`web:<users.id>`) with
+  `linkedUserId`/`linkedBy`/`linkedAt`; unlink gives it a fresh cluster. Nothing written before
+  is moved. `resolveOrCreateChannelIdentity` returns `linkedUserId`.
+- **Turn identity:** a plugin channel turn (Telegram, Teams, …) whose sender is linked runs as the
+  account's cluster (`resolvedOmadiaUserId`, principal, `per_user` MCP key via
+  `channelTurnMcpUserKey`). Unlinked senders keep their raw id, unchanged. The sender's cluster is
+  resolved once per turn and reused as the run-trace owner. Memory tiers stay per channel.
+- No migration. Plugin side: omadia-channel-telegram 0.9.0 (user picker, kernel-validated pairing).
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

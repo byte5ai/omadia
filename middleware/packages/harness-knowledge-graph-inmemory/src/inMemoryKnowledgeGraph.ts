@@ -26,6 +26,9 @@ import {
   canonicalOwners,
   ownersCoverAudience,
   type ChannelIdentityIngest,
+  type ChannelIdentityLinkInput,
+  type ChannelIdentityLinkResult,
+  CHANNEL_IDENTITY_LINK_PROPS,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
   type DatasetColumnType,
@@ -1005,6 +1008,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           isNewIdentity: false,
           isNewCluster: false,
           ...this.clusterAuthSubject(cluster.id),
+          ...linkedUserIdOf(existing.props),
         };
       }
     }
@@ -1124,6 +1128,96 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       isNewCluster,
       ...this.clusterAuthSubject(clusterId),
     };
+  }
+
+  /** ADR-0225 — see {@link KnowledgeGraph.linkChannelIdentity}. */
+  async linkChannelIdentity(input: ChannelIdentityLinkInput): Promise<ChannelIdentityLinkResult> {
+    const identityExtId = channelIdentityNodeId(input.channelKind, input.channelUserId);
+    const now = new Date().toISOString();
+    const existing = this.nodes.get(identityExtId);
+    const identity = existing && existing.type === 'ChannelIdentity' ? existing : undefined;
+    const previousCluster = identity ? this.identityClusterOf(identity.id) : undefined;
+
+    if (input.target === null) {
+      if (!identity || typeof identity.props['linkedUserId'] !== 'string') {
+        throw Object.assign(new Error('not_linked'), { code: 'not_linked' });
+      }
+      const omadiaUserId = randomUUID();
+      const clusterId = userNodeId(omadiaUserId);
+      this.upsertNode({
+        id: clusterId,
+        type: 'User',
+        props: {
+          omadiaUserId,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          ...(typeof identity.props['displayName'] === 'string'
+            ? { displayName: identity.props['displayName'] }
+            : {}),
+        },
+      });
+      this.nodes.set(identity.id, { ...identity, props: withoutLinkProps(identity.props) });
+      this.moveIdentity(identity.id, clusterId);
+      return {
+        channelIdentityNodeId: identityExtId,
+        omadiaUserId,
+        ...(previousCluster ? { previousOmadiaUserId: previousCluster.omadiaUserId } : {}),
+      };
+    }
+
+    const clusterId = userNodeId(input.target.omadiaUserId);
+    const cluster = this.nodes.get(clusterId);
+    if (!cluster || cluster.type !== 'User') {
+      throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+    }
+    const linkProps = {
+      linkedUserId: input.target.userId,
+      linkedAt: now,
+      ...(input.target.linkedBy ? { linkedBy: input.target.linkedBy } : {}),
+    };
+    if (identity) {
+      this.nodes.set(identity.id, {
+        ...identity,
+        props: { ...withoutLinkProps(identity.props), ...linkProps, lastSeenAt: now },
+      });
+    } else {
+      this.upsertNode({
+        id: identityExtId,
+        type: 'ChannelIdentity',
+        props: {
+          channelKind: input.channelKind,
+          channelUserId: input.channelUserId,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          ...(input.displayName ? { displayName: input.displayName } : {}),
+          ...linkProps,
+        },
+      });
+    }
+    this.moveIdentity(identityExtId, clusterId);
+    return {
+      channelIdentityNodeId: identityExtId,
+      omadiaUserId: input.target.omadiaUserId,
+      ...(previousCluster ? { previousOmadiaUserId: previousCluster.omadiaUserId } : {}),
+    };
+  }
+
+  /** The User-Cluster an identity node belongs to. */
+  private identityClusterOf(identityId: string): { id: string; omadiaUserId: string } | undefined {
+    const link = [...this.edges.values()].find(
+      (e) => e.type === 'IS_IDENTITY_OF' && e.from === identityId,
+    );
+    const cluster = link ? this.nodes.get(link.to) : undefined;
+    if (!cluster || cluster.type !== 'User') return undefined;
+    return { id: cluster.id, omadiaUserId: String(cluster.props['omadiaUserId'] ?? '') };
+  }
+
+  /** Replaces every IS_IDENTITY_OF edge of the identity by one to `clusterId`. */
+  private moveIdentity(identityId: string, clusterId: string): void {
+    for (const [key, edge] of this.edges) {
+      if (edge.type === 'IS_IDENTITY_OF' && edge.from === identityId) this.edges.delete(key);
+    }
+    this.addEdge({ type: 'IS_IDENTITY_OF', from: identityId, to: clusterId });
   }
 
   /**
@@ -4047,4 +4141,16 @@ function resolvedByOf(actor: AclMutationOptions): string | null {
 /** An audience that canonicalises to no owner matches nothing (mirrors Neon's `EMPTY_AUDIENCE`). */
 function isEmptyAudience(audience: readonly string[] | undefined): boolean {
   return audience !== undefined && canonicalOwners(audience).length === 0;
+}
+
+/** `{ linkedUserId }` when the identity carries an operator link (ADR-0225). */
+function linkedUserIdOf(props: Record<string, unknown>): { linkedUserId?: string } {
+  const linked = props['linkedUserId'];
+  return typeof linked === 'string' && linked !== '' ? { linkedUserId: linked } : {};
+}
+
+/** The props without the operator-link keys. */
+function withoutLinkProps(props: Record<string, unknown>): Record<string, unknown> {
+  const drop = new Set<string>(CHANNEL_IDENTITY_LINK_PROPS);
+  return Object.fromEntries(Object.entries(props).filter(([key]) => !drop.has(key)));
 }
