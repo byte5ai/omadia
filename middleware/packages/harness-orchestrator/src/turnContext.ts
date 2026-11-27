@@ -182,6 +182,21 @@ export interface TurnContextValue {
    */
   captureRawToolResult?: (toolName: string, rawResult: string) => void;
   /**
+   * #1747 — cancels the turn from outside: a routine run that timed out or
+   * whose routine was paused or deleted while it ran. Installed by the caller
+   * in an OUTER scope; the turn scope copies it, and both tool loops stop at
+   * the next iteration (throwing the signal's reason) instead of running to
+   * the end and paying for an answer nobody will receive. Undefined for chat
+   * turns: they are cancelled by their client.
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * #1743 — the calling user's IANA zone, when the channel reported one
+   * (`ChatTurnInput.userTimeZone`). Read by `manage_routine` so a routine is
+   * evaluated in its creator's zone (ADR 0240). Never reaches the model.
+   */
+  userTimeZone?: string;
+  /**
    * Canvas sentinel tap (Omadia UI). Set by the ui-orchestrator around a
    * canvas turn: every dispatch site hands a sentinel-bearing RAW tool
    * result (`_pending*` canvas directives) here BEFORE the privacy guard

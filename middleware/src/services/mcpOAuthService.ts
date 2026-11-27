@@ -29,6 +29,7 @@ import {
   type CimdBlockedReason,
 } from './mcpCimd.js';
 import { redactedErrorText } from './secretRedaction.js';
+import { assertPublicHttpsUrl } from './ssrfGuard.js';
 import { substituteMcpConfig } from '../agents/subAgentToolHydration.js';
 import type { AuditActor } from '../auth/adminAuditLog.js';
 
@@ -92,6 +93,12 @@ export interface McpAuthDescription {
    *  cautious reading rather than something the server said: `protected: false`
    *  would hide the authorization UI of a server that may well need it. */
   readonly discoveryUnavailable?: boolean;
+  /**
+   * #1924 — the metadata was read and is unusable (an issuer mismatch,
+   * invalid documents): the reason, for the auth section, the chat card and
+   * the model. `issuer` and `acquisitionMode` are placeholders while set.
+   */
+  readonly discoveryError?: string;
 }
 
 /** What the stored authorization of one (server, user) is worth (#1923).
@@ -183,16 +190,48 @@ function hasStaticHeaders(server: McpServerRow): boolean {
   return Object.keys(server.headers ?? {}).length > 0;
 }
 
-const DCR_PROBE_TTL_MS = 10 * 60 * 1000;
+/** A thrown value's message, bounded for display. */
+function errorMessage(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+/** #1924 — the model- and user-facing text for a provider configuration that
+ *  cannot be used. No Connect card: connecting would fail the same way. */
+export function mcpOAuthConfigBrokenMessage(serverName: string, reason: string): string {
+  return (
+    `🔒 The MCP server "${serverName}" needs authorization, but its OAuth provider configuration ` +
+    `cannot be used: ${reason.slice(0, 300)}. An operator has to fix the server or provider setup ` +
+    `in the MCP Control Center; connecting again will not help.`
+  );
+}
+
+/** #1929 / ADR-0108 — OAuth is offered only for MCP servers on public https. */
+export function mcpOAuthPublicHttpsOnlyMessage(serverName: string): string {
+  return (
+    `🔒 The MCP server "${serverName}" asked for authorization, but omadia supports OAuth only for ` +
+    `MCP servers reachable over public https. Configure an API key or another static header for ` +
+    `this server instead, or publish it under a public https address.`
+  );
+}
+
+/** #1929 — the endpoint passes the public-https rule OAuth discovery uses. */
+export async function isPublicHttpsEndpoint(endpoint: string | null): Promise<boolean> {
+  if (!endpoint) return false;
+  try {
+    await assertPublicHttpsUrl(endpoint);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export class McpOAuthService {
+  /** #1947 — issuers whose advertised DCR declined a registration on Connect.
+   *  Process-local; a restart re-learns it on the next Connect. */
+  private readonly dcrDeclined = new Set<string>();
   private readonly discovery: McpAuthDiscovery;
   private readonly client: McpOAuthClient;
-  /** Per-issuer cache of whether Dynamic Client Registration actually works.
-   *  A server can ADVERTISE a registration_endpoint yet gate it (e.g. Figma
-   *  hard-403s third-party DCR), so "brokered" must reflect a real probe, not
-   *  the advertised flag. Cached to avoid re-probing on every status check. */
-  private readonly dcrProbeCache = new Map<string, { at: number; ok: boolean }>();
 
   /** In-flight refreshes, keyed by (serverId, userKey) — W0-1, D3.
    *
@@ -705,6 +744,10 @@ export class McpOAuthService {
       this.deps.redirectUri,
       CIMD_CLIENT_NAME,
     );
+    // #1947 — remember a declined registration (e.g. Figma gates DCR), so the
+    // status stops promising zero-setup for this issuer after the first try.
+    if (registered) this.dcrDeclined.delete(issuer);
+    else this.dcrDeclined.add(issuer);
     if (registered) {
       // Deprecation warning, not an error: the MCP spec's DCR sunset is a
       // 12-month clock, and a broker that only offers DCR must keep working
@@ -788,6 +831,28 @@ export class McpOAuthService {
    * only replaces Dynamic Client Registration at MCP-native brokers. Do not
    * deprecate or gate this behind a CIMD-unavailable check.
    */
+  /**
+   * #1947 — remove the OAuth client stored for `issuer` and its vault secret,
+   * once no server uses the issuer any more. The registration at the provider
+   * stays: RFC 7592 management is optional and rarely offered, and the stored
+   * registration access token it would need is not kept.
+   */
+  async forgetClient(issuer: string): Promise<boolean> {
+    const row = await this.deps.graph.getMcpOAuthClient(issuer);
+    // An operator-entered client (Entra ID, Okta) is kept: its secret cannot
+    // be re-acquired without the operator, and a new server may reuse it.
+    if (!row || row.registeredVia === 'manual') return false;
+    if (row.clientSecretRef) {
+      try {
+        await this.deps.vault.deleteKey(VAULT_NS, row.clientSecretRef);
+      } catch {
+        /* a missing vault entry is already gone */
+      }
+    }
+    await this.deps.graph.deleteMcpOAuthClient(issuer);
+    return true;
+  }
+
   async setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void> {
     let secretRef: string | null = null;
     if (clientSecret) {
@@ -801,6 +866,21 @@ export class McpOAuthService {
       registeredVia: 'manual',
       clientMetadataUrl: null,
     });
+  }
+
+  /**
+   * #1947 — the issuer a server uses, `null` when it uses none (no OAuth), and
+   * `undefined` when that cannot be told right now (metadata unreadable). The
+   * client cleanup keeps a client whenever any answer is `undefined`.
+   */
+  async issuerUse(server: McpServerRow): Promise<string | null | undefined> {
+    if (!server.endpoint || server.transport === 'stdio') return null;
+    try {
+      const d = await this.discovery.discover(this.resolveEndpoint(server));
+      return d?.server.issuer ?? null;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Resolve the issuer for a server (for the manual-client UI to know which
@@ -856,7 +936,8 @@ export class McpOAuthService {
         // server answers even when set up correctly. Not an OAuth signal.
         if (err.code === UNADVERTISED_AUTH_CHALLENGE && hasStaticHeaders(server)) return unprotected;
       }
-      return { ...unprotected, protected: true };
+      // #1924 — say why, instead of reading like "not set up yet".
+      return { ...unprotected, protected: true, discoveryError: errorMessage(err) };
     }
     if (!discovered) return unprotected;
     const issuer = discovered.server.issuer;
@@ -902,44 +983,21 @@ export class McpOAuthService {
       cimdBlockedReason = reach.reason;
     }
 
-    // "brokered" via DCR = DCR REALLY works, not just that it's advertised.
-    // Probe it (result cached) so the UI never promises zero-setup for a server
-    // whose registration is gated.
-    const dcrWorks =
-      discovered.server.registrationEndpoint !== null && (await this.canBrokerClient(discovered));
+    // #1947 — DCR as advertised. Reading the auth status must not register a
+    // client at the provider: registration happens on Connect
+    // (`beginAuthorization` → `ensureClient`), and a gated DCR endpoint shows
+    // up there as `McpOAuthNeedsClientError`, which asks for a manual client.
+    const dcrAdvertised =
+      discovered.server.registrationEndpoint !== null && !this.dcrDeclined.has(issuer);
     return {
       protected: true,
       issuer,
       issuerHost,
-      brokered: dcrWorks,
-      acquisitionMode: dcrWorks ? 'dcr' : 'manual',
+      brokered: dcrAdvertised,
+      acquisitionMode: dcrAdvertised ? 'dcr' : 'manual',
       cimdSupported,
       cimdBlockedReason,
     };
-  }
-
-  /** True when we can obtain an OAuth client for this issuer WITHOUT operator
-   *  setup — either one is already stored, or the acquisition chain (cimd, then
-   *  DCR) actually succeeds. A success also persists the client, so a later
-   *  Connect is instant. Failure (e.g. a gated DCR endpoint) is cached as
-   *  not-brokered. */
-  private async canBrokerClient(discovered: DiscoveredAuth): Promise<boolean> {
-    const issuer = discovered.server.issuer;
-    try {
-      if (await this.loadClient(issuer)) return true;
-    } catch {
-      /* fall through to a probe */
-    }
-    const cached = this.dcrProbeCache.get(issuer);
-    if (cached && Date.now() - cached.at < DCR_PROBE_TTL_MS) return cached.ok;
-    try {
-      await this.ensureClient(discovered); // registers + persists on success
-      this.dcrProbeCache.set(issuer, { at: Date.now(), ok: true });
-      return true;
-    } catch {
-      this.dcrProbeCache.set(issuer, { at: Date.now(), ok: false });
-      return false;
-    }
   }
 
   private async persistToken(

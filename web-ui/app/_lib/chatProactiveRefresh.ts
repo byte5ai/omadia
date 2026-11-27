@@ -66,6 +66,9 @@ export interface ProactiveRefresh {
   isFoldOnlyChange(prev: readonly ChatSession[], next: readonly ChatSession[]): boolean;
 }
 
+/** #1755 — how often a visible chat re-reads its deliveries. */
+export const PROACTIVE_POLL_MS = 60_000;
+
 export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefresh {
   const { setSessions, hydrating, activeId, fetchSession, persistFold } = deps;
 
@@ -177,9 +180,15 @@ export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefres
     const onFocus = (): void => {
       refreshProactive(activeId);
     };
+    // #1755 — a tab that stays visible without regaining focus (a second
+    // monitor, a kiosk) still gets a delivery: a light poll while visible.
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshProactive(activeId);
+    }, PROACTIVE_POLL_MS);
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', onFocus);
     return () => {
+      window.clearInterval(poll);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', onFocus);
     };

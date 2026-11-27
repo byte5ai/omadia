@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.103.0 — 2026-11-26
+## 1.106.0 — 2026-11-26
 
 Additive.
 
@@ -18,6 +18,17 @@ Additive.
   `GeneratedObjectDeleter`; ADR-0187, #1986): kernel-provided. A plugin that writes generated
   files records each key under the current turn's person and chat and registers how its objects
   are deleted; the kernel deletes a key once no chat or person references it.
+
+## 1.104.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`ListMemorableKnowledgeOptions.offset`** (optional): skip that many
+  entries of the newest-first list, so `listMemorableKnowledgeFor` can page
+  past `limit` (#1853). Both bundled providers implement it and break ties on
+  equal `created_at` by id, so pages do not overlap.
 
 ## 1.102.0 — 2026-11-26
 

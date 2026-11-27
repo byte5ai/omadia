@@ -105,8 +105,13 @@ export function createMemoryBackendRouter(deps: MemoryBackendDeps): Router {
     const envDefault: Backend =
       deps.config.MEMORY_BACKEND ??
       (databaseUrlPresent ? 'postgres' : 'inmemory');
+    // `current` is the backend that is RUNNING (#1834): the admin page and
+    // the /memory badge label it "active". The saved choice that the next
+    // boot applies is `desired`; they differ only while a restart is pending.
+    // With no provider registered yet (cold-boot edge) fall back to desired.
     res.json({
-      current: desired,
+      current: running ?? desired,
+      desired,
       envDefault,
       databaseUrlPresent,
       activeProviderId: activeProviderId(deps.registry),

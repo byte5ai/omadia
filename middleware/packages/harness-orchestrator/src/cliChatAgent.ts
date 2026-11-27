@@ -55,7 +55,7 @@ import {
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
-import { TOOLS_OFF_DIRECTIVE, isToolsOffTurn } from './toolsOffTurn.js';
+import { TOOLS_OFF_DIRECTIVE, UNATTENDED_DIRECTIVE, UNATTENDED_DROPPED_TOOLS, isToolsOffTurn, isUnattendedTurn } from './toolsOffTurn.js';
 import {
   OMADIA_MCP_SERVER_NAME,
   OMADIA_MCP_TOOL_PREFIX,
@@ -1766,6 +1766,10 @@ export class CliChatAgent implements ChatAgent {
     if (isToolsOffTurn(input)) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(TOOLS_OFF_DIRECTIVE)}`);
     }
+    // #1770 / ADR 0242 — nobody is present on a routine run or trigger firing.
+    if (isUnattendedTurn(input)) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(UNATTENDED_DIRECTIVE)}`);
+    }
 
     if (typeof input.fixedSystemHint === 'string' && input.fixedSystemHint.trim().length > 0) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(input.fixedSystemHint)}`);
@@ -2071,6 +2075,8 @@ export class CliChatAgent implements ChatAgent {
     // below then expects exactly zero omadia tools.
     const toolsOff = isToolsOffTurn(input);
     let tools = toolsOff ? [] : this.deps.dispatch.listDispatchableToolSpecs();
+    // #1770 / ADR 0242 — an unattended turn offers no interactive tool here either.
+    if (isUnattendedTurn(input)) tools = tools.filter((t) => !UNATTENDED_DROPPED_TOOLS.has(t.name));
     const bearer = randomUUID();
     // #1098 — the cost-ledger turn key. Minted per turn (at the public entry,
     // ADR-0195: the privacy handle is keyed by it) so two turns of one session

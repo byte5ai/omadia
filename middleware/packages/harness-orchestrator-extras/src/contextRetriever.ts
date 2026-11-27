@@ -1,4 +1,7 @@
-import type { EmbeddingClient } from '@omadia/embeddings';
+import {
+  currentEmbeddingClient,
+  type EmbeddingClientSource,
+} from './liveEmbeddingClient.js';
 import {
   turnNodeId,
   type AgentPrioritiesStore,
@@ -529,7 +532,8 @@ export class ContextRetriever {
   constructor(
     private readonly graph: KnowledgeGraph,
     opts: ContextRetrieverOptions = {},
-    private readonly embeddingClient?: EmbeddingClient,
+    /** Resolved per call (#1815, ADR-0194) — a fixed client or a resolver. */
+    private readonly embeddingClient?: EmbeddingClientSource,
     /** OB-74 (Palaia Phase 5) — optional. When the KG provider does not
      *  publish the `agentPriorities@1` capability, the assembler runs
      *  without Block/Boost (manual_authored × 1.3 stays active). */
@@ -1356,14 +1360,15 @@ export class ContextRetriever {
   ): Promise<MemoryRecallHit[]> {
     if (this.opts.memoryRecallDisabled) return [];
     const viewer = memoryViewer(input);
-    if (!this.embeddingClient || !viewer) return [];
+    const embeddingClient = currentEmbeddingClient(this.embeddingClient);
+    if (!embeddingClient || !viewer) return [];
     const audience = input.audienceOwners ? { audienceOwners: input.audienceOwners } : {};
     // #1536 — under a shield, no memory that holds values no shield masked.
     const shielded = input.excludeUnprotected ? { excludeUnprotected: true } : {};
 
     let queryVector: number[];
     try {
-      queryVector = await this.embeddingClient.embed(input.userMessage);
+      queryVector = await embeddingClient.embed(input.userMessage);
     } catch (err) {
       console.error(
         '[context:memory] query embed failed — skipping memory recall:',
@@ -1485,14 +1490,15 @@ export class ContextRetriever {
   ): Promise<MemoryRecallHit[]> {
     if (this.opts.durableTierDisabled) return [];
     const viewer = memoryViewer(input);
-    if (!this.embeddingClient || !viewer) return [];
+    const embeddingClient = currentEmbeddingClient(this.embeddingClient);
+    if (!embeddingClient || !viewer) return [];
 
     const reservedSlots = Math.max(0, this.opts.durableReservedSlots);
     if (reservedSlots === 0) return [];
 
     let queryVector: number[];
     try {
-      queryVector = await this.embeddingClient.embed(input.userMessage);
+      queryVector = await embeddingClient.embed(input.userMessage);
     } catch (err) {
       console.error(
         '[context:durable] query embed failed — skipping durable recall:',
@@ -1553,9 +1559,10 @@ export class ContextRetriever {
     // supports it. Semantic recall catches paraphrases ("kredite" ↔ "darlehen")
     // that plainto_tsquery misses. Empty result → fall through to FTS as a
     // lexical safety net (good for specific ids / names).
-    if (this.embeddingClient) {
+    const embeddingClient = currentEmbeddingClient(this.embeddingClient);
+    if (embeddingClient) {
       try {
-        const vector = await this.embeddingClient.embed(input.userMessage);
+        const vector = await embeddingClient.embed(input.userMessage);
         if (vector.length > 0) {
           const hits = await this.graph.searchTurnsByEmbedding({
             queryEmbedding: vector,

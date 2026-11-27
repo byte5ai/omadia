@@ -756,6 +756,9 @@ function DraggablePluginTile(props: {
 }
 
 function KindBadge({ kind }: { kind: string }): React.ReactElement {
+  // #1887 — the manifest kind is a value, not a label; a kind this build has
+  // no name for still shows as itself rather than as a missing key.
+  const t = useTranslations('operatorAgents.pluginKinds');
   const cls = {
     agent: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
     integration: 'bg-[color:var(--success)]/10 text-[color:var(--success)]',
@@ -767,7 +770,7 @@ function KindBadge({ kind }: { kind: string }): React.ReactElement {
     <span
       className={`rounded px-2 py-0 text-[10px] uppercase tracking-wide ${cls}`}
     >
-      {kind}
+      {t.has(kind) ? t(kind) : kind}
     </span>
   );
 }

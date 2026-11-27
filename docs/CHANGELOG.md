@@ -39,7 +39,7 @@ changelog.
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn
-  gets through the new kernel service `generatedObjects@1` (plugin-api **1.103.0**), filed under
+  gets through the new kernel service `generatedObjects@1` (plugin-api **1.106.0**), filed under
   the turn's person and chat. Deleting a chat releases the caller's records of that chat; the
   memory purge releases the person's (axis "User") or all records (axis "All") and counts them in
   the preview. A key left without any record is deleted from the bucket; an inactive producer or a
@@ -51,6 +51,108 @@ changelog.
   generatedObjects@1`).
 - Not tracked: files from before this change and records outside a turn — the bucket lifecycle
   rule stays required as the backstop; dataset deletion does not reach exports made from it.
+### Fixed — routines: deliveries, cleanup and the routines page (W23, 2026-11-26)
+
+- **Deliveries in the web chat** (#1755, #1756, #1766, #1775): the next turn of a chat gets its
+  recent routine deliveries as a labelled block (which routine, when, what it wrote;
+  `routineDeliveryContext.ts`, `routes/chat.ts`), so a follow-up can quote and discuss them
+  instead of denying them. An empty run is detected on the model's own text before the AI
+  disclosure is folded in, so a disclosure line alone is never delivered. The run's Privacy
+  Shield receipt is stored on the delivery (`ChatMessage.privacyReceipt`, server-written
+  only; a client PUT cannot add or change it) and shown like a chat turn's. The routine badge
+  names the delivery time, and a visible chat re-reads its deliveries every minute. The
+  deliveries block covers the last 24 hours, is framed as data, names times in
+  `PROACTIVE_TIMEZONE`, and a client PUT cannot rewrite a delivery's text (ADR 0244).
+- **Cleanup** (#1753, #1757, #1765): deleting a user account deletes their routines (audited
+  as `routines_deleted`, the admin confirmation names the count, `routine_count` on `GET
+  /api/v1/admin/users/:id`). The account resolves to its person's `omadia_user_id` through its
+  `web:<users.id>` identity (`accountRoutineOwner.ts`); a person with another web login keeps
+  the routines. Closing a chat tab asks first and names the routines that deliver
+  into it; deleting an existing web chat pauses them with the reason and removes the chat's markdown
+  transcripts (`/memories/sessions/<id>/`, `sessionTranscriptDir`); `GET
+  /api/chat/sessions/:id/routines` lists them. Deleting a routine removes its transcripts.
+  The run history keeps at most 200 runs per routine and none older than 90 days (pruned on
+  insert).
+- **Routines page** (#1749, #1754, #1758): the DTO names `timeZone`, `nextRunAt` and `until`;
+  rows keep their order (`created_at`); the page shows the next run and deadline in the
+  routine's zone, the agent and an agent problem, run cost and the routine's total, loads more
+  runs (`GET /:id/runs?before=`), polls while a run is in flight with "run now" disabled, and
+  translates headers, statuses (`cancelled`, `silent`), buttons and server errors (route codes
+  mapped, otherwise the server's reason under a localized headline; template save and preview
+  no longer show "… failed: 400", and the preview lists source warnings).
+
+### Fixed — routine runs: cancel, timeout, one run at a time, subscription CLI (W22, 2026-11-26)
+
+- **Run control** (#1746, #1747, #1748, `routineRunControl.ts`): pausing or deleting a routine
+  cancels its run in flight; the run is recorded as the new status `cancelled` (routines
+  migration `0008_routine_runs_cancelled`), not as `timeout`, and nothing is delivered. The
+  status is read once more before delivery, so a pause on another instance also holds. A run
+  deleted mid-flight writes no run row (its history goes with the routine). A cancelled run
+  does not count towards the trigger's circuit breaker. The abort signal reaches the agent
+  turn (`turnContext.abortSignal`, checked at the top of every tool-loop iteration), manual
+  runs get the routine's timeout too, and the timeout floor is 30 s (`manage_routine` rejects
+  less; stored rows below it are raised). One run per routine at a time in a process (across
+  machines only cron is at-most-once, via the trigger lease): `POST
+  /api/v1/routines/:id/trigger` answers `409 routines.run_in_progress` while one is in flight,
+  a cron firing then is skipped, and the routine DTO carries `running`. Resuming an active
+  routine no longer re-arms it.
+- **Subscription CLI** (#1763): a routine on an agent whose tool loop the CLI owns
+  (`ChatAgentBundle.externalToolLoop`) runs through the agent's chat agent instead of the
+  tool-less in-process orchestrator, so it no longer fails on every run. Raw tool results for
+  output templates are captured on that path too; tool calls and iterations are recorded as
+  unknown there.
+- **Time zone and schedule checks** (#1743, #1750, ADR 0240): `middleware/src/scheduler/zonedCron.ts`
+  evaluates cron patterns in a named IANA zone and checks a recurring schedule before it is
+  stored (`checkCronSchedule`: plain 5-field pattern, no `?`, no `@daily`/`L`/`W`/`#`, at
+  least two upcoming runs, minimum gap). A routine stores its zone (routines migration
+  `0009_routines_timezone`): the creator's (`ChatTurnInput.userTimeZone`, now also on the
+  turn context) or `PROACTIVE_TIMEZONE`; its trigger runs in it; rows without one stay UTC.
+  `manage_routine` results name `timeZone` and `nextRun` (`2026-11-27 09:00 (Europe/Berlin)`).
+  Existing routines whose pattern no longer passes are paused on boot with the reason.
+- **`manage_routine` refusals reach the model** (#1767, #1751): schedule refusals, a web
+  routine outside a saved chat and other `ToolRefusalError`s pass `formatError` (ADR 0078)
+  instead of "outcome unknown"; invalid input is a short `field: problem` list, not a zod
+  dump. `targetEmail` is no longer advertised, and its refusal says this deployment cannot
+  message other people instead of sending the user to an operator.
+- **Field-level interning exemption** (#1768, ADR 0241, decided after recommendation,
+  reversible): `manage_routine` results reach the model in clear minus `prompt`,
+  `lastRunError` and the smart-card sidecar (`INTERN_FIELD_EXEMPT_TOOLS`,
+  `fieldExemptModelCopy`, all three dispatch seams); the tool is not served on the public MCP
+  endpoint.
+- **Routines are bound to their agent by id** (#1744, #1745, `routineAgentBinding.ts`, routines
+  migration `0010_routines_agent_id`): a new agent that takes a deleted agent's slug no longer
+  takes over its routines, a routine without an agent never runs on the default agent, and a
+  disabled or deleted agent is named in the run error (no more "configure the LLM API key").
+  Such a routine is paused with the reason when the trigger engine would schedule it, `POST
+  /:id/trigger` answers `409 routines.agent_unavailable`, and the routine DTO carries
+  `agentSlug` and `agentProblem`. Rows from before the migration are bound on their next run.
+  When an agent ends service (disabled, deleted, archetype plugin removed) its active routines
+  are paused with the reason (`EndOfServiceReport.routinesPaused`, `routines_paused` in the
+  agent route response and the audit).
+- **Unattended turns** (#1770, #1771, #1772, ADR 0242): `ChatTurnInput.unattended`
+  (`@omadia/channel-sdk` **0.3.18**), set by the routine runner and the trigger turn executor. Such a turn
+  offers no `ask_user_choice`/`suggest_follow_ups` (in-process and on the subscription CLI), runs no card router, gets a directive to
+  state assumptions instead of asking, and gets no "recent turns" context block (earlier runs
+  are not trusted facts). A routine turn runs outside any routines principal, so a smart-card
+  "run now" inside a chat turn no longer offers `manage_routine` to the run, and the run is
+  told the current time in its zone.
+- **Output templates** (#1759, #1760, #1761): `format: 'html'` and `sections: []` are refused
+  at save and preview (html was stored and then ignored on every run; a stored html template
+  is treated as no template). A static-only template delivers its text without a paid agent
+  turn. A run can stay silent: an answer of `[[nothing]]` (the trigger convention) ends it
+  with the new status `silent` (routines migration `0011_routine_runs_silent`), nothing is
+  delivered, and it does not count towards the breaker. A slot response with a missing slot
+  keeps the slots the model wrote (like the preview) instead of dropping all of them. Data
+  sections report a source that was not called, returned prose instead of JSON rows, or names
+  no list: the renderer returns `warnings`, the preview shows them, and a delivered run
+  records them as `template: …` in its error field.
+- **Routine cost** (#1776, ADR 0243, decided after recommendation, reversible): every run
+  stores its metered model cost (`routine_runs.cost_usd`, routines migration
+  `0012_routine_runs_cost`; a failed turn still counts), `GET /api/v1/routines/:id/runs`
+  returns `costUsd` per run and `totalCostUsd`, and a manual run's cost is booked on the
+  routine's trigger (`TriggerService.bookManualSpend`: spend, monthly budgets, audit row
+  `fired` / `manual_run`), so the operator trigger view shows every run.
+
 ### Fixed — office files, attachments and transcription (Welle 5 W07-08) (2026-11-26)
 
 - **File export follows the agent's grant (#1972).** The Excel offer under a truncated
@@ -589,6 +691,32 @@ changelog.
 - The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
 - The webhook validation fixtures use the graph's JSON object type, resolving a TypeScript error in the test gate.
 
+### Fixed — agent editor: fresh state after save, revision check, Limits tab, German labels (#1873, #1882, #1887, #1889, #1894, #1895, ADR-0216) (2026-11-26)
+
+- **Agent plugin editor reseeds from the stored set (#1873).** After a save on the Plugins tab, the editor remounted before the page refresh and showed the old set. A second "Save" then quietly restored a grant that had just been removed, or removed one that had just been added. `PUT /api/v1/operator/agents/:slug/plugins` now also returns the stored set (`plugins`), and the editor reseeds from it. A cancelled broad-reach confirmation keeps the editor's unsaved edits.
+- **Agent identity: revision check and protection for unsaved edits (#1889, ADR-0216).** `PUT /:slug/identity` accepts an optional `expected_revision`. If the stored identity has moved on, the request is refused with 409 `identity_revision_conflict` (`error` plus `code`/`message`, `current_revision`) and nothing is written. An agent without an identity row now reports `identity.revision: 0`; `expected_revision: 0` means "no identity may exist yet", so two tabs saving an agent's first identity no longer overwrite each other. Requests without the field are not checked. The web UI always sends it and shows a localized "changed elsewhere, reload" message. Avatar upload and removal keep unsaved field edits, removing the avatar asks first, and leaving a detail tab or the page with unsaved changes asks first. No migration: the existing `agent_identities.revision` is used.
+- **Limits tab (#1882, #1894, #1895).** Preset labels show readable text instead of raw keys. The note now says correctly that a value set on the agent replaces the Quality Guard value for that field. The anti-flattery select has a "Not set" option that is distinct from "Off" and saves no level. Any change to the quality block now reloads the registry. The "Own prohibitions" field keeps Enter and spaces while typing and normalizes on blur.
+- **German agent pages (#1887).** German catalogue values on the agent pages were translated. The agent meta lines, plugin kind badges, routing-tester source, privacy profile, persona slider ends and radar axes now come from the catalogue (new `builder.persona.axes.<axis>.{name,left,right}`, `operatorAgents.pluginKinds.*`, `routingTesterVia.*`, `privacyProfiles.*`). `PERSONA_AXIS_LABELS` was removed in favour of `usePersonaAxisCopy`.
+
+### Fixed — operator agent routes: bindings, drain/kill, create errors, Teams notice, missing packages, inspector model (#1879, #1884, #1885, #1901, #1903, #1942) (2026-11-26)
+
+- **Bindings and routing tester refuse unknown channel types** (#1879). `PUT /api/v1/operator/agents/:slug/bindings` answers a new binding under a type no installed channel plugin routes with `400 unknown_channel_type` (`known_channel_types`); the kernel's own web chat type `web` is always accepted; a binding the agent already holds may stay. `POST …/resolve-channel` refuses an unknown type the same way instead of answering "fallback". Migration **0117_channel_api_binding_type** rewrites old `channel-api` bindings with a `key:` key to `@omadia/channel-api` when no binding under the real type holds the same key; such rows routed nothing before and route the API key to the bound agent after the upgrade.
+- **Drain/kill find the agent's web chats** (#1884). A client `PUT /api/chat/sessions/:id` no longer drops the server-owned agent pin (`snapshot`, ADR-0146), which had left drain/kill matching nothing. Both answer `404` for an unknown agent; the agents page asks before a drain and shows how many web chats were released or deleted. A browser that still holds a deleted chat re-creates it (unpinned) on its next load.
+- **Agent create errors** (#1885). A malformed slug is `400 invalid_body` on `slug` (`AGENT_SLUG_RE`, exported by `@omadia/orchestrator`), a taken slug `409 slug_taken`. The form keeps its values until the server confirms, errors are localized with field hints, and the slug `pattern`s compile under the browser's `v` flag.
+- **Agent Builder inspector** names the agent's resolved model, not the Plugin Builder's code-generation model, as the "Main model" default (#1901).
+- **Teams identity form** shows the missing Microsoft 365 connector up front and keeps "Start provisioning" disabled (#1903).
+- **Assigned plugins without a package** are marked `package_missing` in the operator-agents plugin lists and shown as "Package missing" on the agent page; the boot warning names byte5ai/omadia-ui-support for the canvas ids (#1942). The check (agent page, `GET /admin/runtime/installed`, boot warning) asks the uploaded, built-in and local-dev (`PLUGIN_DEV_DIR`) stores, so a local-dev plugin is not called packageless.
+
+### Fixed — agent identity prompt: base identity kept, server-side preview, slider baseline, prompt audit (#1878, #1890, #1893, #1219, ADR-0217) (2026-11-26)
+
+- **Agent identity keeps the platform identity when only limits are set (#1878).** A boundary, character slider or anti-flattery level alone used to replace the platform-wide assistant identity, because the compiled identity text was non-empty. The registry now reads whether behaviour text was authored (`identity_has_own_instructions`). Without it, the compiled sections are appended after the platform identity. The layering lives in `agentIdentityLayers.ts` (`assembleAgentIdentity`). Per-family fallback prompts now also keep the base identity, the name and the description.
+- **Prompt tab shows what the running agent sends (#1890).** `identityPreamble` builds the head of the stable system prompt (identity, language line, answer-size block). `buildSystemPrompt` opens with it and the built agent exposes it as `identityPrompt`. `GET/PUT /api/v1/operator/agents/:slug/identity` return it as `identity_prompt`. The tab's hint (en+de) now describes the real order: Quality Guard rules first, the working mode after the identity, then tools, date and context.
+- **Character sliders measured against the real model (#1893, ADR-0217).** Sliders are target levels against the baseline of the model family the agent runs on. `inferPersonaFamily` (orchestrator package, shared with the fallback switch) maps Fable, the vendor families of `basePersonas.ts` and `unknown` instead of defaulting to Sonnet. "Auto" agents resolve via `OrchestratorRegistry.runModelFor`, and Fable gets an Opus-derived baseline. The identity routes return `persona_baseline`; the editor shows it as the model-default tick and radar reference and puts unset axes on it. Stored prompts of Fable, non-Anthropic and unresolved agents are recompiled on the next boot.
+- **Prompt audit leftovers (#1219).** The session-summary and file-retry prompts are now English, without numeric caps or shouted words, and answer in the conversation's language. `temperature_hint` needed no core change, because #2143 already removed it.
+
+### Fixed — a reused agent slug starts empty (#1881, ADR-0218) (2026-11-26)
+
+- **A reused slug no longer inherits a deleted agent's state (#1881, ADR-0218).** Deleting an agent now moves its memory trees (`/memories/orchestrators/<slug>`, `/memories/contexts/<slug>`, with their discretion labels) under the tombstone's placeholder slug `deleted-<id>`, where the Danger-Zone purge (axis `agent`) still reaches them, and removes the slug's public MCP key bindings. The delete response carries `slug_state`, and the audit records `agent.slug_state_moved`. Graph history cannot be moved, because its external ids embed the scope. So creating an agent (or the first-run agent) with a slug that still has graph history, curated memory, a memory tree or a binding is refused with `409 slug_state_remains` until the old slug is purged; a check that cannot answer gives `503 slug_state_unverifiable`. Residuals (web chat tabs, Quality Guard `agent_overrides`, routines #1745, slug-keyed graph tuning tables) are listed in ADR-0218.
 ### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
 
 - `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the
@@ -738,6 +866,171 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — MCP OAuth UX: honest reasons, confirmed service delegation, no DCR on status reads (ADR-0208) (2026-11-26)
+
+- **#1924** A provider configuration that cannot be used is reported with its reason:
+  `auth-status.discoveryError`, `POST /mcp-servers/:id/authorize` → `422
+  mcp_oauth_discovery_failed` (was 500), and a named chat message; only a missing client
+  registration gets the "one-time app registration" hint. The auth section says when the
+  metadata is unreadable instead of showing `?` placeholders.
+- **#1929** An MCP server off public https that refuses a call for authorization gets "OAuth
+  only for public https servers" (ADR-0108) instead of a raw 401. `McpAuthProvider.onAuthFailure`
+  now receives the failure text.
+- **#1933** `PUT /mcp-servers/:id/delegation` and the `delegation` field of `PUT
+  /mcp-grants` to `service` need `confirm: true` (else 409
+  `delegation_confirmation_required`), are written to the admin audit
+  (`mcp_server.delegation_change`) and answers 404 for a malformed id. The UI asks first and
+  shows a shared authorization under `service`; Connect/Disconnect there ask before replacing
+  or removing it for all callers. The Conductor dialog says the switch covers the whole server.
+- **#1947** Viewing a server no longer registers an OAuth client at the provider (DCR is
+  reported as advertised; registration happens on Connect). Deleting the last server of an
+  issuer removes its automatically acquired client (DCR/CIMD) and vault secret; a manual
+  client is kept, and nothing is removed while another server's issuer cannot be read. The registration hint shows only when
+  Connect opens the client form.
+- **#1906 (UI part)** The delegation switch is shown for MCP servers without OAuth too.
+
+### Fixed — MCP result safety: binary content, one result cap, KG ingest (ADR-0207) (2026-11-26)
+
+- **#1920** MCP `image`/`audio` blocks and blob resources reach the model as a type/size
+  placeholder, never as base64 text. A tool result the Privacy Shield does not intern
+  (operator bypass, bypassed sub-agent narration, no privacy guard) is cut to 200 000
+  characters with a notice (`capToolResultText`). Provider image blocks for unmasked
+  servers are a follow-up (ADR-0207).
+- **#1934** MCP → Knowledge-Graph ingest skips failed calls and the connect prompt; the
+  digest for a masked server holds counts only, no field names. The KG toggle's tooltip
+  (en/de) says that ingest needs an active Privacy Guard.
+
+### Fixed — MCP grants and hydration (W09-10) (2026-11-26)
+
+- **#1910** Sub-agent (helper) MCP tools carry the discovered description and input
+  schema, like top-level grants, instead of a placeholder and an empty schema.
+- **#1918** A rebuild's post-build hook reads the snapshot the agent is being built from
+  (`OrchestratorRegistry.currentSnapshot()` during a diff), so a re-scan, an enabled or a
+  disabled server reaches the agent's tools with that change, not one change later.
+- **#1917** An empty `tools/list` from a server that listed tools before is not stored
+  and prunes nothing (Discover answers 409 `mcp_tool_list_empty`, the re-scan reports a
+  failure). Pruning keeps hash-bound acknowledgements. A granted tool the discovered
+  server no longer lists is not handed to a model.
+- **#1939** A repeated canvas drop is a no-op: core migration
+  `0118_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
+  unique index `agent_tool_grants_subagent_uidx`; `createToolGrant` binds only the
+  parameters its conflict query uses (the agent node answered 500). Hydration builds one
+  tool per granted tool.
+- **#1948** Native MCP tool names longer than 64 characters end in a stable `_<8 hex>`
+  suffix instead of a plain cut; names that fit are unchanged. **A long tool's native name
+  therefore changes**: a per-tool privacy setting, API-key tool binding or allowlist entry
+  saved under the old cut name no longer matches (fails closed) and has to be saved again. Grants whose native names
+  collide after character replacement are refused (`mcp_tool_name_collision`). A tool name
+  may contain `:`; only a `<server>:` prefix is stripped from a grant ref.
+- **#1932** Replaying an answered MCP input request uses `mcpRowToConfig` (endpoint
+  placeholders, static headers), now in `src/services/mcpInputReplayer.ts`.
+
+### Fixed — memory admin: saved backend choice, env-seeded graph config, /memories paging, audit key, copy (#1834, #1858, #1853, #1854, #1839, ADR-0192, ADR-0193) (2026-11-26)
+
+- **#1834** A memory-backend switch saved on `/admin/memory-backend` now lasts until the
+  operator changes it. `bootstrapMemoryFromEnv` reads `memory_backend` before it removes the
+  non-selected sibling and carries it onto the sibling it installs or keeps; before, the
+  choice was removed with the old entry and the second boot silently swapped back.
+  `GET /api/v1/admin/memory/backend` reports `current` = the running backend and the new
+  `desired` = the saved choice; the admin page shows the saved choice separately while a
+  restart is pending, and the `/memory` badge names the running backend. ADR-0192 records
+  the rule and supersedes the "memory backend follows the environment on every boot"
+  sentence of ADR-0047 (ADR-0124 already stated the precedence).
+- **#1858** `GRAPH_EMBEDDING_BACKFILL_*` now take effect on existing installs. The boot
+  writes a backfill setting of `@omadia/knowledge-graph-neon` only when its variable is set,
+  records what it wrote in the hidden key `_env_seeded`, and on every boot lets boot-written
+  values follow the variable (or drops them when it is unset). A value an operator saved in
+  the Store wins; a set variable it overrides is logged as `⚠ … is ignored`. Values the old
+  migration wrote unasked (the built-in defaults) count as boot-written. ADR-0193 records
+  the rule (`src/plugins/envSeededConfig.ts`); the variables are now in `.env.example` and
+  handoff §10. A boot that self-heals a dual-active knowledge graph reconciles the
+  backfill settings too.
+- **#1853** `/memories` reaches every entry: `GET /api/v1/memory` takes an opaque `cursor`
+  and answers `nextCursor` (null on the last page; a full page is followed by a one-row
+  probe), backed by the new optional `ListMemorableKnowledgeOptions.offset`
+  (plugin-api 1.99.0, both providers, ties broken by id). The page shows how many entries
+  are loaded and a "Load more" button. The history labels `delete_excerpt` ("excerpt
+  deleted") with a badge. Owner checks on an existing entry of another user now answer 404
+  `memory.not_found` like an unknown id (`/:id/audit`, owners, PATCH, DELETE, excerpts)
+  instead of 403 `memory.not_an_owner` (ADR-0019 disclosure "none", ADR-0104). A failed
+  list load shows a localized headline with the server's message as detail, never the
+  client's transport line. Handoff §7 documents the route contract.
+- **#1854** Graph explorer: the owner/audit section of a memory is keyed by the entry, so
+  selecting another entry shows its own audit (a new request) and empty owner/reason inputs
+  instead of the previous entry's history and typed text.
+- **#1839** Memory, graph and knowledge admin copy: no visible text names internal planning
+  steps any more ("slice 6.5", "Slice 9", "slice 11", "#133"). Hard-coded English went into
+  the catalogs (en+de): `/memories` heading and row labels, the history's actor/before/after
+  lines (new namespace `memoryAudit`), the graph owner section (tabs, Delete, translated
+  action names via the shared `memoryAuditLabels.ts`), the recall card's insight kind,
+  kg-priorities "Add", the duplicates/inconsistencies status filter and "Detector". German
+  values that were English or jargon are translated (bulk promotion, duplicates and
+  inconsistencies, KG lifecycle, KG priorities, graph filters, `/memory` axes). The `/admin`
+  storage-backend card names Postgres and In-Memory instead of a filesystem option that
+  does not exist. The local model size is shown in decimal MB (135 MB, it divided by 1024
+  twice under an "MB" label), and the adapter's store text says 135 MB instead of 144 MB.
+  i18n literal ceiling lowered (109 after rebasing on main); four stale identical-value exceptions removed.
+
+### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
+
+- **#1815** `@omadia/orchestrator-extras` no longer captures `embeddingClient@1` in
+  `activate()`. Context recall (memory, durable and turn legs), contradiction and
+  merge-candidate detection (incl. the bulk merge services) and topic detection resolve the
+  client per call (`liveEmbeddingClient.ts`), so **Reactivate provider** / **Switch
+  provider** work without a restart. The topic detector is now published whenever an LLM
+  is available and answers continue-default (`reason: no-embedding-provider`) while no
+  provider is published; `memoryFeatureStatus@1` reports its state at read time.
+- **#1817** The knowledge-graph gate withdraws its approved client as soon as the registry
+  stops publishing it (uninstall, deactivate, reactivate): writes off, epoch bumped,
+  backfill stood down, then an in-place re-evaluation against the registry. The backfill no
+  longer counts an attempt for an embed that failed after the epoch moved. The kernel now
+  marks a disposed model-service registration (`embeddingClient`, `transcription`,
+  `decisionModel`) withdrawn: calls through a held reference reject with
+  `ModelServiceWithdrawnError` and never reach the removed adapter.
+- **#1855** The recall relevance judge resolves `class:fast` per call when
+  `kg_recall_relevance_judge_model` is unset, so it uses the discovered fast model after a
+  restart as after a reactivation. The boot log reads `recallJudge=on(class:fast per call, now …)`.
+- The orchestrator resolves the client per call too: `query_knowledge_graph`'s
+  `search_turns_semantic` and the durable-rules promotion hook take the same resolver
+  (`EmbeddingClientSource`, now exported by `@omadia/embeddings`). After a switch they
+  embed with the new provider; after an uninstall the tool answers "embeddings not
+  configured" instead of `embedding failed — … withdrawn`.
+- A `replace()` registration of a model service is withdrawn on its dispose as well (only
+  the wrapper that `replace()` created); `docs/security-architecture.md` §4 records the
+  egress rule.
+- Log lines of the extras now read `embed=live, now on|off`.
+
+### Fixed — embedding provider admin tells the truth and leads somewhere (#1814, #1816, #1818, #1857) (2026-11-26)
+
+- **#1816** `/health` no longer reports `kg.embeddings`/`semanticRecall: true` while the
+  active embedding adapter publishes no client (keyless adapter without weights, OpenAI
+  adapter without key). `buildKgHealth` takes whether `embeddingClient` is published, the
+  same evidence as the admin page's `capabilityPublished`, and warns
+  "embedding provider '<id>' is active but publishes no embedding client (…)".
+- **#1857** `capabilityGap` has a new reason `weights-ready-reactivate`: the keyless
+  adapter is the only installed provider, its weights are complete, it only needs
+  **Reactivate provider**. The box says so and carries the button; the "second adapter"
+  text (`not-published`) is left for installs that really have a second provider.
+- **#1818** The recommended `process_dedup_threshold` carries its provenance in the
+  kernel-synthetic KG config key `_process_dedup_threshold_recommended_by`
+  (`src/routes/embeddingDedupThreshold.ts`). A value is omadia's own while the marker names
+  a provider and the value still equals its recommendation; any edit makes it the
+  operator's, which is never touched. `/switch` now applies the target's recommendation as
+  `/reactivate` does, and removes omadia's value when the target has none; uninstalling a
+  provider removes the value recommended for it (install service `onUninstalled`). The page
+  shows the provenance (`dedupThresholdProvenance` in `GET /`), switch responses carry
+  `dedupThreshold`. A value written by older builds (no marker) that equals exactly one
+  provider's current recommendation is read as that recommendation, so the keyless
+  adapter's old `0.45` is cleared on a switch or uninstall; any other unmarked value stays
+  the operator's.
+- **#1814** The store's blocked-install box links to the admin page of the colliding
+  capability (`/admin/embedding-provider`, `/admin/transcription-provider`, otherwise
+  `/admin/providers`), and its text names both ways out. Store detail and install endpoint
+  now word the collision with one sentence (`describeProviderCollision`: "uninstall '<owner>'
+  first and then install this one"). `GET /admin/embedding-provider` lists
+  `installableProviders` (store providers not installed) and the page names them with the
+  steps to move. The keyless adapter's setup guide describes **Load model now** →
+  **Reactivate provider** instead of an `npm` command that a container cannot run.
 ### Added — MCP `structuredContent` feeds the data side channel (#547, ADR-0021) (2026-11-26)
 
 - MCP tools their server declares `readOnlyHint` are now data-action read tools for

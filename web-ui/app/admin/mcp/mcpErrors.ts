@@ -59,3 +59,31 @@ export function catalogErrorKind(err: unknown): CatalogErrorKind {
   if (err.code === 'transport_failed') return 'unreachable';
   return 'generic';
 }
+
+/**
+ * W09-10 — MCP route refusals that carry their meaning in `error` (#1917,
+ * #1924, #1933, #1948). The middleware's `message` is English; the UI shows
+ * the catalog copy under `adminMcp.routeErrors.<key>` instead.
+ */
+export type McpRouteErrorKey =
+  | 'toolListEmpty'
+  | 'oauthDiscoveryFailed'
+  | 'delegationConfirmationRequired'
+  | 'toolNameCollision';
+
+export function mcpRouteErrorKey(err: unknown): McpRouteErrorKey | null {
+  if (!(err instanceof ApiError)) return null;
+  let body: { error?: unknown; message?: unknown };
+  try {
+    body = JSON.parse(err.body) as { error?: unknown; message?: unknown };
+  } catch {
+    return null;
+  }
+  if (body.error === 'mcp_tool_list_empty') return 'toolListEmpty';
+  if (body.error === 'mcp_oauth_discovery_failed') return 'oauthDiscoveryFailed';
+  if (body.error === 'delegation_confirmation_required') return 'delegationConfirmationRequired';
+  if (typeof body.message === 'string' && body.message.startsWith('mcp_tool_name_collision:')) {
+    return 'toolNameCollision';
+  }
+  return null;
+}

@@ -57,17 +57,44 @@ function runAdaptive(opts: {
 }
 
 describe('renderRoutineTemplate — format gating', () => {
-  it('rejects html format until a real consumer needs it', () => {
+  it('refuses a stored template from before #1759 that still says html', () => {
     const r = renderRoutineTemplate({
       template: {
         format: 'html',
         sections: [{ kind: 'static-markdown', text: 'hi' }],
-      },
+      } as unknown as RoutineOutputTemplate,
       rawToolResults: new Map(),
       slots: {},
     });
     assert.equal(r.ok, false);
-    if (!r.ok) assert.match(r.reason, /'html' is not yet supported/);
+    if (!r.ok) assert.match(r.reason, /'html' is not supported/);
+  });
+
+  it('reports a source that was not called, returned prose, or names no list (#1761)', () => {
+    const r = renderRoutineTemplate({
+      template: {
+        format: 'markdown',
+        sections: [
+          { kind: 'data-list', sourceTool: 'absent', itemTemplate: '{{x}}' },
+          { kind: 'data-list', sourceTool: 'prose', itemTemplate: '{{x}}' },
+          { kind: 'data-list', sourceTool: 'obj', sourcePath: 'meta', itemTemplate: '{{x}}' },
+          { kind: 'data-list', sourceTool: 'rows', itemTemplate: '{{x}}', emptyText: 'none' },
+        ],
+      },
+      rawToolResults: new Map<string, unknown>([
+        ['prose', 'just words'],
+        ['obj', '{"meta":{"n":1}}'],
+        ['rows', '[]'],
+      ]),
+      slots: {},
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.warnings.length, 3, 'zero rows is not a problem');
+      assert.match(r.warnings[0]!, /'absent' was not called/);
+      assert.match(r.warnings[1]!, /'prose' returned text/);
+      assert.match(r.warnings[2]!, /'meta' is not a list/);
+    }
   });
 
   it('accepts markdown format and tags the result with format=markdown', () => {

@@ -62,6 +62,9 @@ export interface OperatorAgentPluginDto {
   id: string;
   config: Record<string, unknown>;
   enabled: boolean;
+  /** #1942 — no package store holds the plugin: it runs nowhere, whatever
+   *  `enabled` says. Absent on an older middleware. */
+  package_missing?: boolean;
 }
 
 export interface OperatorAgentBindingDto {
@@ -934,6 +937,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   // Spec 2042 §5.11 — `PUT …/context-memory` refuses `off` for an agent that
   // holds capability grants.
   'context_memory_required',
+  // #1889 / ADR-0216 — `PUT …/identity` with an `expected_revision` the
+  // stored identity has moved past (another tab or operator saved first).
+  'identity_revision_conflict',
 ] as const;
 
 export type OperatorAgentErrorCode = (typeof OPERATOR_AGENT_ERROR_CODES)[number];
@@ -1387,12 +1393,20 @@ export function parseTeamsIdentityErrorCode(
   }
 }
 
+/** #1873 — what a replace-set PUT stored, as the server now holds it. */
+export interface ReplaceAgentPluginsResponse {
+  ok: boolean;
+  plugins: OperatorAgentPluginDto[];
+  /** Held grants of a foreign archetype plugin the replace removed (S3c). */
+  removed_invalid_grants?: string[];
+}
+
 export async function replaceAgentPlugins(
   slug: string,
   plugins: Array<{ id: string; config?: Record<string, unknown>; enabled?: boolean }>,
   opts?: GrantWriteOptions,
-): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}/plugins`, {
+): Promise<ReplaceAgentPluginsResponse> {
+  return callJson<ReplaceAgentPluginsResponse>(`/v1/operator/agents/${encodeURIComponent(slug)}/plugins`, {
     method: 'PUT',
     body: JSON.stringify({
       plugins,

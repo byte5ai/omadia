@@ -167,7 +167,9 @@ describe('OM-102 — orchestrator-extras activate() provider wiring', () => {
       assert.equal(status.reasons?.topicDetector, 'no_embedding_provider');
       assert.equal(status.reasons?.factExtractor, undefined);
       assert.equal(status.providerId, CLI);
-      assert.equal(provided.has('topicDetector'), false);
+      // #1815 — published anyway: it resolves the embedding client per call,
+      // so a provider installed later turns it on without a restart.
+      assert.equal(provided.has('topicDetector'), true);
     } finally {
       await handle.close();
     }

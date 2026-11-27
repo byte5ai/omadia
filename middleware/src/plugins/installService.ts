@@ -32,6 +32,7 @@ import {
   type ActivationFailure,
 } from './activationFailure.js';
 import {
+  describeProviderCollision,
   findActiveProviderCollision,
   walkCapabilityInstallChain,
 } from './capabilityResolver.js';
@@ -354,7 +355,7 @@ export class InstallService {
     if (collision) {
       throw new InstallError(
         'install.capability_already_provided',
-        `capability '${collision.capability}' is already provided by '${collision.ownerId}' — uninstall it first`,
+        describeProviderCollision(collision),
         409,
         collision,
       );

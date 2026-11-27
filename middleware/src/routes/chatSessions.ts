@@ -8,6 +8,7 @@ import {
   ServerMirroredSessionError,
   chatSessionOwnedBy,
   isValidSessionId,
+  isWebChatSessionId,
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from '@omadia/orchestrator';
@@ -239,6 +240,16 @@ interface ChatSessionDeps {
    * after the transcript is gone; a failure is logged, never fails the delete.
    */
   releaseGenerated?: (scope: string, ownerOmadiaUserId: string | undefined) => Promise<unknown>;
+  /** #1753 — remove the markdown transcripts of the chat's scope when it is deleted. */
+  purgeTranscripts?: (sessionScope: string) => Promise<void>;
+  /** #1757 — the routines that deliver into a chat; absent = no routines feature. */
+  routines?: () => ChatRoutinesPort | undefined;
+}
+
+/** #1757 — what the chat routes need of the routines feature. */
+export interface ChatRoutinesPort {
+  listForChat(sessionId: string): Promise<ReadonlyArray<{ id: string; name: string }>>;
+  pauseForChat(sessionId: string): Promise<number>;
 }
 
 export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
@@ -374,21 +385,69 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     if (!store) return;
     try {
       // Idempotent for a missing chat; another account's answers 404.
-      if ((await store.fileExistsFor(id)) && !(await ownSession(store, req, id))) {
+      const exists = await store.fileExistsFor(id);
+      if (exists && !(await ownSession(store, req, id))) {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // #1753 / #1757 — only a saved web chat takes its transcripts and
+      // routines with it: an unsaved id, or one of another scope (a routine,
+      // a Teams conversation, a shared bucket), may name someone else's.
+      const existed = exists && isWebChatSessionId(id);
       await store.delete(id);
-    } catch (err) {
-      failure(res, err, '[chat-sessions] delete');
-      return;
-    }
-    if (deps.releaseGenerated) {
-      await deps.releaseGenerated(id, req.session?.omadia_user_id).catch((err: unknown) => {
+      // ADR-0187 (#1986) — the caller's records of generated files made in this
+      // chat; only their own rows, so it is safe for a chat that never existed.
+      // A failure is logged and never fails the delete.
+      await deps.releaseGenerated?.(id, req.session?.omadia_user_id).catch((err: unknown) => {
         console.error('[chat-sessions] generated files not released:', err instanceof Error ? err.message : err);
       });
+      if (!existed) {
+        res.json({ ok: true, routinesPaused: 0 });
+        return;
+      }
+      // #1753 — the chat's transcripts (`/memories/sessions/<id>/`) go with it:
+      // the orchestrator is told to look there for earlier conversations.
+      await deps.purgeTranscripts?.(id).catch((err: unknown) => {
+        console.error(`[chat-sessions] removing the transcripts of chat ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      // #1757 — routines that delivered into this chat are paused now, with
+      // the reason, instead of each failing its next run first.
+      let routinesPaused = 0;
+      try {
+        routinesPaused = (await deps.routines?.()?.pauseForChat(id)) ?? 0;
+      } catch (err) {
+        console.error(`[chat-sessions] pausing the routines of chat ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      res.json({ ok: true, routinesPaused });
+    } catch (err) {
+      failure(res, err, '[chat-sessions] delete');
     }
-    res.json({ ok: true });
+  });
+
+  /** #1757 — the active routines that deliver into a chat, named in the close confirmation. */
+  router.get('/sessions/:id/routines', async (req: Request, res: Response) => {
+    const id = req.params['id'];
+    if (typeof id !== 'string' || !isValidSessionId(id)) {
+      res.status(400).json({ error: 'invalid_id' });
+      return;
+    }
+    const store = resolveStore(res);
+    if (!store) return;
+    try {
+      // Only the chat's owner learns which routines deliver into it.
+      if (!(await store.fileExistsFor(id))) {
+        res.json({ routines: [] });
+        return;
+      }
+      if (!(await ownSession(store, req, id))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const routines = (await deps.routines?.()?.listForChat(id)) ?? [];
+      res.json({ routines: routines.map((r) => ({ id: r.id, name: r.name })) });
+    } catch (err) {
+      failure(res, err, '[chat-sessions] routines');
+    }
   });
 
   /**

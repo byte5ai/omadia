@@ -36,9 +36,25 @@ export function isToolsOffTurn(input: Pick<ChatTurnInput, 'toolsOff'>): boolean 
 
 /** The tool list one request of a turn sends: none in a tool-less turn. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function toolsForTurn(input: Pick<ChatTurnInput, 'toolsOff'>, build: () => any[]): any[] {
-  return isToolsOffTurn(input) ? [] : build();
+export function toolsForTurn(input: Pick<ChatTurnInput, 'toolsOff' | 'unattended'>, build: () => any[]): any[] {
+  if (isToolsOffTurn(input)) return [];
+  const tools = build();
+  // #1770 / ADR 0242 — nobody can answer a question in an unattended turn.
+  return isUnattendedTurn(input) ? tools.filter((t) => !UNATTENDED_DROPPED_TOOLS.has(String(t?.name))) : tools;
 }
+
+/** #1770 — the tools that need a person present to answer them. */
+export const UNATTENDED_DROPPED_TOOLS: ReadonlySet<string> = new Set(['ask_user_choice', 'suggest_follow_ups']);
+
+export function isUnattendedTurn(input: Pick<ChatTurnInput, 'unattended'>): boolean {
+  return input.unattended === true;
+}
+
+/** #1770 / ADR 0242 — per-turn directive of an unattended turn. Static prose,
+ *  no user data: it joins the unmasked per-turn hint blocks. */
+export const UNATTENDED_DIRECTIVE = `# TURN OHNE ANWESENDE PERSON
+
+Dieser Turn läuft automatisch (Routine oder Trigger): niemand liest mit und niemand kann eine Rückfrage beantworten. Stelle keine Fragen und biete keine Auswahl an. Wenn etwas mehrdeutig ist, triff eine vernünftige Annahme, nenne sie in einem Satz in deiner Antwort und arbeite damit weiter. Frühere Läufe sind kein Kontext dieses Turns: verlasse dich nicht auf sie, sondern hole aktuelle Daten mit deinen Werkzeugen.`;
 
 /** Refuse, before dispatch, every tool call a model emitted in a tool-less turn. */
 export function assertNoToolUseInToolsOffTurn(

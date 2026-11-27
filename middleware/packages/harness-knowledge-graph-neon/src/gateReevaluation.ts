@@ -95,9 +95,11 @@ export interface GateRunner {
   outcome(): EmbeddingModelGateOutcome;
   /** Is a stale-vector clear still owed under the current verdict? */
   clearResumeOwed(): boolean;
-  /** Are vector writes allowed right now? */
+  /** Are vector writes allowed right now? Checks for a withdrawn provider
+   *  first (#1817). */
   vectorWritesAllowed(): boolean;
-  /** The client the current verdict was computed against. */
+  /** The client the current verdict was computed against, or `undefined`
+   *  once the registry no longer publishes it (#1817). */
   approvedClient(): EmbeddingClient | undefined;
   /**
    * THE FENCE (#440 follow-up). Bumped in the same synchronous block that
@@ -277,13 +279,66 @@ export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner>
 
   publication.attachReevaluate(reevaluate);
 
+  /**
+   * #1817 / ADR-0194 — WITHDRAWAL. Uninstalling or deactivating the approved
+   * provider removes its registry entry, but nothing re-ran the gate: the
+   * stores and the backfill sweep kept embedding with the removed provider's
+   * client (an OpenAI-compatible adapter kept sending turn text to its API)
+   * until a restart, while `/health` already reported embeddings off.
+   *
+   * Every read of the approved client, the write verdict or the epoch checks
+   * that the registry STILL holds the approved client. If it does not, the
+   * runner withdraws in one synchronous block — no approved client, a new
+   * epoch (fencing every write already awaiting an embed), writes OFF, sweep
+   * stood down — and then re-evaluates in place against whatever the registry
+   * holds now. That keeps the module rule: the approved reference moves to a
+   * NEW client only together with a verdict computed for it.
+   */
+  const withdrawIfGone = (): void => {
+    if (approved === undefined || deps.resolveRegistryClient() === approved) {
+      return;
+    }
+    approved = undefined;
+    epoch += 1;
+    const clearOwed = requiresStaleVectorClearResume(outcome);
+    publication.republish(outcome, false, clearOwed, epoch);
+    try {
+      deps.syncBackfill({
+        client: undefined,
+        vectorWritesAllowed: false,
+        clearResumeOwed: clearOwed,
+      });
+    } catch (err) {
+      deps.log(
+        `[graph-embedding-gate] standing the backfill down after the provider withdrawal failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    deps.log(
+      `[graph-embedding-gate] the approved embedding client is no longer published (provider uninstalled, deactivated or replaced) — vector writes OFF at epoch=${String(epoch)}, re-evaluating against the registry`,
+    );
+    reevaluate().catch((err: unknown) => {
+      deps.log(
+        `[graph-embedding-gate] re-evaluation after the provider withdrawal failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+
   return {
     status: publication.status,
     outcome: () => outcome,
     clearResumeOwed: () => requiresStaleVectorClearResume(outcome),
-    vectorWritesAllowed: () => publication.vectorWritesAllowed(),
-    approvedClient: () => approved,
-    epoch: () => epoch,
+    vectorWritesAllowed: () => {
+      withdrawIfGone();
+      return publication.vectorWritesAllowed();
+    },
+    approvedClient: () => {
+      withdrawIfGone();
+      return approved;
+    },
+    epoch: () => {
+      withdrawIfGone();
+      return epoch;
+    },
     markStaleVectorClearComplete: (callerEpoch: number) => {
       publication.markStaleVectorClearComplete(callerEpoch);
     },

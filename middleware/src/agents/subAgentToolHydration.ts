@@ -334,6 +334,23 @@ function discoveredDescriptor(
   return { name: toolRef };
 }
 
+/**
+ * #1917 — the descriptor of a granted tool the server still offers. A server
+ * that was discovered and no longer lists the tool yields `undefined`: the
+ * grant stays stored (the tool may come back) but is not handed to a model,
+ * which would only meet the dispatch guard's "run Discover" refusal. A server
+ * never discovered keeps the name-only fallback of `discoveredDescriptor`.
+ */
+export function offeredMcpDescriptor(
+  row: McpServerRow | undefined,
+  toolRef: string,
+): McpToolDescriptor | undefined {
+  const tools = (row?.discoveredTools ?? []) as ReadonlyArray<Record<string, unknown>>;
+  const discovered = row?.lastDiscoveredAt !== null && row?.lastDiscoveredAt !== undefined;
+  if (discovered && !tools.some((t) => t['name'] === toolRef)) return undefined;
+  return discoveredDescriptor(row, toolRef);
+}
+
 /** True for a non-null, non-array object. Arrays are rejected: an
  *  `outputSchema` is a JSON-Schema object, and a persisted array would be
  *  corrupt data rather than a lenient variant. */
@@ -453,6 +470,12 @@ export function registerDbSubAgentTools(
             );
           },
           ...(deps.blockedMcpGrant ? { blockedMcpGrant: deps.blockedMcpGrant } : {}),
+          // #1910 — helpers get the discovered description and schema too.
+          mcpDescriptor: (serverId, toolName) =>
+            offeredMcpDescriptor(
+              deps.mcpServers.find((r) => r.id === serverId),
+              toolName,
+            ),
           // #2050 — the helper's envelope is a subset of its agent's, checked
           // when built AND on every call against the live parent.
           parentHolds: (grant) =>
@@ -482,6 +505,7 @@ export function registerDbSubAgentTools(
   // sub-agent bucket). Register each MCP grant as a per-agent DomainTool.
   // `toolKind='native'` top-level grants stay a no-op: native tools are
   // process-wide and already reachable by the orchestrator.
+  const topLevelSeen = new Set<string>();
   for (const g of slice.toolGrants) {
     if (g.subAgentId !== null) continue;
     if (g.toolKind !== 'mcp' || !g.mcpServerId) continue;
@@ -493,6 +517,10 @@ export function registerDbSubAgentTools(
       continue;
     }
     const toolName = mcpToolNameFromRef(g.toolRef, cfg.name);
+    // #1939 — rows that normalise to the same tool are one tool.
+    const key = `${g.mcpServerId} ${toolName}`;
+    if (topLevelSeen.has(key)) continue;
+    topLevelSeen.add(key);
     if (deps.blockedMcpGrant?.(g.mcpServerId, toolName)) {
       deps.log?.(
         `subAgentToolHydration: top-level mcp tool "${toolName}" on "${cfg.name}" blocked by scan-verdict policy — skipped`,
@@ -500,9 +528,14 @@ export function registerDbSubAgentTools(
       continue;
     }
     const row = deps.mcpServers.find((r) => r.id === g.mcpServerId);
-    tools.push(
-      mcpGrantToDomainTool(deps.mcpManager, cfg, discoveredDescriptor(row, toolName)),
-    );
+    const descriptor = offeredMcpDescriptor(row, toolName);
+    if (descriptor === undefined) {
+      deps.log?.(
+        `subAgentToolHydration: top-level mcp tool "${toolName}" is no longer offered by "${cfg.name}" — skipped`,
+      );
+      continue;
+    }
+    tools.push(mcpGrantToDomainTool(deps.mcpManager, cfg, descriptor));
   }
 
   // Skill capability contracts (epic #459 W4, issue #456): persona skills may

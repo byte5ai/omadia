@@ -159,7 +159,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -256,6 +256,7 @@ import {
   type LocalEmbeddingModelFetcher,
   type MemoryFeatureStatusView,
 } from './routes/adminEmbeddingProvider.js';
+import { releaseRecommendedDedupThreshold } from './routes/embeddingDedupThreshold.js';
 import {
   createAdminTranscriptionProviderRouter,
   TRANSCRIPTION_PROVIDER_STATE_SERVICE,
@@ -384,6 +385,7 @@ import {
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { parseMcpActionId } from './conductor/mcpActionId.js';
 import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
+import { createMcpInputReplayer } from './services/mcpInputReplayer.js';
 import { createMcpActionInvoker, listMcpActions } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
@@ -501,6 +503,7 @@ import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService } from './platform/agentEndOfService.js';
+import { createAgentSlugState } from './platform/agentSlugState.js';
 import { createSystemNoticeOutbox } from './platform/systemNoticeOutbox.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
@@ -625,7 +628,6 @@ import {
 // W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
 // replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
 import {
-  planMcpInputReplay,
   setSharedMcpInputReplayer,
   sharedPendingMcpInputStore,
 } from '@omadia/orchestrator';
@@ -636,7 +638,12 @@ import {
   delegationBlockedUnattendedMessage,
   resolveMcpUserKey,
 } from './services/mcpDelegation.js';
-import { McpOAuthService } from './services/mcpOAuthService.js';
+import {
+  McpOAuthService,
+  isPublicHttpsEndpoint,
+  mcpOAuthConfigBrokenMessage,
+  mcpOAuthPublicHttpsOnlyMessage,
+} from './services/mcpOAuthService.js';
 import { CIMD_METADATA_PATH, cimdMetadataUrl } from './services/mcpCimd.js';
 import { createMcpClientMetadataRouter } from './routes/mcpClientMetadata.js';
 import { McpConfigService } from './services/mcpConfigService.js';
@@ -678,6 +685,10 @@ import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
 import { createAttachmentByteReader, loopbackOriginFor } from './channels/attachmentByteReader.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
+import { agentEndedText, resolveRoutineAgent } from './plugins/routines/routineAgentBinding.js';
+import { WEB_CHAT_DELETED_PAUSE } from './plugins/routines/webChatProactiveSender.js';
+import { purgeSessionTranscripts } from './plugins/routines/sessionTranscripts.js';
+import { routineOwnerIdsForAccount } from './plugins/routines/accountRoutineOwner.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
@@ -699,7 +710,7 @@ import { ObservedConversationInvites } from './platform/observedConversationInvi
 import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
-import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
+import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver, ChatTurnInput } from '@omadia/channel-sdk';
 import type {
   AgentIdentityProvider,
   ChannelReadinessProvider,
@@ -713,7 +724,7 @@ import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.
 import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
-import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
+import { currentDispatchCaller, looksUnauthorized, turnContext } from '@omadia/orchestrator';
 import { mcpReadToolInvoker } from './triggers/mcpReadTool.js';
 import { ConsultationStore } from './consultation/consultationStore.js';
 import { createConsultationBroker } from './consultation/consultationBroker.js';
@@ -1238,6 +1249,9 @@ async function main(): Promise<void> {
       `[middleware] local-dev package store loaded (${localDevPackageStore.list().length} packages at ${localDevPackageStore.rootPath()})`,
     );
   }
+  // Every place a plugin's package can live — the catalog reads all three, so
+  // "has no package" must too (a PLUGIN_DEV_DIR plugin is not packageless).
+  const packageSources = [uploadedPackageStore, builtInPackageStore, localDevPackageStore] as const;
 
   // Resolution order on ID collision (PluginCatalog.load applies last-set-
   // wins): Local-Dev > Uploaded > Built-in > PLUGIN_MANIFEST_DIR (examples).
@@ -1444,6 +1458,10 @@ async function main(): Promise<void> {
       await adminAudit?.record(entry);
     },
     emitSystemNotice,
+    // #1744 — an agent that ends service takes its routines with it (paused,
+    // with the reason on the routine), instead of each failing at its next run.
+    pauseRoutinesOf: async (agent, reason) =>
+      (await routinesHandle?.runner.pauseRoutinesOfAgent(agent, agentEndedText(agent.name, reason))) ?? 0,
     log: (m) => console.log(m),
   });
   const facilitationEngineSources = (): FacilitationEngineSources => ({
@@ -2235,8 +2253,16 @@ async function main(): Promise<void> {
     },
     // #2088 — an uninstalled archetype plugin no longer delivers its archetype:
     // the kernel's own descriptor (where it has one) applies again.
-    onUninstalled: async () => {
+    onUninstalled: async (agentId) => {
       await archetypeRegistry.sync();
+      // #1818 — the dedup threshold omadia recommended FOR this embedding
+      // provider leaves with it; the next KG activation uses the default (or
+      // the next provider's recommendation). An operator value stays.
+      if (await releaseRecommendedDedupThreshold(installedRegistry, agentId)) {
+        console.log(
+          `[middleware] removed the dedup threshold recommended for uninstalled ${agentId}; the knowledge graph uses its default from its next activation`,
+        );
+      }
     },
     onUninstall: async (agentId, reason) => {
       // #2088 — FIRST, while the plugin is still installed and running: the
@@ -2680,7 +2706,7 @@ async function main(): Promise<void> {
   );
   // Entries of the registry whose package is gone are visited by no runtime
   // (each walks the packages), so nothing ever reports them. Once per boot.
-  warnPackagelessEntries(installedRegistry, [uploadedPackageStore, builtInPackageStore], (message) => {
+  warnPackagelessEntries(installedRegistry, packageSources, (message) => {
     console.warn(message);
   });
   // #1070 — the orchestrator (an extension) has now had its chance to provide
@@ -3488,7 +3514,7 @@ async function main(): Promise<void> {
                   ? delegationBlockedUnattendedMessage(server.name)
                   : delegationBlockedMessage(server.name);
               },
-              onAuthFailure: async (cfg: McpServerConfig) => {
+              onAuthFailure: async (cfg: McpServerConfig, failure?: string) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                 if (!server) return null;
                 // W0-1 (D2): fail closed FIRST. A `per_user` server with no
@@ -3506,7 +3532,20 @@ async function main(): Promise<void> {
                 // discovery keeps this cheap per call). With the metadata
                 // unreadable there is nothing to prompt for: the raw failure
                 // is more honest than "isn't set up yet".
+                // #1929 / ADR-0108 — OAuth discovery talks only to public
+                // https hosts. A server elsewhere that refused the call for
+                // authorization gets that said plainly, not a raw 401.
+                if (
+                  server.transport !== 'stdio' &&
+                  failure !== undefined &&
+                  looksUnauthorized(failure) &&
+                  !(await isPublicHttpsEndpoint(mcpRowToConfig(server).endpoint))
+                ) {
+                  return mcpOAuthPublicHttpsOnlyMessage(server.name);
+                }
                 const desc = await mcpOAuthService.describeAuth(server);
+                // #1924 — an unusable provider configuration, named.
+                if (desc.discoveryError) return mcpOAuthConfigBrokenMessage(server.name, desc.discoveryError);
                 if (!desc.protected || desc.discoveryUnavailable) return null;
                 // Machine block the chat parses into an in-line "Connect" card
                 // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
@@ -3549,39 +3588,16 @@ async function main(): Promise<void> {
     // Publish the handle so the operator router can invalidate a changed
     // server and `shutdownBuilder` can close the pooled stdio children.
     runtimeMcpManager = mcpManager;
-    // W2-1 (#544) — the replayer. Registered here because this is the only
-    // place that holds BOTH the manager and the server registry: a replay is
-    // a fresh `tools/call`, so it needs the server's live config (endpoint,
-    // headers, Vault-resolved env) re-resolved rather than a snapshot taken
-    // when the call was parked.
-    //
-    // A server the operator deleted (or renamed away) between the two turns
-    // returns `undefined`, which the orchestrator surfaces to the user as
-    // "no longer reachable" instead of silently dropping their input.
+    // W2-1 (#544) — the replayer (see `createMcpInputReplayer`). Registered
+    // here because this is the only place that holds both the manager and the
+    // server registry.
     if (mcpAuditStore) {
-      setSharedMcpInputReplayer({
-        replay: async (record, inputResponses) => {
-          const server = (await mcpAuditStore.listMcpServers()).find(
-            (s) => s.id === record.serverId,
-          );
-          if (!server) return undefined;
-          const cfg: McpServerConfig = {
-            id: server.id,
-            name: server.name,
-            transport: server.transport,
-            endpoint: server.endpoint,
-            ...(server.privacyBypass ? { privacyBypass: true } : {}),
-          };
-          // #562 phase 3 — the RECORD decides which dialect the retry
-          // speaks: omadia's flat `inputResponses` argument for a 2025-era
-          // peer, the spec's per-request `inputResponses` param plus a
-          // verbatim `requestState` echo for a 2026-07-28 one. See
-          // `planMcpInputReplay` for why that is derived from the card
-          // rather than from the connection.
-          const plan = planMcpInputReplay(record, inputResponses);
-          return mcpManager.callTool(cfg, record.toolName, plan.args, plan.replay);
-        },
-      });
+      setSharedMcpInputReplayer(
+        createMcpInputReplayer({
+          listServers: () => mcpAuditStore.listMcpServers(),
+          manager: mcpManager,
+        }),
+      );
     }
     // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
     // resolved lazily by createPluginContext, exactly like the 'llm'
@@ -3790,12 +3806,10 @@ async function main(): Promise<void> {
   const routineTriggerScheduler = createRoutineTriggerScheduler({
     service: () => triggersRef.current?.service,
     routines: () => routinesHandle?.store,
-    resolveAgent: (slug) => {
-      // #2055 — no fallback agent: a routine runs as the agent it names.
-      const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-      const agent = slug !== null && slug !== 'default' ? registry?.get(slug)?.agent : undefined;
-      return agent ? { id: agent.id, slug: agent.slug } : undefined;
-    },
+    // #2055 — no fallback agent: a routine runs as the agent it is bound to
+    // (#1745: by id, not by whoever holds its slug now).
+    resolveAgent: (routine) =>
+      resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
     askOwner: async (routine, text) => {
       const sender = routinesHandle?.senderRegistry.get(routine.channel);
       if (!sender) throw new Error(`no proactive sender for channel '${routine.channel}'`);
@@ -3848,6 +3862,17 @@ async function main(): Promise<void> {
         ownBotRefusal(conversationRef, agentSlug, channel, (slug, type) =>
           serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.channelIdentityFor(slug, type)?.channelKey,
         ),
+      // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
+      defaultTimeZone: config.PROACTIVE_TIMEZONE,
+      // #1753 — a deleted routine's transcripts go with it.
+      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1776 — a manual run's cost is booked on the routine's trigger.
+      bookManualRunCost: async (routineId, costUsd) => {
+        await triggersRef.current?.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId });
+      },
+      // #1744 / #1745 — the agent a routine is bound to, by id.
+      resolveAgent: (routine) =>
+        resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
       // #1598 — the routine's own orchestrator, with its plugin grants.
       // #2045 / #2046 — with the agent's emitter and speaker, so a routine's
       // answer passes the same identity guard and carries the same speaker.
@@ -3859,6 +3884,9 @@ async function main(): Promise<void> {
         const speaker = speakerOf(bundle.agent);
         return {
           runTurn: (input) => raw.runTurn(input),
+          // #1763 — on the subscription CLI the tool loop is the CLI's: the
+          // run goes through the agent's chat agent like a chat turn there.
+          ...(bundle.externalToolLoop ? { chat: (input: ChatTurnInput) => bundle.agent.chat(input) } : {}),
           ...(emitter ? { emitter } : {}),
           ...(speaker ? { speaker } : {}),
         };
@@ -4033,7 +4061,14 @@ async function main(): Promise<void> {
         EMBEDDING_GATE_STATUS_SERVICE,
       );
       const probe = await probeGraphPool(serviceRegistry.get('graphPool'));
-      const kg = buildKgHealth(installedRegistry, gate, probe);
+      // #1816 — whether a client is published right now, so an active adapter
+      // that stood down (missing weights, no key) is not reported as on.
+      const kg = buildKgHealth(
+        installedRegistry,
+        gate,
+        probe,
+        serviceRegistry.get('embeddingClient') !== undefined,
+      );
       // #648 (epic #642) — the resolved AI-Act marking posture per channel.
       // Read per request for the same reason the embedding gate is: a config
       // change re-activates the orchestrator and re-publishes, and a boot-time
@@ -4305,6 +4340,8 @@ async function main(): Promise<void> {
     '/api',
     requireAuth,
     createChatRouter({
+      // #1756 — routine delivery times in the instance zone (ADR 0240).
+      timeZone: config.PROACTIVE_TIMEZONE,
       agentResolver,
       legacyChatOwner,
       routeTurn: routeWebTurn,
@@ -4375,6 +4412,18 @@ async function main(): Promise<void> {
       legacyOwner: legacyChatOwner,
       releaseGenerated: (scope, ownerOmadiaUserId) =>
         generatedObjects.release({ scope, ...(ownerOmadiaUserId ? { ownerOmadiaUserId } : {}) }),
+      // #1753 — and removes its markdown transcripts.
+      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1757 — deleting a chat pauses the routines that deliver into it.
+      routines: () => {
+        const runner = routinesHandle?.runner;
+        return runner
+          ? {
+              listForChat: (id) => runner.routinesOfWebChat(id),
+              pauseForChat: (id) => runner.pauseRoutinesOfWebChat(id, WEB_CHAT_DELETED_PAUSE),
+            }
+          : undefined;
+      },
     }),
   );
 
@@ -4746,6 +4795,19 @@ async function main(): Promise<void> {
   const releaseAgentChannelBots = agentChannelIdentities
     ? (agentId: string) => agentChannelIdentities.releaseAll(agentId)
     : undefined;
+  // #1881 (ADR-0218) — a delete moves the slug-keyed memory under the
+  // tombstone (with its discretion labels) and removes the slug's public MCP
+  // key bindings; a create refuses a slug that still has state, because the
+  // graph's scopes cannot be moved. Named here for the same lazy match.
+  const agentSlugState = createAgentSlugState({
+    memoryStore: () => memoryStore,
+    labelMoves: (store, agentSlug) =>
+      new LabelledMemoryStore(store, discretionStore, agentSlug, { labelReads: false }),
+    mcpBindings: () => (graphPool ? createPublicMcpKeyBindingAdminStore(graphPool) : undefined),
+    knowledgeGraph: () => knowledgeGraph,
+    tenantId: graphTenantId,
+    log: (m) => console.warn(m),
+  });
   app.use(
     '/api/v1/operator/agents',
     requireAuth,
@@ -4798,8 +4860,12 @@ async function main(): Promise<void> {
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // #1942 — an assigned plugin whose package is gone shows as such.
+      hasPackage: (id: string) => hasPackage(id, packageSources),
       // #2088 — end of service before a disable or a delete; the audit of both.
       endOfService: agentEndOfService,
+      // #1881 (ADR-0218) — see `agentSlugState` above.
+      slugState: agentSlugState,
       recordAudit: async (entry) => {
         await adminAudit?.record(entry);
       },
@@ -6430,6 +6496,32 @@ async function main(): Promise<void> {
       createAdminUsersRouter({
         userStore,
         audit: adminAudit,
+        // #1765 — a deleted account takes its routines with it.
+        // The account resolves to the person's routine owner ids (their
+        // `omadia_user_id` cluster, when this is their only web login).
+        routines: () => {
+          const runner = routinesHandle?.runner;
+          const ownerIds = (id: string): Promise<string[]> =>
+            graphPool
+              ? routineOwnerIdsForAccount(graphPool, graphTenantId, id, async (other) =>
+                  Boolean(await userStore.findById(other)),
+                )
+              : Promise.resolve([id]);
+          return runner
+            ? {
+                countForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.countRoutinesOfUser(owner);
+                  return n;
+                },
+                deleteForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.deleteRoutinesOfUser(owner);
+                  return n;
+                },
+              }
+            : undefined;
+        },
         sessions: sessionRevocation,
         loginLimiter: loginGuard.limiter,
         loginDevices: loginGuard.devices,
@@ -6934,7 +7026,7 @@ async function main(): Promise<void> {
       promptContributionRegistry,
       vault: secretVault,
       catalog: pluginCatalog,
-      hasPackage: (id) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
+      hasPackage: (id) => hasPackage(id, packageSources),
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),

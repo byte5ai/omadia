@@ -26,6 +26,14 @@ describe('<PersonaRadar />', () => {
     expect(radar.querySelectorAll('text').length).toBeGreaterThanOrEqual(12);
   });
 
+  it('labels the axes with their German names, not raw keys (#1887)', () => {
+    render(<PersonaRadar />);
+    const radar = screen.getByTestId('persona-radar');
+    const labels = Array.from(radar.querySelectorAll('text')).map((n) => n.textContent);
+    expect(labels).toContain('Risikobereitschaft');
+    expect(labels).not.toContain('risk_tolerance');
+  });
+
   it('renders both polygons (neutral baseline + persona) when axes empty', () => {
     render(<PersonaRadar />);
     const radar = screen.getByTestId('persona-radar');

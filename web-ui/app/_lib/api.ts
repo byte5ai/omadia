@@ -2138,6 +2138,8 @@ export interface AdminUsersListResponse {
 
 export interface AdminUserResponse {
   user: AdminUser;
+  /** #1765 — routines the user owns; deleted with the account. Only on GET /:id; null when counting failed. */
+  routine_count?: number | null;
 }
 
 export async function listAdminUsers(): Promise<AdminUsersListResponse> {
@@ -3372,9 +3374,21 @@ export interface RoutineDto {
   createdAt: string;
   updatedAt: string;
   lastRunAt: string | null;
-  lastRunStatus: 'ok' | 'error' | 'timeout' | null;
+  lastRunStatus: RoutineRunStatus | null;
   lastRunError: string | null;
   outputTemplate: RoutineOutputTemplateDto | null;
+  /** #1748 — a run is in flight; "run now" is refused meanwhile. */
+  running?: boolean;
+  /** #1744 — the agent that runs the routine (null = bound to none). */
+  agentSlug?: string | null;
+  /** #1744 / #1745 — why no agent may run it (server text), else null. */
+  agentProblem?: string | null;
+  /** #1743 — the zone the cron pattern runs in. */
+  timeZone?: string;
+  /** #1749 — next run (ISO), null when it does not run again. */
+  nextRunAt?: string | null;
+  /** #2082 — deadline (ISO), null until first scheduled. */
+  until?: string | null;
 }
 
 export interface ListRoutinesResponse {
@@ -3490,8 +3504,8 @@ export async function setRoutineTemplate(
 }
 
 export type PreviewRoutineTemplateResponse =
-  | { ok: true; format: 'markdown'; text: string }
-  | { ok: true; format: 'adaptive-card'; items: readonly unknown[] }
+  | { ok: true; format: 'markdown'; text: string; warnings?: readonly string[] }
+  | { ok: true; format: 'adaptive-card'; items: readonly unknown[]; warnings?: readonly string[] }
   | { ok: false; reason: string };
 
 /**
@@ -3550,7 +3564,7 @@ export async function deleteRoutine(id: string): Promise<void> {
 }
 
 export type RoutineRunTrigger = 'cron' | 'catchup' | 'manual';
-export type RoutineRunStatus = 'ok' | 'error' | 'timeout';
+export type RoutineRunStatus = 'ok' | 'error' | 'timeout' | 'cancelled' | 'silent';
 
 /**
  * Lightweight summary used for the per-routine run-history list. The full
@@ -3568,6 +3582,8 @@ export interface RoutineRunSummaryDto {
   errorMessage: string | null;
   iterations: number | null;
   toolCalls: number | null;
+  /** #1776 — metered model cost (USD); null = not metered. */
+  costUsd?: number | null;
 }
 
 export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
@@ -3581,6 +3597,8 @@ export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
 export interface ListRoutineRunsResponse {
   runs: RoutineRunSummaryDto[];
   count: number;
+  /** #1776 — cost of all recorded runs (USD). */
+  totalCostUsd?: number;
 }
 
 export interface RoutineRunResponse {
@@ -3589,12 +3607,14 @@ export interface RoutineRunResponse {
 
 export async function listRoutineRuns(
   id: string,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; before?: string } = {},
 ): Promise<ListRoutineRunsResponse> {
   const params = new URLSearchParams();
   if (typeof opts.limit === 'number' && Number.isFinite(opts.limit)) {
     params.set('limit', String(Math.trunc(opts.limit)));
   }
+  // #1749 — load more: runs that started before this ISO instant.
+  if (opts.before) params.set('before', opts.before);
   const suffix = params.toString() ? `?${params.toString()}` : '';
   return getJson<ListRoutineRunsResponse>(
     `/v1/routines/${encodeURIComponent(id)}/runs${suffix}`,
@@ -3819,11 +3839,15 @@ export interface MemorableKnowledgeNode {
 
 export interface ListMemoriesResponse {
   items: MemorableKnowledgeNode[];
+  /** Pass as `cursor` to read the next page; `null` on the last page
+   *  (#1853). Absent on older middleware builds. */
+  nextCursor?: string | null;
 }
 
 export interface ListMemoriesOptions {
   kind?: MemorableKind;
   limit?: number;
+  cursor?: string;
 }
 
 export async function listMemories(
@@ -3832,6 +3856,7 @@ export async function listMemories(
   const params = new URLSearchParams();
   if (opts.kind) params.set('kind', opts.kind);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.cursor !== undefined) params.set('cursor', opts.cursor);
   const qs = params.toString();
   return getJson<ListMemoriesResponse>(`/v1/memory${qs ? `?${qs}` : ''}`);
 }
@@ -3942,7 +3967,8 @@ export type MemorableAclAction =
   | 'shrink'
   | 'delete'
   | 'edit'
-  | 'edit_excerpt';
+  | 'edit_excerpt'
+  | 'delete_excerpt';
 
 export interface MemorableAclAuditEntry {
   id: string;
@@ -4969,7 +4995,11 @@ export function operatorMemoryContextsFileUrl(path: string): string {
 export type MemoryBackend = 'postgres' | 'inmemory';
 
 export interface MemoryBackendState {
+  /** The backend that is running now. */
   current: MemoryBackend;
+  /** The saved choice the next boot applies; differs from `current` only
+   *  while `restartRequiredToApply`. Optional for older middleware builds. */
+  desired?: MemoryBackend;
   envDefault: string;
   databaseUrlPresent: boolean;
   activeProviderId: string | null;
@@ -5091,6 +5121,8 @@ export interface EmbeddingProviderDrift {
  * `no-active-provider` — nothing is activated at all.
  * `missing-credentials` — a KEYED adapter is active without a key/base URL.
  * `missing-weights` — the keyless adapter is active, its model is not on disk.
+ * `weights-ready-reactivate` — #1857: the keyless adapter is the only
+ *   provider, its weights are complete, it only needs a reactivation.
  * `not-published` — weights are there, yet nothing was published: the adapter
  *   stood down because a sibling already held the service, or activation failed.
  */
@@ -5098,7 +5130,22 @@ export type EmbeddingCapabilityGap =
   | 'no-active-provider'
   | 'missing-credentials'
   | 'missing-weights'
+  | 'weights-ready-reactivate'
   | 'not-published';
+
+/** #1814 — an `embeddingClient@1` provider the store offers, not installed. */
+export interface InstallableEmbeddingProvider {
+  pluginId: string;
+  label: string;
+  keyless: boolean;
+}
+
+/** #1818 — where the knowledge graph's dedup threshold came from. */
+export interface EmbeddingDedupThresholdProvenance {
+  source: 'default' | 'recommended' | 'operator';
+  value: string | null;
+  recommendedBy: string | null;
+}
 
 export interface EmbeddingWidthCollision {
   providerDimensions: number | null;
@@ -5109,6 +5156,11 @@ export interface EmbeddingWidthCollision {
 
 export interface EmbeddingProviderState {
   providers: EmbeddingProviderOption[];
+  /** #1814 — store providers not installed yet. Optional for older builds. */
+  installableProviders?: InstallableEmbeddingProvider[];
+  /** #1818 — provenance of `process_dedup_threshold`; `null` without a KG.
+   *  Optional for older builds. */
+  dedupThresholdProvenance?: EmbeddingDedupThresholdProvenance | null;
   activeProviderId: string | null;
   activeModel: { modelId: string; dimensions: number } | null;
   /** Optional so older middleware builds still satisfy this type. */
@@ -5156,6 +5208,9 @@ export interface EmbeddingProviderState {
 export interface SwitchEmbeddingProviderResult extends EmbeddingProviderState {
   ok: true;
   switchedTo: string;
+  /** #1818 — what the switch did about the dedup threshold. Optional for
+   *  older builds. */
+  dedupThreshold?: EmbeddingDedupThresholdResult;
   /**
    * Did the knowledge-graph's model/dimension gate actually re-run against the
    * new provider? False on a deployment with no Postgres knowledge-graph
@@ -5264,7 +5319,13 @@ export interface EmbeddingDedupThresholdResult {
   applied: boolean;
   value: number | null;
   previous: string | null;
-  reason: 'applied' | 'operator-set' | 'no-recommendation' | 'no-knowledge-graph';
+  reason:
+    | 'applied'
+    | 'cleared'
+    | 'unchanged'
+    | 'operator-set'
+    | 'no-recommendation'
+    | 'no-knowledge-graph';
 }
 
 export interface ReactivateEmbeddingProviderResult extends EmbeddingProviderState {

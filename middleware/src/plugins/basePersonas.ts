@@ -10,8 +10,9 @@
  * Issue #58 ports the kemia data set 1:1 (`byte5ai/kemia@main:src/lib/base-personas.ts`)
  * **without** touching omadia's `BuilderModelId`, the model picker, the
  * runtime routing, or any inference call. The registry is a data asset
- * prepared for future multi-provider expansion; today the runtime still
- * resolves only the three Claude families via `personaDelta.ts`.
+ * prepared for future multi-provider expansion. Since #1893 the runtime uses
+ * it: `inferFamilyFromModel` maps a non-Anthropic model to its family here
+ * (the id list lives in the orchestrator package, `VENDOR_PERSONA_FAMILIES`).
  *
  * Key adaptation: kemia uses camelCase axis keys (`riskTolerance`),
  * omadia uses snake_case (`risk_tolerance`). The conversion is mechanical
@@ -19,6 +20,8 @@
  *
  * @see Issue #58
  */
+
+import type { VendorPersonaFamily } from '@omadia/orchestrator';
 
 import type { PersonaAxes } from './builder/agentSpec.js';
 
@@ -41,20 +44,7 @@ export type ProfileConfidence =
  * Kept as a string so the registry can grow without a TypeScript change
  * downstream — the runtime falls back to `unknown` for unrecognized ids.
  */
-export type PersonaFamilyId =
-  | 'anthropic-claude'
-  | 'openai-gpt'
-  | 'google-gemini'
-  | 'meta-llama'
-  | 'mistral'
-  | 'alibaba-qwen'
-  | 'deepseek'
-  | 'moonshot-kimi'
-  | 'zhipu-glm'
-  | '01ai-yi'
-  | 'google-gemma'
-  | 'microsoft-phi'
-  | 'unknown';
+export type PersonaFamilyId = VendorPersonaFamily;
 
 export interface BaseProfile {
   family: PersonaFamilyId;
