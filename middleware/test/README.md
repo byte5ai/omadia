@@ -132,6 +132,20 @@ Completeness guards (step 4) catch what the sweeps cannot see coming:
   documented to leave it. A new migration that rewrites visibility or owners
   goes into `migrated()` by hand, from its documented intent.
 
+Lifecycle invariants (step 5) run the real jobs that change memory after it is
+written. `lifecycle.ts` seeds the world on Neon and wraps each job: the
+memorable-knowledge search is read for every viewer and mode before and after,
+and a canary someone gains without an ACL audit row from that job fails
+(`guarded`). What a job creates is checked against the oracle for an item of
+its shape (`assertOracleBounds`). `lifecycleInvariants.pg.test.ts` covers the
+jobs that write memory (identity resolution, promotion, bulk promotion, the
+scratch reaper, owner removal), `lifecycleCleanup.pg.test.ts` those that age,
+replay, merge and erase it (decay with a 90-day fake clock, backfill,
+auto-merge, the user purge of ADR-0186). `lifecycleInvariants.test.ts` runs
+random owner/edit/delete sequences with `fast-check` on the in-memory graph
+and checks that scope keys never collide. Add a new lifecycle job to one of
+the two files, inside `guarded`.
+
 The seed mints each person's omadia user id through identity resolution, as a
 login or Teams message would (`Seeded.users`); `USERS` in `world.ts` holds the
 Teams (AAD) ids. Memories list their owners in both forms, as production
