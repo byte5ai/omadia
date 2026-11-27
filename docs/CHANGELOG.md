@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Office export in a web chat (W32 follow-up) (2026-11-27)
+
+- **#2338 — Office is no integration egress (ADR-0298).** `create_xlsx` and `create_docx`
+  declared no tool effect, so the discretion integration egress checked them like a write. A web
+  chat turn that carried any label from another conversation of the same person (recall, memory)
+  refused every export with `integration_undeclared`; Telegram turns without such a label worked.
+  The Office manifest now declares `capabilities[].side_effects: "none"`: Office renders
+  in-process, and the file reaches the person only with the answer, which the people egress
+  checks. Diagrams stays undeclared because `render_diagram` sends its source to the configured
+  Kroki endpoint. Every other undeclared tool is still checked like a write. Known gap: a withheld
+  streamed answer leaves the tool outputs (the signed link included) in the client's tool trace
+  (#2342).
+
 ### Docs — wave 5 ADRs accepted, roadmap design ADRs 0285–0290 (W36) (2026-11-27)
 
 - ADRs 0175–0257 whose code is on main move from Proposed to Accepted (status line and index
