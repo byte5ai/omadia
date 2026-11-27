@@ -804,7 +804,7 @@ export {
 } from './answerLanguage.js';
 
 // Session logger + chat-session store
-export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';
+export { SessionLogger, graphScopeFor, isChatSessionScope, sessionTranscriptDir } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
 
 // #684 — run-trace outcome tallies. Exported so an operator surface can read
@@ -828,6 +828,7 @@ export {
   chatSessionOwner,
   ServerMirroredSessionError,
   isServerMirroredSession,
+  isWebChatSessionId,
   isValidSessionId,
 } from './chatSessionStore.js';
 export type {

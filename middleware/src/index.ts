@@ -673,6 +673,9 @@ import { createCoreApi } from './channels/coreApi.js';
 import { createAttachmentByteReader, loopbackOriginFor } from './channels/attachmentByteReader.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { agentEndedText, resolveRoutineAgent } from './plugins/routines/routineAgentBinding.js';
+import { WEB_CHAT_DELETED_PAUSE } from './plugins/routines/webChatProactiveSender.js';
+import { purgeSessionTranscripts } from './plugins/routines/sessionTranscripts.js';
+import { routineOwnerIdsForAccount } from './plugins/routines/accountRoutineOwner.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
@@ -3828,6 +3831,8 @@ async function main(): Promise<void> {
         ),
       // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
       defaultTimeZone: config.PROACTIVE_TIMEZONE,
+      // #1753 — a deleted routine's transcripts go with it.
+      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
       // #1776 — a manual run's cost is booked on the routine's trigger.
       bookManualRunCost: async (routineId, costUsd) => {
         await triggersRef.current?.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId });
@@ -4295,6 +4300,8 @@ async function main(): Promise<void> {
     '/api',
     requireAuth,
     createChatRouter({
+      // #1756 — routine delivery times in the instance zone (ADR 0240).
+      timeZone: config.PROACTIVE_TIMEZONE,
       agentResolver,
       legacyChatOwner,
       routeTurn: routeWebTurn,
@@ -4360,7 +4367,22 @@ async function main(): Promise<void> {
   app.use(
     '/api/chat',
     requireAuth,
-    createChatSessionsRouter({ getStore: getChatSessionStore, legacyOwner: legacyChatOwner }),
+    createChatSessionsRouter({
+      getStore: getChatSessionStore,
+      legacyOwner: legacyChatOwner,
+      // #1753 — and removes its markdown transcripts.
+      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1757 — deleting a chat pauses the routines that deliver into it.
+      routines: () => {
+        const runner = routinesHandle?.runner;
+        return runner
+          ? {
+              listForChat: (id) => runner.routinesOfWebChat(id),
+              pauseForChat: (id) => runner.pauseRoutinesOfWebChat(id, WEB_CHAT_DELETED_PAUSE),
+            }
+          : undefined;
+      },
+    }),
   );
 
   // Plugin-contributed navigation. The web-ui shell renders a static nav for
@@ -6431,6 +6453,32 @@ async function main(): Promise<void> {
       createAdminUsersRouter({
         userStore,
         audit: adminAudit,
+        // #1765 — a deleted account takes its routines with it.
+        // The account resolves to the person's routine owner ids (their
+        // `omadia_user_id` cluster, when this is their only web login).
+        routines: () => {
+          const runner = routinesHandle?.runner;
+          const ownerIds = (id: string): Promise<string[]> =>
+            graphPool
+              ? routineOwnerIdsForAccount(graphPool, graphTenantId, id, async (other) =>
+                  Boolean(await userStore.findById(other)),
+                )
+              : Promise.resolve([id]);
+          return runner
+            ? {
+                countForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.countRoutinesOfUser(owner);
+                  return n;
+                },
+                deleteForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.deleteRoutinesOfUser(owner);
+                  return n;
+                },
+              }
+            : undefined;
+        },
         sessions: sessionRevocation,
         loginLimiter: loginGuard.limiter,
         loginDevices: loginGuard.devices,

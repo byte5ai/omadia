@@ -45,7 +45,16 @@ export function mergeServerProactiveMessages(
     const server = serverProactive.get(m.id);
     // Keep the server's own marker on a delivery the client round-tripped.
     if (server?.proactive) {
-      messages.push({ ...m, proactive: server.proactive });
+      // #1775 / ADR 0244 — the receipt and the text are the server's too: a
+      // client can neither add a receipt nor rewrite what a routine delivered
+      // (the delivery is quoted to the model as the routine's words).
+      const { privacyReceipt: _clientReceipt, ...clientCopy } = m;
+      messages.push({
+        ...clientCopy,
+        content: server.content,
+        proactive: server.proactive,
+        ...(server.privacyReceipt !== undefined ? { privacyReceipt: server.privacyReceipt } : {}),
+      });
     } else if (m.proactive) {
       dropped += 1;
     } else {

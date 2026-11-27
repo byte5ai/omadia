@@ -1,4 +1,4 @@
-import type { MemoryStore } from '@omadia/plugin-api';
+import type { MemoryStore, PrivacyReceipt } from '@omadia/plugin-api';
 
 import { withSessionLock } from './chatSessionLock.js';
 import { mergeServerProactiveMessages } from './chatSessionProactive.js';
@@ -74,6 +74,13 @@ export interface ChatMessage {
   /** #1896 — a deliberate NO_REPLY turn: empty content, the chat shows no
    *  bubble for it. */
   silent?: true;
+  /**
+   * #1775 — the Privacy Shield receipt of the turn that produced this
+   * message. Written by the server only for a routine delivery whose run
+   * wrote one (the web chat's own turns keep theirs client-side); rendered
+   * like a chat turn's receipt card.
+   */
+  privacyReceipt?: PrivacyReceipt;
 }
 
 export interface ChatProactiveMarker {
@@ -199,6 +206,15 @@ const SERVER_MESSAGE_ID_PREFIX = 'srv-';
  * waiting for its first turn. Shared by the web client's hydration (same
  * rule, same two halves).
  */
+/**
+ * #1753 / #1757 — whether `id` has the shape the web chat mints (a UUID or
+ * its `id-<base36>-<base36>` fallback). Anything else is another channel's or
+ * the kernel's scope, never a web chat a user can delete.
+ */
+export function isWebChatSessionId(id: string): boolean {
+  return UUID_RE.test(id) || WEB_FALLBACK_ID_RE.test(id);
+}
+
 export function isServerMirroredSession(
   session: Pick<ChatSession, 'id' | 'messages'>,
 ): boolean {
@@ -575,6 +591,8 @@ export class ChatSessionStore {
       routineName?: string;
       droppedAttachments?: number;
       droppedInteractive?: string;
+      /** #1775 — the run's Privacy Shield receipt, when the shield acted. */
+      privacyReceipt?: PrivacyReceipt;
     },
   ): Promise<'appended' | 'not_found'> {
     if (!ID_RE.test(id)) return 'not_found';
@@ -599,6 +617,7 @@ export class ChatSessionStore {
         startedAt: message.deliveredAt,
         finishedAt: message.deliveredAt,
         proactive,
+        ...(message.privacyReceipt !== undefined ? { privacyReceipt: message.privacyReceipt } : {}),
       };
       await this.save({
         ...existing,

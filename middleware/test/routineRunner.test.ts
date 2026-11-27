@@ -1961,6 +1961,27 @@ describe('review fixes — withheld answers and the pause reason', () => {
     assert.match(h.store.rows.get(routine.id)!.lastRunError ?? '', /its agent 'SEO' was disabled/);
   });
 });
+
+describe('#1766 — an empty answer is checked before the AI disclosure is folded in', () => {
+  it('fails the run instead of delivering a disclosure line alone', async () => {
+    const orchestrator: OrchestratorLike = {
+      runTurn: () =>
+        Promise.resolve({
+          answer: '   ',
+          toolCalls: 0,
+          iterations: 1,
+          aiDisclosure: { text: 'KI-generiert', level: 'standard' },
+        } as unknown as ChatTurnResult),
+    };
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts[0]!.status, 'error');
+    assert.match(h.runsStore.inserts[0]!.errorMessage ?? '', /empty answer/);
+  });
+});
 describe('RoutineRunner — MCP identity of a run (#1907, ADR-0206)', () => {
   function observingOrchestrator(seen: Array<{ key?: string; unattended?: boolean }>): OrchestratorLike {
     return {
@@ -2014,3 +2035,36 @@ const TEMPLATE_FOR_IDENTITY: RoutineOutputTemplate = {
     { kind: 'narrative-slot', id: 'intro' },
   ],
 };
+
+describe('#1753 / #1757 / #1765 — cleanup', () => {
+  it('deleting a routine removes its transcripts; a user\'s routines go with the account', async () => {
+    const purged: string[] = [];
+    const store = new InMemoryRoutineStore();
+    (store as unknown as { listIdsForUserId: (u: string) => Promise<string[]> }).listIdsForUserId = (u) =>
+      Promise.resolve([...store.rows.values()].filter((r) => r.userId === u).map((r) => r.id));
+    const senderRegistry = new InMemoryProactiveSenderRegistry();
+    senderRegistry.register(new StubSender());
+    const runner = new RoutineRunner({
+      store: store as unknown as RoutineStore,
+      runsStore: new InMemoryRoutineRunsStore() as unknown as RoutineRunsStore,
+      scheduler: new StubScheduler(),
+      getOrchestrator: () => makeStubOrchestrator().orchestrator,
+      senderRegistry,
+      purgeTranscripts: (scope) => {
+        purged.push(scope);
+        return Promise.resolve();
+      },
+      log: () => {},
+    });
+    const a = await runner.createRoutine(baseInput);
+    await runner.deleteRoutine(a.id, OWNER_SCOPE);
+    assert.deepEqual(purged, [`routine:${a.id}`]);
+
+    await runner.createRoutine({ ...baseInput, name: 'x' });
+    await runner.createRoutine({ ...baseInput, name: 'y' });
+    assert.equal(await runner.countRoutinesOfUser(USER), 2);
+    assert.equal(await runner.deleteRoutinesOfUser(USER), 2);
+    assert.equal(store.rows.size, 0);
+    assert.equal(purged.length, 3);
+  });
+});

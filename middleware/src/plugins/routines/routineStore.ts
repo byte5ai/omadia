@@ -334,9 +334,10 @@ export class RoutineStore {
    */
   async listAll(): Promise<Routine[]> {
     const result = await this.pool.query<RoutineRow>(
+      // #1749 — stable order: a run (which bumps updated_at) must not move rows.
       `SELECT ${SELECT_COLUMNS}
          FROM routines
-        ORDER BY updated_at DESC`,
+        ORDER BY created_at DESC, id`,
     );
     return result.rows.map(rowToRoutine);
   }
@@ -486,6 +487,28 @@ export class RoutineStore {
     );
     const row = result.rows[0];
     return row ? rowToRoutine(row) : null;
+  }
+
+  /**
+   * #1765 — every routine an owner id holds, in every tenant: their account
+   * is being deleted. The caller resolves the account to its owner ids
+   * (`accountRoutineOwner.ts`): web routines are owned by the session's
+   * `omadia_user_id`, not by `users.id`.
+   */
+  async listIdsForUserId(userId: string): Promise<string[]> {
+    const result = await this.pool.query<{ id: string }>('SELECT id FROM routines WHERE user_id = $1', [userId]);
+    return result.rows.map((r) => r.id);
+  }
+
+  /** #1757 — the active routines that deliver into a web chat. */
+  async listActiveForWebChat(sessionId: string): Promise<Routine[]> {
+    const result = await this.pool.query<RoutineRow>(
+      `SELECT ${SELECT_COLUMNS} FROM routines
+        WHERE status = 'active' AND channel = 'web' AND conversation_ref->>'sessionId' = $1
+        ORDER BY created_at`,
+      [sessionId],
+    );
+    return result.rows.map(rowToRoutine);
   }
 
   /** #1745 — bind a routine created before agent ids to the agent that runs it now. */

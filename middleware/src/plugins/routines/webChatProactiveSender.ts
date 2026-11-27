@@ -66,6 +66,10 @@ export function webChatConversationRef(
 
 const NO_STORE_ERROR = 'web chat is not configured (no chat session store)';
 
+/** #1757 — why a routine was paused when its chat was deleted. */
+export const WEB_CHAT_DELETED_PAUSE =
+  'paused: the web chat it delivers into was deleted; delete the routine or create it again from an existing chat';
+
 export const WEB_CHAT_NO_CONVERSATION_ERROR =
   'this routine was requested outside a saved web chat, so there is no conversation ' +
   'to deliver it into; start it from a chat tab';
@@ -168,6 +172,9 @@ export function createWebChatProactiveSender(
         ...(routine ? { routineId: routine.id, routineName: routine.name } : {}),
         ...(attachmentCount > 0 ? { droppedAttachments: attachmentCount } : {}),
         ...(message.interactive ? { droppedInteractive: message.interactive.kind } : {}),
+        // #1775 — the run's receipt, shown like a chat turn's (ADR 0093: only
+        // present when the shield acted).
+        ...(message.privacyReceipt ? { privacyReceipt: message.privacyReceipt } : {}),
       });
       // Deleted while the turn ran: gone for good, like the pre-flight case.
       if (outcome === 'not_found') throw goneError(sessionId);

@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routines: deliveries, cleanup and the routines page (W23, 2026-11-26)
+
+- **Deliveries in the web chat** (#1755, #1756, #1766, #1775): the next turn of a chat gets its
+  recent routine deliveries as a labelled block (which routine, when, what it wrote;
+  `routineDeliveryContext.ts`, `routes/chat.ts`), so a follow-up can quote and discuss them
+  instead of denying them. An empty run is detected on the model's own text before the AI
+  disclosure is folded in, so a disclosure line alone is never delivered. The run's Privacy
+  Shield receipt is stored on the delivery (`ChatMessage.privacyReceipt`, server-written
+  only; a client PUT cannot add or change it) and shown like a chat turn's. The routine badge
+  names the delivery time, and a visible chat re-reads its deliveries every minute. The
+  deliveries block covers the last 24 hours, is framed as data, names times in
+  `PROACTIVE_TIMEZONE`, and a client PUT cannot rewrite a delivery's text (ADR 0244).
+- **Cleanup** (#1753, #1757, #1765): deleting a user account deletes their routines (audited
+  as `routines_deleted`, the admin confirmation names the count, `routine_count` on `GET
+  /api/v1/admin/users/:id`). The account resolves to its person's `omadia_user_id` through its
+  `web:<users.id>` identity (`accountRoutineOwner.ts`); a person with another web login keeps
+  the routines. Closing a chat tab asks first and names the routines that deliver
+  into it; deleting an existing web chat pauses them with the reason and removes the chat's markdown
+  transcripts (`/memories/sessions/<id>/`, `sessionTranscriptDir`); `GET
+  /api/chat/sessions/:id/routines` lists them. Deleting a routine removes its transcripts.
+  The run history keeps at most 200 runs per routine and none older than 90 days (pruned on
+  insert).
+- **Routines page** (#1749, #1754, #1758): the DTO names `timeZone`, `nextRunAt` and `until`;
+  rows keep their order (`created_at`); the page shows the next run and deadline in the
+  routine's zone, the agent and an agent problem, run cost and the routine's total, loads more
+  runs (`GET /:id/runs?before=`), polls while a run is in flight with "run now" disabled, and
+  translates headers, statuses (`cancelled`, `silent`), buttons and server errors (route codes
+  mapped, otherwise the server's reason under a localized headline; template save and preview
+  no longer show "… failed: 400", and the preview lists source warnings).
+
 ### Fixed — routine runs: cancel, timeout, one run at a time, subscription CLI (W22, 2026-11-26)
 
 - **Run control** (#1746, #1747, #1748, `routineRunControl.ts`): pausing or deleting a routine

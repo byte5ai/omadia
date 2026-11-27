@@ -347,4 +347,54 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     assert.equal(t?.runs, 0, 'not a firing');
     manual.stop();
   });
+
+  it('W23: web-chat routines are found by chat, run history is bounded and pages by cursor (pg)', async () => {
+    const runsStore = new RoutineRunsStore({ pool, log: () => undefined });
+    const chatId = '11111111-1111-4111-8111-111111111111';
+    const web = await store.create({
+      tenant: 't1',
+      userId: 'anna',
+      name: 'Web',
+      cron: '0 8 * * *',
+      prompt: 'Bericht',
+      channel: 'web',
+      conversationRef: { kind: 'http-chat', sessionScope: chatId, sessionId: chatId },
+    });
+    assert.deepEqual((await store.listActiveForWebChat(chatId)).map((r) => r.id), [web.id]);
+    assert.deepEqual(await store.listActiveForWebChat('22222222-2222-4222-8222-222222222222'), []);
+    assert.deepEqual(await store.listIdsForUserId('anna'), [web.id]);
+
+    const base = Date.now() - 1000 * 60 * 60;
+    for (let i = 0; i < 205; i += 1) {
+      await runsStore.insert({
+        routineId: web.id,
+        tenant: 't1',
+        userId: 'anna',
+        trigger: 'cron',
+        startedAt: new Date(base + i * 1000),
+        finishedAt: new Date(base + i * 1000 + 500),
+        status: 'ok',
+        prompt: 'p',
+      });
+    }
+    // An old run beyond the age limit goes on the next insert.
+    await pool.query(
+      `INSERT INTO routine_runs (routine_id, tenant, user_id, trigger, started_at, status, prompt)
+       VALUES ($1, 't1', 'anna', 'cron', now() - interval '120 days', 'ok', 'old')`,
+      [web.id],
+    );
+    await runsStore.prune(web.id);
+    const { rows } = await pool.query<{ n: string; oldest: Date }>(
+      'SELECT COUNT(*) AS n, MIN(started_at) AS oldest FROM routine_runs WHERE routine_id = $1',
+      [web.id],
+    );
+    assert.equal(Number(rows[0]!.n), 200);
+    assert.ok(rows[0]!.oldest.getTime() >= base, 'the newest 200 stay, the old one is gone');
+
+    const page1 = await runsStore.listForRoutine(web.id, 50);
+    const page2 = await runsStore.listForRoutine(web.id, 50, page1.at(-1)!.startedAt);
+    assert.equal(page2.length, 50);
+    assert.ok(page2[0]!.startedAt < page1.at(-1)!.startedAt);
+  });
 });
+
