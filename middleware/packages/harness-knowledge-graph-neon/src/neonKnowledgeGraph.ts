@@ -2632,6 +2632,32 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     try {
       await client.query('BEGIN');
 
+      // DERIVED_FROM targets — Turn nodes only, resolved before the MK is
+      // written so their shield flag can be stamped on it (#2278).
+      const derivedTurns: { id: string; unprotected: boolean }[] = [];
+      for (const turnExtId of input.derivedFromTurnIds ?? []) {
+        const row = await client.query<{ id: string; unprotected: boolean }>(
+          `SELECT id,
+                  COALESCE((properties->>'unprotected')::boolean, FALSE) AS unprotected
+           FROM graph_nodes
+           WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'
+           LIMIT 1`,
+          [this.tenantId, turnExtId],
+        );
+        const hit = row.rows[0];
+        if (!hit) {
+          skippedDerivedFrom++;
+          continue;
+        }
+        derivedTurns.push(hit);
+      }
+      // #2278 — a MK derived from an unprotected Turn is stamped itself. The
+      // DERIVED_FROM edge alone marked it before, and the edge goes when the
+      // Turn is deleted (user purge, history purge): the MK then reached
+      // shielded turns with values no shield masked.
+      const unprotected =
+        input.unprotected === true || derivedTurns.some((t) => t.unprotected);
+
       const initialOwners = input.aclOwners ?? [];
       const props = validateNodeProps('MemorableKnowledge', {
         kind: input.kind,
@@ -2644,7 +2670,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // default-isolate by origin (team/public visibility still shares).
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
         // #1536 — holds values no shield masked; recall under a shield skips it.
-        ...(input.unprotected === true ? { unprotected: true } : {}),
+        ...(unprotected ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -2711,23 +2737,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         });
       }
 
-      // DERIVED_FROM edges — Turn nodes only.
-      for (const turnExtId of input.derivedFromTurnIds ?? []) {
-        const row = await client.query<{ id: string }>(
-          `SELECT id FROM graph_nodes
-           WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'
-           LIMIT 1`,
-          [this.tenantId, turnExtId],
-        );
-        const hit = row.rows[0];
-        if (!hit) {
-          skippedDerivedFrom++;
-          continue;
-        }
+      for (const turn of derivedTurns) {
         await this.upsertEdge(client, {
           type: 'DERIVED_FROM',
           fromUuid: mkUuid,
-          toUuid: hit.id,
+          toUuid: turn.id,
         });
       }
 

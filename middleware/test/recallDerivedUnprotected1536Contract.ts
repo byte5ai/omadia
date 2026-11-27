@@ -12,6 +12,10 @@ import { describe, it } from 'node:test';
 import type { KnowledgeGraph, TurnIngest } from '@omadia/plugin-api';
 
 export const VIEWER = '15361536-0000-4000-8000-000000001536';
+/** #2278 — owner of the memory whose source turn is purged; nobody else's
+ *  search sees it, so the shared seed's counts stay as they are. */
+const SECOND_VIEWER = '22782278-0000-4000-8000-000000002278';
+const PURGED_USER = 'purged-user-2278';
 export const VECTOR = Array.from({ length: 768 }, (_, i) => (i % 7) / 7 + 0.01);
 
 function turn(scope: string, minute: number, unprotected: boolean | undefined): TurnIngest {
@@ -27,12 +31,14 @@ function turn(scope: string, minute: number, unprotected: boolean | undefined): 
 
 export interface Seeded {
   readonly kg: KnowledgeGraph;
+  readonly embed: Embed;
+  readonly tenantId: string;
   readonly mk: { readonly fromOpen: string; readonly fromGuarded: string; readonly stamped: string };
 }
 
 export type Embed = (externalId: string) => Promise<void>;
 
-export async function seed(kg: KnowledgeGraph, embed: Embed): Promise<Seeded> {
+export async function seed(kg: KnowledgeGraph, embed: Embed, tenantId: string): Promise<Seeded> {
   const open = await kg.ingestTurn(turn('s-open', 1, true));
   const guarded = await kg.ingestTurn(turn('s-guarded', 2, false));
   const legacy = await kg.ingestTurn(turn('s-legacy', 3, undefined));
@@ -73,7 +79,7 @@ export async function seed(kg: KnowledgeGraph, embed: Embed): Promise<Seeded> {
   await plan('p-guarded', guarded.turnId);
   await plan('p-legacy', legacy.turnId);
   await plan('p-orphan');
-  return { kg, mk };
+  return { kg, embed, tenantId, mk };
 }
 
 export function runContract(label: string, setup: () => Promise<Seeded | undefined>): void {
@@ -112,6 +118,44 @@ export function runContract(label: string, setup: () => Promise<Seeded | undefin
         (await search(true)).map((h) => h.parentMkId),
         [s.mk.fromGuarded],
       );
+    });
+
+    it('a memory derived from an unprotected turn stays skipped after the turn is purged (#2278)', async (t) => {
+      const s = await setup();
+      if (!s) return t.skip('no test database');
+      if (!s.kg.purgeConversationHistory) return t.skip('backend has no history purge');
+      const open = await s.kg.ingestTurn({
+        ...turn('s-purged-2278', 4, true),
+        userId: PURGED_USER,
+      });
+      const res = await s.kg.createMemorableKnowledge({
+        kind: 'reference',
+        summary: 'Marc Demo leitet Lilium (2278)',
+        createdBy: `web:${SECOND_VIEWER}`,
+        aclOwners: [SECOND_VIEWER],
+        palaiaExcerpts: { texts: ['Marc Demo leitet Lilium (Auszug 2278)'], source: 'llm' },
+        derivedFromTurnIds: [open.turnId],
+      });
+      const mkId = res.memorableKnowledgeNodeId;
+      await s.embed(mkId);
+      for (const ex of await s.kg.listExcerptsForMemory(mkId)) await s.embed(ex.id);
+
+      await s.kg.purgeConversationHistory({ tenantId: s.tenantId, userId: PURGED_USER });
+
+      const opts = (excludeUnprotected: boolean) => ({
+        queryEmbedding: VECTOR,
+        viewerOmadiaUserId: SECOND_VIEWER,
+        minSimilarity: 0,
+        limit: 10,
+        excludeUnprotected,
+      });
+      // Control: the purge removed the turn, not the memory.
+      assert.deepEqual(
+        (await s.kg.searchMemorableKnowledgeByEmbedding(opts(false))).map((h) => h.mk.id),
+        [mkId],
+      );
+      assert.deepEqual(await s.kg.searchMemorableKnowledgeByEmbedding(opts(true)), []);
+      assert.deepEqual(await s.kg.searchExcerptsByEmbedding(opts(true)), []);
     });
 
     it('plan recall under a shield keeps only plans of a known, protected turn', async (t) => {

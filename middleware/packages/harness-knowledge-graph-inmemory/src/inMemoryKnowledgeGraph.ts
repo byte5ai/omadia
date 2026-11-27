@@ -1179,6 +1179,21 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     let skippedRequired = 0;
     let skippedDerivedFrom = 0;
 
+    // DERIVED_FROM targets — Turn nodes only. #2278: a MK derived from an
+    // unprotected Turn is stamped itself, so it stays skipped under a shield
+    // after the Turn (and its edge) is deleted. Like Neon.
+    const derivedTurns: GraphNode[] = [];
+    for (const turnExtId of input.derivedFromTurnIds ?? []) {
+      const node = this.nodes.get(turnExtId);
+      if (!node || node.type !== 'Turn') {
+        skippedDerivedFrom++;
+        continue;
+      }
+      derivedTurns.push(node);
+    }
+    const unprotected =
+      input.unprotected === true || derivedTurns.some((t) => t.props['unprotected'] === true);
+
     const initialOwners = input.aclOwners ?? [];
     this.upsertNode({
       id: mkExtId,
@@ -1200,7 +1215,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           : {}),
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
         // #1536 — holds values no shield masked; recall under a shield skips it.
-        ...(input.unprotected === true ? { unprotected: true } : {}),
+        ...(unprotected ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -1243,13 +1258,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       this.addEdge({ type: 'REQUIRES', from: mkExtId, to: entityExtId });
     }
 
-    for (const turnExtId of input.derivedFromTurnIds ?? []) {
-      const node = this.nodes.get(turnExtId);
-      if (!node || node.type !== 'Turn') {
-        skippedDerivedFrom++;
-        continue;
-      }
-      this.addEdge({ type: 'DERIVED_FROM', from: mkExtId, to: turnExtId });
+    for (const turn of derivedTurns) {
+      this.addEdge({ type: 'DERIVED_FROM', from: mkExtId, to: turn.id });
     }
 
     // Slice 6.5 — atomic excerpt persistence. Mirrors NeonKnowledgeGraph.

@@ -371,6 +371,19 @@ changelog.
   `safeContextSegment` already does for context keys. Default deployments (flag off) are
   unaffected; with the flag on, only scopes of exactly those spellings move partition.
 
+### Fixed — Privacy Shield: a purged turn no longer unmasks the memories derived from it (#2278) (2026-11-26)
+
+- A MemorableKnowledge row counted as unprotected if stamped `unprotected` or linked
+  `DERIVED_FROM` to an unprotected Turn (#1536). Auto-promotion never set the stamp, so the edge
+  was the only mark, and it went with the Turn: after a user purge (ADR-0186) or history purge,
+  memories other people still own reached shielded turns with values no shield masked (3,104
+  withheld reads in the memory-ACL step 5 world). `createMemorableKnowledge` (Neon and
+  in-memory) now stamps a memory when any of its `derivedFromTurnIds` is unprotected.
+- **Migration** `harness-knowledge-graph-neon` **0039_memorable_knowledge_unprotected_from_turn**
+  — stamps existing memories whose `DERIVED_FROM` Turn is unprotected. Idempotent. A memory whose
+  Turn was already deleted has no mark left and stays as it is.
+- Regression case in the #1536 contract (`recallDerivedUnprotected1536Contract.ts`, both backends).
+
 ### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
 
 - With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
