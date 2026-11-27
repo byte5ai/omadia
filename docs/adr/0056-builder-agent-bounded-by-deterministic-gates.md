@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — runtime-smoke pass criterion superseded by [ADR-0232](0232-runtime-smoke-runs-handlers-on-stub-credentials.md)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers (recorded retroactively from the code on main); turn

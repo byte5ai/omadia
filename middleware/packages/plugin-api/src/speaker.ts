@@ -80,6 +80,10 @@ export type EmissionType = (typeof EMISSION_TYPES)[number];
  *   archetype was uninstalled; the agent is disabled and its running
  *   processes ended without their closing documents (spec §5.10). Posted
  *   once in each affected home conversation.
+ * - `model_unavailable`: the agent's model policy pins a primary whose
+ *   provider cannot be used now (no key, removed) and allows no fallback
+ *   (`fallback: 'none'`), so the turn fails instead of silently running on
+ *   another provider (#1877).
  */
 export const SYSTEM_NOTICE_CODES = [
   'agent_disabled',
@@ -100,6 +104,8 @@ export const SYSTEM_NOTICE_CODES = [
   'agent_own_bot',
   // Spec 2042 §5.10 — end of service after the archetype plugin was removed.
   'archetype_plugin_removed',
+  // #1877 — the pinned primary is unavailable and the policy allows no fallback.
+  'model_unavailable',
 ] as const;
 
 export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];

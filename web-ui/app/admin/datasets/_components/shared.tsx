@@ -109,6 +109,10 @@ export function toFriendlyError(err: unknown, t: TFn): string {
     }
     if (err.code === 'dataset.unsupported_type') return t('errors.notCsv');
     if (err.code === 'dataset.no_file') return t('errors.noFile');
+    // #1847 — coded import failures get their own copy; the library's English
+    // diagnostic never becomes the headline.
+    const coded = codedImportError(err, t);
+    if (coded !== undefined) return coded;
     if (err.code === 'dataset.import_failed') {
       // The route's `reason` is the parser's own diagnostic (ragged rows, row
       // cap, empty file) and has no stable code behind it — surface it as
@@ -123,6 +127,42 @@ export function toFriendlyError(err: unknown, t: TFn): string {
   return t('errors.unexpected', {
     detail: err instanceof Error ? err.message : String(err),
   });
+}
+
+/** Copy for the coded import failures of the route (#1847), or `undefined`. */
+function codedImportError(err: ApiError, t: TFn): string | undefined {
+  switch (err.code) {
+    case 'dataset.csv_unreadable': {
+      const line = apiLine(err);
+      return line === undefined
+        ? t('errors.csvUnreadable')
+        : t('errors.csvUnreadableAtLine', { line });
+    }
+    case 'dataset.csv_ragged_rows': {
+      const line = apiLine(err);
+      return line === undefined
+        ? t('errors.csvRaggedRows')
+        : t('errors.csvRaggedRowsAtLine', { line });
+    }
+    case 'dataset.csv_empty':
+      return t('errors.csvEmpty');
+    case 'dataset.row_cap':
+      return t('errors.rowCap', { maxRows: MAX_DATASET_ROWS });
+    case 'dataset.reserved_column':
+      return t('errors.reservedColumn');
+    default:
+      return undefined;
+  }
+}
+
+/** The source line the parser stopped at, when the route reports one. */
+function apiLine(err: ApiError): number | undefined {
+  try {
+    const parsed = JSON.parse(err.body) as { line?: unknown };
+    return typeof parsed.line === 'number' ? parsed.line : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The server's untranslated `message`, for use as secondary detail only. */

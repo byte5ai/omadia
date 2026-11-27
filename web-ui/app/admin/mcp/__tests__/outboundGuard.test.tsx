@@ -167,7 +167,10 @@ describe('Servers tab guard errors (#1341 / #1342)', () => {
       }),
     );
     renderWithIntl(<AdminMcpPage />);
-    await user.click(await screen.findByRole('button', { name: 'Add server' }));
+    // #1955 — the button stays disabled until name and endpoint are filled.
+    await user.type(await screen.findByLabelText('Name'), 'meta');
+    await user.type(screen.getByLabelText('Endpoint'), 'http://169.254.169.254/mcp');
+    await user.click(screen.getByRole('button', { name: 'Add server' }));
 
     const line = await screen.findByText(/This address is blocked for security reasons/);
     expect(line.textContent).toContain(BLOCKED_REASON);

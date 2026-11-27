@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 
+import {
+  BUNDLE_SLOTS_FILE,
+  BUNDLE_SPEC_FILE,
+  isDraftSourceFile,
+} from '../plugins/builder/specFromBundle.js';
 import type { BuildPipeline } from '../plugins/builder/buildPipeline.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import { specToAgentMd } from '../plugins/builder/specToAgentMd.js';
@@ -52,21 +57,20 @@ export function makeBuilderAwareProfileLoader(deps: {
       // the snapshot reflects the CURRENT spec, not "last save or
       // empty buffer".
       //
-      // The full AgentSpec rides along as `knowledge/spec.json` so a
-      // rollback can actually restore the plugin: agent.md alone
-      // doesn't carry slot code, tools, setup-fields, or the playbook
-      // structure that codegen consumes. With spec.json in the bundle
-      // a downstream importer (or a re-build after rollback) has
-      // everything it needs to re-derive the package; without it the
-      // download is just the prose body. Knowledge's `.json` extension
-      // allowlist already accepts this, no Bundle-spec change needed.
+      // The full AgentSpec rides along as `knowledge/spec.json` and the
+      // slot code as `knowledge/slots.json` (#1787): the Builder keeps slot
+      // code in `draft.slots`, a column the spec does not contain, so
+      // spec.json alone left an imported or rolled-back draft with empty
+      // slots that never built. With both files an importer or a rollback
+      // can restore the draft itself. Knowledge's `.json` extension
+      // allowlist already accepts both, no Bundle-spec change needed.
       const [agentRecord, knowledgeSummaries] = await Promise.all([
         deps.liveProfileStorage.getAgentMd(profileId),
         deps.liveProfileStorage.listKnowledge(profileId),
       ]);
       const userKnowledge = await Promise.all(
         knowledgeSummaries
-          .filter((s) => s.filename !== 'spec.json')
+          .filter((s) => !isDraftSourceFile(s.filename))
           .map(async (s) => {
             const rec = await deps.liveProfileStorage.getKnowledgeFile(
               profileId,
@@ -89,6 +93,10 @@ export function makeBuilderAwareProfileLoader(deps: {
         });
       const specJsonContent = Buffer.from(
         JSON.stringify(draft.spec, null, 2),
+        'utf8',
+      );
+      const slotsJsonContent = Buffer.from(
+        JSON.stringify(draft.slots, null, 2),
         'utf8',
       );
 
@@ -142,7 +150,8 @@ export function makeBuilderAwareProfileLoader(deps: {
         agentMd: inlineAgentMd,
         pluginPins,
         knowledge: [
-          { filename: 'spec.json', content: specJsonContent },
+          { filename: BUNDLE_SPEC_FILE, content: specJsonContent },
+          { filename: BUNDLE_SLOTS_FILE, content: slotsJsonContent },
           ...userKnowledge,
         ],
       };

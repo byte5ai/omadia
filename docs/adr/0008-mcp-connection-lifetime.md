@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [0205](0205-mcp-calls-are-resent-only-when-safe-and-failures-end-only-their-request.md) (end of life after a failed tool call)
 
 - **Date:** 2026-08-06
 - **Deciders:** omadia maintainers

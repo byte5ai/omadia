@@ -16,8 +16,12 @@ the sibling public chat ingress.
 
 | Surface | What it does |
 |---|---|
-| `POST /api/v1/mcp` | The one public route. MCP JSON-RPC over HTTP: `tools/list`, `tools/call`. Self-authenticating (bearer API key) — no session cookie. |
-| `GET`/anything else on that path | `405 Method Not Allowed`. There is no standalone SSE stream. |
+| `POST /api/v1/mcp` | The one public route (one trailing slash, `/api/v1/mcp/`, is the same route). MCP JSON-RPC over HTTP: `tools/list`, `tools/call`. Self-authenticating (bearer API key) — no session cookie. |
+| `GET`/anything else on that path | `405 Method Not Allowed` with `Allow: POST`. There is no standalone SSE stream. The key is checked first, so a request without a valid key gets `401` before the method is looked at. |
+
+`initialize` is accepted but not needed; its `serverInfo` is
+`omadia-public-mcp` with the omadia release (`unknown` on a build without a
+stamped version).
 
 Key lifecycle (create/list/revoke) is **not** part of this API — see "Getting an
 API key" below.
@@ -40,8 +44,14 @@ Authorization: Bearer <your-omadia-api-key>
 ```
 
 - `401` — missing, unknown, or revoked key. Not retryable.
-- `403` — the key authenticated but lacks a required scope. Not retryable.
 - `429` — you exceeded the key's per-minute request budget. Retry after a pause.
+- A missing **scope** is not an HTTP error: scopes are checked inside the MCP
+  handler, where the method is known, so the answer is HTTP `200` with a JSON-RPC
+  error, for example `-32600 this API key is not scoped for 'mcp:list'`. Not
+  retryable.
+
+Every authenticated request appears in the key's usage log on `/admin/api-keys`
+(route `/api/v1/mcp`, outcome `ok`, `error`, `forbidden` or `rate_limited`).
 
 The key is a **server credential**. It must never be shipped to a browser or an
 end-user device: there is no session, no cookie and no consent step, so the key
@@ -129,8 +139,16 @@ identities would be, and write your integration against the digest — not again
 the shape of the upstream system's rows.
 
 If masking is unavailable or fails, the call is **refused** rather than answered
-with unmasked data. You will see an error, not a result. That is intentional and
-not retryable in a tight loop — report it to the operator.
+with unmasked data. You will see a JSON-RPC error (`-32603`, "privacy masking …"),
+not a result. That is intentional and not retryable in a tight loop — report it
+to the operator.
+
+**A tool that fails** is not a privacy failure. When the tool itself reports an
+error (an MCP tool's `isError` result, an upstream JSON-RPC error, a server that
+still needs an OAuth connection), you get an ordinary tool result with
+`isError: true` and a generic text. The tool's own error text is never served
+here, because it can quote the data the tool failed on; the operator finds the
+call in the MCP audit log as "tool reported an error".
 
 ## When a tool needs more input (MRTR)
 
@@ -246,8 +264,9 @@ You may attach an idempotency key to a `tools/call`:
 It rides in `params._meta` because **MCP standardizes no idempotency field**.
 That makes it advisory, and the guarantee is narrower than the name suggests:
 
-- It applies to **write-capable tools only**. Reads ignore it (deduping a read
-  would serve you stale data).
+- It applies to **write tools only**: tools that declare themselves write-capable
+  and tools the operator listed under the binding's write tools. Reads ignore it
+  (deduping a read would serve you stale data).
 - It is **process-local**, with a ~15 minute window. If the operator runs more
   than one omadia instance behind a load balancer, **two requests carrying the
   same key can both execute** — they may land on different instances that share

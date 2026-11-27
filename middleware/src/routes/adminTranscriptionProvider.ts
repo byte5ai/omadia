@@ -47,8 +47,28 @@ export interface AdminTranscriptionProviderDeps {
   readonly deactivate: (pluginId: string) => Promise<boolean>;
 }
 
+/**
+ * #1981 — why `transcription@1` is (not) live, for the tool that needs it:
+ * `ready` (a service is published), `not_configured` (an adapter is
+ * installed but publishes nothing — no API key, an undeclared endpoint),
+ * `not_installed` (no installed plugin provides it). Kernel-published as
+ * `transcriptionProviderState@1`.
+ */
+export type TranscriptionProviderState = 'ready' | 'not_configured' | 'not_installed';
+
+export const TRANSCRIPTION_PROVIDER_STATE_SERVICE = 'transcriptionProviderState';
+
+export function transcriptionProviderState(
+  deps: Pick<AdminTranscriptionProviderDeps, 'installedRegistry' | 'catalog' | 'getTranscription'>,
+): TranscriptionProviderState {
+  if (deps.getTranscription() !== undefined) return 'ready';
+  return installedProviderIds(deps).length > 0 ? 'not_configured' : 'not_installed';
+}
+
 /** Installed plugins whose manifest publishes `transcription@1`. */
-function installedProviderIds(deps: AdminTranscriptionProviderDeps): string[] {
+function installedProviderIds(
+  deps: Pick<AdminTranscriptionProviderDeps, 'installedRegistry' | 'catalog'>,
+): string[] {
   const wanted = parseCapabilityRef(TRANSCRIPTION_CAPABILITY);
   const out: string[] = [];
   for (const entry of deps.catalog.list()) {
@@ -104,6 +124,8 @@ class SwitchRolledBack extends Error {
   constructor(
     message: string,
     readonly restoredProviderId: string | null,
+    /** #1981 — the provider that was active before the switch, if any. */
+    readonly previousProviderId: string | null,
   ) {
     super(message);
   }
@@ -204,7 +226,12 @@ export function createAdminTranscriptionProviderRouter(
             : 'transcriptionProvider.switch_failed',
         message,
         details:
-          err instanceof SwitchRolledBack ? { restoredProviderId: err.restoredProviderId } : {},
+          err instanceof SwitchRolledBack
+            ? {
+                restoredProviderId: err.restoredProviderId,
+                previousProviderId: err.previousProviderId,
+              }
+            : {},
       });
       return;
     }
@@ -243,8 +270,9 @@ export function createAdminTranscriptionProviderRouter(
     } catch (err) {
       const restored = await restorePrevious();
       throw new SwitchRolledBack(
-        `activating '${targetId}' failed (${err instanceof Error ? err.message : String(err)}) — ${describeRestore(restored)}`,
+        `activating '${targetId}' failed (${err instanceof Error ? err.message : String(err)}) — ${describeRestore(previousId, restored)}`,
         restored,
+        previousId,
       );
     }
 
@@ -254,8 +282,9 @@ export function createAdminTranscriptionProviderRouter(
     if (d.getTranscription() === undefined) {
       const restored = await restorePrevious();
       throw new SwitchRolledBack(
-        `'${targetId}' activated but published no transcription@1 — it is not configured (missing API key); ${describeRestore(restored)}`,
+        `'${targetId}' activated but published no transcription@1 — it is not configured (missing API key); ${describeRestore(previousId, restored)}`,
         restored,
+        previousId,
       );
     }
   }
@@ -263,8 +292,15 @@ export function createAdminTranscriptionProviderRouter(
   return router;
 }
 
-/** Wording for a rollback that may or may not have taken. */
-function describeRestore(restored: string | null): string {
+/**
+ * Wording for a rollback that may or may not have taken. #1981 — with no
+ * provider before the switch there was nothing to restore, and the text says
+ * so instead of reporting a failed restore.
+ */
+function describeRestore(previousId: string | null, restored: string | null): string {
+  if (previousId === null) {
+    return 'no provider was active before, so none is live now; configure this one and activate it again';
+  }
   return restored === null
     ? 'AND THE PREVIOUS PROVIDER COULD NOT BE RESTORED — there is no live transcription@1 right now; configure one and activate it'
     : `the previous provider ('${restored}') was restored and verified live`;

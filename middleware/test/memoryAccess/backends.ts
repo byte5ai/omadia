@@ -99,5 +99,5 @@ export async function seedNeon(pool: Pool, world: World): Promise<NeonSeeded> {
       await pool.query(`DELETE FROM ${table} WHERE tenant_id = ANY($1)`, [tenants]);
     }
   };
-  return { seeded, clean };
+  return { seeded: { ...seeded, pool }, clean };
 }

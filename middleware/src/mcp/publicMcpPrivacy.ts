@@ -29,7 +29,7 @@
  *     Closed by pinning `checkBypass` to `undefined`: a bypass does not extend
  *     to this endpoint, ever, and cannot be configured to.
  *
- *  3. **Intern-exempt tools.** `isInternExemptTool` hands `memory`,
+ *  3. **Intern-exempt tools.** `isInternExemptCall` hands `memory`,
  *     `read_attachment`, `query_processes`, `ask_user_choice` and friends over
  *     IN CLEAR, by design — masking them blinds the agent to its own state. That
  *     reasoning is about the AGENT reading its own scaffolding; it does not
@@ -49,7 +49,9 @@
  * (class name, sanitised code, the request id as log ref — `origin:
  * 'dispatcher'`, so it is served as the error it is). A returned `Error:` text
  * is never served: the gate answers tool-error redaction with `withheld`, and
- * the result is refused like any other unmasked one.
+ * `PublicMcpServer` answers the call with a generic `isError` result that
+ * names only the tool (ADR-0212, #1937), dropping whatever text the
+ * dispatcher produced.
  *
  * Model calls INSIDE a tool: a domain tool wraps a sub-agent with its own model
  * loop. `ToolDispatchService` runs the handler with `handle.forNestedCalls()` as
@@ -62,7 +64,7 @@
  */
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
-import { isInternExemptTool } from '@omadia/orchestrator';
+import { INTERN_EXEMPT_OPERATIONS, isInternExemptTool } from '@omadia/orchestrator';
 import { describeThrownError } from '@omadia/plugin-api';
 
 /**
@@ -160,8 +162,9 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
 
     /**
      * Pinned to `withheld`. For the call's own result: a redacted text still
-     * would not set `didMask`, so `assertMaskingCrossed` would discard it
-     * anyway; answering `withheld` makes that fail-closed outcome explicit and
+     * would not set `didMask`, and `PublicMcpServer` replaces a tool error's
+     * text with its generic answer anyway (ADR-0212); answering `withheld` makes
+     * that explicit and
      * spends no detector — or C1 sidecar call — on text that is never served.
      * For a sub-agent's inner tool error: the sub-agent model gets the
      * withheld notice instead of a redacted hint, and no per-turn detector
@@ -228,7 +231,14 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
  * Enforced as a hard filter rather than a warning, because the alternative is a
  * log line nobody reads guarding a data leak. An operator who lists one gets the
  * warning AND the tool stays unreachable.
+ *
+ * Every intern-exempt tool is covered, plus every tool with exempt OPERATIONS
+ * (ADR-0197 — `query_dataset` lists the user's datasets in clear). That
+ * includes the exempt file/image producers (`render_diagram`, `create_xlsx`,
+ * `create_docx`, #1967): their result is not interned, so the public gate
+ * would see no masking and `assertMaskingCrossed` would discard every call —
+ * listing them would only advertise tools that always fail.
  */
 export function isPubliclyServableTool(name: string): boolean {
-  return !isInternExemptTool(name);
+  return !isInternExemptTool(name) && !INTERN_EXEMPT_OPERATIONS.has(name);
 }

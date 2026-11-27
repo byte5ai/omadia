@@ -93,9 +93,8 @@ export const ToolSpecSchema = z.object({
   // schemas as warnings for tools that look like they should have args.
   input: InputJsonSchemaShape.default({} as JsonSchema),
   // Optional JSON-Schema for the tool's return value. Mirrors `input`
-  // shape-wise; codegen falls back to the boilerplate's default
-  // `output_schema` when a tool omits this (see codegen.ts
-  // reproduceManifestCapabilities).
+  // shape-wise; a tool that omits it gets no `output_schema` in the
+  // manifest (#1729, see codegen.ts synthesizeCapabilityEntry).
   output: InputJsonSchemaShape.optional(),
   // #507 — these four used to be advisory-only: the Builder LLM emitted
   // them from training memory, Zod's non-strict mode silently dropped
@@ -1169,4 +1168,28 @@ export function validateSpecForCodegen(
   }
 
   return issues;
+}
+
+/**
+ * #1808 — a dashboard page calls its data-source tool with
+ * `data_binding.args` (else `{}`) on every request; required input the args
+ * do not set means the page can never show data. A warning (lint_spec, the
+ * page form), not a codegen gate: existing drafts must keep building.
+ */
+export function uiRouteMissingArgs(
+  spec: AgentSpec,
+): Array<{ routeId: string; toolId: string; missing: string[] }> {
+  const out: Array<{ routeId: string; toolId: string; missing: string[] }> = [];
+  for (const route of spec.ui_routes) {
+    const binding = route.data_binding;
+    if (!binding) continue;
+    const tool = spec.tools.find((t) => t.id === binding.tool_id);
+    const required = Array.isArray(tool?.input?.['required'])
+      ? (tool.input['required'] as unknown[]).filter((r): r is string => typeof r === 'string')
+      : [];
+    const args = binding.args ?? {};
+    const missing = required.filter((field) => !(field in args));
+    if (missing.length > 0) out.push({ routeId: route.id, toolId: binding.tool_id, missing });
+  }
+  return out;
 }

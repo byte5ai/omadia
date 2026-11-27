@@ -44,14 +44,17 @@ describe('codegen.generate', () => {
     _resetServiceTypeRegistryForTests();
     registerServiceType('odoo.client', {
       providedBy: 'de.byte5.integration.odoo',
+      major: 1,
       typeImport: { from: '@omadia/integration-odoo', name: 'OdooClient' },
     });
     registerServiceType('odoo.cache', {
       providedBy: 'de.byte5.integration.odoo',
+      major: 1,
       typeImport: { from: '@omadia/integration-odoo', name: 'OdooResponseCache' },
     });
     registerServiceType('confluence.client', {
       providedBy: 'de.byte5.integration.confluence',
+      major: 1,
       typeImport: {
         from: '@omadia/integration-confluence',
         name: 'ConfluenceClient',
@@ -59,6 +62,7 @@ describe('codegen.generate', () => {
     });
     registerServiceType('confluence.toolkit', {
       providedBy: 'de.byte5.integration.confluence',
+      major: 1,
       typeImport: {
         from: '@omadia/integration-confluence',
         name: 'LocalSubAgentTool[]',
@@ -66,6 +70,7 @@ describe('codegen.generate', () => {
     });
     registerServiceType('microsoft365.graph', {
       providedBy: 'de.byte5.integration.microsoft365',
+      major: 1,
       typeImport: {
         from: '@omadia/integration-microsoft365',
         name: 'Microsoft365Accessor',
@@ -505,29 +510,14 @@ describe('codegen.generate', () => {
   });
 
   it('fails fast with one issue per unresolved placeholder source', async () => {
-    // Same fail-fast contract as before — workspace review surfaced that
-    // an unresolved placeholder used to throw one residue PER FILE the
-    // token appeared in (manifest.yaml + README.md + …), burying the
-    // signal. The fix collapses to a single actionable issue per missing
-    // manifest source. depends_on used to be the regression case; with
-    // B.6-9.1 (DEPENDS_ON_YAML derived placeholder) it no longer fails, and
-    // OUTBOUND_HOST (network.outbound[0]) is likewise now AST-written from
-    // spec.network.outbound (integration-backed agents legitimately have an
-    // empty outbound) — so we exercise the fail-fast path via EXAMPLE_PROMPT_2
-    // (playbook.example_prompts[1]) with only one prompt supplied.
-    const { slots } = loadFixture();
-    const spec = parseAgentSpec({
-      id: 'de.byte5.agent.lonely',
-      name: 'Lonely',
-      description: 'one prompt only',
-      category: 'other',
-      depends_on: [],
-      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      // Only one example prompt → EXAMPLE_PROMPT_2 (example_prompts[1]) is
-      // unresolved; everything else resolves.
-      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x'] },
-      network: { outbound: [] }, // now AST-written as `outbound: []`, no residue
-    });
+    // An unresolved placeholder used to throw one residue PER FILE the token
+    // appeared in (manifest.yaml + README.md + …), burying the signal. The
+    // fix collapses to a single actionable issue per missing manifest source.
+    // A parsed spec resolves every source the templates still map (#1729
+    // removed the index-bound playbook placeholders), so the source is
+    // removed after parsing — the shape a hand-built spec object can have.
+    const { spec: parsed, slots } = loadFixture();
+    const spec = { ...parsed, domain: undefined } as unknown as AgentSpec;
     await assert.rejects(
       () => generate({ spec, slots }),
       (err: unknown) => {
@@ -535,15 +525,105 @@ describe('codegen.generate', () => {
         const residues = err.issues.filter(
           (i) => i.code === 'placeholder_residue',
         );
-        // Exactly one residue per missing source (here: example_prompts[1] →
-        // EXAMPLE_PROMPT_2), not one per file the placeholder appears in.
         assert.equal(residues.length, 1);
         const detail = residues[0]!.detail;
-        assert.match(detail, /\{\{EXAMPLE_PROMPT_2\}\}/);
-        assert.match(detail, /playbook\.example_prompts\[1\]/);
+        assert.match(detail, /\{\{AGENT_DOMAIN\}\}/);
+        assert.match(detail, /'domain'/);
         return true;
       },
     );
+  });
+
+  describe('#1729 playbook lists and output_schema', () => {
+    async function playbookOf(notFor: string[], prompts: string[]) {
+      const { spec: base, slots } = loadFixture();
+      const spec = parseAgentSpec({
+        ...base,
+        playbook: { when_to_use: 'Weather questions', not_for: notFor, example_prompts: prompts },
+      });
+      const out = await generate({ spec, slots });
+      return yaml.parse(out.get('manifest.yaml')!.toString('utf-8')) as {
+        playbook: { not_for: string[]; example_prompts: string[] };
+        capabilities: Array<Record<string, unknown>>;
+      };
+    }
+
+    it('copies longer lists whole', async () => {
+      const m = await playbookOf(['climate history', 'storm warnings', 'pollen'], ['p1', 'p2', 'p3', 'p4']);
+      assert.deepEqual(m.playbook.not_for, ['climate history', 'storm warnings', 'pollen']);
+      assert.deepEqual(m.playbook.example_prompts, ['p1', 'p2', 'p3', 'p4']);
+    });
+
+    it('builds empty and one-entry lists', async () => {
+      const empty = await playbookOf([], []);
+      assert.deepEqual(empty.playbook.not_for, []);
+      assert.deepEqual(empty.playbook.example_prompts, []);
+      const one = await playbookOf(['climate history'], ['p1']);
+      assert.deepEqual(one.playbook.not_for, ['climate history']);
+      assert.deepEqual(one.playbook.example_prompts, ['p1']);
+    });
+
+    it('gives a tool without output no output_schema', async () => {
+      const m = await playbookOf([], []);
+      assert.equal('output_schema' in m.capabilities[0]!, false);
+    });
+  });
+
+  describe('#1736 spec text with quotes and backslashes', () => {
+    const tricky = 'Says "hi" to C:\\weather\\ and it\'s `fine` ${x} */';
+
+    it('writes valid package.json, manifest.yaml and TS for every template', async () => {
+      for (const template of ['integration', 'tool'] as const) {
+        const { spec: base, slots } = loadFixture();
+        const spec = parseAgentSpec({
+          ...base,
+          template,
+          ...(template === 'tool' ? { depends_on: [] } : {}),
+          name: tricky,
+          description: tricky,
+          description_en: `${tricky}\nsecond line`,
+          playbook: { when_to_use: tricky, not_for: [tricky], example_prompts: [tricky] },
+          tools: [{ ...base.tools[0]!, description: tricky }],
+        });
+        const out = await generate({ spec, slots });
+        const pkg = JSON.parse(out.get('package.json')!.toString('utf-8')) as { description: string };
+        assert.equal(pkg.description, tricky);
+        const m = yaml.parse(out.get('manifest.yaml')!.toString('utf-8')) as {
+          identity: { name: string; description: { en: string; de: string } };
+          playbook: { when_to_use: string; not_for: string[] };
+          capabilities: Array<{ description: string }>;
+        };
+        assert.equal(m.identity.name, tricky);
+        assert.equal(m.identity.description.de, tricky);
+        assert.equal(m.identity.description.en, `${tricky}\nsecond line`);
+        assert.equal(m.playbook.when_to_use.trim(), tricky);
+        assert.deepEqual(m.playbook.not_for, [tricky]);
+        assert.equal(m.capabilities[0]!.description, tricky);
+        const html = out.get('assets/admin-ui/index.html')?.toString('utf-8');
+        if (html) assert.match(html, /Says &quot;hi&quot;/);
+      }
+    });
+
+    it('escapes values inside generated TypeScript string literals and comments', async () => {
+      const { spec: base, slots } = loadFixture();
+      const spec = parseAgentSpec({ ...base, name: "Bob's */ agent\nline" });
+      const out = await generate({ spec, slots });
+      const client = out.get('client.ts')!.toString('utf-8');
+      assert.match(client, /Bob\\'s \*\\\/ agent\\nline/);
+    });
+
+    it('names the spec field when a value carries placeholder braces', async () => {
+      const { spec: base, slots } = loadFixture();
+      const spec = parseAgentSpec({ ...base, description: 'uses {{AGENT_ID}} literally' });
+      await assert.rejects(
+        () => generate({ spec, slots }),
+        (err: unknown) => {
+          assert.ok(err instanceof CodegenError);
+          assert.ok(err.issues.some((i) => i.code === 'spec_validation' && /spec\.description\b/.test(i.detail)));
+          return true;
+        },
+      );
+    });
   });
 
   it('renders network.outbound: [] for an integration-backed agent (empty outbound)', async () => {
@@ -1357,6 +1437,47 @@ describe('codegen.generate', () => {
       '*',
     );
     assert.equal(pkgJson.peerDependencies?.['zod'], '^4.0.0');
+
+    // #1779 — the looked-up service is declared, so install and preview grant it.
+    const manifest = yaml.parse(out.get('manifest.yaml')!.toString('utf-8')) as {
+      requires?: string[];
+    };
+    assert.deepEqual(manifest.requires, ['odoo.client@^1']);
+  });
+
+  it('#1779 — refuses an external_read whose provider declares no major', async () => {
+    registerServiceType('legacy.client', {
+      providedBy: 'de.byte5.integration.odoo',
+      typeImport: { from: '@omadia/integration-odoo', name: 'OdooClient' },
+    });
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.legacy',
+      name: 'Legacy',
+      description: 'x',
+      category: 'productivity',
+      depends_on: ['de.byte5.integration.odoo'],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      external_reads: [
+        { id: 'read_it', description: 'x', service: 'legacy.client', method: 'm', args: [], kwargs: {} },
+      ],
+      playbook: { when_to_use: 'x' },
+    });
+    await assert.rejects(
+      () => generate({ spec, slots }),
+      (err: unknown) => {
+        assert.ok(err instanceof CodegenError);
+        assert.ok(err.issues.some((i) => /external_reads\[0\]\.service 'legacy\.client'/.test(i.detail)));
+        return true;
+      },
+    );
+  });
+
+  it('#1779 — writes no requires: without external_reads', async () => {
+    const { spec, slots } = loadFixture();
+    const out = await generate({ spec, slots });
+    const manifest = yaml.parse(out.get('manifest.yaml')!.toString('utf-8')) as Record<string, unknown>;
+    assert.equal('requires' in manifest, false);
   });
 
   it('emits one service-lookup block when two external_reads share a service', async () => {

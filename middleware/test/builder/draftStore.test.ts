@@ -176,13 +176,17 @@ describe('DraftStore', () => {
     await storeShort.softDelete('a@x', draftRow.id);
 
     // Under grace — nothing should purge
-    const earlyCount = await storeShort.purgePublished();
-    assert.equal(earlyCount, 0);
+    const early = await storeShort.purgePublished();
+    assert.equal(early.length, 0);
 
     await new Promise((r) => setTimeout(r, 80));
 
     const purged = await storeShort.purgePublished();
-    assert.equal(purged, 1, 'exactly the published+soft-deleted one purges');
+    assert.deepEqual(
+      purged,
+      [{ id: published.id, userEmail: 'a@x' }],
+      'exactly the published+soft-deleted one purges',
+    );
 
     // Plain draft still there (never published → never auto-purged)
     const leftover = await storeShort.list('a@x', { scope: 'deleted' });
@@ -391,6 +395,17 @@ describe('DraftStore', () => {
     const future = new DraftStore({ dbPath: futurePath });
     await assert.rejects(() => future.open(), /newer than this middleware supports/);
   });
+
+  it('#1790: hardDeleteDeleted removes only an already deleted draft', async () => {
+    const active = await store.create('a@x', 'active');
+    const gone = await store.create('a@x', 'gone');
+    await store.softDelete('a@x', gone.id);
+    assert.equal(await store.hardDeleteDeleted('a@x', active.id), false);
+    assert.equal(await store.hardDeleteDeleted('b@x', gone.id), false, 'owner-scoped');
+    assert.equal(await store.hardDeleteDeleted('a@x', gone.id), true);
+    assert.equal((await store.list('a@x', { scope: 'deleted' })).length, 0);
+    assert.ok(await store.load('a@x', active.id));
+  });
 });
 
 describe('DraftStore v1 → v4 migration (2026-05-18)', () => {
@@ -541,4 +556,5 @@ describe('DraftStore v1 → v4 migration (2026-05-18)', () => {
     await assert.rejects(() => store.open(), /schema version 99/);
     assert.ok(existsSync(dbPath));
   });
+
 });

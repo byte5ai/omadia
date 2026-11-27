@@ -538,8 +538,13 @@ function RollbackModal({
     setBusy(true);
     try {
       const res = await rollbackSnapshot(draftId, snapshot.snapshot_id);
+      const restored = res.draft_restored;
       await onRolledBack(
-        t('toastRollbackDone', { count: res.diverged_assets.length }),
+        restored?.spec && restored.slots
+          ? t('toastRollbackDraftRestored')
+          : restored?.spec
+            ? t('toastRollbackSpecOnly')
+            : t('toastRollbackDone', { count: res.diverged_assets.length }),
       );
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));

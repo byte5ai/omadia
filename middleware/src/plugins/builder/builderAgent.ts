@@ -1024,6 +1024,9 @@ async function runBridgedTool(
  * manifest linter), so there the CLI has to own the loop.
  */
 function defaultBuildSubAgent(opts: BuilderSubAgentBuildOptions): Askable {
+  // ADR-0196 (#2241, Entscheidung nach Empfehlung, umkehrbar) — an operator
+  // job outside the Privacy Shield, like the `LocalSubAgent` below; only
+  // OMADIA_PRIVACY_FORCE_GUARDED refuses it (the CLI agent before the spawn).
   if (opts.cliModel) {
     return createCliSubAgent({
       name: opts.name,

@@ -46,6 +46,8 @@ import type {
   BuilderPluginKind,
   BuilderTemplateInfo,
   Draft,
+  RuntimeSmokeReason,
+  RuntimeSmokeToolStatus,
   TemplateSlotDef,
 } from '../../../../_lib/builderTypes';
 
@@ -252,11 +254,11 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   const [runtimeSmoke, setRuntimeSmoke] = useState<{
     phase: 'running' | 'ok' | 'failed';
     buildN: number;
-    reason?: 'ok' | 'activate_failed' | 'tool_failures' | 'no_tools';
+    reason?: RuntimeSmokeReason;
     activateError?: string;
     results?: ReadonlyArray<{
       toolId: string;
-      status: 'ok' | 'timeout' | 'threw' | 'validation_failed';
+      status: RuntimeSmokeToolStatus;
       durationMs: number;
       errorMessage?: string;
     }>;

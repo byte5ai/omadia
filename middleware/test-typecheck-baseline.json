@@ -38,7 +38,6 @@
   "test/builder/renderReactRoute.test.ts": 1,
   "test/builder/reportPlatformIssueTool.test.ts": 3,
   "test/builder/runtimeSmoke.test.ts": 1,
-  "test/builder/runtimeSmokeOrchestrator.test.ts": 1,
   "test/builder/slotTypecheckPipeline.test.ts": 9,
   "test/builder/specEventBus.test.ts": 5,
   "test/builder/specPatcher.test.ts": 3,

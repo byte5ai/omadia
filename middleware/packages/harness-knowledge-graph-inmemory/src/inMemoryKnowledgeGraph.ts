@@ -36,6 +36,9 @@ import {
   type DatasetQueryResult,
   type DatasetSummary,
   validateDatasetQueryOptions,
+  assertNoEncryptedQueryColumns,
+  datasetQueryValueColumns,
+  isEncryptedDatasetCell,
   type EntityRef,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
@@ -220,6 +223,23 @@ function matchesDatasetFilter(
     default:
       return false;
   }
+}
+
+/** Group order by aggregate value: descending, nulls last. */
+function compareGroupValues(a: number | null, b: number | null): number {
+  if (a === null) return b === null ? 0 : 1;
+  if (b === null) return -1;
+  return b - a;
+}
+
+/** Group tie-break by key as Neon sees it (`data->>col`, text, `COLLATE "C"`),
+ *  nulls last. */
+function compareGroupKeys(a: unknown, b: unknown): number {
+  const left = a === null || a === undefined ? null : String(a);
+  const right = b === null || b === undefined ? null : String(b);
+  if (left === null) return right === null ? 0 : 1;
+  if (right === null) return -1;
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /** #430 — non-numeric / missing values are dropped from the aggregate
@@ -3414,6 +3434,15 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     if (!d || d.ownerOmadiaUserId !== viewerOmadiaUserId) return null;
     const normalized = validateDatasetQueryOptions(d.columns, opts);
     const columnTypeByName = new Map(d.columns.map((c) => [c.name, c.type]));
+    // #1849 — same refusal as the Neon backend.
+    assertNoEncryptedQueryColumns(
+      normalized,
+      new Set(
+        datasetQueryValueColumns(normalized).filter((c) =>
+          d.rows.some((row) => isEncryptedDatasetCell(row[c])),
+        ),
+      ),
+    );
     const matched = d.rows.filter((row) =>
       normalized.filters.every((f) =>
         matchesDatasetFilter(
@@ -3442,26 +3471,17 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         if (bucket) bucket.push(row);
         else buckets.set(key, [row]);
       }
-      // #430 fixup — cap at 200 groups, same as the Neon backend's
-      // `LIMIT 200` (neonKnowledgeGraph.ts). Uncapped, a dataset with many
-      // unique group keys could blow the turn token budget through this
-      // backend even though Neon is safe. Sorted by value (desc, nulls
-      // last) BEFORE truncating — same order as Neon's
-      // `ORDER BY value DESC NULLS LAST LIMIT 200` — so which 200 survive is
-      // deterministic, not insertion-order-dependent.
-      const MAX_GROUPS = 200;
-      const groups = [...buckets.entries()]
+      // #1844 — `limit`/`offset` page through the groups, same order as the
+      // Neon backend (`ORDER BY value DESC NULLS LAST, key ASC NULLS LAST`),
+      // so a page is deterministic and pages never overlap.
+      const all = [...buckets.entries()]
         .map(([key, rowsInGroup]) => ({
           key,
           value: computeDatasetAggregate(rowsInGroup, normalized.aggregate!),
         }))
-        .sort((a, b) => {
-          if (a.value === null) return b.value === null ? 0 : 1;
-          if (b.value === null) return -1;
-          return b.value - a.value;
-        })
-        .slice(0, MAX_GROUPS);
-      return { groups, totalMatched: matched.length };
+        .sort((a, b) => compareGroupValues(a.value, b.value) || compareGroupKeys(a.key, b.key));
+      const groups = all.slice(normalized.offset, normalized.offset + normalized.limit);
+      return { groups, totalGroups: all.length, totalMatched: matched.length };
     }
     return {
       aggregateValue: computeDatasetAggregate(matched, normalized.aggregate),

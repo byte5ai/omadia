@@ -64,6 +64,8 @@ export interface RollbackResponse {
   rolled_back_to: { snapshot_id: string; bundle_hash: string };
   applied_at: string;
   diverged_assets: string[];
+  /** #1788 — what the rollback restored into the Builder draft itself. */
+  draft_restored?: { spec: boolean; slots: boolean };
 }
 
 export interface AssetDiffEntry {

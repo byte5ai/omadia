@@ -136,7 +136,13 @@ export function registerSelfExtensionRoutes(
     }
     let currentSpec;
     try {
-      currentSpec = parseAgentSpec(draft.spec);
+      // #1786 — slot code lives on `draft.slots`, not in `spec.slots`. Merge
+      // it in, so the approved spec (patches against this one) carries the
+      // code the build needs.
+      currentSpec = parseAgentSpec({
+        ...draft.spec,
+        slots: { ...(draft.spec.slots ?? {}), ...draft.slots },
+      });
     } catch (err) {
       return sendJson(res, 422, {
         code: 'self_ext.spec_invalid',

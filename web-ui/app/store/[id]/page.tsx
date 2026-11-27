@@ -701,6 +701,14 @@ async function PermissionsBlock({
       mono: true,
     },
     {
+      // ADR-0256 — the top-level /memories trees the plugin may change. The
+      // first plugin to use a tree owns it.
+      label: t('memoryTrees'),
+      icon: <Database className="size-3.5" aria-hidden />,
+      items: perms.memory_trees ?? [],
+      mono: true,
+    },
+    {
       label: t('graphReads'),
       icon: <Database className="size-3.5" aria-hidden />,
       items: perms.graph_reads,

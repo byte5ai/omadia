@@ -24,6 +24,7 @@ import {
   type LinkKeyReport,
   type PrivacyScanStats,
   type TableParse,
+  type TableParseFailure,
   type TableTruncationStats,
 } from './datasetImport.js';
 import { parseXlsx } from './datasetImportXlsx.js';
@@ -94,7 +95,7 @@ function resolveCellKey(input: ImportTabularDatasetInput): DatasetCellKey | unde
 
 export type ImportTabularDatasetResult =
   | { ok: true; imported: ImportedTable[] }
-  | { ok: false; reason: string };
+  | TableParseFailure;
 
 /** One named table awaiting ingest. */
 interface NamedTable {
@@ -106,7 +107,7 @@ interface NamedTable {
 /** Parse bytes into the set of tables the file contains. */
 async function parseTables(
   input: ImportTabularDatasetInput,
-): Promise<{ ok: true; tables: NamedTable[] } | { ok: false; reason: string }> {
+): Promise<{ ok: true; tables: NamedTable[] } | TableParseFailure> {
   if (input.format === 'csv') {
     const parsed = parseCsv(input.bytes);
     if (!parsed.ok) return parsed;
@@ -167,7 +168,7 @@ export async function importTabularDataset(
     });
     if (!dataset.ok) {
       const where = named.sheetName ? ` (sheet '${named.sheetName}')` : '';
-      return { ok: false, reason: `${dataset.reason}${where}` };
+      return { ...dataset, reason: `${dataset.reason}${where}` };
     }
     built.push({
       named,

@@ -19,7 +19,7 @@ identity:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
       url: "https://omadia.ai"
-  license: "Proprietary"
+  license: "MIT"
   categories:
     - "reference"
 
@@ -32,8 +32,10 @@ compat:
   core: ">=1.0 <2.0"
   node: ">=20"
 
-depends_on:
-  - "@omadia/memory"
+# No `depends_on: @omadia/memory` (#1973): the notes go through `ctx.memory`,
+# which the kernel scopes per plugin (`permissions.memory`) over whichever
+# memoryStore@1 provider is active. Naming one provider plugin would make the
+# plugin uninstallable on a stack that runs the other one (ADR-0053).
 
 lifecycle:
   entry: "dist/plugin.js"

@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import type { Router, Request, Response } from 'express';
 
-import { sanitizeIssueBody } from '../plugins/builder/issueBodySanitizer.js';
+import {
+  sanitizeIssueBody,
+  sanitizeIssueTitle,
+} from '../plugins/builder/issueBodySanitizer.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import type { GithubIssueCache } from '../plugins/builder/githubIssueCache.js';
 import type { GithubIssueCreator } from '../plugins/builder/githubIssueCreator.js';
@@ -279,7 +282,8 @@ export function registerBuilderIssueReportingRoutes(
       const created = await deps.issueCreator.createIssue({
         owner,
         repo,
-        title,
+        // #1783 — the client-supplied title is untrusted too.
+        title: sanitizeIssueTitle(title).title,
         body: sanitized.body,
         labels: requiredLabels,
       });

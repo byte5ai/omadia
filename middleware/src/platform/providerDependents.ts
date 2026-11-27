@@ -22,9 +22,19 @@
  * torn-down instances. So the plugin that captures a rebuilt one is rebuilt
  * after it ({@link rebuildOrder}); the settings PATCH, which reactivates
  * several scopes at once, sorts by the same rule.
+ *
+ * #1891 — a provider plugin's own config (e.g. `anthropic_base_url` of
+ * `@omadia/plugin-llm-anthropic`) changes the provider of every LLM plugin
+ * that runs on its provider id, without any `llm_provider` write. Its
+ * reactivation is therefore a provider change for those plugins
+ * ({@link llmPluginsUsingProvider}): the provider plugin first (it
+ * re-registers the descriptor), then they in {@link rebuildOrder}; a plugin
+ * that does not come back up is reported, and a provider plugin that itself
+ * stays down is reported instead of rebuilding anything onto it.
  */
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { DEFAULT_PROVIDER, LLM_PLUGINS, readStringConfig } from './pluginLlmReadiness.js';
+
 
 /** Ids of the LLM plugins that inherit their provider from `pluginId`. */
 export function providerDependentsOf(pluginId: string): string[] {
@@ -63,6 +73,42 @@ export function rebuildOrder(
   return [...ids.filter((id) => !capturers.has(id)), ...ids.filter((id) => capturers.has(id))];
 }
 
+/**
+ * #1891 — the installed LLM plugins that may run on `providerId`, in rebuild
+ * order. The agent runtime always: any agent's model policy may pin that
+ * provider. Another plugin when its own `llm_provider` (default Anthropic)
+ * names it; a plugin that inherits (orchestrator-extras, OM-102) also when
+ * the parent's names it or it is Anthropic, which its candidate chain always
+ * contains.
+ */
+export function llmPluginsUsingProvider(
+  providerId: string,
+  installedRegistry: Pick<InstalledRegistry, 'has' | 'get'>,
+): string[] {
+  const isInstalled = (id: string) => installedRegistry.has(id);
+  const ownProvider = (id: string) =>
+    readStringConfig(installedRegistry.get(id)?.config ?? {}, 'llm_provider')?.trim() || undefined;
+  const uses = (desc: (typeof LLM_PLUGINS)[number]): boolean => {
+    if (desc.capturedBy === undefined && desc.inheritsProviderFrom === undefined) return true;
+    const own = ownProvider(desc.id);
+    if (desc.inheritsProviderFrom === undefined) return (own ?? DEFAULT_PROVIDER) === providerId;
+    const candidates = [own, ownProvider(desc.inheritsProviderFrom), DEFAULT_PROVIDER];
+    return candidates.includes(providerId);
+  };
+  return rebuildOrder(
+    LLM_PLUGINS.filter((desc) => isInstalled(desc.id) && uses(desc)).map((desc) => desc.id),
+    isInstalled,
+  );
+}
+
+/** #1891 — every installed LLM plugin, in the order a provider change rebuilds them. */
+export function llmPluginsToRebuild(isInstalled: (pluginId: string) => boolean): string[] {
+  return rebuildOrder(
+    LLM_PLUGINS.map((p) => p.id).filter(isInstalled),
+    isInstalled,
+  );
+}
+
 function effectiveProvider(cfg: Record<string, unknown> | undefined): string {
   return (readStringConfig(cfg ?? {}, 'llm_provider') ?? DEFAULT_PROVIDER).trim();
 }
@@ -79,6 +125,12 @@ export function isEffectiveProviderChange(
 export interface ProviderReactivationDeps {
   readonly installedRegistry: Pick<InstalledRegistry, 'has' | 'get'>;
   readonly reactivate?: (pluginId: string) => Promise<void>;
+  /**
+   * #1891 — the provider id `pluginId` contributes (its manifest's
+   * `llm_provider.id`), or `undefined` when it is no provider plugin. Absent =
+   * no plugin is a provider plugin.
+   */
+  readonly providerIdOf?: (pluginId: string) => string | undefined;
 }
 
 /** How the written plugin itself came out of the rebuild. */
@@ -178,6 +230,13 @@ export interface ProviderWriteFacts {
    * reach a dependent still left `errored`.
    */
   readonly providerWritten?: boolean;
+  /**
+   * #2240 / ADR-0215 — the write changed a provider API key in the kernel
+   * scope (the orchestrator's own secret editor). Every installed LLM plugin
+   * built a provider from that scope, so all of them are rebuilt, as for a
+   * key change under LLM access.
+   */
+  readonly kernelCredentialWritten?: boolean;
   /** Rebuild the plugin that captures the written one afterwards (#1394).
    *  Default `true`; a batch that rebuilds it itself passes `false`. */
   readonly rebuildCapturer?: boolean;
@@ -195,6 +254,9 @@ function dependentsToRebuild(
   pluginId: string,
   facts: ProviderWriteFacts,
 ): string[] {
+  if (facts.kernelCredentialWritten === true) {
+    return llmPluginsToRebuild((id) => installedRegistry.has(id)).filter((id) => id !== pluginId);
+  }
   return providerDependentsOf(pluginId).filter((id) => {
     if (!installedRegistry.has(id)) return false;
     if (facts.providerChanged) return true;
@@ -225,6 +287,10 @@ export async function reactivateAfterProviderWrite(
 ): Promise<PrimaryRebuildOutcome | undefined> {
   const reactivate = deps.reactivate;
   if (reactivate === undefined) return undefined;
+  const contributedProvider = deps.providerIdOf?.(pluginId);
+  if (contributedProvider !== undefined) {
+    return reactivateProviderPlugin(deps.installedRegistry, reactivate, pluginId, contributedProvider);
+  }
   const dependents = dependentsToRebuild(deps.installedRegistry, pluginId, opts);
   const dependentFailures: Array<{ readonly id: string; readonly reason: string }> = [];
   for (const id of dependents) {
@@ -258,4 +324,47 @@ export async function reactivateAfterProviderWrite(
   for (const f of otherFailures) console.error(`[providers] ${f.message}`);
   if (firstFailure !== undefined) throw firstFailure;
   return outcome;
+}
+
+/**
+ * #1891 — rebuild a provider plugin, then the installed LLM plugins that may
+ * run on its provider ({@link llmPluginsUsingProvider}; they resolve their
+ * provider once per `activate()`). A provider plugin left down is thrown as a
+ * {@link ProviderPluginRebuildError} and nothing is rebuilt onto it; otherwise
+ * the same failure contract as {@link reactivateAfterProviderWrite}: the first
+ * LLM plugin left down is thrown, the rest are logged.
+ */
+async function reactivateProviderPlugin(
+  installedRegistry: ProviderReactivationDeps['installedRegistry'],
+  reactivate: (pluginId: string) => Promise<void>,
+  pluginId: string,
+  providerId: string,
+): Promise<PrimaryRebuildOutcome> {
+  await reactivate(pluginId);
+  const primaryFailure = activationFailure(installedRegistry, pluginId);
+  if (primaryFailure !== undefined) throw new ProviderPluginRebuildError(pluginId, primaryFailure);
+  const outcome: PrimaryRebuildOutcome = { providerChanged: true };
+  const failures: ProviderDependentRebuildError[] = [];
+  for (const id of llmPluginsUsingProvider(providerId, installedRegistry)) {
+    const reason = await rebuildDependent(installedRegistry, reactivate, id);
+    if (reason !== undefined) failures.push(new ProviderDependentRebuildError(pluginId, id, reason, outcome));
+  }
+  const [firstFailure, ...otherFailures] = failures;
+  for (const f of otherFailures) console.error(`[providers] ${f.message}`);
+  if (firstFailure !== undefined) throw firstFailure;
+  return outcome;
+}
+
+/**
+ * #1891 — a provider plugin's config was saved, but the plugin did not come
+ * back up; the LLM plugins were NOT rebuilt onto it and keep what they had.
+ */
+export class ProviderPluginRebuildError extends Error {
+  readonly pluginId: string;
+
+  constructor(pluginId: string, reason: string) {
+    super(`${pluginId} did not come back up after its config write (${reason}); the LLM plugins were not rebuilt onto it`);
+    this.name = 'ProviderPluginRebuildError';
+    this.pluginId = pluginId;
+  }
 }

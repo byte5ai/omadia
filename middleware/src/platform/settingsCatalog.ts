@@ -9,10 +9,12 @@
  * has been removed: per-plugin settings now live exclusively in that editor.
  *
  * What remains here are only the settings that genuinely DON'T map 1:1 to a
- * single plugin's setup field — the LLM provider API keys, whose secrets fan
- * out across THREE vault scopes (orchestrator, verifier, orchestrator-extras).
- * Setting one centrally writes all three; the per-plugin editor would require
- * editing each scope separately. The web UI edits them under Admin → LLM
+ * single plugin's setup field — the LLM provider API keys. Since ADR-0215
+ * (#2240) they live in ONE vault scope, the kernel's
+ * (`KERNEL_PROVIDER_CREDENTIAL_SCOPE`); the agent runtime, the verifier and
+ * orchestrator-extras read them through the kernel provider pool, and a key
+ * change rebuilds all three (see `adminSettings.ts`). Before, each key was
+ * written into three scopes. The web UI edits them under Admin → LLM
  * access → "API keys" (`/admin/providers`); the old `/admin/settings` page that
  * rendered this catalog directly was removed in #1397.
  *
@@ -27,10 +29,10 @@ import {
   providerApiKeyVaultKey,
 } from '@omadia/llm-provider';
 
-/** Plugin ids (installed-registry ids / vault scopes) the settings target. */
-const ORCHESTRATOR = '@omadia/orchestrator';
-const ORCHESTRATOR_EXTRAS = '@omadia/orchestrator-extras';
-const VERIFIER = '@omadia/verifier';
+import { KERNEL_PROVIDER_CREDENTIAL_SCOPE } from './kernelProviderCredentials.js';
+
+/** #2240 / ADR-0215 — the one scope every provider API key is written to. */
+const PROVIDER_KEY_SCOPES: readonly string[] = [KERNEL_PROVIDER_CREDENTIAL_SCOPE];
 
 export type SettingValueType =
   | 'string'
@@ -92,7 +94,7 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
   {
     key: 'ANTHROPIC_API_KEY',
     label: 'Anthropic API key',
-    help: 'Used by the orchestrator, the verifier and the background tasks. Starts with "sk-ant-". The stored value is never shown. Written to all three plugin vaults.',
+    help: 'Used by the orchestrator, the verifier and the background tasks. Starts with "sk-ant-". The stored value is never shown. Stored once in the vault for the agent runtime, the verifier and the background tasks.',
     category: C_MODELS,
     type: 'secret',
     placeholder: 'sk-ant-…',
@@ -103,33 +105,33 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
       // is deleted on clear (see adminSettings) so a revoke truly revokes.
       vaultKey: providerApiKeyVaultKey('anthropic'),
       legacyVaultKey: legacyProviderApiKeyVaultKey('anthropic'),
-      scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+      scopes: PROVIDER_KEY_SCOPES,
     },
   },
   {
     key: 'OPENAI_API_KEY',
     label: 'OpenAI API key',
-    help: 'Optional. For the provider "openai" (chosen per plugin via llm_provider). Starts with "sk-". The stored value is never shown. Written to all three plugin vaults.',
+    help: 'Optional. For the provider "openai" (chosen per plugin via llm_provider). Starts with "sk-". The stored value is never shown. Stored once in the vault for the agent runtime, the verifier and the background tasks.',
     category: C_MODELS,
     type: 'secret',
     placeholder: 'sk-…',
     secret: {
       // OpenAI is canonical-only (no legacy flat key).
       vaultKey: providerApiKeyVaultKey('openai'),
-      scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+      scopes: PROVIDER_KEY_SCOPES,
     },
   },
   {
     key: 'MISTRAL_API_KEY',
     label: 'Mistral API key',
-    help: 'Optional. For the provider "mistral" (chosen per plugin via llm_provider). Mistral is hosted in the EU (France), so there is no third-country transfer. The stored value is never shown. Written to all three plugin vaults.',
+    help: 'Optional. For the provider "mistral" (chosen per plugin via llm_provider). Mistral is hosted in the EU (France), so there is no third-country transfer. The stored value is never shown. Stored once in the vault for the agent runtime, the verifier and the background tasks.',
     category: C_MODELS,
     type: 'secret',
     placeholder: 'API key from console.mistral.ai …',
     secret: {
       // Mistral is canonical-only (no legacy flat key), like OpenAI.
       vaultKey: providerApiKeyVaultKey('mistral'),
-      scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+      scopes: PROVIDER_KEY_SCOPES,
     },
   },
 ];
@@ -170,7 +172,7 @@ function signsInWithoutKey(p: ProviderKeySource): boolean {
 
 /** Build per-provider API-key settings for plugin-contributed providers (e.g.
  *  MiniMax) so the operator connects them on the same admin overview as the
- *  built-in keys. The secret fans out to the same three LLM-plugin scopes.
+ *  built-in keys. The secret goes to the same kernel scope (ADR-0215).
  *  Skipped: providers the static entries already cover, and providers that
  *  sign in without a key (see `signsInWithoutKey`). */
 export function providerKeySettings(
@@ -186,12 +188,12 @@ export function providerKeySettings(
     out.push({
       key: `${p.id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`,
       label: `${p.label} API key`,
-      help: `Optional. For the provider "${p.id}" (chosen per plugin via llm_provider). The stored value is never shown. Written to all three plugin vaults.`,
+      help: `Optional. For the provider "${p.id}" (chosen per plugin via llm_provider). The stored value is never shown. Stored once in the vault for the agent runtime, the verifier and the background tasks.`,
       category: C_MODELS,
       type: 'secret',
       secret: {
         vaultKey: providerApiKeyVaultKey(p.id),
-        scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+        scopes: PROVIDER_KEY_SCOPES,
       },
     });
   }
