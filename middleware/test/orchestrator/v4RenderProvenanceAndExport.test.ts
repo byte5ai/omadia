@@ -283,6 +283,16 @@ describe('#1972 — file export, file rules and the forced retry follow the agen
     const ungranted = await runRenderTurn('ungranted', ANNOUNCE);
     const granted = await runRenderTurn('granted', ANNOUNCE);
     assert.equal(granted.requests.length, ungranted.requests.length + 1);
-    assert.ok(!JSON.stringify(ungranted.requests).includes('NICHT aufgerufen'));
+    // The nudge is English since #1219.
+    assert.ok(JSON.stringify(granted.requests).includes('You said you would build a file'));
+    assert.ok(!JSON.stringify(ungranted.requests).includes('You said you would build a file'));
+  });
+
+  it('#2345 — a capability list forces no retry, even with the tool granted', async () => {
+    const list = 'Ich bin für FAQ zuständig, beantworte Fragen und erstelle bei Bedarf Excel- und Word-Dateien.';
+    const granted = await runRenderTurn('granted', list);
+    const ungranted = await runRenderTurn('ungranted', list);
+    assert.equal(granted.requests.length, ungranted.requests.length);
+    assert.ok(!JSON.stringify(granted.requests).includes('You said you would build a file'));
   });
 });
