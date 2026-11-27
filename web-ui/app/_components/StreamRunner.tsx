@@ -81,7 +81,7 @@ export async function runOneTurn(
   depsRef: DepsRef,
 ): Promise<void> {
   const { request, signal } = claim;
-  const { sessionId, pendingMessageId, message, agentSlug, answerVerbosity } = request;
+  const { sessionId, pendingMessageId, message, agentSlug, answerVerbosity, attachments } = request;
   const { store } = depsRef.current;
 
   // Per-turn accumulators. Kept local to the runner so the store stays
@@ -167,6 +167,7 @@ export async function runOneTurn(
         sessionId,
         ...(agentSlug ? { agentSlug } : {}),
         ...(answerVerbosity ? { answerVerbosity } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
       }),
       signal,
     });
@@ -198,6 +199,7 @@ export async function runOneTurn(
             message?: string;
             slug?: string;
             reason?: string;
+            code?: string;
           };
           msg = parsed.message ?? parsed.error ?? `HTTP ${String(res.status)}`;
           // Phase A / TA08 + OM-76/77 — flag the recovery banner and give the
@@ -219,6 +221,10 @@ export async function runOneTurn(
               agentUnavailableReason: 'no_agents_active',
             });
             msg = t('errorNoAgentsActive');
+          } else if (res.status === 400 && parsed.code === 'chat_upload.unknown_attachment') {
+            // #2336 — an attached file no longer belongs to this chat (deleted
+            // with it, or attached in another tab's chat).
+            msg = t('uploads.error.unknownAttachment');
           }
         } catch {
           msg = fallback || `HTTP ${String(res.status)}`;

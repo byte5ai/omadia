@@ -91,6 +91,8 @@ export interface InitRoutinesOptions {
   purgeTranscripts?: RoutineRunnerOptions['purgeTranscripts'];
   /** #1776 — see `RoutineRunnerOptions.bookManualRunCost`. */
   bookManualRunCost?: RoutineRunnerOptions['bookManualRunCost'];
+  /** #2357 — see `RoutineRunnerOptions.manualRunRefusal`. */
+  manualRunRefusal?: RoutineRunnerOptions['manualRunRefusal'];
   /** #1744 / #1745 — see `RoutineRunnerOptions.resolveAgent`. */
   resolveAgent?: RoutineRunnerOptions['resolveAgent'];
   /** Spec 2042 §5.3 — see `RoutineRunnerOptions.deliveryRefusal`. */
@@ -142,6 +144,7 @@ export async function initRoutines(
     ...(opts.deliveryRefusal ? { deliveryRefusal: opts.deliveryRefusal } : {}),
     ...(opts.resolveAgent ? { resolveAgent: opts.resolveAgent } : {}),
     ...(opts.bookManualRunCost ? { bookManualRunCost: opts.bookManualRunCost } : {}),
+    ...(opts.manualRunRefusal ? { manualRunRefusal: opts.manualRunRefusal } : {}),
     ...(opts.purgeTranscripts ? { purgeTranscripts: opts.purgeTranscripts } : {}),
     log,
     maxActivePerUser: opts.maxActivePerUser,

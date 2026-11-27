@@ -359,6 +359,8 @@ interface Harness {
 
 interface MakeHarnessOptions {
   orchestrator?: OrchestratorLike;
+  /** #2357 — the budget pre-check of manual runs. */
+  manualRunRefusal?: (routineId: string) => Promise<string | undefined>;
   /** Live resolver seam (issue #473). Takes precedence over `orchestrator`;
    *  lets tests flip the chat agent between fires (hot-enable / rotation). */
   getOrchestrator?: (agentSlug: string | null) => OrchestratorLike | undefined;
@@ -404,6 +406,7 @@ function makeHarness(options: MakeHarnessOptions = {}): Harness {
     log: () => {},
     maxActivePerUser: options.maxActivePerUser,
     ...(options.resolveAgent ? { resolveAgent: options.resolveAgent } : {}),
+    ...(options.manualRunRefusal ? { manualRunRefusal: options.manualRunRefusal } : {}),
   });
   return {
     store,
@@ -1683,6 +1686,38 @@ describe('#1746 / #1747 / #1748 — run control: cancel, timeout signal, one run
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(gated.runTurnCalls(), 1);
     assert.equal(h.runsStore.inserts[0]!.trigger, 'manual');
+  });
+
+  it('#2357 — a manual run is refused by the budget pre-check, on both entry points', async () => {
+    const asked: string[] = [];
+    const h = makeHarness({
+      manualRunRefusal: async (id) => {
+        asked.push(id);
+        return 'the agent\'s monthly budget would be exceeded by one more run';
+      },
+    });
+    const routine = await h.runner.createRoutine(baseInput);
+    for (const start of [
+      () => h.runner.startManualRun(routine.id, OWNER_SCOPE),
+      () => h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE),
+    ]) {
+      await assert.rejects(start(), (err: Error) => {
+        assert.equal(err.name, 'RoutineBudgetRefusedError');
+        assert.match(err.message, /monthly budget/);
+        return true;
+      });
+    }
+    assert.deepEqual(asked, [routine.id, routine.id]);
+    assert.equal(h.agentCalls.length, 0, 'no turn ran');
+    assert.equal(h.runsStore.inserts.length, 0);
+    assert.equal(h.runner.isRunning(routine.id), false, 'the slot is not held');
+  });
+
+  it('#2357 — a failing budget pre-check does not block the run', async () => {
+    const h = makeHarness({ manualRunRefusal: () => Promise.reject(new Error('db down')) });
+    const routine = await h.runner.createRoutine(baseInput);
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(h.runsStore.inserts.length, 1);
   });
 
   it('#2339 — run_now refuses a routine of another owner and a paused one', async () => {

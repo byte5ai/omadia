@@ -99,6 +99,60 @@ changelog.
   stored `unprotected` like a missing one, as `query` and the model's own process tools already do
   (#2334).
 
+### Added — file uploads in the web chat (#2336, #1985) (2026-11-27)
+
+- New kernel route `POST /api/chat/uploads`: recordings, PDFs, DOCX, text, CSV/XLSX and
+  images up to 25 MiB, stored under `web-chat/<chat>/<uuid>/<name>`, bound to the chat at upload
+  (ADR-0178) and filed as producer `web-chat-upload` in the `generated_objects` ledger, so
+  deleting the chat or purging the person deletes the file (ADR-0187). No migration.
+- `/api/chat` and `/api/chat/stream` take `attachments` references; the kernel checks each
+  against its chat binding and states it as `storedAttachments`, so web uploads get the same
+  ingest, Privacy Shield masking and prompt-masked transcripts (ADR-0198) as channel uploads.
+  `read_attachment` / `transcribe_recording` are offered on web turns that carry files.
+- Web chat: attach by paper clip, drag & drop or paste; size/type limits; attachment list in
+  the sent message (en + de). A file removed before sending is deleted at once
+  (`DELETE /api/chat/uploads`); a chat holds at most 100 uploads. New ADR-0310.
+- API contract: `POST /api/chat` / `/api/chat/stream` with a whitespace-only `message` and no
+  `attachments` now answers `400` (it passed before).
+
+### Fixed — a manual routine run passes the budget checks first (#2357) (2026-11-27)
+
+- `manage_routine` `run_now`, the routine page's "run now" and the smart-card button refuse a run
+  when the kill switch is set, the routine's trigger is paused for budget, or one more firing's
+  budget would exceed the trigger's total or the agent's or instance's month
+  (`TriggerService.manualRunRefusal`; route answers `409 routines.budget_refused`). Read-only; the
+  cost is still booked afterwards (ADR-0324).
+
+### Fixed — deleting a chat or routine purges its graph history (#1753) (2026-11-27)
+
+- Deleting a web chat or a routine now removes its conversation history from the knowledge graph
+  (Turns, Runs, tool calls, plans, derived Facts, the Session) under every agent, after its
+  transcripts. New filter `ConversationHistoryPurgeFilter.conversationScopes` and helper
+  `matchesConversationScope` (plugin-api 1.113.0, additive); `graphScopeKeysFor` in
+  `@omadia/orchestrator` (ADR-0323).
+
+### Changed — routine deliveries and transcripts are appended, plugin-api 1.113.0 (#1753) (2026-11-27)
+
+- `MemoryStore.appendFile?` (optional) and the helper `appendToMemoryFile` (plugin-api **1.113.0**,
+  additive); Postgres and in-memory stores append in place. The session transcript is appended per
+  turn instead of read and written back; a web-chat routine delivery is one line in
+  `/memories/chat-sessions/<id>.deliveries.jsonl`, folded into the chat document by its next save
+  (ADR-0322).
+
+### Fixed — routine deliveries appear live in the open web chat (#2354) (2026-11-27)
+
+- New `GET /api/chat/sessions/:id/events` (SSE, owner only, bound to the session like the builder
+  stream): after a routine delivery is stored the web sender signals the chat's open streams
+  (`ChatDeliveryBus`), and the web UI re-reads the chat at once. The event carries no text; the
+  60-second poll stays as fallback (ADR-0321).
+
+### Fixed — AI disclosure line follows the answer language (#2353) (2026-11-27)
+
+- The AI-disclosure line is composed in the language of the answer it is appended to (German or
+  English, `detectAnswerLocale`), on every path: buffered, streaming, subscription CLI, fast path
+  and own-identity posts. `ai_disclosure_locale` is now the fallback for answers whose language is
+  undecided (ADR-0320, supersedes ADR-0220 in part).
+
 ### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
 
 - `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows

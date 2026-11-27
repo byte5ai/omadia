@@ -580,10 +580,19 @@ export interface MessageSystemNotice {
   text: string;
 }
 
+/** #2336 — a file a user message carried (display only; no storage key). */
+export interface MessageUpload {
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** #2336 (ADR-0310) — files the user attached to this message. */
+  uploads?: MessageUpload[];
   /** #2045 — the speaker of an assistant message. */
   speaker?: MessageSpeaker;
   /** #2045 — set when the message is (or ends with) a `system` notice. */
@@ -1026,6 +1035,7 @@ function coerceMessage(v: unknown): Message | null {
     'fileAttachments',
     'followUpOptions',
     'maskedValues',
+    'uploads',
   ] as const;
   const arrayDefaults: Record<string, unknown[]> = {};
   for (const key of arrayFields) {

@@ -3701,10 +3701,15 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     if (filter.tenantId !== this.tenantId) {
       throw Object.assign(new Error('tenant_mismatch'), { code: 'tenant_mismatch' });
     }
+    // #1753 (ADR-0323) — $5: unqualified conversation keys; a node matches
+    // its bare key or `<any agent>::<key>` (keys hold no ':').
     const scopeMatches = (alias: string): string =>
       `($2::text IS NULL
          OR left(${alias}.scope, length($2)) = $2
-         OR ($2 = 'default::' AND ${alias}.scope NOT LIKE '%::%'))`;
+         OR ($2 = 'default::' AND ${alias}.scope NOT LIKE '%::%'))
+       AND ($5::text[] IS NULL
+         OR ${alias}.scope = ANY($5::text[])
+         OR substring(${alias}.scope from '::([^:]*)$') = ANY($5::text[]))`;
     const cte = `
       WITH user_ids AS (${personIdsSql('$1', '$3')}),
       roots AS (
@@ -3812,6 +3817,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         filter.agentSlug !== undefined ? agentScopePrefix(filter.agentSlug) : null,
         filter.userId ?? null,
         [...CONVERSATION_HISTORY_NODE_TYPES],
+        filter.conversationScopes !== undefined ? [...filter.conversationScopes] : null,
       ],
     };
   }

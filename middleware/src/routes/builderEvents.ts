@@ -1,13 +1,12 @@
 import type { Router, Request, Response } from 'express';
 
-import { SESSION_COOKIE } from '../auth/requireAuth.js';
 import type { AutoFixOrchestrator } from '../plugins/builder/autoFixOrchestrator.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import type { SpecEventBus } from '../plugins/builder/specEventBus.js';
 
 import {
+  readStreamSession,
   watchStreamSession,
-  type StreamSession,
   type StreamSessionDeps,
 } from './builderEventsSession.js';
 
@@ -181,22 +180,6 @@ export function registerBuilderEventsRoutes(
 function readEmail(req: Request): string | null {
   const email = req.session?.email;
   return typeof email === 'string' && email.length > 0 ? email : null;
-}
-
-/**
- * The session the stream is bound to: the cookie `requireAuth` verified and
- * the claims it set, `exp` included. Null when any of it is missing, so a
- * stream is never opened without an end.
- */
-function readStreamSession(req: Request): StreamSession | null {
-  const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
-  const token = cookies?.[SESSION_COOKIE];
-  const claims = req.session as { provider?: unknown; sub?: unknown; exp?: unknown } | undefined;
-  if (typeof token !== 'string' || token.length === 0 || !claims) return null;
-  const { provider, sub, exp } = claims;
-  if (typeof provider !== 'string' || typeof sub !== 'string') return null;
-  if (typeof exp !== 'number' || !Number.isFinite(exp)) return null;
-  return { token, provider, sub, expiresAt: exp };
 }
 
 function readId(req: Request): string | null {

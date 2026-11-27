@@ -396,8 +396,9 @@ jobs:
           # 872 → 874 with W42 (#2333/#2334 fixed: the 4 todos go; #2340 adds
           # a User/Fact control per pg sweep mode and the re-ingest case of
           # recallDerivedUnprotected1536.pg; #2358 one re-key case). Measured
-          # on a fresh database: tests 874, pass 874, todo 0.
-          PG_TEST_FLOOR: '874'
+          # on a fresh database: tests 874, pass 874, todo 0. Re-pinned after
+          # merging main (train 7, ran=876): 876 + 2 = 878.
+          PG_TEST_FLOOR: '878'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

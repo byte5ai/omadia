@@ -1,4 +1,4 @@
-import type { MemoryStore, PrivacyReceipt } from '@omadia/plugin-api';
+import { appendToMemoryFile, type MemoryStore, type PrivacyReceipt } from '@omadia/plugin-api';
 
 import { withSessionLock } from './chatSessionLock.js';
 import { mcpInputReplyLabel, parseMcpInputReply } from './mcp/pendingMcpInput.js';
@@ -20,6 +20,21 @@ import { mergeServerProactiveMessages } from './chatSessionProactive.js';
 
 const DIR = '/memories/chat-sessions';
 const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
+/**
+ * #1753 (ADR-0322) — routine deliveries land in an append-only journal next
+ * to the chat document (`<id>.deliveries.jsonl`, one `{ message, at }` per
+ * line) instead of rewriting the whole document per delivery. `get` and
+ * `list` read the document with its journal; the next `save` (a client PUT,
+ * a turn mirror, a reset) writes the merged document and drops the journal.
+ * The suffix does not end in `.json`, so no document scan picks it up.
+ */
+const JOURNAL_SUFFIX = '.deliveries.jsonl';
+
+interface JournalLine {
+  readonly message: ChatMessage;
+  /** When the delivery was journaled (epoch ms); bumps `updatedAt`. */
+  readonly at: number;
+}
 
 /**
  * A single observable event from a sub-agent's inner tool loop, captured by
@@ -356,6 +371,9 @@ export class ChatSessionStore {
     if (!(await this.store.directoryExists(DIR))) return [];
 
     const entries = await this.store.list(DIR);
+    const journals = new Set(
+      entries.filter((e) => !e.isDirectory && e.virtualPath.endsWith(JOURNAL_SUFFIX)).map((e) => e.virtualPath),
+    );
     const summaries: ChatSessionSummary[] = [];
 
     for (const entry of entries) {
@@ -363,7 +381,9 @@ export class ChatSessionStore {
       if (!entry.virtualPath.endsWith('.json')) continue;
       try {
         const raw = await this.store.readFile(entry.virtualPath);
-        const parsed = JSON.parse(raw) as ChatSession;
+        const doc = JSON.parse(raw) as ChatSession;
+        const journal = `${entry.virtualPath.slice(0, -'.json'.length)}${JOURNAL_SUFFIX}`;
+        const parsed = journals.has(journal) ? await this.withJournal(doc, journal) : doc;
         if (owner && !chatSessionOwnedBy(parsed, owner.viewer, owner.legacyOwner)) continue;
         summaries.push({
           id: parsed.id,
@@ -456,6 +476,7 @@ export class ChatSessionStore {
       if (parsed.id !== id) return 'kept';
       if (isServerMirroredSession(parsed)) {
         await this.store.delete(virtualPath);
+        await this.dropJournal(id);
         return 'purged';
       }
       // #2311 — a chat stored before #1953 keeps the input-card values its
@@ -493,13 +514,53 @@ export class ChatSessionStore {
     const virtualPath = this.pathFor(id);
     if (!(await this.store.fileExists(virtualPath))) return null;
     const raw = await this.store.readFile(virtualPath);
-    return JSON.parse(raw) as ChatSession;
+    const doc = JSON.parse(raw) as ChatSession;
+    const journal = this.journalFor(id);
+    return (await this.store.fileExists(journal)) ? this.withJournal(doc, journal) : doc;
   }
 
+  /**
+   * Writes the whole document and drops the delivery journal: every caller
+   * saves a document it read through `get` (journal merged in), under the
+   * session lock, or deliberately without the deliveries (a reset).
+   */
   async save(session: ChatSession): Promise<void> {
     if (!ID_RE.test(session.id)) throw new InvalidSessionIdError(session.id);
     const virtualPath = this.pathFor(session.id);
     await this.store.writeFile(virtualPath, JSON.stringify(session, null, 2));
+    await this.dropJournal(session.id);
+  }
+
+  private journalFor(id: string): string {
+    if (!ID_RE.test(id)) throw new InvalidSessionIdError(id);
+    return `${DIR}/${id}${JOURNAL_SUFFIX}`;
+  }
+
+  private async dropJournal(id: string): Promise<void> {
+    const journal = this.journalFor(id);
+    if (await this.store.fileExists(journal)) await this.store.delete(journal);
+  }
+
+  /** The document with the journaled deliveries it does not hold yet. */
+  private async withJournal(doc: ChatSession, journal: string): Promise<ChatSession> {
+    const known = new Set(doc.messages.map((m) => m.id));
+    const added: ChatMessage[] = [];
+    let updatedAt = doc.updatedAt;
+    for (const line of (await this.store.readFile(journal)).split('\n')) {
+      if (line.trim().length === 0) continue;
+      let entry: JournalLine;
+      try {
+        entry = JSON.parse(line) as JournalLine;
+      } catch {
+        console.warn(`[chat-sessions] skip unreadable delivery journal line in ${journal}`);
+        continue;
+      }
+      if (!entry.message || typeof entry.message.id !== 'string' || known.has(entry.message.id)) continue;
+      known.add(entry.message.id);
+      added.push(entry.message);
+      if (typeof entry.at === 'number') updatedAt = Math.max(updatedAt, entry.at);
+    }
+    return added.length === 0 ? doc : { ...doc, messages: [...doc.messages, ...added], updatedAt };
   }
 
   /**
@@ -642,8 +703,8 @@ export class ChatSessionStore {
   ): Promise<'appended' | 'not_found'> {
     if (!ID_RE.test(id)) return 'not_found';
     return this.withLock(id, async () => {
-      const existing = await this.get(id);
-      if (!existing) return 'not_found';
+      // #1753 (ADR-0322) — existence only; the document is not read or written.
+      if (!(await this.store.fileExists(this.pathFor(id)))) return 'not_found';
       const proactive: ChatProactiveMarker = {
         deliveredAt: message.deliveredAt,
         ...(message.routineId !== undefined ? { routineId: message.routineId } : {}),
@@ -664,11 +725,8 @@ export class ChatSessionStore {
         proactive,
         ...(message.privacyReceipt !== undefined ? { privacyReceipt: message.privacyReceipt } : {}),
       };
-      await this.save({
-        ...existing,
-        messages: [...existing.messages, appended],
-        updatedAt: Math.max(Date.now(), existing.updatedAt),
-      });
+      const line: JournalLine = { message: appended, at: Date.now() };
+      await appendToMemoryFile(this.store, this.journalFor(id), `${JSON.stringify(line)}\n`);
       return 'appended';
     });
   }
@@ -676,6 +734,8 @@ export class ChatSessionStore {
   async delete(id: string): Promise<void> {
     const virtualPath = this.pathFor(id);
     await this.withLock(id, async () => {
+      // The journal goes with the document, even when only the journal is left.
+      await this.dropJournal(id);
       if (!(await this.store.fileExists(virtualPath))) return;
       await this.store.delete(virtualPath);
     });

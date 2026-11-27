@@ -184,7 +184,23 @@ export interface GeneratedObjectTurn {
 export interface GeneratedObjectsRegistry extends GeneratedObjectsService {
   /** Objects a release with `filter` would delete or un-reference. */
   count(filter: GeneratedObjectFilter): Promise<{ objects: number; shared: number }>;
-  release(filter: GeneratedObjectFilter): Promise<GeneratedObjectRelease>;
+  /**
+   * Same as `release`, restricted to the rows `only` keeps (#2336: one
+   * upload removed from the composer).
+   */
+  release(
+    filter: GeneratedObjectFilter,
+    only?: (row: GeneratedObjectRow) => boolean,
+  ): Promise<GeneratedObjectRelease>;
+  /** The rows a filter selects (#2336: the uploads of one chat). */
+  rows(filter: GeneratedObjectFilter): Promise<GeneratedObjectRow[]>;
+  /**
+   * #2336 (ADR-0310) — file a key under an explicit person and chat, for a
+   * kernel route that stores a file outside a turn (a web-chat upload).
+   * Throws when the store fails or is not bound yet, so the caller can undo
+   * the write: a file without its row would never be deleted.
+   */
+  recordFor(producer: string, storageKey: string, turn: GeneratedObjectTurn): Promise<void>;
 }
 
 export interface GeneratedObjectsRegistryDeps {
@@ -198,14 +214,18 @@ export function createGeneratedObjectsRegistry(deps: GeneratedObjectsRegistryDep
   const log = deps.log ?? ((msg: string): void => { console.warn(msg); });
   const deleters = new Map<string, GeneratedObjectDeleter>();
 
-  async function plan(filter: GeneratedObjectFilter): Promise<{
+  async function plan(
+    filter: GeneratedObjectFilter,
+    only?: (row: GeneratedObjectRow) => boolean,
+  ): Promise<{
     rows: GeneratedObjectRow[];
     orphans: Map<string, GeneratedObjectRow[]>;
     shared: GeneratedObjectRow[];
   }> {
     const store = deps.store();
     if (!store) return { rows: [], orphans: new Map(), shared: [] };
-    const rows = await store.select(filter);
+    const selected = await store.select(filter);
+    const rows = only ? selected.filter(only) : selected;
     const kept = await store.stillReferenced(rows);
     const orphans = new Map<string, GeneratedObjectRow[]>();
     const shared: GeneratedObjectRow[] = [];
@@ -234,6 +254,17 @@ export function createGeneratedObjectsRegistry(deps: GeneratedObjectsRegistryDep
       }
     },
 
+    async recordFor(producer, storageKey, turn) {
+      const store = deps.store();
+      if (!store) throw new Error('[generated-objects] no store bound; the file would never be released');
+      await store.insert({
+        storageKey,
+        producer,
+        ownerOmadiaUserId: turn.ownerOmadiaUserId ?? '',
+        scope: turn.scope ?? '',
+      });
+    },
+
     registerDeleter(producer, deleter) {
       if (deleters.has(producer)) {
         throw new Error(`[generated-objects] a deleter for ${producer} is already registered`);
@@ -249,11 +280,16 @@ export function createGeneratedObjectsRegistry(deps: GeneratedObjectsRegistryDep
       return { objects: orphans.size, shared: new Set(shared.map((r) => refKey(r.producer, r.storageKey))).size };
     },
 
-    async release(filter) {
+    async rows(filter) {
+      const store = deps.store();
+      return store ? store.select(filter) : [];
+    },
+
+    async release(filter, only) {
       const store = deps.store();
       const result: GeneratedObjectRelease = { deleted: 0, unreferenced: 0, pending: 0 };
       if (!store) return result;
-      const { orphans, shared } = await plan(filter);
+      const { orphans, shared } = await plan(filter, only);
       await store.remove(shared);
       result.unreferenced = new Set(shared.map((r) => refKey(r.producer, r.storageKey))).size;
       for (const rows of orphans.values()) {

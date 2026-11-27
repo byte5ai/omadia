@@ -26,6 +26,10 @@ import { AgentsConsultedFooter } from '../_components/chat/AgentsConsultedFooter
 import { AnswerDetails } from '../_components/chat/AnswerDetails';
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
+import { AttachFileButton, ComposerAttachmentList } from '../_components/chat/ComposerAttachments';
+import { MessageUploads } from '../_components/chat/MessageUploads';
+import { filesFromDataTransfer } from '../_lib/chatUploads';
+import { useComposerUploads } from '../_lib/useComposerUploads';
 import { AttachmentGrid, FileAttachmentList } from '../_components/chat/FileAttachments';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
 import { parseNudgeBlock } from '../_components/chat/nudgeBlock';
@@ -242,6 +246,9 @@ export default function ChatPage(): React.ReactElement {
   }, [activeSession.messages]);
 
   const [input, setInput] = useState('');
+  // #2336 (ADR-0310) — files attached to the message being written.
+  const composerUploads = useComposerUploads(activeId);
+  const [dragActive, setDragActive] = useState(false);
   const [resetPending, setResetPending] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   /** #1071 — the last reset cleared this browser only; the server kept its
@@ -292,7 +299,11 @@ export default function ChatPage(): React.ReactElement {
       // Two entry points use this: the Senden button (reads `input`) and the
       // Smart-Card option buttons (pass the chosen label via overrideText).
       const trimmed = (overrideText ?? input).trim();
-      if (!trimmed || sending || hydrating) return;
+      // #2336 — typed sends carry the composer's files; a message may be
+      // only files. Card answers (overrideText) never carry them.
+      const files = overrideText === undefined ? composerUploads.ready : [];
+      if ((!trimmed && files.length === 0) || sending || hydrating) return;
+      if (overrideText === undefined && composerUploads.busy) return;
 
       const targetSessionId = activeId;
       // #1953 — what the chat shows and stores may differ from what is sent:
@@ -303,6 +314,15 @@ export default function ChatPage(): React.ReactElement {
         id: newSessionId(),
         role: 'user',
         content: shown,
+        ...(files.length > 0
+          ? {
+              uploads: files.map((f) => ({
+                fileName: f.fileName,
+                contentType: f.contentType,
+                sizeBytes: f.sizeBytes,
+              })),
+            }
+          : {}),
         startedAt: Date.now(),
         finishedAt: Date.now(),
       };
@@ -340,8 +360,12 @@ export default function ChatPage(): React.ReactElement {
         // Phase 3 — a "Kürzer" / "Mehr Details" re-ask carries its level for
         // this one turn; a normal send carries nothing.
         ...(opts?.answerVerbosity ? { answerVerbosity: opts.answerVerbosity } : {}),
+        ...(files.length > 0
+          ? { attachments: files.map((f) => ({ storageKey: f.storageKey })) }
+          : {}),
       });
       if (!started) return;
+      if (files.length > 0) composerUploads.clear();
 
       mutateById(targetSessionId, (session) => {
         const isFirst = hasNoTurns(session.messages);
@@ -353,7 +377,9 @@ export default function ChatPage(): React.ReactElement {
         const cleanedMessages = stripStaleInteractives(session.messages);
         return {
           ...session,
-          title: isFirst ? deriveTitle(shown) : session.title,
+          title: isFirst
+            ? deriveTitle(shown || files.map((f) => f.fileName).join(', '))
+            : session.title,
           messages: [...cleanedMessages, userMsg, pending],
           updatedAt: Date.now(),
         };
@@ -366,6 +392,7 @@ export default function ChatPage(): React.ReactElement {
     },
     [
       input,
+      composerUploads,
       sending,
       hydrating,
       activeId,
@@ -732,8 +759,36 @@ export default function ChatPage(): React.ReactElement {
           recent turn. Gated by its own header toggle. */}
       <PlanDagPane plan={planDagEnabled ? activePlan : null} />
 
-      <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
+      <footer
+        className={[
+          'border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur',
+          dragActive ? 'ring-2 ring-inset ring-[color:var(--accent)]' : '',
+        ].join(' ')}
+        // #2336 — drop files anywhere on the composer to attach them.
+        onDragOver={(event) => {
+          if (!event.dataTransfer.types.includes('Files')) return;
+          event.preventDefault();
+          setDragActive(true);
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setDragActive(false);
+        }}
+        onDrop={(event) => {
+          if (!event.dataTransfer.types.includes('Files')) return;
+          event.preventDefault();
+          setDragActive(false);
+          if (hydrating) return;
+          composerUploads.addFiles(filesFromDataTransfer(event.dataTransfer));
+        }}
+      >
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
+          {dragActive && (
+            <p role="status" className="text-[11px] text-[color:var(--fg-muted)]">
+              {t('uploads.dropHint')}
+            </p>
+          )}
+          <ComposerAttachmentList uploads={composerUploads.uploads} onRemove={composerUploads.remove} />
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
             <div className="flex items-center gap-2 text-[11px]">
@@ -772,6 +827,7 @@ export default function ChatPage(): React.ReactElement {
             >
               <Eraser size={16} aria-hidden />
             </button>
+            <AttachFileButton onFiles={composerUploads.addFiles} disabled={hydrating} />
             <textarea
               ref={inputRef}
               value={input}
@@ -779,6 +835,13 @@ export default function ChatPage(): React.ReactElement {
                 setInput(e.target.value);
               }}
               onKeyDown={onKeyDown}
+              // #2336 — a pasted file (screenshot, copied file) is attached.
+              onPaste={(event) => {
+                const pasted = filesFromDataTransfer(event.clipboardData);
+                if (pasted.length === 0) return;
+                event.preventDefault();
+                composerUploads.addFiles(pasted);
+              }}
               rows={2}
               placeholder={sending ? t('steerPlaceholder') : t('placeholder')}
               className="flex-1 resize-none rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-2 text-sm shadow-sm focus:border-[color:var(--border-strong)] focus:outline-none"
@@ -808,7 +871,12 @@ export default function ChatPage(): React.ReactElement {
                 onClick={() => {
                   send();
                 }}
-                disabled={input.trim().length === 0 || hydrating}
+                disabled={
+                  (input.trim().length === 0 && composerUploads.ready.length === 0) ||
+                  composerUploads.busy ||
+                  hydrating
+                }
+                title={composerUploads.busy ? t('uploads.waitForUploads') : undefined}
               >
                 {t('sendButton')}
               </Button>
@@ -817,7 +885,7 @@ export default function ChatPage(): React.ReactElement {
           {/* OM-21/37: the send shortcut was documented only in the empty
               state, so anyone past their first message had no way to learn it.
               Keep it visible under the field. */}
-          <p className="mt-1 pl-11 text-[11px] text-[color:var(--fg-subtle)]">
+          <p className="mt-1 pl-20 text-[11px] text-[color:var(--fg-subtle)]">
             {t('composerSendHint')}
           </p>
         </div>
@@ -1194,7 +1262,14 @@ export function MessageRow({
         ].join(' ')}
       >
         {isUser ? (
-          <div className="whitespace-pre-wrap text-sm">{message.content}</div>
+          <>
+            {message.uploads && message.uploads.length > 0 && (
+              <MessageUploads uploads={message.uploads} />
+            )}
+            {message.content !== '' && (
+              <div className="whitespace-pre-wrap text-sm">{message.content}</div>
+            )}
+          </>
         ) : (
           <>
             {message.speaker && (
