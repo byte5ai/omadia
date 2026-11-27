@@ -5387,6 +5387,9 @@ Confirmed empirically against a deployment under our control: uncredentialed
    convention.
 3. `DEV_ENDPOINTS_LOOPBACK_ONLY=true` (optional, default off) additionally
    refuses any `/api/dev` request that did not arrive over a loopback socket.
+   Under `NODE_ENV=production` (the shipped image) the guard is always on,
+   whatever the setting says (#2275, ADR-0260): the dev routes read every
+   account's memory, so a copied flag must not reach remote sessions.
    `mountDevLoopbackGuard` mounts it on the `/api/dev` prefix ahead of both the
    graph browser and the session plugin routes (`pluginRouteRegistry.mountAll`,
    and hot-installed ones after it), so it covers the `@omadia/memory` browser

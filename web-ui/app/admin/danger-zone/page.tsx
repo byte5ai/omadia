@@ -84,6 +84,7 @@ const WARNING_CODES: ReadonlySet<string> = new Set([
   'user_unknown',
   'user_layers_unsupported',
   'generated_files_pending',
+  'sessions_not_revoked',
 ]);
 const ERROR_CODES: ReadonlySet<string> = new Set([
   'invalid_selector',
@@ -99,7 +100,14 @@ const codeRich = {
   ),
 };
 
-type ExtraCountKey = 'excerpts' | 'datasets' | 'processes' | 'identity' | 'generatedFiles' | 'deowned';
+type ExtraCountKey =
+  | 'excerpts'
+  | 'datasets'
+  | 'processes'
+  | 'identity'
+  | 'generatedFiles'
+  | 'deowned'
+  | 'sessions';
 
 const TONE_CLASS = {
   danger: 'font-mono text-[color:var(--danger)]',
@@ -436,7 +444,13 @@ export default function DangerZonePage(): React.ReactElement {
                 ['generatedFiles', preview.generatedFileCount],
               ]}
             />
-            <ExtraCounts tone="muted" rows={[['deowned', preview.kgDeownedCount]]} />
+            <ExtraCounts
+              tone="muted"
+              rows={[
+                ['deowned', preview.kgDeownedCount],
+                ['sessions', preview.sessionAccountCount],
+              ]}
+            />
           </dl>
           {preview.resolvedUser !== undefined && (
             <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
@@ -531,6 +545,7 @@ export default function DangerZonePage(): React.ReactElement {
                 ['identity', result.identityDeleted],
                 ['generatedFiles', result.generatedFilesDeleted],
                 ['deowned', result.kgDeowned],
+                ['sessions', result.sessionsRevoked],
               ]}
             />
           </dl>

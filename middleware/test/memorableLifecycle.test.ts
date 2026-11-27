@@ -25,7 +25,7 @@ import { agentOfTurnScope } from '@omadia/orchestrator-extras/dist/bulkPromotion
 import {
   INCONSISTENCY_MAX_LOST_VERDICTS,
   PROMOTION_RETIRED_PROP,
-  SYSTEM_AUDIT_ACTOR_UUID,
+  SYSTEM_ACTOR_OMADIA_USER_ID,
   type GraphNode,
   type KnowledgeGraph,
 } from '@omadia/plugin-api';
@@ -256,7 +256,7 @@ describe('ADR-0190 · safe auto-merge (#1835)', () => {
     assert.equal(await kg.getMemorableKnowledge(auto), null, 'auto copy retired');
     const audit = await kg.listMemoryAclAudit(auto);
     const del = audit.find((r) => r.action === 'delete');
-    assert.equal(del?.actorOmadiaUserId, SYSTEM_AUDIT_ACTOR_UUID);
+    assert.equal(del?.actorOmadiaUserId, SYSTEM_ACTOR_OMADIA_USER_ID);
     assert.equal(del?.actorChannelIdentityId, 'system:auto-merge');
     assert.match(del?.reason ?? '', /cosine=1\.000/);
     const resolved = await kg.listMergeCandidates({ viewerOmadiaUserId: OWNER, status: 'resolved' });

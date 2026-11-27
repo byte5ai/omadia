@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — refined by [ADR-0182](0182-web-and-api-turns-carry-an-account-or-key-origin.md) (web chat, web routines and Public API turns carry an
+Accepted; Superseded in part by [ADR-0261](0261-agents-on-memory-off-move-to-members-off-is-a-shared-agent.md) (existing `off` agents are switched to `members`) — refined by [ADR-0182](0182-web-and-api-turns-carry-an-account-or-key-origin.md) (web chat, web routines and Public API turns carry an
 origin, so they are no longer context-free)
 
 - **Date:** 2026-11-25

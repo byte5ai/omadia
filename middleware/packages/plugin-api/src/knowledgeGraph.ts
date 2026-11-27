@@ -380,6 +380,13 @@ export interface KnowledgeGraph {
    * e-mail). `count` 0 means no cluster with this id. Optional.
    */
   countUserIdentity?(omadiaUserId: string): Promise<{ count: number }>;
+  /**
+   * #2293 (1.108.0) — the channel identities linked to the person's `User`
+   * cluster, e.g. `{ channelKind: 'telegram', channelUserId: '42' }`. Lets a
+   * user purge reach the per-channel context trees of every identity in one
+   * run. Empty when no cluster has this id. Optional.
+   */
+  listUserChannelIdentities?(omadiaUserId: string): Promise<readonly UserChannelIdentity[]>;
   /** #1843 — delete those identity nodes and their edges. A later login
    *  creates a new cluster with a new id. */
   purgeUserIdentity?(omadiaUserId: string): Promise<{ deletedNodes: number }>;
@@ -1771,10 +1778,12 @@ export interface AclAuditEntry {
   createdAt: string;
 }
 
-/** Args every owner-mutating call shares. Actor must already be in
- *  `acl_owners` of the target MK. */
-/** ADR-0185 — the actor id a system write records in `memory_acl_audit`
- *  (a NOT NULL uuid column): the nil UUID. No omadia user ever has it. */
+/**
+ * ADR-0185 / ADR-0190 — THE actor id every system write records in an audit
+ * row (`memory_acl_audit.actor`, a NOT NULL uuid column, and the purge /
+ * promotion audit): the nil UUID. No omadia user ever has it, so an audit
+ * filter "acted by the system" is one equality on this value (#2297).
+ */
 export const SYSTEM_ACTOR_OMADIA_USER_ID = '00000000-0000-0000-0000-000000000000';
 
 /** Options of {@link KnowledgeGraph.listOwnerlessMemorableKnowledge}. */
@@ -1783,6 +1792,8 @@ export interface ListOwnerlessMemorableKnowledgeOptions {
   limit?: number;
 }
 
+/** Args every owner-mutating call shares. Actor must already be in
+ *  `acl_owners` of the target MK. */
 export interface AclMutationOptions {
   actorOmadiaUserId: string;
   /** Optional ChannelIdentity external_id, e.g. `web:<users.uuid>` —
@@ -1800,8 +1811,14 @@ export interface AclMutationOptions {
   systemActor?: string;
 }
 
-/** ADR-0190 — the actor uuid an audit row carries when a kernel job acted. */
-export const SYSTEM_AUDIT_ACTOR_UUID = '00000000-0000-0000-0000-000000000000';
+/**
+ * ADR-0190 — the actor uuid an audit row carries when a kernel job acted.
+ *
+ * @deprecated since 1.108.0 (#2297): the same value as
+ * {@link SYSTEM_ACTOR_OMADIA_USER_ID}; use that one. Kept as an alias so
+ * plugins compiled against it keep building; removed with the next major.
+ */
+export const SYSTEM_AUDIT_ACTOR_UUID: typeof SYSTEM_ACTOR_OMADIA_USER_ID = SYSTEM_ACTOR_OMADIA_USER_ID;
 
 /**
  * ADR-0190 — Turn property that keeps a turn out of auto and bulk promotion
@@ -2753,6 +2770,25 @@ export function ownersCoverAudience(
  */
 export function userNodeId(omadiaUserId: string): string {
   return `user:${omadiaUserId}`;
+}
+
+/** #2293 — one channel identity of a person (`listUserChannelIdentities`). */
+export interface UserChannelIdentity {
+  readonly channelKind: ChannelKind;
+  readonly channelUserId: string;
+}
+
+/**
+ * #2293 — the inverse of {@link channelIdentityNodeId}: split an external id
+ * `<kind>:<id>` at the first `:`. `null` when the shape does not match.
+ */
+export function parseChannelIdentityNodeId(externalId: string): UserChannelIdentity | null {
+  const sep = externalId.indexOf(':');
+  if (sep <= 0 || sep === externalId.length - 1) return null;
+  return {
+    channelKind: externalId.slice(0, sep) as ChannelKind,
+    channelUserId: externalId.slice(sep + 1),
+  };
 }
 
 /**

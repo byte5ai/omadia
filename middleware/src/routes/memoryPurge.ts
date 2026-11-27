@@ -10,6 +10,7 @@ import type {
   MemorableKnowledgePurgeFilter,
   MemoryStore,
   ProcessMemoryService,
+  UserChannelIdentity,
 } from '@omadia/plugin-api';
 
 import {
@@ -115,6 +116,13 @@ export interface MemoryPurgeDeps {
    *  after a purge removed memorable knowledge (axis `all` deletes the rule
    *  entries with everything else; the files stay or are re-seeded). */
   syncDurableRules?: () => Promise<unknown>;
+  /**
+   * #2292 — end every open web session of these accounts (`users.id`), e.g.
+   * by bumping `users.session_version` (ADR-0106). Returns how many accounts
+   * it reached. Absent ⇒ the purge leaves sessions alone and warns
+   * `sessions_not_revoked`.
+   */
+  revokeAccountSessions?: (accountIds: readonly string[]) => Promise<number>;
 }
 
 /** A warning the UI translates: `adminDangerZone.warnings.<code>`. */
@@ -130,7 +138,8 @@ export interface PurgeWarning {
     | 'user_selector_resolved'
     | 'user_unknown'
     | 'user_layers_unsupported'
-    | 'generated_files_pending';
+    | 'generated_files_pending'
+    | 'sessions_not_revoked';
   params?: Record<string, string>;
 }
 
@@ -143,6 +152,9 @@ interface PurgePlan {
   user: ResolvedPurgeUser | null;
   /** #1986 — the generated-file records the purge releases. */
   generated: GeneratedObjectFilter | null;
+  /** #2292 — the person's accounts (`users.id` of their `web` identities),
+   *  read before the identity step deletes the links. */
+  accountIds: readonly string[];
 }
 
 /**
@@ -258,6 +270,24 @@ class PreviewTokens {
   }
 }
 
+const ACCOUNT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * #2292 — the person's accounts (`users.id`): their `web` identities, plus
+ * the selector itself when it was read as an account id (a KG without
+ * `listUserChannelIdentities` still reaches that one). Only uuid-shaped ids:
+ * `users.id` is a uuid, and anything else could not name an account.
+ */
+function accountIdsOf(
+  user: ResolvedPurgeUser | null,
+  selector: string,
+  identities: readonly UserChannelIdentity[],
+): string[] {
+  const ids = new Set(identities.filter((i) => i.channelKind === 'web').map((i) => i.channelUserId));
+  if (user?.via === 'account_id') ids.add(selector.trim());
+  return [...ids].filter((id) => ACCOUNT_ID.test(id));
+}
+
 export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
   const router = Router();
   const tenantId = deps.tenantId ?? 'default';
@@ -282,8 +312,18 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
     const user = axis === 'user' ? await resolveUserSelector(deps.knowledgeGraph, selector) : null;
     // #1840 — an account id or channel identity reaches the person's member
     // notes too, the same trees their omadia user id selects.
-    if (user && user.omadiaUserId !== selector) {
-      for (const target of await resolvePurgeTargets(deps.store, 'user', user.omadiaUserId)) {
+    const extraSelectors = user && user.omadiaUserId !== selector ? [user.omadiaUserId] : [];
+    // #2293 — and the per-channel context trees of every identity linked to
+    // the person (`/memories/contexts/<agent>/user/<kind>~<id>`), in one run.
+    const identities =
+      user && user.via !== 'unresolved'
+        ? ((await deps.knowledgeGraph?.listUserChannelIdentities?.(user.omadiaUserId)) ?? [])
+        : [];
+    for (const identity of identities) {
+      extraSelectors.push(`${identity.channelKind}~${identity.channelUserId}`);
+    }
+    for (const extra of extraSelectors) {
+      for (const target of await resolvePurgeTargets(deps.store, 'user', extra)) {
         if (!scratchTargets.includes(target)) scratchTargets.push(target);
       }
     }
@@ -291,6 +331,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       scratchTargets,
       reseedEntries,
       user,
+      accountIds: accountIdsOf(user, selector, identities),
       generated: null,
       ...kgFilters(axis, user?.omadiaUserId ?? selector, tenantId, actorOmadiaUserId),
     };
@@ -352,6 +393,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
         deps.generatedObjects && plan.generated
           ? (await deps.generatedObjects.count(plan.generated)).objects
           : 0,
+      ...(plan.accountIds.length > 0 ? { sessionsRevoked: plan.accountIds.length } : {}),
     };
   }
 
@@ -386,6 +428,13 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
         Object.assign(deleted, userData);
       }
     }
+    // #2292 — last: an open web session would otherwise keep the deleted
+    // omadia user id through every renewal until a real sign-in.
+    if (plan.accountIds.length > 0) {
+      deleted.sessionsRevoked = deps.revokeAccountSessions
+        ? await deps.revokeAccountSessions(plan.accountIds)
+        : 0;
+    }
   }
 
   function planWarnings(
@@ -410,6 +459,9 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       if (missing.length > 0) {
         warnings.push({ code: 'user_layers_unsupported', params: { layers: missing.join(', ') } });
       }
+    }
+    if (plan && plan.accountIds.length > 0 && !deps.revokeAccountSessions) {
+      warnings.push({ code: 'sessions_not_revoked' });
     }
     if (axis === 'team' || axis === 'channel') {
       warnings.push({ code: 'kg_not_modelled', params: { axis } });
@@ -455,6 +507,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
         processCount: counts.processes ?? 0,
         identityCount: counts.identity ?? 0,
         generatedFileCount: counts.generatedFiles ?? 0,
+        sessionAccountCount: counts.sessionsRevoked ?? 0,
         ...(plan.user ? { resolvedUser: plan.user } : {}),
         reseedEntries: plan.reseedEntries,
         warnings: planWarnings(axis, counts, plan),
@@ -609,6 +662,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       processesDeleted: deleted.processes ?? 0,
       identityDeleted: deleted.identity ?? 0,
       generatedFilesDeleted: deleted.generatedFiles ?? 0,
+      sessionsRevoked: deleted.sessionsRevoked ?? 0,
       ...(reseededFiles !== undefined ? { reseededFiles } : {}),
       ...(auditId ? { auditId } : {}),
       warnings,

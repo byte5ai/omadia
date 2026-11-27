@@ -6001,7 +6001,7 @@ TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-P
 ADMIN_TOKEN                         # mount /api/admin (mutating memory; read-only
                                     # counters: /security/screening #749, /run-trace #1082)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
-DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
+DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669); unter NODE_ENV=production immer an (#2275)
 # Teams
 MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD, MICROSOFT_APP_TYPE=MultiTenant,
 MICROSOFT_APP_TENANT_ID
@@ -8892,7 +8892,8 @@ Erledigt durch #669: Statt eines `DEV_TOKEN` laufen alle `/api/dev/*`-Routen
 hinter dem `/api`-Session-Gate (Operator-Login). `DEV_ENDPOINTS_LOOPBACK_ONLY=true`
 bindet seit #1350 das ganze `/api/dev`-Präfix an Loopback, auch die
 Plugin-Route `/api/dev/memory`. Die Flag bleibt Dev-Scaffolding und auf
-deployten Umgebungen aus. Siehe `docs/security-architecture.md`.
+deployten Umgebungen aus. Unter `NODE_ENV=production` ist das Präfix seit
+#2275 (ADR-0260) immer Loopback-only. Siehe `docs/security-architecture.md`.
 
 ### Phase 10 — Ollama-basierte Entity-Extraction aus Prose
 
@@ -9549,6 +9550,11 @@ dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migratio
 `User`/`ChannelIdentity`-Knoten. Response-Felder zusätzlich `kgDeownedCount|kgExcerptCount|
 datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
 `omadiaUserId`.
+Seit ADR-0262 (#2292/#2293) liest `planPurge` alle `ChannelIdentity`-Knoten des Clusters
+(`KnowledgeGraph.listUserChannelIdentities?`, plugin-api 1.108.0) und löscht die Kontext-Bäume
+aller `<kanal>~<id>` im selben Lauf; die Konten (`web`-Identitäten) bekommen danach
+`session_version` hochgezählt (`revokeAccountSessions`, Preview `sessionAccountCount`, Result
+`sessionsRevoked`, Warnung `sessions_not_revoked`).
 
 Erzeugte Dateien (ADR-0187, #1986): Kernel-Service `generatedObjects@1`
 (`services/generatedObjects.ts`, Core-Migration 0119) — Office/Diagrams rufen `record(producer,
@@ -11821,9 +11827,12 @@ Leserkreis, Offenlegungsstufe).
 - **Audit:** `discretion_flow_audit` (jede Verweigerung, jeder erlaubte
   kontextübergreifende Fluss; nur Label-IDs und Gründe, nie Inhalt).
 - **Context-Memory:** neue Agenten starten in `members` (Migration 0099);
-  bestehende werden bewusst NICHT umgestellt (würde ihre Notizen verbergen).
-  `PUT …/context-memory` mit `off` → 409 `context_memory_required`, wenn der Agent
-  Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
+  seit #2290 (Migration 0122, ADR-0261) sind auch bestehende Standard-Agents von
+  `off` auf `members` umgestellt; `context_memory_switched_at` treibt den Hinweis im
+  Memory-Tab (Notizen aus `off` bleiben im Agent-Tier, ungelesen). `off` ist jetzt
+  ein ausdrücklich gemeinsamer Agent: `PUT …/context-memory` mit `off` braucht
+  `shared: true` (sonst 409 `context_memory_shared_required`) und → 409
+  `context_memory_required`, wenn der Agent Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
   (kein Memory, die Route erlaubt für sie nur `off`).
 
 ### Kollegen im Prompt (`consultableColleagues`)

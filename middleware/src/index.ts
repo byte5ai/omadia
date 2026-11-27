@@ -218,6 +218,7 @@ import {
   PLUGIN_DOMAINS_ADMIN_PATH,
   mountDevGraph,
   mountDevLoopbackGuard,
+  resolveDevLoopbackOnly,
   mountKnowledgeGraphAdmin,
 } from './routes/graphRouterMounts.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
@@ -4381,6 +4382,9 @@ async function main(): Promise<void> {
   // until then (and without Postgres) such chats belong to nobody.
   let resolveLegacyChatOwner: LegacyChatOwner = () => Promise.resolve(undefined);
   const legacyChatOwner: LegacyChatOwner = () => resolveLegacyChatOwner();
+  // #2292 — the user store a memory purge uses to end a purged person's
+  // open web sessions; bound with the users table below.
+  let purgeSessionUserStore: UserStore | undefined;
 
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
@@ -4662,6 +4666,24 @@ async function main(): Promise<void> {
     '/api/v1/admin/memory/purge',
     requireAuth,
     createMemoryPurgeRouter({
+      // #2292 — the user store is built further down (with the auth routes);
+      // bound late like `resolveLegacyChatOwner`. Unbound (no users table)
+      // there are no accounts whose sessions could be open.
+      revokeAccountSessions: async (accountIds) => {
+        const users = purgeSessionUserStore;
+        if (!users) return 0;
+        let revoked = 0;
+        for (const id of accountIds) {
+          // One account failing must not report the whole purge as failed
+          // after every layer is already gone; it is logged instead.
+          try {
+            if (await users.update(id, { revokeSessions: true })) revoked++;
+          } catch (err) {
+            console.error(`[memory-purge] could not end the sessions of account ${id}:`, err);
+          }
+        }
+        return revoked;
+      },
       store: memoryStore,
       ...(knowledgeGraph ? { knowledgeGraph } : {}),
       ...(graphPool ? { graphPool } : {}),
@@ -6358,6 +6380,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    purgeSessionUserStore = userStore;
     linkableUsers.current = userStore;
     resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
@@ -8053,7 +8076,13 @@ async function main(): Promise<void> {
   // #1350 — the loopback guard covers the whole `/api/dev` prefix, including
   // the plugin routes `pluginRouteRegistry.mountAll(app)` mounts further down
   // (the `@omadia/memory` browser). It must stay ahead of both mounts.
-  mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });
+  // #2275 (ADR-0260): under NODE_ENV=production the prefix is loopback-only
+  // regardless of DEV_ENDPOINTS_LOOPBACK_ONLY.
+  const devLoopbackOnly = resolveDevLoopbackOnly({
+    loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY,
+    nodeEnv: process.env['NODE_ENV'],
+  });
+  mountDevLoopbackGuard(app, { loopbackOnly: devLoopbackOnly });
   if (
     mountDevGraph(app, requireAuth, {
       graph: knowledgeGraph,
@@ -8062,7 +8091,7 @@ async function main(): Promise<void> {
   ) {
     console.log(
       `[middleware] DEV endpoints enabled at ${DEV_GRAPH_PATH} (auth: required${
-        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
+        devLoopbackOnly ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
       })`,
     );
   }

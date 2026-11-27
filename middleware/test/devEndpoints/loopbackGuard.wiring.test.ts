@@ -28,10 +28,14 @@ function offsetOf(needle: string): number {
 }
 
 describe('#1350 — index.ts mounts the /api/dev loopback guard first', () => {
-  it('passes DEV_ENDPOINTS_LOOPBACK_ONLY to mountDevLoopbackGuard', () => {
+  it('passes DEV_ENDPOINTS_LOOPBACK_ONLY through resolveDevLoopbackOnly (#2275)', () => {
     assert.match(
       liveIndexSource,
-      /mountDevLoopbackGuard\(app,\s*\{\s*loopbackOnly:\s*config\.DEV_ENDPOINTS_LOOPBACK_ONLY\s*\}\)/,
+      /const devLoopbackOnly = resolveDevLoopbackOnly\(\{\s*loopbackOnly:\s*config\.DEV_ENDPOINTS_LOOPBACK_ONLY,\s*nodeEnv:\s*process\.env\['NODE_ENV'\],?\s*\}\);/,
+    );
+    assert.match(
+      liveIndexSource,
+      /mountDevLoopbackGuard\(app,\s*\{\s*loopbackOnly:\s*devLoopbackOnly\s*\}\)/,
     );
   });
 

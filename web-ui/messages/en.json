@@ -2351,6 +2351,7 @@
       "unknown": "Request failed: {detail}",
       "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation.",
       "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again.",
+      "context_memory_shared_required": "Off makes this a shared agent: every account and API key uses one memory. Confirm that before saving.",
       "config_revision_conflict": "Someone changed this setting elsewhere since you opened it, so your save was not stored. Reload to see the current value, then make your change again."
     },
     "statusEnabled": "enabled",
@@ -2657,7 +2658,7 @@
     },
     "contextMemory": {
       "heading": "Chat-context memory",
-      "hint": "Controls whether this agent keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). New agents start with “Shared by the people present”; agents created earlier keep their mode. Off is not available while the agent holds capability grants.",
+      "hint": "Controls whether this agent keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). Agents start with “Shared by the people present”. Off is only for agents that are meant to be shared by everyone, and not available while the agent holds capability grants.",
       "loading": "Loading the memory setting…",
       "stateSummary": "Current: {mode}",
       "stateUnknown": "Current: unknown",
@@ -2673,7 +2674,7 @@
       "modes": {
         "off": {
           "label": "Off",
-          "description": "One shared memory tree for every turn, as before this feature — every web chat account and every API key reads what the others asked the agent to remember. Not available for an agent that holds capability grants."
+          "description": "Shared agent: one memory tree for every turn — every web chat account and every API key reads what the others asked the agent to remember. Only for agents meant to be shared; not available for an agent that holds capability grants."
         },
         "enforce": {
           "label": "Separate per context",
@@ -2687,7 +2688,11 @@
           "label": "Shared by the people present",
           "description": "Knowledge belongs to the people present when it came up. Any chat where only those people take part can use it, a direct message, a web chat or an API key's turns included; once someone else is present, it stays out."
         }
-      }
+      },
+      "switchedNotice": "This agent was switched from Off to “Shared by the people present” on {date}, so each account and API key now has its own memory. Notes it saved under Off are kept but no longer read; choose Off again (shared agent) if everyone should use them.",
+      "sharedHeading": "Off makes this a shared agent",
+      "sharedWarning": "Every web chat account and every API key of this agent then reads and writes one memory: what one person asks it to remember, everyone else can read.",
+      "acknowledgeShared": "This agent is meant to be shared; everyone may read its memory."
     },
     "teamsInstalls": {
       "heading": "Teams assignment",
@@ -6635,7 +6640,8 @@
       "user_selector_resolved": "The selector is {via, select, account_id {an account id} channel_identity {a channel identity} other {not an omadia user id}}; the purge works on that person’s omadia user id {omadiaUserId}.",
       "user_unknown": "No person has this id: no knowledge-graph user and no account. Check whether you copied the omadia user id or the account id from the user page.",
       "user_layers_unsupported": "This installation cannot delete the person’s {layers}; they stay.",
-      "generated_files_pending": "{count} generated files should have been deleted but were not: the Office or Diagrams plugin is not active, or its bucket refused the delete. They are deleted on the next purge or chat deletion; the bucket lifecycle rule is the backstop."
+      "generated_files_pending": "{count} generated files should have been deleted but were not: the Office or Diagrams plugin is not active, or its bucket refused the delete. They are deleted on the next purge or chat deletion; the bucket lifecycle rule is the backstop.",
+      "sessions_not_revoked": "This installation cannot end the person’s open web sessions: they keep working under the deleted id until they sign in again. Delete or disable the account afterwards."
     },
     "errors": {
       "invalid_selector": "The selector must be spelled channelType~id, e.g. teams~19:abc@thread.tacv2 (raw native id) or the key shown in the memory browser.",
@@ -6667,7 +6673,8 @@
       "processes": "Stored processes",
       "identity": "Identity nodes (name, e-mail)",
       "deowned": "Shared facts: only this person is removed as owner",
-      "generatedFiles": "Generated files (Office, diagrams)"
+      "generatedFiles": "Generated files (Office, diagrams)",
+      "sessions": "Web sign-ins of the person ended (accounts)"
     }
   },
   "adminDuplicates": {

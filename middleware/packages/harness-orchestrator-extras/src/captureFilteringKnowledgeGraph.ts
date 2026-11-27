@@ -185,6 +185,7 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
   // ADR-0225 — the operator link of a channel identity, forwarded too.
   readonly linkChannelIdentity?: KnowledgeGraph['linkChannelIdentity'];
   readonly countUserIdentity?: KnowledgeGraph['countUserIdentity'];
+  readonly listUserChannelIdentities?: KnowledgeGraph['listUserChannelIdentities'];
   readonly purgeUserIdentity?: KnowledgeGraph['purgeUserIdentity'];
 
   constructor(opts: CaptureFilteringKnowledgeGraphOptions) {
@@ -207,6 +208,8 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     if (innerLinkIdentity) this.linkChannelIdentity = innerLinkIdentity;
     const innerCountIdentity = opts.inner.countUserIdentity?.bind(opts.inner);
     if (innerCountIdentity) this.countUserIdentity = innerCountIdentity;
+    const innerListIdentities = opts.inner.listUserChannelIdentities?.bind(opts.inner);
+    if (innerListIdentities) this.listUserChannelIdentities = innerListIdentities;
     const innerPurgeIdentity = opts.inner.purgeUserIdentity?.bind(opts.inner);
     if (innerPurgeIdentity) this.purgeUserIdentity = innerPurgeIdentity;
   }

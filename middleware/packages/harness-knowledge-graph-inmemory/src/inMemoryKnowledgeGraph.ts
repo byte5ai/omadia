@@ -4,6 +4,8 @@ import {
   agentInvocationNodeId,
   agentScopePrefix,
   channelIdentityNodeId,
+  parseChannelIdentityNodeId,
+  type UserChannelIdentity,
   SYSTEM_ACTOR_OMADIA_USER_ID,
   type ChannelKind,
   CONVERSATION_HISTORY_NODE_TYPES,
@@ -120,7 +122,6 @@ import {
   type TurnIngestResult,
   type TurnSearchHit,
   PROMOTION_RETIRED_PROP,
-  SYSTEM_AUDIT_ACTOR_UUID,
   extractRecallSearchTerms,
   isMemorableContentCorrection,
   INCONSISTENCY_MAX_LOST_VERDICTS,
@@ -1561,7 +1562,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       memoryExternalId: memorableKnowledgeNodeId,
       ...(actor.systemActor
         ? {
-            actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+            actorOmadiaUserId: SYSTEM_ACTOR_OMADIA_USER_ID,
             actorChannelIdentityId: actor.systemActor,
           }
         : {
@@ -1829,6 +1830,14 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async countUserIdentity(omadiaUserId: string): Promise<{ count: number }> {
     return { count: this.userIdentityIds(omadiaUserId).length };
+  }
+
+  async listUserChannelIdentities(omadiaUserId: string): Promise<readonly UserChannelIdentity[]> {
+    const [, ...identities] = this.userIdentityIds(omadiaUserId);
+    return identities
+      .filter((id) => this.nodes.get(id)?.type === 'ChannelIdentity')
+      .map((id) => parseChannelIdentityNodeId(id))
+      .filter((v): v is UserChannelIdentity => v !== null);
   }
 
   async purgeUserIdentity(omadiaUserId: string): Promise<{ deletedNodes: number }> {

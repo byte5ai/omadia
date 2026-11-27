@@ -36,6 +36,52 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
+
+- `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows
+  (ADR-0185, ADR-0190); `SYSTEM_AUDIT_ACTOR_UUID` is a deprecated alias of it (plugin-api
+  **1.108.0**) and no kernel code uses it any more. Same value, so stored audit rows and filters
+  are unchanged.
+
+### Fixed — a user purge covers all linked identities and ends web sessions (#2292, #2293, ADR-0262) (2026-11-27)
+
+- The `user` axis now reads every channel identity of the person's cluster
+  (`KnowledgeGraph.listUserChannelIdentities?`, plugin-api **1.108.0**, in-memory + Neon) and
+  purges the context trees `/memories/contexts/<agent>/user/<kind>~<id>` of all of them in the
+  same run, whichever id the operator typed.
+- The person's accounts (`web` identities) get `users.session_version` bumped after the purge,
+  so open web sessions stop carrying the deleted omadia user id. Preview `sessionAccountCount`,
+  result `sessionsRevoked`, warning `sessions_not_revoked` when no user store is wired; the
+  Danger Zone shows the count (en + de).
+
+### Fixed — debug `scope` turns and steering are bound to the account (#2291) (2026-11-27)
+
+- `POST /api/chat`, `/chat/stream` and `/chat/steer` with a debug `scope` (or neither `scope`
+  nor `sessionId`) used the caller-chosen label as the turn bucket, so another account with the
+  same label could steer the turn and shared its transcript bucket (ADR-0180 residual). For a
+  signed-in session the bucket is now `http-<users.id>~<scope>` / `http-<users.id>~default`
+  (account first, so the 80-character key cut cannot drop it);
+  requests without an account keep the old labels. Debug transcripts under the old labels stay
+  where they are.
+
+### Changed — agents on memory mode `off` move to `members` (#2290, ADR-0261) (2026-11-27)
+
+- **Migration** core **0122_context_memory_off_to_members** — every `standard` agent on
+  `context_memory = 'off'` becomes `members`, so each web account and each API key gets its own
+  memory; new column `agents.context_memory_switched_at` records the switch. Nothing is deleted:
+  notes written under `off` stay in the agent tier and are no longer read.
+- `GET …/context-memory` returns `switchedFromOffAt`; the memory tab shows a notice until an
+  operator saves a mode. `PUT …/context-memory` with `off` now needs `shared: true`
+  (`409 context_memory_shared_required`); the UI asks for a "shared agent" acknowledgement.
+
+### Security — `/api/dev` is loopback-only under `NODE_ENV=production` (#2275, ADR-0260) (2026-11-27)
+
+- With `DEV_ENDPOINTS_ENABLED=true` the dev graph and the memory browser read every account's
+  memory. Under `NODE_ENV=production` (baked into the shipped image) the `/api/dev` prefix is now
+  bound to loopback whatever `DEV_ENDPOINTS_LOOPBACK_ONLY` says (`resolveDevLoopbackOnly`,
+  `routes/graphRouterMounts.ts`); remote sessions get `403 dev.loopback_only`. The compose dev
+  stack (`NODE_ENV=development`) keeps the opt-in behaviour.
+- Tests: `test/devEndpoints/` covers the production case for graph + memory browser.
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of
