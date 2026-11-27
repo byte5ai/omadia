@@ -11,11 +11,13 @@ import type { ChatSession } from './chatSessions';
  * server copy requested before (or while) a clear bring cleared deliveries
  * back.
  *
- * There is no live push for the web chat, so the chat page calls
+ * The chat page calls
  * `refreshProactive` when it mounts, when hydration finishes and when the
  * active chat changes; this hook itself re-reads the active chat when the
  * tab becomes visible again and when the window regains focus (a desktop /
- * Electron window can be refocused without ever turning hidden). PUT answers
+ * Electron window can be refocused without ever turning hidden), on a 60 s
+ * poll, and — #2354 — at once when the chat's delivery stream signals a
+ * delivery. PUT answers
  * (the server merges deliveries into every PUT) are folded through
  * `foldProactive` too.
  *
@@ -64,6 +66,46 @@ export interface ProactiveRefresh {
    * changed chat is a fold result) — nothing this tab needs to write whole.
    */
   isFoldOnlyChange(prev: readonly ChatSession[], next: readonly ChatSession[]): boolean;
+}
+
+/** #2354 — the delivery stream of one chat (`GET …/sessions/:id/events`). */
+export function deliveryEventsUrl(id: string): string {
+  return `/bot-api/chat/sessions/${encodeURIComponent(id)}/events`;
+}
+
+/** #2354 — wait before re-opening a delivery stream the browser closed. */
+export const DELIVERY_EVENTS_RETRY_MS = 15_000;
+
+/**
+ * #2354 — subscribe to a chat's delivery signals; `undefined` where the
+ * browser has no `EventSource` (tests, old engines), which leaves the poll.
+ *
+ * A stream answered with an error status is closed by the browser for good
+ * (it retries only dropped connections). That is the normal case for a chat
+ * that is not stored yet (404 until its first PUT), so a closed stream is
+ * opened again after {@link DELIVERY_EVENTS_RETRY_MS}.
+ */
+function openDeliveryEvents(id: string, onDelivery: () => void): { close(): void } | undefined {
+  if (typeof window === 'undefined' || typeof EventSource === 'undefined') return undefined;
+  let source: EventSource | undefined;
+  let retry: number | undefined;
+  let closed = false;
+  const open = (): void => {
+    source = new EventSource(deliveryEventsUrl(id), { withCredentials: true });
+    source.addEventListener('delivery', onDelivery);
+    source.addEventListener('error', () => {
+      if (closed || source?.readyState !== EventSource.CLOSED) return;
+      retry = window.setTimeout(open, DELIVERY_EVENTS_RETRY_MS);
+    });
+  };
+  open();
+  return {
+    close(): void {
+      closed = true;
+      if (retry !== undefined) window.clearTimeout(retry);
+      source?.close();
+    },
+  };
 }
 
 /** #1755 — how often a visible chat re-reads its deliveries. */
@@ -185,9 +227,15 @@ export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefres
     const poll = window.setInterval(() => {
       if (document.visibilityState === 'visible') refreshProactive(activeId);
     }, PROACTIVE_POLL_MS);
+    // #2354 (ADR-0321) — a delivery into the open chat arrives at once: the
+    // middleware signals it on the chat's event stream (a signal only, never
+    // the text) and the chat is re-read through the owner-checked GET. The
+    // poll above stays as the fallback (stream down, another process).
+    const events = openDeliveryEvents(activeId, () => refreshProactive(activeId));
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', onFocus);
     return () => {
+      events?.close();
       window.clearInterval(poll);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', onFocus);

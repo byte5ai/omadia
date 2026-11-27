@@ -7476,6 +7476,11 @@ The memory purge (`/api/v1/admin/memory/purge`, page `/admin/danger-zone`) is
 the operator's tool for erasure requests, so it has to delete what it says and
 leave a record of who did it.
 
+Deleting a web chat or a routine (#1753, ADR-0323) runs the same conversation-history
+selection, restricted to that conversation (`conversationScopes`), after removing its
+transcripts. It has no preview: the deletion itself is the confirmation, and memorable
+knowledge promoted from the conversation stays.
+
 - **Complete.** Besides scratch memory and the knowledge graph's
   `MemorableKnowledge`, a purge deletes the conversation history of its
   selection: `Turn` nodes (the full user message and answer), their `Session`,

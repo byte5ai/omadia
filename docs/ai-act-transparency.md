@@ -110,7 +110,7 @@ Betreibers, und der Code lässt sie zu. Setup-Felder des Orchestrator-Plugins
 |---|---|
 | `ai_disclosure_level` | globale Stufe: `standard`, `concise`, `off` |
 | `ai_disclosure_level_overrides` | pro Kanal, Format `"telegram=concise,web=off"` |
-| `ai_disclosure_locale` | Sprache der Kennzeichnung, normalisiert auf `de` / `en` |
+| `ai_disclosure_locale` | Ersatzsprache der Kennzeichnung (`de` / `en`); die Zeile folgt der Sprache der Antwort und nutzt die Einstellung nur, wenn diese nicht klar Deutsch oder Englisch ist (ADR-0320) |
 | `ai_disclosure_assistant_name` | Name, der in die Standardformulierung eingewoben wird |
 | `ai_disclosure_operator_note` | wörtlicher Zusatz, **hinter** der Kennzeichnungszeile |
 

@@ -348,5 +348,27 @@ export function runMemoryStoreConformance(
         assert.equal(await store.readFile('/memories/abc/x.md'), 'victim');
         assert.equal(await store.readFile('/memories/ab/y.md'), 'victim');
       }));
+
+    // #1753 (ADR-0322) — the optional append primitive.
+    it('appendFile creates a missing file, then appends; size follows', () =>
+      withStore(async (store) => {
+        assert.ok(store.appendFile, 'this backend implements appendFile');
+        await store.appendFile('/memories/log/day.md', 'a');
+        await store.appendFile('/memories/log/day.md', 'bü\n');
+        assert.equal(await store.readFile('/memories/log/day.md'), 'abü\n');
+        const entry = (await store.list('/memories/log')).find(
+          (e) => e.virtualPath === '/memories/log/day.md',
+        );
+        assert.equal(entry?.sizeBytes, Buffer.byteLength('abü\n', 'utf8'));
+      }));
+
+    it('appendFile onto a directory → MemoryIsDirectoryError', () =>
+      withStore(async (store) => {
+        await store.createFile('/memories/dir/x.md', 'x');
+        await assert.rejects(
+          () => store.appendFile!('/memories/dir', 'y'),
+          MemoryIsDirectoryError,
+        );
+      }));
   });
 }

@@ -15,6 +15,7 @@ import {
 import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { LLM_SETUP_HINT } from '../llmSetupHint.js';
 import { chatViewer, type LegacyChatOwner } from './chatSessionAccess.js';
+import { openChatDeliveryStream, type ChatDeliveryStreamDeps } from './chatDeliveryEvents.js';
 
 /**
  * CRUD for persisted chat-tab sessions. Mounted at `/api/chat`, so the full
@@ -29,6 +30,8 @@ import { chatViewer, type LegacyChatOwner } from './chatSessionAccess.js';
  *                                        answers `{ ok, session }` with the
  *                                        stored document. An empty `messages`
  *                                        array is NOT a clear.
+ *   GET    /api/chat/sessions/:id/events  SSE: a signal per routine delivery
+ *                                        into this chat (#2354, ADR-0321)
  *   DELETE /api/chat/sessions/:id        drop the file
  *   POST   /api/chat/sessions/:id/reset  the explicit clear: drops turns AND
  *                                        routine deliveries, stamps `resetAt`
@@ -240,7 +243,7 @@ interface ChatSessionDeps {
    */
   releaseGenerated?: (scope: string, ownerOmadiaUserId: string | undefined) => Promise<unknown>;
   /** #1753 — remove the markdown transcripts of the chat's scope when it is deleted. */
-  purgeTranscripts?: (sessionScope: string) => Promise<void>;
+  purgeTranscripts?: (sessionScope: string, ownerOmadiaUserId: string | undefined) => Promise<void>;
   /** #1757 — the routines that deliver into a chat; absent = no routines feature. */
   routines?: () => ChatRoutinesPort | undefined;
   /**
@@ -249,6 +252,11 @@ interface ChatSessionDeps {
    * logged, the delete stands). Absent = no row.
    */
   audit?: () => Pick<AdminAuditLog, 'record'> | undefined;
+  /**
+   * #2354 (ADR-0321) — live delivery signals for an open chat. Absent = the
+   * events route answers 404 and the web UI keeps its poll.
+   */
+  deliveries?: ChatDeliveryStreamDeps;
 }
 
 /** #1757 — what the chat routes need of the routines feature. */
@@ -349,6 +357,31 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     }
   });
 
+  router.get('/sessions/:id/events', async (req: Request, res: Response) => {
+    const id = req.params['id'];
+    if (typeof id !== 'string' || !isValidSessionId(id)) {
+      res.status(400).json({ error: 'invalid_id' });
+      return;
+    }
+    if (!deps.deliveries) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const store = resolveStore(res);
+    if (!store) return;
+    try {
+      // Only the chat's owner learns when something lands in it.
+      if (!(await ownSession(store, req, id))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+    } catch (err) {
+      failure(res, err, '[chat-sessions] events');
+      return;
+    }
+    openChatDeliveryStream(req, res, id, deps.deliveries);
+  });
+
   router.put('/sessions/:id', async (req: Request, res: Response) => {
     const id = req.params['id'];
     if (typeof id !== 'string' || !isValidSessionId(id)) {
@@ -437,7 +470,9 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       // the orchestrator is told to look there for earlier conversations.
       let transcriptsPurged = false;
       if (deps.purgeTranscripts) {
-        await deps.purgeTranscripts(id).then(
+        // ADR-0323 — the graph side keeps to the deleting person's turns: the
+        // id was chosen by a client and may share a key with another chat.
+        await deps.purgeTranscripts(id, req.session?.omadia_user_id).then(
           () => {
             transcriptsPurged = true;
           },

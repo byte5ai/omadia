@@ -242,6 +242,20 @@ export class RoutineNotFoundError extends Error {
  * run: a run would be skipped anyway, and recording it as `ok` overwrote the
  * `last_run_error` that explains the pause.
  */
+/**
+ * #2357 (ADR-0324) — a manual run refused by the budget pre-check. A tool
+ * refusal, so `manage_routine` passes the reason to the model.
+ */
+export class RoutineBudgetRefusedError extends ToolRefusalError {
+  constructor(
+    readonly routineId: string,
+    readonly reason: string,
+  ) {
+    super(`routine ${routineId} cannot run now: ${reason}`);
+    this.name = 'RoutineBudgetRefusedError';
+  }
+}
+
 export class RoutineNotActiveError extends Error {
   constructor(
     id: string,
@@ -319,6 +333,12 @@ export interface RoutineRunnerOptions {
    */
   bookManualRunCost?: (routineId: string, costUsd: number) => Promise<void>;
   /**
+   * #2357 (ADR-0324) — why a manual run of this routine may not start for
+   * budget reasons (the checks a scheduled firing gets); `undefined` = it
+   * may. Absent = no budget check (no trigger engine).
+   */
+  manualRunRefusal?: (routineId: string) => Promise<string | undefined>;
+  /**
    * #1753 — remove the markdown transcripts of a conversation scope
    * (`routine:<id>`) when the routine is deleted. Absent = nothing to remove.
    */
@@ -374,6 +394,7 @@ export class RoutineRunner {
   private readonly deliveryRefusal: RoutineRunnerOptions['deliveryRefusal'];
   private readonly resolveAgent: RoutineRunnerOptions['resolveAgent'];
   private readonly bookManualRunCost: RoutineRunnerOptions['bookManualRunCost'];
+  private readonly manualRunRefusalOf: RoutineRunnerOptions['manualRunRefusal'];
   private readonly purgeTranscripts: RoutineRunnerOptions['purgeTranscripts'];
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
@@ -401,6 +422,7 @@ export class RoutineRunner {
     this.deliveryRefusal = opts.deliveryRefusal;
     this.resolveAgent = opts.resolveAgent;
     this.bookManualRunCost = opts.bookManualRunCost;
+    this.manualRunRefusalOf = opts.manualRunRefusal;
     this.purgeTranscripts = opts.purgeTranscripts;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
@@ -444,6 +466,27 @@ export class RoutineRunner {
    * complete (or the run errored). Caller (`handleRoutineAction`)
    * surfaces a confirmation back into the chat.
    */
+  /**
+   * #2357 — the budget pre-check of a manual run, for callers that answer
+   * before starting it (the trigger route). Throws nothing: a failing check
+   * is logged and counts as "may run", as the firing's own reservation is
+   * what enforces the caps for scheduled runs.
+   */
+  async manualRunRefusal(id: string): Promise<string | undefined> {
+    if (!this.manualRunRefusalOf) return undefined;
+    try {
+      return await this.manualRunRefusalOf(id);
+    } catch (err) {
+      this.log(`[routines] budget pre-check of ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  private async assertManualRunAllowed(id: string): Promise<void> {
+    const refusal = await this.manualRunRefusal(id);
+    if (refusal !== undefined) throw new RoutineBudgetRefusedError(id, refusal);
+  }
+
   async triggerRoutineNow(
     id: string,
     scope: RoutineActorScope,
@@ -460,6 +503,7 @@ export class RoutineRunner {
       throw new RoutineNotActiveError(id, routine.name, routine.status);
     }
     if (this.inFlight.has(id)) throw new RoutineRunInProgressError(id);
+    await this.assertManualRunAllowed(id);
     // #1747 — a manual run gets the same timeout a scheduled one does.
     const timeout = timeoutSignal(effectiveTimeoutMs(routine.timeoutMs));
     try {
@@ -487,6 +531,7 @@ export class RoutineRunner {
     if (!this.chatAgentAvailable(routine.agentSlug ?? null)) {
       throw new ToolRefusalError('no chat agent can run this routine right now (its orchestrator is gone or no LLM key is configured)');
     }
+    await this.assertManualRunAllowed(id);
     // The run's slot is taken here, before answering: a second run_now (a
     // parallel tool call) or a cron fire in between is refused or skipped,
     // never told "started" for a run that then does not happen.

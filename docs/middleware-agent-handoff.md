@@ -5370,8 +5370,20 @@ Tools zu nutzen. Funktionierte on first try.
 interface MemoryStore {
   list / fileExists / directoryExists / readFile /
   createFile / writeFile / delete / rename
+  appendFile?   // #1753, ADR-0322, plugin-api 1.113.0
 }
 ```
+
+**Anhängen (#1753, ADR-0322).** `appendFile` ist optional; Aufrufer gehen über
+`appendToMemoryFile(store, path, text)` (plugin-api), das ohne `appendFile` auf Lesen + Schreiben
+zurückfällt. Postgres hängt in einem Statement an (`content || $2`), In-Memory ebenso;
+`LabelledMemoryStore` und `ScopedMemoryStore` reichen es mit ihren Schreib-Prüfungen durch
+(andere Decorators nutzen den Rückfall). Nutzer: der `SessionLogger` (Tages-Transkript, nie mehr
+zurückgelesen) und das **Zustell-Journal** des Web-Chats: eine Routine-Zustellung schreibt eine
+Zeile `{ message, at }` nach `/memories/chat-sessions/<id>.deliveries.jsonl`, statt das
+Chat-Dokument neu zu schreiben. `ChatSessionStore.get`/`list` lesen Dokument + Journal, der
+nächste `save` (Client-PUT, Turn-Spiegel, Reset) schreibt das zusammengeführte Dokument und
+löscht das Journal; `delete` nimmt es mit.
 
 Heute: `FilesystemMemoryStore` (Pfad-Traversal-Schutz, Null-Byte-Schutz,
 URL-encoded-`..`-Schutz). Austauschbar gegen Postgres/S3 ohne
@@ -7103,8 +7115,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
   pro Prozess); Zustellungs-Kontext für Kanal-Routinen von vor #2316 (ohne `origin_scope`);
-  Zustellungen und Transkripte ohne Komplett-Rewrite pro Lauf (#1753, Rest); Graph-Knoten
-  gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
   `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
 
@@ -10143,9 +10153,15 @@ durch den Web-Sender unten.
   (`/memories/chat-sessions/<id>.json`), derselbe Store, aus dem die Web-UI hydratisiert.
   Ein Lauf hängt eine Assistant-Nachricht mit Marker `proactive: { deliveredAt,
   routineId?, routineName? }` an den Chat an, in dem die Routine angelegt wurde
-  (`ChatSessionStore.appendProactiveMessage`). Kein Live-Push: der Web-Chat hat keinen
-  Realtime-Kanal (`WebSocketRegistry` gehört den Channel-Plugins, SSE nur dem Builder).
-  Stattdessen liest die Web-UI die aktive Session **additiv** neu
+  (`ChatSessionStore.appendProactiveMessage`). **Live-Signal (#2354, ADR-0321):** nach dem
+  Anhängen ruft der Sender `onDelivered`, der Kernel veröffentlicht auf dem prozesslokalen
+  `ChatDeliveryBus` (`src/routes/chatDeliveryEvents.ts`), und
+  `GET /api/chat/sessions/:id/events` (SSE, nur für den Besitzer des Chats, sonst 404; an die
+  Sitzung gebunden wie der Builder-Stream, `watchStreamSession`; Heartbeat 25 s) schickt
+  `event: delivery` mit `{ type, sessionId, deliveredAt }` — nie den Text. Die Web-UI hält
+  pro aktivem Chat eine `EventSource` offen und liest bei jedem Signal neu (s. u.); der
+  60-s-Poll bleibt als Rückfall (Stream weg, Zustellung aus einem anderen Prozess).
+  Außerdem liest die Web-UI die aktive Session **additiv** neu
   (`refreshProactive` → `mergeProactiveFromRemote`, nie ein PUT, übersprungen solange ein
   Turn streamt): wenn `/chat` mountet — der `ChatSessionsProvider` sitzt im Root-Layout
   und hydratisiert nur einmal pro Full-Load, ein In-App-Wechsel von `/routines` nach
@@ -12095,6 +12111,19 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   für einen gespeicherten Chat eine Zeile `chat.delete` (Ziel `chat:<id>`, `after` = `kind`,
   `transcriptsPurged`, pausierte Routinen als `routine:<id>`), best-effort nach dem Löschen.
   `ChatRoutinesPort.pauseForChat` liefert dafür die Ids statt einer Zahl.
+- **Budget-Vorabprüfung manueller Routine-Läufe (#2357, ADR-0324, Welle 7):** `run_now`,
+  `POST /api/v1/routines/:id/trigger` (`409 routines.budget_refused`) und der Karten-Button fragen
+  vorher `TriggerService.manualRunRefusal('routine', id)`: Kill-Switch, Budget-Pause des Triggers,
+  Platz für ein `budget_per_firing_usd` im Trigger-Gesamtbudget und im Agent-/Instanz-Monat. Nur
+  lesend; die Kosten bucht weiter `bookManualSpend` danach. Fehler der Prüfung → Lauf startet.
+- **Graph-Verlauf gelöschter Chats/Routinen (#1753, ADR-0323, Welle 7):** Chat-Löschen und
+  Routine-Löschen rufen `purgeConversationRecords` (`src/plugins/routines/sessionTranscripts.ts`):
+  erst die Markdown-Transkripte, dann `KnowledgeGraph.purgeConversationHistory({ tenantId,
+  conversationScopes: graphScopeKeysFor(scope) })` — Turns, Runs, Tool-Calls, Pläne, nur daraus
+  abgeleitete Facts und die Session, unter jedem Agenten (`<slug>::<key>` und unqualifiziert).
+  Beim Chat-Löschen zusätzlich `userId` = `omadia_user_id` des Löschenden (Chat-IDs wählt der
+  Client; ein kollidierender Key trifft so nie fremde Turns); ohne diese Id bleibt der Graph.
+  `MemorableKnowledge` bleibt. Ein Graph ohne Purge wird geloggt, kein Fehler.
 - **OAuth-Tokens und /setup-Seed nur im Kernel-Scope (#2313, ADR-0275):** Device-Flow
   (`storeProviderOAuthTokens`), Token-Store-`persist`/`load` und `/setup`-Seed schreiben/lesen nur
   `KERNEL_PROVIDER_CREDENTIAL_SCOPE`; `consolidateProviderCredentials` übernimmt beim Boot eine

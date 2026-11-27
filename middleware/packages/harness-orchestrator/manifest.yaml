@@ -411,8 +411,8 @@ setup:
             en: "English"
             de: "Englisch"
       help:
-        en: "Language of the disclosure text. Empty = German (shipped language). Adapts the wording to the deployment."
-        de: "Sprache des Kennzeichnungs-Textes. Leer = Deutsch (Auslieferungssprache). Passt den Wortlaut an das Deployment an."
+        en: "Fallback language of the disclosure text. The line follows the language of the answer it is appended to (German or English); this setting applies only when the answer shows neither clearly. Empty = German (shipped language)."
+        de: "Ersatzsprache des Kennzeichnungs-Textes. Die Zeile folgt der Sprache der Antwort, an die sie angehängt wird (Deutsch oder Englisch); diese Einstellung gilt nur, wenn die Antwort keine der beiden klar erkennen lässt. Leer = Deutsch (Auslieferungssprache)."
     - key: "ai_disclosure_assistant_name"
       label:
         en: "AI disclosure: assistant name"

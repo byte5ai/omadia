@@ -47,3 +47,57 @@ export function buildAnswerLanguageRule(
     'Die Sprache von Tool-Ergebnissen, Dokumenten und dieser Anweisung bestimmt die Antwortsprache nicht.'
   );
 }
+
+/**
+ * #2353 / ADR-0320 — the language an answer is written in, for the texts the
+ * kernel appends to it (the AI-disclosure line). The disclosure composer knows
+ * German and English, so this tells only those two apart; `undefined` when the
+ * text shows neither clearly (too short, another language, only data).
+ *
+ * Deterministic and cheap: it counts frequent function words of each language
+ * outside code, links and markup. No model call (ADR-0021).
+ */
+export function detectAnswerLocale(text: string | undefined): 'de' | 'en' | undefined {
+  if (!text) return undefined;
+  const prose = text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/<[^>\n]+>/g, ' ')
+    .toLowerCase();
+  const words = prose.match(/[a-zäöüß]+/g) ?? [];
+  let de = 0;
+  let en = 0;
+  for (const word of words) {
+    if (GERMAN_FUNCTION_WORDS.has(word)) de += 1;
+    else if (ENGLISH_FUNCTION_WORDS.has(word)) en += 1;
+  }
+  if (de + en < MIN_FUNCTION_WORDS) return undefined;
+  if (en >= de * DOMINANCE_RATIO) return 'en';
+  if (de >= en * DOMINANCE_RATIO) return 'de';
+  return undefined;
+}
+
+/** Fewer function words than this is a name, a number or a table, not prose. */
+const MIN_FUNCTION_WORDS = 3;
+/** One language must clearly lead; a mixed text keeps the configured locale. */
+const DOMINANCE_RATIO = 2;
+
+// Words that are frequent in one language and do not occur as words in the
+// other (no "in", "an", "was", "will", "so", "also", "man", "am").
+const GERMAN_FUNCTION_WORDS: ReadonlySet<string> = new Set([
+  'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'einer',
+  'und', 'oder', 'aber', 'nicht', 'ist', 'sind', 'wird', 'werden', 'wurde', 'wurden',
+  'ich', 'du', 'sie', 'wir', 'ihr', 'ihnen', 'dich', 'mich', 'mir', 'dir', 'uns',
+  'mit', 'für', 'auf', 'von', 'zu', 'zum', 'zur', 'im', 'auch', 'noch', 'nur',
+  'wie', 'wenn', 'dass', 'kann', 'können', 'gibt', 'hier', 'bitte', 'diese', 'dieser',
+  'dieses', 'sich', 'bei', 'nach', 'aus', 'über', 'keine', 'kein', 'habe', 'haben',
+]);
+
+const ENGLISH_FUNCTION_WORDS: ReadonlySet<string> = new Set([
+  'the', 'a', 'and', 'or', 'but', 'not', 'is', 'are', 'were', 'be', 'been',
+  'i', 'you', 'we', 'they', 'he', 'she', 'it', 'your', 'our', 'their', 'my',
+  'with', 'for', 'on', 'of', 'to', 'at', 'from', 'by', 'this', 'that', 'these', 'those',
+  'there', 'here', 'what', 'which', 'when', 'if', 'can', 'could', 'would', 'should',
+  'have', 'has', 'had', 'do', 'does', 'did', 'please', 'about', 'any', 'no', 'yes',
+]);

@@ -1810,7 +1810,9 @@ export interface ConversationHistoryPurgeFilter {
 tenantId: string;
 agentSlug?: string;
 userId?: string;
+conversationScopes?: readonly string[];
 }
+export declare function matchesConversationScope(scope: string, keys: readonly string[]): boolean;
 export declare const CONVERSATION_HISTORY_NODE_TYPES: readonly ["Turn", "Run", "AgentInvocation", "ToolCall", "Plan", "PlanStep"];
 export interface FactIngest {
 factId: string;
@@ -2847,7 +2849,9 @@ createFile(virtualPath: string, content: string): Promise<void>;
 writeFile(virtualPath: string, content: string): Promise<void>;
 delete(virtualPath: string): Promise<void>;
 rename(fromVirtualPath: string, toVirtualPath: string): Promise<void>;
+appendFile?(virtualPath: string, content: string): Promise<void>;
 }
+export declare function appendToMemoryFile(store: MemoryStore, virtualPath: string, content: string): Promise<void>;
 export interface MemoryEntry {
 virtualPath: string;
 isDirectory: boolean;

@@ -27,7 +27,7 @@
  * the undecorated store for them.
  */
 
-import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
+import { appendToMemoryFile, type MemoryEntry, type MemoryStore } from '@omadia/plugin-api';
 
 import { UNKNOWN_READERS, type LabelSet } from './labels.js';
 import type { DiscretionPort } from './port.js';
@@ -98,6 +98,12 @@ export class LabelledMemoryStore implements MemoryStore {
   async writeFile(virtualPath: string, content: string): Promise<void> {
     await this.recordBeforeWrite(virtualPath);
     await this.inner.writeFile(virtualPath, content);
+  }
+
+  /** #1753 (ADR-0322) — labelled like a write; the inner store appends. */
+  async appendFile(virtualPath: string, content: string): Promise<void> {
+    await this.recordBeforeWrite(virtualPath);
+    await appendToMemoryFile(this.inner, virtualPath, content);
   }
 
   async delete(virtualPath: string): Promise<void> {

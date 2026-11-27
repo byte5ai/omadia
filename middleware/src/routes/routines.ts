@@ -355,6 +355,12 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         res.status(409).json({ code: 'routines.agent_unavailable', message: agentProblem });
         return;
       }
+      // #2357 (ADR-0324) — the budget checks a scheduled firing gets.
+      const budgetRefusal = await deps.runner.manualRunRefusal(id);
+      if (budgetRefusal !== undefined) {
+        res.status(409).json({ code: 'routines.budget_refused', message: budgetRefusal });
+        return;
+      }
       if (!deps.runner.chatAgentAvailable(routine.agentSlug ?? null)) {
         res.status(503).json({
           code: 'routines.chat_unavailable',

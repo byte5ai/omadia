@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChatSessions, type ChatSession, type Message } from '../chatSessions';
 
 /**
- * #1071 — the web chat has no live push, so a routine delivery the server
- * appended after page load reaches the UI through (a) hydration, (b) an
- * explicit re-read (`refreshProactive`, called by the chat page) and (c) the
- * document the server answers a PUT with. All three are additive: a delivery
+ * #1071 — a routine delivery the server appended after page load reaches the
+ * UI through (a) hydration, (b) an explicit re-read (`refreshProactive`, called
+ * by the chat page or, #2354, on a delivery signal) and (c) the document the
+ * server answers a PUT with. All three are additive: a delivery
  * must never cost the local copy the fields only the browser keeps.
  */
 
@@ -476,5 +476,103 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     await waitFor(() => {
       expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual(['u1', DELIVERY.id]);
     });
+  });
+
+  it('#2354 — re-reads the active chat when its delivery stream signals a delivery', async () => {
+    class FakeEventSource {
+      static readonly CLOSED = 2;
+      static instances: FakeEventSource[] = [];
+      readyState = 1;
+      readonly listeners = new Map<string, Array<() => void>>();
+      closed = false;
+      constructor(readonly url: string) {
+        FakeEventSource.instances.push(this);
+      }
+      addEventListener(type: string, fn: () => void): void {
+        this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+      }
+      close(): void {
+        this.closed = true;
+        this.readyState = FakeEventSource.CLOSED;
+      }
+      emit(type: string): void {
+        for (const fn of this.listeners.get(type) ?? []) fn();
+      }
+    }
+    vi.stubGlobal('EventSource', FakeEventSource);
+    try {
+      const view = await hydrated();
+      act(() => {
+        view.result.current.setActive(ID_B);
+      });
+      const streamB = (): FakeEventSource | undefined =>
+        FakeEventSource.instances.find(
+          (s) => !s.closed && s.url === `/bot-api/chat/sessions/${ID_B}/events`,
+        );
+      await waitFor(() => {
+        expect(streamB()).toBeDefined();
+      });
+      // The previous chat's stream was closed on the switch.
+      expect(FakeEventSource.instances.filter((s) => !s.closed)).toHaveLength(1);
+      serverB = { ...serverB, updatedAt: 9_000, messages: [...serverB.messages, DELIVERY] };
+
+      act(() => {
+        streamB()!.emit('delivery');
+      });
+
+      await waitFor(() => {
+        expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual(['u1', DELIVERY.id]);
+      });
+      view.unmount();
+      expect(FakeEventSource.instances.every((s) => s.closed)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('#2354 — re-opens a delivery stream the browser closed (chat not stored yet)', async () => {
+    const opened: string[] = [];
+    class ClosingEventSource {
+      static readonly CLOSED = 2;
+      readyState = 0;
+      readonly listeners = new Map<string, Array<() => void>>();
+      constructor(readonly url: string) {
+        opened.push(url);
+        // Chat B's first attempt is answered 404: the browser closes it for good.
+        if (url.endsWith(`${ID_B}/events`) && opened.filter((u) => u === url).length === 1) {
+          queueMicrotask(() => {
+            this.readyState = ClosingEventSource.CLOSED;
+            for (const fn of this.listeners.get('error') ?? []) fn();
+          });
+        }
+      }
+      addEventListener(type: string, fn: () => void): void {
+        this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+      }
+      close(): void {
+        this.readyState = ClosingEventSource.CLOSED;
+      }
+    }
+    vi.stubGlobal('EventSource', ClosingEventSource);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const view = await hydrated();
+      act(() => {
+        view.result.current.setActive(ID_B);
+      });
+      await waitFor(() => {
+        expect(opened.filter((u) => u.endsWith(`${ID_B}/events`)).length).toBeGreaterThan(0);
+      });
+      const streamsOfB = (): number => opened.filter((u) => u.endsWith(`${ID_B}/events`)).length;
+      expect(streamsOfB()).toBe(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(streamsOfB()).toBe(2);
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });

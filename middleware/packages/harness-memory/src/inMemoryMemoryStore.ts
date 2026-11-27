@@ -92,6 +92,15 @@ export class InMemoryMemoryStore implements MemoryStore {
     this.files.set(p, content);
   }
 
+  /** #1753 (ADR-0322) — append in place; a missing file is created. */
+  async appendFile(virtualPath: string, content: string): Promise<void> {
+    const p = this.normalize(virtualPath);
+    if (await this.directoryExists(p)) {
+      throw new MemoryIsDirectoryError(virtualPath);
+    }
+    this.files.set(p, (this.files.get(p) ?? '') + content);
+  }
+
   async delete(virtualPath: string): Promise<void> {
     const p = this.normalize(virtualPath);
     if (p === MEMORY_ROOT) {

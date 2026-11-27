@@ -9,6 +9,7 @@ import {
 } from '../src/plugins/routines/manageRoutineTool.js';
 import { RoutineRunInProgressError } from '../src/plugins/routines/routineRunControl.js';
 import {
+  RoutineBudgetRefusedError,
   RoutineNotActiveError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
@@ -530,6 +531,7 @@ describe('#2339 — manage_routine run_now', () => {
       [new RoutineRunInProgressError(ID), /already running/],
       [new RoutineNotActiveError(ID, 'demo', 'paused'), /is paused; resume it/],
       [new RoutineNotFoundError(ID), /not found/],
+      [new RoutineBudgetRefusedError(ID, 'the routine\'s total budget would be exceeded by one more run'), /total budget/],
     ];
     for (const [err, pattern] of refusals) {
       const { runner } = stubRunner({ runNowImpl: () => Promise.reject(err) });

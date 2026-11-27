@@ -60,6 +60,12 @@ class StubRunner {
     return this.agentProblems.get(routine.id);
   }
 
+  public budgetRefusals = new Map<string, string>();
+
+  async manualRunRefusal(id: string): Promise<string | undefined> {
+    return this.budgetRefusals.get(id);
+  }
+
   seed(routine: Routine): void {
     this.rows.set(routine.id, routine);
   }
@@ -221,6 +227,20 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
     const body = (await res.json()) as { code: string; message: string };
     assert.equal(body.code, 'routines.agent_unavailable');
     assert.match(body.message, /disabled or deleted/);
+    assert.equal(h.runner.triggerCalls.length, 0);
+  });
+
+  // #2357 — the budget checks a scheduled firing gets, before the 202.
+  it('returns 409 routines.budget_refused with the reason and starts nothing', async () => {
+    h.runner.chatAvailable = true;
+    h.runner.budgetRefusals.set('00000000-0000-4000-8000-000000000001', "the agent's monthly budget would be exceeded by one more run");
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
+      method: 'POST',
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'routines.budget_refused');
+    assert.match(body.message, /monthly budget/);
     assert.equal(h.runner.triggerCalls.length, 0);
   });
 });
