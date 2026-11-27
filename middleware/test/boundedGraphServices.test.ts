@@ -393,6 +393,24 @@ describe('ADR-0044 · bounded processMemory@1', () => {
     await assert.rejects(() => bounded.get('p-own'), GraphServiceRefusedError);
   });
 
+  it('#2334 · under a shield, a process stored unprotected reads as missing for get / history / edit', async () => {
+    const { service, edits } = fakeProcesses();
+    const open = { ...processRecord('p-open', `${ATLAS}s`), unprotected: true } as ProcessRecord;
+    const withOpen: ProcessMemoryService = {
+      ...service,
+      get: async (id) => (id === open.id ? open : service.get(id)),
+      history: async (id) => (id === open.id ? [open] : service.history(id)),
+    };
+    const bounded = boundProcessMemory(withOpen, PLUGIN);
+    const shielded = <T>(fn: () => Promise<T>): Promise<T> => inTurn(USER_BOUND, fn, { privacyHandle: {} });
+    assert.equal(await shielded(() => bounded.get('p-open')), null);
+    assert.deepEqual(await shielded(() => bounded.history('p-open')), []);
+    assert.deepEqual(await shielded(() => bounded.edit({ id: 'p-open', title: 'x' })), { ok: false, reason: 'not-found' });
+    assert.deepEqual(edits, []);
+    assert.equal((await shielded(() => bounded.get('p-own')))?.id, 'p-own');
+    assert.equal((await inTurn(USER_BOUND, () => bounded.get('p-open')))?.id, 'p-open', 'no shield: readable');
+  });
+
   it('answers an edit of a process the turn may not read like a missing one', async () => {
     const { service, edits } = fakeProcesses();
     const bounded = boundProcessMemory(service, PLUGIN);

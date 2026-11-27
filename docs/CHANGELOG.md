@@ -36,13 +36,16 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — a plugin's plan and process reads honour the Privacy Shield (#2333, ADR-0315) (2026-11-27)
+### Fixed — a plugin's plan and process reads honour the Privacy Shield (#2333, #2334, ADR-0315) (2026-11-27)
 
 - Under a privacy handle, a plugin's bounded `listPlansForScope` / `getPlan` / `getPlanSteps` /
   `getPlanStepsForPlans` / `deletePlan` / `setPlanStepStatus` skip plans of the own conversation
   whose turn is `unprotected` or unknown. The current turn's own plan stays readable
   (`isPlanReadableUnderShield`, `src/platform/shieldedNeighbors.ts`). This is the recall plan
   leg's rule. The session tail's continuity residual does not cover plans (ADR-0315).
+- Under a privacy handle, the bounded `processMemory@1` `get` / `history` / `edit` answer a process
+  stored `unprotected` like a missing one, as `query` and the model's own process tools already do
+  (#2334).
 
 ### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
 

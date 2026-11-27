@@ -669,7 +669,11 @@ export function boundProcessMemory(service: ProcessMemoryService, pluginId: stri
     const filter = readFilter(method);
     if (!filter) return null;
     const record = await service.get(id);
-    return record && filter(record) ? record : null;
+    if (!record || !filter(record)) return null;
+    // #2334 — under a shield, a process stored `unprotected` reads as
+    // missing (get / history / edit), like `query` and the model's own
+    // process tools (`withheldUnderShield`, #1540).
+    return shieldActive() && record.unprotected === true ? null : record;
   };
   return Object.freeze({
     // A process lands only in this agent's scopes: another agent's

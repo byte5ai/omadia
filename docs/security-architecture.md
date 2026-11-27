@@ -2919,7 +2919,10 @@ The same provenance reaches three more readers (#1540):
   the process recall leg and the plan-runner's process reuse skip such a
   process, `run_stored_process` refuses it, and the duplicate branch of
   `write_process` and the result of `edit_process` withhold its title and id
-  (the id embeds the title's slug).
+  (the id embeds the title's slug). A plugin's bounded `processMemory@1`
+  applies the same rule: under a privacy handle `get`, `history` and `edit`
+  answer an `unprotected` process like a missing one, as `query` already did
+  (#2334).
 - **A plugin's plan reads (#2333, ADR-0315).** Under a privacy handle the
   bounded `listPlansForScope`, `getPlan`, `getPlanSteps`,
   `getPlanStepsForPlans`, `deletePlan` and `setPlanStepStatus` see only the
