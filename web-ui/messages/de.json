@@ -1445,6 +1445,10 @@
         "what": "Die Änderung wurde gespeichert, aber nicht jedes Plugin, das sie nutzt, ist neu gestartet.",
         "next": "Speichere erneut, um den Neustart zu wiederholen. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
       },
+      "provider_key_in_kernel_scope": {
+        "what": "Provider-API-Keys werden nicht mehr pro Plugin gespeichert. Agentenlaufzeit, Verifier und Hintergrund-Jobs nutzen alle die Keys unter LLM-Zugang.",
+        "next": "Trag den Key unter Admin → LLM-Zugang ein. Hier wurde nichts gespeichert."
+      },
       "empty_secrets_patch": {
         "what": "Beim Speichern war kein geänderter Wert dabei.",
         "next": "Ändere oder leere mindestens ein Feld, bevor du speicherst."
@@ -2316,6 +2320,7 @@
       "multi_orchestrator_unavailable": "Die Multi-Agent-Laufzeit ist nicht verfügbar.",
       "not_found": "Diesen Agenten gibt es nicht mehr — lad die Seite neu.",
       "plugin_not_assigned": "Dieses Plugin ist dem Agenten nicht mehr zugewiesen — lad die Seite neu.",
+      "model_policy_tool_incompatible": "Dieser Provider kann die Turns eines Agenten nicht ausführen: Das Abo-CLI beantwortet nur Anfragen ohne Tools. Wähle einen Provider mit API-Key.",
       "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
       "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
       "unknown": "Request fehlgeschlagen: {detail}",
@@ -2511,6 +2516,10 @@
       "sameRef": "Fallback und Primär sind dasselbe Modell — anderen Fallback wählen oder Keiner.",
       "sameProvider": "Gleicher Provider wie das primäre Modell — ein Ausfall des Providers trifft beide.",
       "deferred": "Das primäre Modell nennt {provider}, der Host läuft aber auf {active} und hat keinen Pool für {provider} — der Effort greift, der Modellwechsel nicht.",
+      "toolIncompatible": "Diese Richtlinie nennt {provider}, das die Turns dieses Agenten nicht ausführen kann (das Abo-CLI beantwortet nur Anfragen ohne Tools). Wähle einen Provider mit API-Key und speichere.",
+      "primaryUnavailable": "{provider} ist gerade nicht verfügbar (kein Key oder der Provider wurde entfernt). Mit Fallback „Keiner“ scheitern die Turns dieses Agenten mit einem Hinweis; mit Fallback laufen sie auf dem Fallback.",
+      "summaryUnavailableNoFallback": "{primary} nicht verfügbar · kein Fallback, Turns scheitern",
+      "summaryUnavailableWithFallback": "{primary} nicht verfügbar · läuft auf Fallback {fallback}",
       "fallbackNoVision": "Das Fallback-Modell kann keine Bilder lesen — bei Turns mit Anhängen läuft das primäre Modell ohne Fallback.",
       "primaryNoVision": "Das primäre Modell kann keine Bilder lesen.",
       "summaryAuto": "Auto ({model})",

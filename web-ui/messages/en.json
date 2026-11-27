@@ -1445,6 +1445,10 @@
         "what": "The change was saved, but not every plugin that uses it restarted.",
         "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
       },
+      "provider_key_in_kernel_scope": {
+        "what": "Provider API keys are no longer stored per plugin. The agent runtime, the verifier and the background tasks all use the keys under LLM access.",
+        "next": "Enter the key under Admin → LLM access. Nothing was saved here."
+      },
       "empty_secrets_patch": {
         "what": "The save carried no changed value.",
         "next": "Change or clear at least one field before saving."
@@ -2316,6 +2320,7 @@
       "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
       "not_found": "This agent does not exist anymore — reload the page.",
       "plugin_not_assigned": "This plugin is not assigned to the agent anymore — reload the page.",
+      "model_policy_tool_incompatible": "This provider cannot run an agent's turns: the subscription CLI answers only requests without tools. Pick a provider with an API key.",
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
       "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
@@ -2511,6 +2516,10 @@
       "sameRef": "Fallback and primary are the same model — pick a different fallback or None.",
       "sameProvider": "Same provider as the primary — a provider outage affects both.",
       "deferred": "The primary names {provider}, but the host currently runs {active} and has no pool for {provider} — the effort applies, the model switch does not.",
+      "toolIncompatible": "This policy names {provider}, which cannot run this agent's turns (the subscription CLI answers only requests without tools). Pick a provider with an API key and save.",
+      "primaryUnavailable": "{provider} is unavailable right now (no key, or the provider was removed). With fallback None this agent's turns fail with a notice; with a fallback they run on the fallback.",
+      "summaryUnavailableNoFallback": "{primary} unavailable · no fallback, turns fail",
+      "summaryUnavailableWithFallback": "{primary} unavailable · runs on fallback {fallback}",
       "fallbackNoVision": "The fallback model cannot read images — on a turn with attachments the primary is used without a fallback.",
       "primaryNoVision": "The primary model cannot read images.",
       "summaryAuto": "Auto ({model})",

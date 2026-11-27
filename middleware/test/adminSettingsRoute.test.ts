@@ -17,9 +17,10 @@ import { InMemorySecretVault } from '../src/secrets/vault.js';
  * /api/v1/admin/settings — the *cross-plugin* config/vault overview. After the
  * per-plugin settings were de-duplicated out of this page (each plugin's own
  * setup.fields editor is now the source of truth), the catalog holds only the
- * shared Anthropic API key, whose secret fans out to three vault scopes. These
- * tests cover that one entry end-to-end: secret set/unset resolution, the
- * fan-out write, the sk-ant- prefix validation, and unknown/not-installed paths.
+ * provider API keys. Since ADR-0215 (#2240) a key is written to the kernel
+ * scope only and every installed LLM plugin is rebuilt on it. These tests cover
+ * the entries end-to-end: secret set/unset resolution, the one-scope write, the
+ * rebuild, the sk-ant- prefix validation, and unknown/not-installed paths.
  */
 
 const ORCH = '@omadia/orchestrator';
@@ -143,9 +144,9 @@ describe('admin settings route — GET /', () => {
     assert.equal(key?.isSet, false);
   });
 
-  it('flags the key not-installed when one scope plugin is missing', async () => {
-    // Verifier + extras missing → the cross-plugin secret can't be fully written.
-    h = await makeHarness([{ id: ORCH }]);
+  it('flags the key not-installed when the kernel scope plugin is missing', async () => {
+    // ADR-0215 — only the kernel scope (`@omadia/orchestrator`) is written.
+    h = await makeHarness([{ id: VERIFIER }, { id: EXTRAS }]);
     const body = await getSettings(h);
     const key = findSetting(body, 'ANTHROPIC_API_KEY');
     assert.equal(key?.installed, false);
@@ -169,18 +170,15 @@ describe('admin settings route — PATCH /', () => {
     if (h) await h.close();
   });
 
-  it('writes the Anthropic secret to every configured vault scope and reactivates each', async () => {
+  it('writes the Anthropic secret to the kernel scope only and rebuilds every LLM plugin (ADR-0215)', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const { status } = await patch(h, [
       { key: 'ANTHROPIC_API_KEY', value: 'sk-ant-test123' },
     ]);
     assert.equal(status, 200);
-    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
-      const keys = await h.vault.listKeys(scope);
-      assert.ok(
-        keys.includes(providerApiKeyVaultKey('anthropic')),
-        `missing in ${scope}`,
-      );
+    assert.ok((await h.vault.listKeys(ORCH)).includes(providerApiKeyVaultKey('anthropic')));
+    for (const scope of [VERIFIER, EXTRAS]) {
+      assert.deepEqual(await h.vault.listKeys(scope), [], `no copy in ${scope}`);
     }
     assert.deepEqual(h.reactivated.sort(), [ORCH, EXTRAS, VERIFIER].sort());
   });
@@ -197,22 +195,16 @@ describe('admin settings route — PATCH /', () => {
     assert.deepEqual(h.reactivated, [VERIFIER, EXTRAS, ORCH]);
   });
 
-  it('writes the Mistral secret to every scope and accepts a key with no special prefix', async () => {
+  it('writes the Mistral secret to the kernel scope and accepts a key with no special prefix', async () => {
     // Mistral keys have no public sk-/sk-ant- prefix, so the handler must NOT
-    // prefix-validate them — any non-empty value is accepted and fans out to
-    // provider:mistral/api_key in all three scopes.
+    // prefix-validate them — any non-empty value is accepted and lands in
+    // provider:mistral/api_key of the kernel scope.
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const { status, body } = await patch(h, [
       { key: 'MISTRAL_API_KEY', value: 'aB3xY7qP9random32charMistralKeyValue' },
     ]);
     assert.equal(status, 200, JSON.stringify(body));
-    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
-      const keys = await h.vault.listKeys(scope);
-      assert.ok(
-        keys.includes(providerApiKeyVaultKey('mistral')),
-        `missing in ${scope}`,
-      );
-    }
+    assert.ok((await h.vault.listKeys(ORCH)).includes(providerApiKeyVaultKey('mistral')));
     assert.deepEqual(h.reactivated.sort(), [ORCH, EXTRAS, VERIFIER].sort());
   });
 
@@ -253,25 +245,31 @@ describe('admin settings route — PATCH /', () => {
     }
   });
 
+  it('#2240 — a revoke also deletes the superseded copies the boot migration left', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    await h.vault.setMany(ORCH, { [providerApiKeyVaultKey('anthropic')]: 'sk-ant-kernel' });
+    await h.vault.setMany(EXTRAS, {
+      'superseded:provider:anthropic/api_key': 'sk-ant-old',
+      'superseded:anthropic_api_key#2': 'sk-ant-older',
+      'superseded:provider:openai/api_key': 'sk-keep',
+    });
+    const { status } = await patch(h, [{ key: 'ANTHROPIC_API_KEY', value: null }]);
+    assert.equal(status, 200);
+    assert.deepEqual(await h.vault.listKeys(EXTRAS), ['superseded:provider:openai/api_key']);
+  });
+
   it('setting the key deletes the now-redundant legacy key (convergence)', async () => {
     const legacy = legacyProviderApiKeyVaultKey('anthropic');
     assert.ok(legacy !== undefined);
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
-    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
-      await h.vault.setMany(scope, { [legacy]: 'sk-ant-stale-legacy' });
-    }
+    await h.vault.setMany(ORCH, { [legacy]: 'sk-ant-stale-legacy' });
     const { status } = await patch(h, [
       { key: 'ANTHROPIC_API_KEY', value: 'sk-ant-fresh' },
     ]);
     assert.equal(status, 200);
-    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
-      const keys = await h.vault.listKeys(scope);
-      assert.ok(
-        keys.includes(providerApiKeyVaultKey('anthropic')),
-        `canonical missing in ${scope}`,
-      );
-      assert.ok(!keys.includes(legacy), `stale legacy survived in ${scope}`);
-    }
+    const keys = await h.vault.listKeys(ORCH);
+    assert.ok(keys.includes(providerApiKeyVaultKey('anthropic')), 'canonical missing');
+    assert.ok(!keys.includes(legacy), 'stale legacy survived');
   });
 
   it('rejects an Anthropic key without the sk-ant- prefix', async () => {
@@ -306,8 +304,8 @@ describe('admin settings route — PATCH /', () => {
     );
   });
 
-  it('errors when a target scope plugin is not installed', async () => {
-    h = await makeHarness([{ id: ORCH }]); // verifier + extras missing
+  it('errors when the kernel scope plugin is not installed', async () => {
+    h = await makeHarness([{ id: VERIFIER }, { id: EXTRAS }]); // orchestrator missing
     const { status, body } = await patch(h, [
       { key: 'ANTHROPIC_API_KEY', value: 'sk-ant-test123' },
     ]);
@@ -342,12 +340,10 @@ describe('admin settings route — runtime-installed provider plugin', () => {
 
     const { status } = await patch(h, [{ key: 'SEIBERTGPT_API_KEY', value: 'sgpt_test1234567890' }]);
     assert.equal(status, 200);
-    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
-      assert.equal(
-        await h.vault.get(scope, providerApiKeyVaultKey('seibertgpt')),
-        'sgpt_test1234567890',
-      );
-    }
+    assert.equal(
+      await h.vault.get(ORCH, providerApiKeyVaultKey('seibertgpt')),
+      'sgpt_test1234567890',
+    );
   });
 
   it('rejects the key again once the provider is unregistered', async () => {

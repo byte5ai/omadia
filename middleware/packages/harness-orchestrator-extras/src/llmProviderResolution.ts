@@ -32,10 +32,10 @@
  *   4. `anthropic` as the historical default.
  * The first candidate that any source can actually build wins.
  *
- * Sources in credential order: this plugin's OWN vault scope first (that is
- * where `anthropic_api_key` has always been stored), then the kernel pool,
- * which reads the orchestrator's scope and holds the catalog. Keyless
- * providers such as `claude-cli` resolve from either.
+ * Source: since ADR-0215 (#2240) only the kernel provider pool, which reads
+ * the kernel's vault scope (the keys under LLM access) and holds the catalog;
+ * this plugin's own scope is used only on a host that publishes no pool.
+ * Keyless providers such as `claude-cli` resolve from either.
  *
  * NOTE on capability: `claude-cli` serves ONLY completions and forced
  * single-tool structured output (`claudeCliAdapter.ts` throws on a general
@@ -60,8 +60,9 @@ export interface ProviderCandidateInput {
   /** `llm_provider` configured on THIS plugin, if any. */
   readonly configured?: string | undefined;
   /**
-   * This plugin's own vault scope can build the Anthropic default — i.e. the
-   * operator stored `anthropic_api_key` here.
+   * The install holds an Anthropic key the source can build the default from.
+   * Before ADR-0215 that was this plugin's own vault scope; since then it is
+   * the kernel scope (the key under LLM access).
    *
    * WHY IT OUTRANKS THE INHERITED ASSIGNMENT: without it, an existing install
    * that has a paid Anthropic key on this plugin AND an orchestrator on

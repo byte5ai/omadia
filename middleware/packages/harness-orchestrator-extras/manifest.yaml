@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/orchestrator-extras"
   name: "Agent Runtime Extras"
-  version: "0.2.0"
+  version: "0.3.0"
   kind: "system-module"
   domain: "core.orchestrator-extras"
   description:
@@ -96,15 +96,6 @@ setup:
   # und war als unsichtbare 3 genau der Grund, warum das Modell sich an die
   # Sitzung nicht erinnerte.
   fields:
-    - key: "anthropic_api_key"
-      label:
-        en: "Anthropic API key"
-        de: "Anthropic-API-Key"
-      type: "secret"
-      required: false
-      help:
-        en: "Optional. OM-102: FactExtractor, TopicDetector and the scratch reaper run on ANY available LLM provider — first their own assignment (llm_provider), then the agent runtime's (e.g. the Claude subscription via claude-cli), and only last this key. Only needed if these background jobs should deliberately run on a dedicated Anthropic key. Without any provider only the ContextRetriever remains. (S+12.6: type: secret — the key is stored in the vault, not in the installed.json config.)"
-        de: "Optional. OM-102: FactExtractor, TopicDetector und der Scratch-Reaper laufen auf JEDEM verfügbaren LLM-Provider — zuerst die eigene Zuordnung (llm_provider), dann die der Agentenlaufzeit (z. B. das Claude-Abo über claude-cli), erst zuletzt dieser Key. Nur nötig, wenn diese Hintergrund-Jobs bewusst auf einem eigenen Anthropic-Key laufen sollen. Ohne jeden Provider bleibt nur der ContextRetriever. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "capture_level"
       label:
         en: "Capture level"
@@ -193,5 +184,6 @@ integrations:
   - id: "anthropic_api"
     kind: "http"
     target: "Anthropic Claude API (Haiku-Klassifikator für FactExtractor + TopicDetector)"
-    auth_from: "anthropic_api_key"
+    # ADR-0215: no `auth_from` — this plugin has no key field of its own; the
+    # key lives in the kernel scope (LLM access), read through the kernel pool.
     docs: "https://docs.anthropic.com/en/api/messages"

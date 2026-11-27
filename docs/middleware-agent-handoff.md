@@ -2394,6 +2394,21 @@ Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
 Provider-Wechsel einen Klassen-Ref bei.
 
+**Modell-Policy eines Agenten (#1870, #1871, #1877).** `PUT
+/operator/agents/:slug/model-policy` speichert und baut den Agenten neu:
+`runtimeChangeReasons` (`registry/applyDiff.ts`) kennt den Grund `model_policy`,
+der nächste Turn läuft also auf Primär, Effort und Fallback der neuen Policy.
+`validateModelPolicy` lehnt einen Provider ab, der keine Tool-Turns im
+In-Process-Loop kann (das Abo-CLI, ADR-0086): `400 model_policy_tool_incompatible`.
+GET und PUT melden `deferredProvider` nur noch ohne Provider-Pool und neu
+`primaryUnavailable`, wenn der Provider des Primärmodells gerade nicht nutzbar
+ist; die Modell-Karte zeigt das an. Im Turn gilt (`resolveTurnExecution`): kann
+der Pool das Primärmodell nicht bedienen, startet der Turn auf dem Fallback der
+Policy und ist als Fallback markiert (Receipt `fallbackUsed`, Chip
+`provider_fallback`); mit Fallback „Keiner“ (oder einem ebenfalls nicht
+nutzbaren Fallback) endet er mit der `system`-Notiz `model_unavailable`
+(plugin-api 1.102.0) statt still auf einem anderen Provider zu laufen.
+
 **Sub-Agents fallen auf das Orchestrator-Modell zurück.** Weil die Sub-Agents
 ihr Modell selbst auflösen, kann es nach einem Provider-Wechsel veralten — eine
 konkrete Claude-ID in `SUB_AGENT_MODEL` oder im Manifest läuft gegen den neuen
@@ -3604,9 +3619,11 @@ erste, der sich bauen lässt, gewinnt:
    die den Abo-Fall repariert;
 4. `anthropic` als historischer Default.
 
-Credential-Quellen je Kandidat, in dieser Reihenfolge: eigener Vault-Scope,
-dann der Kernel-Pool `llmProviderPool` (liest den Orchestrator-Scope, teilt
-dessen Circuit-Breaker). Der `llmProviderCatalog` wird durchgereicht — ohne ihn
+Credential-Quelle (seit ADR-0215, #2240): nur der Kernel-Pool
+`llmProviderPool` (liest den Kernel-Scope `@omadia/orchestrator`, teilt dessen
+Circuit-Breaker); der eigene Vault-Scope zählt nur auf einem Host ohne Pool
+(Legacy, Unit-Tests). Stufe 2 fragt entsprechend, ob der Kernel-Scope einen
+Anthropic-Key hat. Der `llmProviderCatalog` wird durchgereicht — ohne ihn
 löst `claude-cli` auf das Default-Wire-Format `openai-compatible` auf und
 scheitert an der fehlenden `baseURL`; Wire-Format und `requiresApiKey: false`
 stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
@@ -3638,7 +3655,19 @@ Drift-Test hält beide gleich). `reactivateAfterProviderWrite`
 (`src/platform/providerDependents.ts`) baut bei einer **effektiven**
 Provider-Änderung (vorher `?? 'anthropic'` gegen nachher; unset → explizit
 `anthropic` zählt nicht) zuerst jedes installierte abhängige Plugin neu, dann das
-Plugin selbst. Die Reihenfolge ist tragend: der Orchestrator greift
+Plugin selbst. #1891: Ein Config- oder Secret-Write an ein **Provider-Plugin**
+(Manifest mit `llm_provider`-Block, z. B. `anthropic_base_url` von
+`@omadia/plugin-llm-anthropic`) zählt als Provider-Änderung für alle
+LLM-Plugins, die auf seiner Provider-Id laufen können
+(`llmPluginsUsingProvider`): erst das Provider-Plugin (es registriert den
+Deskriptor neu), dann in `rebuildOrder` die Agentenlaufzeit (immer, eine
+Modell-Policy kann den Provider pinnen), der Verifier nur bei passendem
+`llm_provider` (Default `anthropic`), extras bei passendem eigenem oder
+geerbtem Provider oder `anthropic`. Bleibt das Provider-Plugin selbst `errored`,
+wird nichts darauf neu gebaut und die Antwort ist
+`runtime.dependent_rebuild_failed` mit `dependentId` = Provider-Plugin,
+`primaryApplied: false`; ein Plugin, das nicht wieder hochkommt, kommt ebenso
+zurück. Die Reihenfolge ist tragend: der Orchestrator greift
 `factExtractor`, `contextRetriever` und `sessionBriefing` von extras eager in
 seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 (`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach
@@ -3754,6 +3783,26 @@ getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
 `test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
 
 ### Provider-Pool-Invalidierung bei Credential-Änderung (#1080)
+
+**Ein Kernel-Pool für die Systemmodule (#2240, ADR-0215).** Orchestrator,
+Verifier und orchestrator-extras bauen ihre Provider nur noch aus dem
+Kernel-`llmProviderPool` (`optional_requires: llmProviderPool@1`); Provider-API-Keys
+liegen in einem Vault-Scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
+(`src/platform/kernelProviderCredentials.ts`, Id weiter `@omadia/orchestrator`).
+Der LLM-Zugang schreibt nur dorthin und baut alle installierten LLM-Plugins neu
+(`llmPluginsToRebuild`). `consolidateProviderCredentials` läuft bei jedem Boot nach
+`runLegacyBootstrap` und vor der ersten Plugin-Aktivierung: Kopien in den Scopes
+von Verifier und extras werden pro Key-Name gelöscht (gleich dem Kernel-Key) oder
+als `superseded:<key>` (bei Kollision `#<n>`) beiseitegelegt — auch wenn der
+Kernel-Scope keinen Key hat: ein nur im Modul vorhandener Key wird bewusst nicht
+in den Kernel-Scope befördert (ADR-0084, Log verweist auf LLM-Zugang). Revoke im
+LLM-Zugang und der Provider-Purge beim Uninstall löschen auch die
+`superseded:`-Kopien. Ein Provider-API-Key an die
+Scopes von Verifier/extras über den Plugin-Editor wird mit
+`400 runtime.provider_key_in_kernel_scope` abgelehnt; beide Manifeste haben kein
+`anthropic_api_key`-Feld mehr (Versionen verifier 0.2.0, extras 0.3.0). Ein
+Provider-Key über den Secret-Editor des Orchestrators (Kernel-Scope) baut wie der
+LLM-Zugang alle installierten LLM-Plugins neu (`kernelCredentialWritten`). Der Verifier lehnt `claude-cli` vor dem Pool ab.
 
 Der Kernel-`llmProviderPool` memoisiert pro Provider-Id, auch ein negatives
 „kein Key". Deshalb hängt er an einem kernel-internen Write-Observer der
@@ -6720,6 +6769,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
   `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
   `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
+- **Kernel-Pool-Rest (#2240, ADR-0215).** Der OAuth-Fan-out
+  (`fanOutProviderOAuthTokens`) und der Back-compat-Key-Seed von `/setup`
+  (`anthropicKeyConsumers`) schreiben weiter Kopien in die Scopes von Verifier und
+  extras; die Module lesen sie nicht, die API-Key-Kopien räumt der nächste Boot auf.
+  Beide auf den Kernel-Scope verengen (OAuth: Hydration „newest wins“ über die
+  Scopes vorher prüfen).
 
 - **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
   ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
@@ -7866,8 +7921,9 @@ Der Orchestrator greift die Dienste von extras **und** Verifier eager in
 (`src/platform/providerDependents.ts`) baut deshalb den abgreifenden Plugin
 immer **nach** den abgegriffenen neu und ergänzt ihn, wenn er fehlt. Genutzt
 von `reactivateAfterProviderWrite` (direkte Zuweisung an extras/Verifier →
-danach Orchestrator), vom Settings-`PATCH` (Key landet in allen drei Scopes →
-Verifier, extras, Orchestrator) und vom OAuth-Fan-out
+danach Orchestrator), vom Settings-`PATCH` (Key landet seit ADR-0215 nur im
+Kernel-Scope; jeder installierte LLM-Plugin wird neu gebaut → Verifier, extras,
+Orchestrator) und vom OAuth-Fan-out
 `fanOutProviderOAuthTokens`. Der Subscription-Hand-off verschiebt den Rebuild
 (`deferCapturerRebuild`) und baut den Orchestrator nur dann einmal am Ende,
 wenn dessen eigener Schritt übersprungen wurde.

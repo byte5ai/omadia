@@ -45,7 +45,10 @@ Benefits:
   client, and removing the Anthropic key revokes the shared host
   `anthropicClient`/`llm` live (falling back to `ANTHROPIC_API_KEY` if set,
   otherwise to an unauthenticated client). After a deletion the kernel pool
-  and the orchestrator stop using the key immediately. Two limits remain:
+  and the orchestrator stop using the key immediately; since ADR-0215 the
+  verifier and orchestrator-extras read the same kernel scope through the
+  kernel pool, and a key change under LLM access rebuilds them too (§8).
+  Two limits remain:
   the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
   and on installs whose vault key was seeded from that env var at first boot
   it is the same key, so host consumers (plan-runner gate, Teams, builder)
@@ -4616,6 +4619,35 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+### Provider API keys: one kernel scope for the system modules (#2240, ADR-0215)
+
+LLM provider API keys (`provider:<id>/api_key`, the legacy `anthropic_api_key`)
+live in ONE vault scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
+(`src/platform/kernelProviderCredentials.ts`; the id stays
+`@omadia/orchestrator`). The agent runtime, the answer verifier and
+`orchestrator-extras` build their providers from the kernel provider pool, which
+reads only that scope; their own scopes are read only on a host that publishes no
+pool. LLM access (and the orchestrator's own secret editor, which writes the same
+scope) writes the key there once and rebuilds every installed LLM plugin, and the
+vault write listener invalidates the pool entry first, so one rotation reaches all
+three modules.
+
+Before, the key was written into three scopes. At every boot, after the legacy
+bootstrap and before any plugin activates, `consolidateProviderCredentials` clears
+the verifier's and extras' scopes key name by key name: a copy equal to the kernel
+key is deleted, every other copy is renamed to `superseded:<key>` (numbered when
+taken; the secret stays in the vault, nothing reads it, the boot log names scope and
+key name, never a value). A key only a module held is deliberately not promoted into
+the kernel scope — that would widen the instance's provider reach without the
+operator entering it under LLM access (ADR-0084); the log asks for that. A revoke
+under LLM access deletes copies and `superseded:` copies in those two scopes, and a
+provider plugin's uninstall purge removes its `superseded:` copies. A provider API key sent to the verifier's or extras' scope through the
+per-plugin editor is refused (`400 runtime.provider_key_in_kernel_scope`) instead
+of being stored where nothing reads it. Residual: an install that ran extras on a
+dedicated Anthropic key now runs it on the key under LLM access; the OAuth token
+fan-out and the back-compat `/setup` key seed still write copies into the module
+scopes (never read by the modules).
+
 ### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
 
 An agent's own Telegram, Discord or Slack bot is registered through
@@ -7546,7 +7578,9 @@ A provider plugin's API key is not stored in the plugin's own vault namespace.
 The settings page and `POST /admin/providers/:id/verify` write
 `provider:<id>/api_key` and `provider:<id>/verified_at` (OAuth providers also
 `provider:<id>/oauth_*`) into the three LLM scopes `@omadia/orchestrator`,
-`@omadia/verifier` and `@omadia/orchestrator-extras`. Uninstall's
+`@omadia/verifier` and `@omadia/orchestrator-extras`. Since ADR-0215 the API key
+itself is written to the kernel scope (`@omadia/orchestrator`) only (§8); the
+purge still covers all three scopes for copies written before. Uninstall's
 `vault.purge(pluginId)` never reached them, so the key outlived the plugin and a
 reinstall under the same id inherited it without the operator entering one.
 
