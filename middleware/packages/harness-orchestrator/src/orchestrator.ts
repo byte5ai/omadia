@@ -124,7 +124,7 @@ import {
 } from './mcp/pendingMcpInput.js';
 import {
   McpAuthPromptMint,
-  parseMcpConnectRequest,
+  notePendingMcpConnect,
   runWithMcpAuthPromptMint,
   type McpConnectRequest,
 } from './mcp/mcpAuthPromptMint.js';
@@ -10422,7 +10422,7 @@ export class Orchestrator {
     // #2312 / ADR-0301 — a connect prompt this dispatch minted names a server
     // the user must connect; channels without tool output (Teams) render it
     // from `ChatTurnResult.mcpConnectRequired`.
-    if (mcpAuthPromptMint.minted(result)) notePendingMcpConnect(result);
+    notePendingMcpConnect(mcpAuthPromptMint, result);
     // Recorded only now, after the late-result firewall: a re-entry must get
     // exactly what this pass used, never a result the first run discarded.
     if (tracked && replay === undefined) {
@@ -12600,11 +12600,6 @@ async function tapCanvasSentinel(toolName: string, raw: string): Promise<void> {
   }
 }
 
-/** #2312 / ADR-0301 — remember the server of a kernel-minted connect prompt on the current turn. */
-function notePendingMcpConnect(prompt: string): void {
-  const request = parseMcpConnectRequest(prompt);
-  if (request) turnContext.current()?.mcpConnectRequests?.set(request.serverId, request);
-}
 
 /** #2312 — the servers the current turn's connect prompts named, cleared after reading. */
 function drainMcpConnects(): McpConnectRequest[] | undefined {

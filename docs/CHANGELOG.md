@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fix — CLI turns report `mcpConnectRequired` (#2374) (2026-11-27)
+
+A subscription-CLI turn never named the per-user MCP servers its tool calls asked the user to
+connect, so Teams showed no Connect card on CLI-backed agents. The loopback dispatcher
+(`ToolDispatchService`) minted the prompt but did not record it, the CLI turn context had no
+`mcpConnectRequests` map, and `chat()` never drained it. Now one `notePendingMcpConnect(mint,
+result)` (`mcp/mcpAuthPromptMint.ts`) serves both dispatch paths, `CliChatAgent.beginDiscretion`
+starts each turn with a fresh map, and the map is drained onto `done` and onto the `chat()`
+result inside the turn's context. ADR-0301 (parity), no new ADR.
+
 ### Security — web chat uploads are checked by content and capped per account (#2373, ADR-0333) (2026-11-27)
 
 `POST /api/chat/uploads` accepted a file by its extension only, so an executable renamed to

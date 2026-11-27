@@ -39,6 +39,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { MCP_AUTH_PROMPT_PREFIX } from '@omadia/plugin-api';
 
+import { turnContext } from '../turnContext.js';
+
 /** The connect prompts `McpManager` produced during one tool dispatch. */
 export class McpAuthPromptMint {
   readonly #prompts = new Set<string>();
@@ -111,3 +113,16 @@ export function parseMcpConnectRequest(prompt: string): McpConnectRequest | unde
   return { serverId, serverName: attr(m[1]!, 'server') ?? serverId };
 }
 
+
+/**
+ * #2312 / ADR-0301 — remember the server of a connect prompt `mint` minted on
+ * the current turn, so the turn result can name it (`mcpConnectRequired`).
+ * Both dispatch paths call it: the in-process loop (`Orchestrator.dispatchTool`)
+ * and the loopback dispatcher of subscription-CLI turns (`ToolDispatchService`,
+ * #2374). A turn without a request map (no chat turn) records nothing.
+ */
+export function notePendingMcpConnect(mint: McpAuthPromptMint, result: string): void {
+  if (!mint.minted(result)) return;
+  const request = parseMcpConnectRequest(result);
+  if (request) turnContext.current()?.mcpConnectRequests?.set(request.serverId, request);
+}
