@@ -2553,8 +2553,7 @@ export class CliChatAgent implements ChatAgent {
               if (event.type === 'text_delta') continue;
             }
             if (event.type === 'text_delta') streamedChars += event.text.length;
-            const shown = await toolOutputs.pass(event);
-            if (shown !== undefined) yield shown;
+            yield* await toolOutputs.pass(event);
           }
           // #1581 — the CLI reports what it actually loaded before the first
           // model request. Without omadia's tools the model writes tool calls

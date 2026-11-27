@@ -83,7 +83,9 @@ changelog.
 - At each streamed `tool_result` / `sub_tool_result` the people-egress check is asked with the
   labels collected so far (`Orchestrator.egressRefusesNow`, `ToolOutputHold`). If it would let the
   answer through, the event streams live as before. If it would refuse, the event is held. For the
-  then-withheld answer it goes out once with `output: ''`, and held sub-results are dropped. Signed
+  then-withheld answer it goes out once with `output: ''`. A sub-agent's inner results wait for
+  their parent's result, because the parent labels the turn only when it returns. They go out with
+  it, or are dropped for a withheld answer. Signed
   download links and raw read results never reach the client's trace. Every call keeps exactly one
   `tool_result`. This covers the in-process stream and the subscription CLI
   (`CliChatAgentDeps.egressRefusesNow`). Kernel consumers still get the real output.

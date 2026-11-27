@@ -8638,8 +8638,7 @@ export class Orchestrator {
           yield this.discloseDoneEvent(guarded.done, input, bound?.ledger);
           continue;
         }
-        const shown = await toolOutputs.pass(event);
-        if (shown !== undefined) yield shown;
+        yield* await toolOutputs.pass(event);
       }
     } finally {
       if (steeringLive) steeringBus.endTurn(sessionId);

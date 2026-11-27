@@ -47,9 +47,13 @@ later. An output that fails it means the answer will be withheld too.
 - `ToolOutputHold` (`packages/harness-orchestrator/src/toolOutputHold.ts`) asks
   `Orchestrator.egressRefusesNow()` (in the CLI agent: the `egressRefusesNow` dep). The check
   answers `true` when it fails.
+- A sub-agent's inner results (`sub_tool_result`) arrive before their parent tool returns and
+  labels the turn. A shield bypass inside the sub-agent, for example, is classified only then. So
+  inner results do not get their own check; they wait for their parent. They go out just before
+  the parent's `tool_result` when that passes, and are held with it when it does not.
 - A held `tool_result` is settled before `done`:
   - **Answer withheld:** it goes out once without its output (`output: ''`), so the row shows the
-    call finished. Held `sub_tool_result`s are dropped.
+    call finished. Held `sub_tool_result`s are dropped, as are those whose parent never returned.
   - **Answer goes out after all:** the full events are sent.
 - Every call yields exactly one `tool_result`, and the channel-sdk contract is unchanged.
 - Both streaming paths use the hold: the orchestrator's stream wrapper and the CLI agent's event
@@ -62,6 +66,8 @@ later. An output that fails it means the answer will be withheld too.
 - 🟢 **Good:** A withheld answer leaves no tool output in any client's trace.
 - 🟢 **Good:** Turns the check lets through stream exactly as before: live, one result per call.
   No client changes.
+- 🔴 **Bad:** A sub-agent's inner results no longer appear while it runs, only together with its
+  own result.
 - 🔴 **Bad:** One egress decision per tool result. It is cheap when the turn has no labels; the
   readers resolve once per turn.
 - 🔴 **Bad (accepted residual):** `tool_use` / `sub_tool_use` inputs still stream live. A model
