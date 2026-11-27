@@ -434,16 +434,17 @@ export class McpOAuthService {
   async tokenState(serverId: string, userKey: string): Promise<McpTokenState> {
     const row = await this.deps.graph.getMcpOAuthToken(serverId, userKey);
     if (!row) return { connected: false, invalid: null };
+    // #2308 — present only when the row names who stored it.
     const storedBy =
       row.storedBy !== null && row.storedBy !== undefined
-        ? { email: row.storedBy.email, at: row.storedBy.at }
-        : null;
-    if (row.invalidReason) return { connected: false, invalid: row.invalidReason, storedBy };
+        ? { storedBy: { email: row.storedBy.email, at: row.storedBy.at } }
+        : {};
+    if (row.invalidReason) return { connected: false, invalid: row.invalidReason, ...storedBy };
     // An expired access token with a refresh token is one refresh away from
     // working, so it still counts. Without one, nothing can renew it.
     const expired = row.expiresAt !== null && row.expiresAt.getTime() <= Date.now();
-    if (expired && !row.refreshTokenRef) return { connected: false, invalid: 'expired', storedBy };
-    return { connected: true, invalid: null, storedBy };
+    if (expired && !row.refreshTokenRef) return { connected: false, invalid: 'expired', ...storedBy };
+    return { connected: true, invalid: null, ...storedBy };
   }
 
   /** Remove omadia's copy of one user's token: the vault values, then the row.
