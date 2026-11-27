@@ -2005,7 +2005,12 @@ describe('RoutineRunner — MCP identity of a run (#1907, ADR-0206)', () => {
   });
 });
 
+// A model slot, so the templated branch runs a turn (a static-only template
+// skips it, #1760).
 const TEMPLATE_FOR_IDENTITY: RoutineOutputTemplate = {
   format: 'markdown',
-  sections: [{ kind: 'static-markdown', text: 'Report' }],
+  sections: [
+    { kind: 'static-markdown', text: 'Report' },
+    { kind: 'narrative-slot', id: 'intro' },
+  ],
 };
