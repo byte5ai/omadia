@@ -10283,13 +10283,19 @@ export class Orchestrator {
         }
         // ADR-0198 — text of the user's own upload (a transcript): readable,
         // with its PII spans masked like the attachment tail of a prompt.
-        if (ownUpload) return maskOwnUploadText(privacy, name, result);
+        // #2309 — an exempt result is not interned, so nothing else bounds
+        // it: the same cap as a bypassed one (ADR-0207). Exempt tools are
+        // kernel tools; their `_pending*` directives stay whole.
+        const capExempt = (text: string): string => capToolResultText(text, { keepDirectives: true });
+        if (ownUpload) return capExempt(await maskOwnUploadText(privacy, name, result));
         // #1544 — the handler ran on the user's values; what it echoes goes
         // back to the model as the placeholders it wrote. #1841 — a `memory`
         // result is masked through THIS turn's map (ADR-0191).
-        return isMemoryNoteTool(name)
-          ? maskMemoryNoteResult(privacy, result)
-          : remaskEchoedValues(privacy, result);
+        return capExempt(
+          isMemoryNoteTool(name)
+            ? await maskMemoryNoteResult(privacy, result)
+            : remaskEchoedValues(privacy, result),
+        );
       }
       // #1768 / ADR 0241 — a field-exempt tool's operational state in clear,
       // its user-entered free text withheld. Its `Error:` text took the
@@ -10297,7 +10303,9 @@ export class Orchestrator {
       const fieldExempt = isGuardedControlFlowResult(result, mcpAuthPromptMint)
         ? undefined
         : fieldExemptModelCopy(name, result);
-      if (fieldExempt !== undefined) return remaskEchoedValues(privacy, fieldExempt);
+      if (fieldExempt !== undefined) {
+        return capToolResultText(remaskEchoedValues(privacy, fieldExempt), { keepDirectives: true });
+      }
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default

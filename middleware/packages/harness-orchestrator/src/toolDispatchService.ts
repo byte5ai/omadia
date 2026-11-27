@@ -12,6 +12,7 @@
  */
 
 import { fieldExemptModelCopy, internFailedNotice, isInternExemptCall } from './privacyInternPolicy.js';
+import { capToolResultText } from './toolResultCap.js';
 import {
   isMemoryNoteTool,
   maskMemoryNoteResult,
@@ -588,8 +589,17 @@ export class ToolDispatchService {
       }
     }
 
+    // #2309 / ADR-0207 — a result that is not interned below (no guard,
+    // intern-exempt, field-exempt, operator bypass) is bounded like one that
+    // is: the shield's intern cap, with a notice. A kernel or plugin tool's
+    // `_pending*` directive stays whole; an MCP server's text never does.
+    const cap = (text: string): string =>
+      capToolResultText(text, {
+        keepDirectives: this.domainTools().find((t) => t.name === name)?.mcpServerId === undefined,
+      });
     const privacy = this.privacyHandle();
-    if (privacy === undefined || typeof result !== 'string') return fromTool(result);
+    if (typeof result !== 'string') return fromTool(result);
+    if (privacy === undefined) return fromTool(cap(result));
 
     // Interning-exemption: the agent's own infrastructure/self tools (memory,
     // stored-process CRUD, self-produced meta output) are never interned —
@@ -610,13 +620,13 @@ export class ToolDispatchService {
         );
       }
       // #1841 — a `memory` result is masked through this turn's map.
-      return fromTool(isMemoryNoteTool(name) ? await maskMemoryNoteResult(privacy, result) : result);
+      return fromTool(cap(isMemoryNoteTool(name) ? await maskMemoryNoteResult(privacy, result) : result));
     }
     // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
     const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)
       ? undefined
       : fieldExemptModelCopy(name, result);
-    if (fieldExempt !== undefined) return fromTool(fieldExempt);
+    if (fieldExempt !== undefined) return fromTool(cap(fieldExempt));
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.
@@ -639,7 +649,7 @@ export class ToolDispatchService {
           );
         }
       }
-      return fromTool(result);
+      return fromTool(cap(result));
     }
 
     // #1105 / #1097 — fulfilled control-flow prose (the `Error:` convention,

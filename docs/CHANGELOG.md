@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the 200 000-character tool-result cap holds on every path (#2309, ADR-0207) (2026-11-27)
+
+- `capToolResultText` now also bounds intern-exempt and field-exempt kernel tool results under a
+  guard (orchestrator dispatch) and every non-interned result on the standalone
+  `ToolDispatchService` path (sub-agent CLI, loopback and public MCP): no guard installed,
+  intern-exempt, field-exempt and operator bypass. A kernel or plugin tool's `_pending*` directive
+  stays whole; an MCP server's text never does. Closes the "not covered yet" rest of ADR-0207.
+
 ### Fixed — a stdio MCP server that timed out is replaced, not reused (#2307, ADR-0205) (2026-11-27)
 
 - `McpManager.callTool`: a `tools/call` on a stdio server that ends in the SDK's request timeout
