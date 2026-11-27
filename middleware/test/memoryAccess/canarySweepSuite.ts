@@ -20,12 +20,13 @@ import {
   sweepPluginServicesOutsideTurn,
   sweepRegisteredGraphTool,
   sweepTurn,
+  verdictOf,
   type EntryPoint,
   type RecallLimits,
   type Sighting,
   type TurnSweep,
 } from './canarySweep.js';
-import { PINNED, expected, type Mode } from './oracle.js';
+import { DEFAULT_SETTINGS, expected, type Mode, type Settings } from './oracle.js';
 import type { Seeded } from './seed.js';
 import {
   AGENTS,
@@ -35,7 +36,6 @@ import {
   viewerId,
   type AgentKey,
   type ProcessItem,
-  type TurnItem,
 } from './world.js';
 
 interface KnownLeak {
@@ -49,26 +49,24 @@ interface KnownLeak {
 }
 
 export const KNOWN_LEAKS: readonly KnownLeak[] = [
+  {
+    issue: '#2333',
+    title: "under a shield a plugin's listPlansForScope skips plans of unprotected or unknown turns",
+    modes: ['off', 'enforce'],
+    recall: 'any',
+    // Seen only in the raw tool result: the shield's digest hides it from the model's view.
+    matches: (_sweep, s) => s.entry === 'tool-raw' && s.item.store === 'plan',
+  },
+  {
+    issue: '#2334',
+    title: "under a shield a plugin's processMemory get/history/edit skip unprotected processes",
+    modes: ['off', 'enforce'],
+    recall: 'any',
+    // Process memory exists only on Neon. Seen only in the raw tool result, as #2333.
+    backend: 'neon',
+    matches: (_sweep, s) => s.entry === 'tool-raw' && s.item.store === 'process',
+  },
 ];
-
-/**
- * Pinned, not decided: a tail-only turn is "not knowledge", but the plugin
- * API says it "MUST remain visible to getSession()" and that a backend
- * ignoring the flag "stays correct". It is no access rule: through a session
- * read, a tail-only turn is visible exactly when the same turn without the
- * flag would be.
- */
-function verdictOf(sweep: TurnSweep, s: Sighting): { allowed: boolean; source: string } {
-  if (s.item.store === 'turn' && s.item.tailOnly && s.entry === 'graph-tool') {
-    const asKnowledge: TurnItem = { ...s.item, tailOnly: false };
-    const v = expected(sweep.viewer, sweep.mode, asKnowledge);
-    return {
-      allowed: v.allowed,
-      source: `${PINNED}: tail-only is no access rule for session reads; ${v.source}`,
-    };
-  }
-  return s.verdict;
-}
 
 function leaksOf(
   sweeps: readonly TurnSweep[],
@@ -109,18 +107,22 @@ export interface SweepOptions {
    * in the world. Default: all agents.
    */
   readonly viewerAgents?: readonly AgentKey[];
+  /** Instance settings for every turn and the oracle. Default: production's. */
+  readonly settings?: Settings;
 }
 
 export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions = {}): void {
   const recall = options.recall ?? 'wide';
   const backend = options.backend ?? 'memory';
+  const settings = options.settings ?? DEFAULT_SETTINGS;
   const setup =
     options.setup ??
     (async (): Promise<SweepSetup> => ({
       seeded: await seedInMemory(buildWorld()),
       teardown: async () => undefined,
     }));
-  describe(`memory access — canary sweep (${modes.join(', ')}; ${recall} recall; ${backend})`, () => {
+  const ownerOnly = settings.teamVisibility ? '' : '; owner-only recall';
+  describe(`memory access — canary sweep (${modes.join(', ')}; ${recall} recall; ${backend}${ownerOnly})`, () => {
     let seeded: Seeded | undefined;
     let teardown: (() => Promise<void>) | undefined;
     const sweeps: TurnSweep[] = [];
@@ -131,7 +133,7 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
       ({ seeded, teardown } = ready);
       const agents = options.viewerAgents ?? AGENT_KEYS;
       for (const viewer of allViewers().filter((v) => agents.includes(v.agent))) {
-        for (const mode of modes) sweeps.push(await sweepTurn(ready.seeded, viewer, mode, recall));
+        for (const mode of modes) sweeps.push(await sweepTurn(ready.seeded, viewer, mode, recall, undefined, settings));
       }
     });
     after(async () => {
@@ -168,6 +170,8 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
           'plugin-accessor',
           'plugin-neighbors',
           'plugin-service',
+          // Shielded viewers: the raw tool results are checked too.
+          'tool-raw',
         ];
         // Processes carry no owners: a context-bound strict / members turn reads
         // none, and since #1774 every turn of those modes is context-bound
@@ -271,7 +275,7 @@ function processWriteViolations(
     const who = `${viewerId(sweep.viewer)} ${sweep.mode}`;
     for (const id of log.edited) {
       const item = processById.get(id);
-      if (item && expected(sweep.viewer, sweep.mode, { ...item, unprotected: false }).allowed) {
+      if (item && expected(sweep.viewer, sweep.mode, { ...item, unprotected: false }, sweep.settings).allowed) {
         allowedEdits += 1;
       } else {
         violations.push(`${who}: edit_process reached the store for ${id}`);
@@ -286,7 +290,7 @@ function processWriteViolations(
       sender: sweep.viewer.user,
       unprotected: false,
     };
-    const mayWrite = expected(sweep.viewer, sweep.mode, own).allowed;
+    const mayWrite = expected(sweep.viewer, sweep.mode, own, sweep.settings).allowed;
     const prefix = `${AGENTS[sweep.viewer.agent]}::`;
     for (const scope of log.written) {
       if (mayWrite && scope === `${prefix}${PROBE_WRITE_SCOPE}`) allowedWrites += 1;

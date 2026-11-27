@@ -34,7 +34,13 @@ import {
   writeProcessToolSpec,
 } from '@omadia/orchestrator/dist/tools/processMemoryTool.js';
 import { ContextRetriever } from '@omadia/orchestrator-extras';
-import type { EmbeddingClient, KnowledgeGraph, MemoryStore, ProcessMemoryService } from '@omadia/plugin-api';
+import type {
+  EmbeddingClient,
+  KnowledgeGraph,
+  MemoryStore,
+  PrivacyGuardService,
+  ProcessMemoryService,
+} from '@omadia/plugin-api';
 import { EntityRefBus, InMemoryNudgeRegistry, nativeToolResultText } from '@omadia/plugin-api';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 import { parseSessionScope } from '../../packages/harness-channel-sdk/src/scopeId.js';
@@ -46,7 +52,7 @@ import { createPluginContext } from '../../src/platform/pluginContext.js';
 import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
 import type { PluginCatalog } from '../../src/plugins/manifestLoader.js';
 import { scriptedModel, type ModelStep } from '../_helpers/scriptedModel.js';
-import { expected, type Mode, type Verdict } from './oracle.js';
+import { DEFAULT_SETTINGS, PINNED, expected, type Mode, type Settings, type Verdict } from './oracle.js';
 import { EMBEDDING_DIM, axis, turnQueryVector, type Seeded } from './seed.js';
 import {
   AGENTS,
@@ -64,6 +70,7 @@ import {
   type AgentKey,
   type ContextKey,
   type Item,
+  type TurnItem,
   type UserKey,
   type Viewer,
 } from './world.js';
@@ -87,7 +94,15 @@ export type EntryPoint =
    * 'memoryStore' | 'processMemory')`: what a plugin declaring
    * `requires: ["knowledgeGraph@^1"]` (and the others) reads with the service.
    */
-  | 'plugin-service';
+  | 'plugin-service'
+  /**
+   * Shielded turns only: what a tool returned before the Privacy Shield
+   * interned it. The shield's digest hides canaries from the model's view, so
+   * without this a tool that stopped filtering would still look clean there
+   * (memory-ACL step 6, mutation IM20). The tool's own filters must hold
+   * without the shield.
+   */
+  | 'tool-raw';
 
 export interface Sighting {
   readonly entry: EntryPoint;
@@ -100,6 +115,8 @@ export interface TurnSweep {
   readonly viewer: Viewer;
   readonly mode: Mode;
   readonly sightings: readonly Sighting[];
+  /** The instance settings the turn ran with (recall's team visibility). */
+  readonly settings: Settings;
   /** Neon only: what `edit_process` / `write_process` passed on to the store. */
   readonly processWrites?: ProcessWriteLog;
 }
@@ -354,7 +371,8 @@ function rosterOf(ctx: ContextKey, sender: UserKey): ChatParticipantsProvider {
 /**
  * Recall limits opened wide, so the prompt shows everything the ACL lets
  * through instead of the top few: the sweep tests who may see, not ranking.
- * The ACL-relevant options are production's (`teamVisibility` on, pinned).
+ * The ACL-relevant options are production's (`teamVisibility` on, pinned);
+ * a sweep's `Settings` can turn it off (`KG_RECALL_TEAM_VISIBILITY=false`).
  */
 /**
  * How much recall returns. `wide` opens every limit, so the prompt shows
@@ -605,6 +623,28 @@ function probePlugin(graph: KnowledgeGraph, memory: MemoryStore, processes?: Pro
   };
 }
 
+/** A raw tool result as the shield is handed it to intern. */
+interface RawResult {
+  readonly tool: string;
+  readonly raw: string;
+}
+
+/** The shield, recording each raw tool result it is handed to intern. */
+function recordingRaw(service: PrivacyGuardService, log: RawResult[]): PrivacyGuardService {
+  return new Proxy(service, {
+    get(target, prop, receiver) {
+      if (prop === 'internToolResultV4') {
+        return (request: Parameters<PrivacyGuardService['internToolResultV4']>[0]) => {
+          log.push({ tool: request.toolName, raw: request.rawResult });
+          return target.internToolResultV4(request);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+
 /**
  * An agent built the way production builds one (`buildOrchestratorForAgent`):
  * binder, namespacer, shield wiring, session logger, the default-on audience
@@ -619,10 +659,13 @@ function buildAgent(
   shielded: boolean,
   recall: RecallLimits = 'wide',
   writeLog?: ProcessWriteLog,
+  wrapGraph?: (graph: KnowledgeGraph) => KnowledgeGraph,
+  settings: Settings = DEFAULT_SETTINGS,
 ) {
   const stores = seeded.stores[tenant];
-  const graph = sweepGraph(stores.graph);
-  const privacy = shielded ? createPrivacyGuardService({ readConfig: () => undefined }) : undefined;
+  const graph = sweepGraph(wrapGraph ? wrapGraph(stores.graph) : stores.graph);
+  const rawResults: RawResult[] = [];
+  const privacy = shielded ? recordingRaw(createPrivacyGuardService({ readConfig: () => undefined }), rawResults) : undefined;
   const nativeToolRegistry = new NativeToolRegistry();
   const built = buildOrchestratorForAgent(
     {
@@ -644,7 +687,7 @@ function buildAgent(
       embeddingClient: sweepEmbedder,
       contextRetriever: new ContextRetriever(
         graph,
-        recall === 'wide' ? WIDE_RECALL : PRODUCTION_RECALL,
+        { ...(recall === 'wide' ? WIDE_RECALL : PRODUCTION_RECALL), teamVisibility: settings.teamVisibility },
         sweepEmbedder,
         undefined,
         stores.processes,
@@ -679,7 +722,19 @@ function buildAgent(
   built.orchestrator.registerDomainTool(
     probePlugin(graph, stores.memory, stores.processes) as unknown as Parameters<typeof built.orchestrator.registerDomainTool>[0],
   );
-  return { orchestrator: built.orchestrator, nativeToolRegistry };
+  return { orchestrator: built.orchestrator, nativeToolRegistry, rawResults };
+}
+
+/**
+ * A scripted attack instead of the sweep's probe (memory-exfiltration corpus,
+ * plan step 6): the user's message and the model's first tool calls. What the
+ * tools hand back is followed as in the sweep. `wrapGraph` exists for the
+ * eval's counter-proofs only: it breaks a defense on purpose.
+ */
+export interface SweepAttack {
+  readonly message: string;
+  readonly calls: readonly { readonly tool: string; readonly input: unknown }[];
+  readonly wrapGraph?: (graph: KnowledgeGraph) => KnowledgeGraph;
 }
 
 /** One real turn of `viewer` in `mode`; every canary the model was sent. */
@@ -688,17 +743,21 @@ export async function sweepTurn(
   viewer: Viewer,
   mode: Mode,
   recall: RecallLimits = 'wide',
+  attack?: SweepAttack,
+  settings: Settings = DEFAULT_SETTINGS,
 ): Promise<TurnSweep> {
   const writeLog: ProcessWriteLog | undefined = seeded.stores[viewer.tenant].processes
     ? { edited: [], written: [] }
     : undefined;
-  const writeProbe = writeLog ? processWriteProbe(seeded, viewer) : [];
+  const writeProbe = writeLog && !attack ? processWriteProbe(seeded, viewer) : [];
   let round = 0;
   const model = scriptedModel((request) => {
     round += 1;
-    return round === 1 ? firstProbe(writeProbe) : followUps(request, round);
+    if (round > 1) return followUps(request, round);
+    if (!attack) return firstProbe(writeProbe);
+    return attack.calls.length > 0 ? { tools: attack.calls } : { text: 'Fertig.' };
   });
-  const { orchestrator } = buildAgent(
+  const { orchestrator, rawResults } = buildAgent(
     seeded,
     viewer.tenant,
     viewer.agent,
@@ -707,6 +766,8 @@ export async function sweepTurn(
     viewer.shielded,
     recall,
     writeLog,
+    attack?.wrapGraph,
+    settings,
   );
 
   const origin = originOf(viewer.context);
@@ -715,7 +776,7 @@ export async function sweepTurn(
   const run = async (): Promise<void> => {
     for await (const event of orchestrator.chatStream({
       // Names every conversation (turn legs) and every entity (entity leg).
-      userMessage: `Was wissen wir zu CANARY-ENTITY ${ALL_KEYWORDS.join(' ')}?`,
+      userMessage: attack?.message ?? `Was wissen wir zu CANARY-ENTITY ${ALL_KEYWORDS.join(' ')}?`,
       sessionScope: conversationOf(viewer.context, viewer.user),
       // Like production: on the web the session's omadia id and the account
       // origin built from it (#1774, `webTurnOrigin`); on Teams the raw
@@ -744,7 +805,7 @@ export async function sweepTurn(
     for (const m of new Set([...text.matchAll(CANARY)].map((x) => x[0].toUpperCase()))) {
       const item = byCanary.get(m);
       if (!item) continue;
-      sightings.push({ entry, canary: m, item, verdict: expected(viewer, mode, item) });
+      sightings.push({ entry, canary: m, item, verdict: expected(viewer, mode, item, settings) });
     }
   };
   const first = model.requests[0];
@@ -770,7 +831,30 @@ export async function sweepTurn(
     );
   }
   record('client-stream', JSON.stringify(toClient));
-  return { viewer, mode, sightings, ...(writeLog ? { processWrites: writeLog } : {}) };
+  for (const { tool, raw } of rawResults) {
+    if (tool === EDIT_PROCESS_TOOL_NAME || tool === WRITE_PROCESS_TOOL_NAME) continue;
+    record('tool-raw', raw);
+  }
+  return { viewer, mode, sightings, settings, ...(writeLog ? { processWrites: writeLog } : {}) };
+}
+
+/**
+ * Pinned, not decided: a tail-only turn is "not knowledge", but the plugin
+ * API says it "MUST remain visible to getSession()" and that a backend
+ * ignoring the flag "stays correct". It is no access rule: through a session
+ * read, a tail-only turn is visible exactly when the same turn without the
+ * flag would be.
+ */
+export function verdictOf(sweep: TurnSweep, s: Sighting): { allowed: boolean; source: string } {
+  if (s.item.store === 'turn' && s.item.tailOnly && s.entry === 'graph-tool') {
+    const asKnowledge: TurnItem = { ...s.item, tailOnly: false };
+    const v = expected(sweep.viewer, sweep.mode, asKnowledge, sweep.settings);
+    return {
+      allowed: v.allowed,
+      source: `${PINNED}: tail-only is no access rule for session reads; ${v.source}`,
+    };
+  }
+  return s.verdict;
 }
 
 /** Edit every process of the viewer's tenant; write into another agent's scope and an unqualified one. */

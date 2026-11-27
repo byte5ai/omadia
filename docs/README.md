@@ -33,6 +33,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | [`readme-guidelines.md`](readme-guidelines.md) | Rolle, Dramaturgie und Wording des Root-README, durchgesetzt von `readmeShape.test.ts`; Begründung, Quellen und Benchmark in [ADR-0011](adr/0011-readme-as-landing-page.md) | Bei Regeländerung | Jeder, der das README ändert |
 | [`adr/`](adr/README.md) | Architecture Decision Records mit **Themenlandkarte**: jeder Bereich des Repos und die ADRs, die ihn binden. Pflicht-Abgleich bei jeder Aufgabe (`/AGENTS.md`, „ADR-Abgleich“); `adrIndexGuard.test.ts` hält Dateien, Index und Landkarte zusammen | Bei jeder Architektur-Entscheidung, im selben PR | Wer die Entscheidung trifft |
 | [`design.md`](design.md) | Lume, die visuelle Sprache der Operator-UI | Bei Theme-Änderungen | Frontend-Thread |
+| [`testing/memory-acl-mutation-record.md`](testing/memory-acl-mutation-record.md) | Memory-ACL-Testplan Schritt 6: jedes Zugriffsprädikat einmal entfernt, welche Suite rot wird, Überlebende und ihre Issues, nächtlicher Stryker-Lauf (Englisch) | Bei neuen Zugriffsregeln oder einem neuen Lauf von `scripts/mutation/handMutate.mjs` | Wer die Memory-ACL-Tests ändert |
 
 ## Lebende Docs (öffentliche Untermenge)
 

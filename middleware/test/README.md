@@ -151,6 +151,23 @@ login or Teams message would (`Seeded.users`); `USERS` in `world.ts` holds the
 Teams (AAD) ids. Memories list their owners in both forms, as production
 stores them depending on where they were promoted.
 
+Step 6 proves these suites bite. `docs/testing/memory-acl-mutation-record.md`
+records removing each access predicate once by hand (in-memory graph, Neon
+SQL, graph view, `/memories` scopes, plugin boundary, REST routes, recall) and
+which suite turned red; `scripts/mutation/` holds the catalog and runner to
+repeat it. The nightly `memory-acl-mutation` workflow runs Stryker over the
+files that hold only access rules
+(`scripts/mutation/stryker.memory-acl.config.mjs`). Under a Privacy Shield the
+canary sweep also reads each tool result before the shield interns it
+(`tool-raw`): the digest would otherwise hide a broken filter from the sweep.
+Two survivors closed gaps: `canaryHttp.pg.test.ts` now checks every REST route
+on Neon, not only the topic routes, and `canarySweepOffOwnerOnly.test.ts` runs
+the documented owner-only setting (`KG_RECALL_TEAM_VISIBILITY=false`; sweep
+option `settings`), under which the graph view's team rule matters.
+The adversarial corpus `memory-exfiltration.jsonl` (probe `memory_acl`,
+`test/adversarial/memoryExfiltration.ts`) runs scripted attacker turns over
+the same world.
+
 ## Env vars
 
 `MEMORY_PG_TEST_URL` is the shared fallback every suite accepts. Individual

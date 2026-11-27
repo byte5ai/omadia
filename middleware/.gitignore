@@ -14,3 +14,7 @@ data/
 *.log
 .DS_Store
 
+
+# Mutation runs (scripts/mutation/): reports and Stryker's sandbox
+reports/mutation/
+.stryker-tmp/

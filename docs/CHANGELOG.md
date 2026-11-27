@@ -261,6 +261,43 @@ background, detached from the asking turn. No migration.
   ("Ich erstelle Excel- und Word-Dateien.") reads as a capability. Still not detected: a file
   claimed without a build verb ("Hier ist die Excel-Datei").
 
+### Added — memory ACL mutation proof (memory-ACL test plan, step 6) (2026-11-27)
+
+- **Hand mutation record** (`docs/testing/memory-acl-mutation-record.md`, catalog and runner in
+  `middleware/scripts/mutation/handCatalog.mjs` / `handMutate.mjs`). Each of 75 access predicates
+  (in-memory graph, Neon SQL, graph view, `/memories` scopes, plugin boundary, REST routes, recall) was
+  removed once on current `main`: 62 turned a memory-access suite red, 6 are caught by unit tests
+  outside it, 3 survived and are closed here (below), 4 remain test gaps (#2340: the world has no User
+  or Fact items, and no test marks a turn unprotected after a memory was promoted from it). Neon
+  SQL mutants keep every query parameter referenced (`(<predicate> OR TRUE)`): a dropped parameter
+  breaks the query and recall silently falls back to FTS, so such a mutant proves nothing. The runner
+  flags a mutant whose run logs a SQL error.
+- **Gaps closed:** `canaryHttp.pg.test.ts` now asserts every REST route on Neon, not only the topic
+  routes (a Neon `getDataset` without its owner check went unnoticed); `canarySweepOffOwnerOnly.test.ts`
+  runs the documented owner-only setting `KG_RECALL_TEAM_VISIBILITY=false` (sweep option `settings`),
+  under which the graph view's team rule matters.
+- **Canary sweep reads raw tool results under a Privacy Shield** (`test/memoryAccess/canarySweep.ts`,
+  entry point `tool-raw`). The shield's digest masked canaries before the sweep looked, so a broken
+  shield filter in turn search (mutant IM20) went unnoticed; the sweep now also records each tool
+  result as the shield receives it.
+- **Two leaks found that way, kept as `todo` tests naming their issue:** #2333 (under a shield a
+  plugin's `listPlansForScope` returns the own conversation's plans of unprotected or unknown turns)
+  and #2334 (under a shield a plugin's `processMemory` `get` / `history` / `edit` return processes
+  stored unprotected; Neon only).
+- **Nightly Stryker run** (`.github/workflows/memory-acl-mutation.yml`,
+  `middleware/scripts/mutation/stryker.memory-acl.config.mjs`, `runUntilRed.mjs`) over the files that
+  hold only access rules, against the in-memory memory-access suites. Report only until the first runs
+  set a baseline. Its test command adds the unit tests that guard rules the sweeps cannot see (write
+  vetoes, the chat turn's session check). Stryker is installed by the workflow (pinned, `--no-save`),
+  not added to `package.json`.
+- **Adversarial memory corpus** (`test/adversarial/corpus/memory-exfiltration.jsonl`, probe
+  `memory_acl` in `test/adversarial/memoryExfiltration.ts`): seven scripted attacker turns over the
+  memory-access world, each with a positive control; all hold. Four counter-proofs in
+  `test/adversarialModel.test.ts` break the graph and expect `breached`. `baseline.json` records the
+  seven as held.
+- CI `PG_TEST_FLOOR` 847 → 858: the known-leak todos for #2333 and #2334 in `canarySweepOff.pg` and
+  `canarySweepEnforce.pg`; re-pinned to the measured total (full `test:pg` 858 tests, 4 todo).
+
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of
