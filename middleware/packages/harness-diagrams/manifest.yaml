@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/diagrams"
   name: "Diagrams"
-  version: "0.2.4"
+  version: "0.2.6"
   kind: "tool"
   domain: "visualization.diagrams"
   description:
@@ -38,6 +38,9 @@ optional_requires:
   - "turnContext@1"
   # ADR-0187 (#1986) — renders are recorded and deleted with chat and person.
   - "generatedObjects@1"
+  # ADR-0266 (#1964) — expired download links are renewed by the kernel route
+  # POST /api/v1/files/renew through this plugin's link renewer.
+  - "fileLinkRenewal@1"
 
 lifecycle:
   entry: "dist/plugin.js"
@@ -53,6 +56,18 @@ setup:
         en: "Endpoint of the Kroki installation, e.g. https://kroki.io"
         de: "Endpoint der Kroki-Installation, z.B. https://kroki.io"
       required: true
+
+    # #2338 / ADR-0299 — the diagram source (chart data included) goes to Kroki.
+    - key: "kroki_internal"
+      type: "boolean"
+      required: false
+      default: "false"
+      label:
+        en: "Kroki runs inside this instance"
+        de: "Kroki läuft innerhalb dieser Instanz"
+      help:
+        en: "Turn on when Kroki is your own deployment that only this instance reaches. Then diagrams may show everything a turn may show. Loopback, private addresses and private host names (.internal, .flycast, a compose service name) count as internal without this switch; the public kroki.io never does. An external renderer is not called in a turn that holds information from another conversation."
+        de: "Einschalten, wenn Kroki eine eigene Installation ist, die nur diese Instanz erreicht. Dann dürfen Diagramme alles zeigen, was ein Turn zeigen darf. Loopback, private Adressen und private Hostnamen (.internal, .flycast, ein Compose-Dienstname) gelten ohne diesen Schalter als intern, das öffentliche kroki.io nie. Ein externer Renderer wird in einem Turn mit Informationen aus einem anderen Gespräch nicht aufgerufen."
 
     - key: "public_base_url"
       type: "url"

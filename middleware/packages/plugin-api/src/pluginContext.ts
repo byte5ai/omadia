@@ -963,6 +963,16 @@ export interface ToolRegistrationOptions {
    */
   readonly piiFields?: readonly ToolPIIField[];
   /**
+   * #2338 / ADR-0299 (1.111.0) — what calling this tool does to its system,
+   * decided at activation: the same values as the manifest's
+   * `capabilities[].side_effects`, for a tool whose effect depends on the
+   * instance's configuration (Diagrams: `none` only while its renderer runs
+   * inside the instance). Wins over the manifest for this tool; a declared
+   * `writeCapabilities` still counts as `write`. Absent ⇒ the manifest
+   * decides, and a tool that declares nothing is checked like a write.
+   */
+  readonly sideEffects?: 'read' | 'write' | 'none';
+  /**
    * #1346 — per-turn availability. The kernel calls it inside the turn scope
    * each time it builds the tool list and the system-prompt tool docs; `false`
    * hides the tool (spec AND `promptDoc`) for that turn. On `registerHandler`

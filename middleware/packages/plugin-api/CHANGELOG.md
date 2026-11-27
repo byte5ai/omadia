@@ -8,6 +8,89 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.112.0 — 2026-11-27
+
+Additive. (Numbered after 1.108.0–1.111.0 of #2331 / #2332 / #2328 / #2343; the lander
+renumbers if needed.)
+
+### Added
+
+- **`newProcessId()`** and **`ProcessRecord.legacyId`** (#2296, ADR-0295): process ids are
+  opaque (`process:<uuid>`); a process written before keeps its old `process:<scope>:<slug>` id
+  as `legacyId`, and providers resolve either form.
+- **`UnresolvedSurrogateCountOptions.reservedShapes`** (#2296): also count reserved-shape
+  surrogates (`PLATZHALTER-*`, pool names at `example.net`) whichever turn minted them; for
+  stored text read back into a turn.
+
+### Deprecated
+
+- **`buildProcessId(scope, title)`** (#2296): the slug carries the title's values into the id.
+  Kept to recognise old ids; new processes use `newProcessId()`.
+
+## 1.111.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`ToolRegistrationOptions.sideEffects?`** (`'read' | 'write' | 'none'`; ADR-0299, #2338): what calling
+  the tool does to its system, decided at activation, for a tool whose effect depends on the instance's
+  configuration. Wins over the manifest's `capabilities[].side_effects` for that tool; a declared
+  `writeCapabilities` still counts as `write`. Diagrams declares `none` only while its Kroki renderer is
+  internal.
+
+## 1.110.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`DATASET_DATE_VALUE_PATTERN`** / **`datasetDateTime(value)`** (#2302, ADR-0267): the
+  stored ISO form of a `date` dataset cell and its comparable wall-clock milliseconds
+  (date-only = midnight, a trailing `Z` read as wall clock, impossible dates `undefined`).
+- **`fileLinkRenewal@1`** (`FILE_LINK_RENEWAL_SERVICE_NAME`, `FileLinkRenewalService`,
+  `FileLinkRenewer`, `SignedFileLink`, `RenewedFileLink`; ADR-0266, #1964): kernel-provided. A
+  plugin that hands out signed download links registers a renewer for its route prefix; the
+  kernel route `POST /api/v1/files/renew` uses it to re-sign an expired link for a signed-in
+  caller without re-generating the file.
+
+### Changed
+
+- `validateDatasetQueryOptions` accepts `gt`/`gte`/`lt`/`lte` on `date` columns; the bound
+  must be a `datasetDateTime` value, else `DatasetQueryValidationError` code
+  `invalid_date_value`. Ranges on `string`/`boolean` columns stay `op_type_mismatch`;
+  encrypted columns stay `encrypted_column`.
+
+## 1.109.0 — 2026-11-27
+
+Additive. (Numbered after 1.108.0 of the sibling W31 PR #2331; the lander renumbers if needed.)
+
+### Added
+
+- **`BulkPromoteRunOptions.mayPromote`** and **`BulkPromoteCandidate`** (#2294): a per-turn
+  discretion gate the kernel supplies by decorating the published `bulkPromotion@1` service. A
+  refused turn is counted as `skipped`; a throw refuses.
+- **`BulkPromotionService.listRetired?` / `unretire?`**, `RetiredTurn`, `UnretireOutcome`
+  (#2295): list turns retired from promotion (ids and reasons, no text) and let an operator
+  allow one again; a turn no person owns stays retired (`no_person_owner`).
+
+## 1.108.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`KnowledgeGraph.listUserChannelIdentities?(omadiaUserId)`** and the `UserChannelIdentity`
+  type plus `parseChannelIdentityNodeId` (#2293): the channel identities linked to a person's
+  `User` cluster. Kernel-only in the bounded graph services; a user purge uses it to reach the
+  per-channel context trees of every identity and the person's accounts.
+
+### Deprecated
+
+- **`SYSTEM_AUDIT_ACTOR_UUID`** (#2297): now an alias of `SYSTEM_ACTOR_OMADIA_USER_ID` (same nil
+  UUID); use `SYSTEM_ACTOR_OMADIA_USER_ID` for every system actor in audit rows. Removed with the
+  next major.
+
 ## 1.107.0 — 2026-11-27
 
 Additive.

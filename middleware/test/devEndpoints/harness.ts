@@ -63,6 +63,7 @@ import {
   DEV_PATH_PREFIX,
   mountDevGraph,
   mountDevLoopbackGuard,
+  resolveDevLoopbackOnly,
   mountKnowledgeGraphAdmin,
 } from '../../src/routes/graphRouterMounts.js';
 
@@ -152,6 +153,9 @@ export interface DevEndpointsHarnessOptions {
   readonly devEndpointsEnabled?: boolean;
   /** Mirrors `config.DEV_ENDPOINTS_LOOPBACK_ONLY`. Default `false`. */
   readonly loopbackOnly?: boolean;
+  /** #2275 — mirrors `process.env.NODE_ENV`, fed through the same
+   *  `resolveDevLoopbackOnly` `src/index.ts` calls. Default `undefined`. */
+  readonly nodeEnv?: string;
   /** Publish `graphLifecycle@1`. Omitted ⇒ a `RecordingLifecycleService`;
    *  `null` ⇒ the service was never published (in-memory KG backend). */
   readonly lifecycle?: LifecycleService | null;
@@ -240,7 +244,13 @@ export async function startDevEndpointsHarness(
     catalog: new PluginCatalog({ manifestDir: '/nonexistent-for-tests' }),
   });
 
-  mountDevLoopbackGuard(app, { loopbackOnly: opts.loopbackOnly ?? false, log: () => {} });
+  mountDevLoopbackGuard(app, {
+    loopbackOnly: resolveDevLoopbackOnly({
+      loopbackOnly: opts.loopbackOnly ?? false,
+      nodeEnv: opts.nodeEnv,
+    }),
+    log: () => {},
+  });
   mountDevGraph(app, requireAuth, {
     graph: new InMemoryKnowledgeGraph(),
     enabled: opts.devEndpointsEnabled ?? true,

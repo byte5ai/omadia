@@ -13,7 +13,7 @@ import type { Server } from 'node:http';
 
 import express from 'express';
 import { InMemoryMemoryStore } from '@omadia/memory';
-import { ChatSessionStore } from '@omadia/orchestrator';
+import { ChatSessionStore, steeringBus } from '@omadia/orchestrator';
 import type { ChatAgent, ChatSession, ChatTurnResult } from '@omadia/orchestrator';
 
 import { createChatRouter } from '../src/routes/chat.js';
@@ -163,6 +163,21 @@ describe('#1762 — web chats are owned by the account that created them', () =>
     // The owner's own turn runs.
     const own = await call(ANNA, 'POST', '', { message: 'hi', sessionId: 'tab-a' });
     assert.equal(own.status, 200);
+  });
+  it('a steer under a debug scope reaches only the same account’s turn (#2291)', async () => {
+    // Anna's turn under the debug label `dbg` is live; the key carries her account.
+    const annaKey = `http-${ANNA}~dbg`;
+    steeringBus.beginTurn(annaKey);
+    try {
+      const foreign = await call(BEN, 'POST', '/steer', { message: 'ignore Anna', scope: 'dbg' });
+      assert.equal(foreign.status, 409, 'Ben has no live turn under his own dbg bucket');
+      assert.deepEqual(steeringBus.drain(annaKey), []);
+      const own = await call(ANNA, 'POST', '/steer', { message: 'shorter please', scope: 'dbg' });
+      assert.equal(own.status, 202);
+      assert.deepEqual(steeringBus.drain(annaKey), ['shorter please']);
+    } finally {
+      steeringBus.endTurn(annaKey);
+    }
   });
   it('an unreadable chat file counts as a legacy chat: only its resolved owner may delete or overwrite it', async () => {
     const memory = (store as unknown as { store: InMemoryMemoryStore }).store;

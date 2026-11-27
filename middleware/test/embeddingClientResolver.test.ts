@@ -195,6 +195,46 @@ describe('#440 live embedding-client resolver — NeonKnowledgeGraph', () => {
     );
   });
 
+  it('#2298 — an embed that fails while its provider is withdrawn burns no attempt', async () => {
+    const { pool, queries } = makeFakePool(graphResponder);
+    let published = true;
+    const client = {
+      async embed(): Promise<number[]> {
+        published = false; // the provider is uninstalled while this call runs
+        throw new Error('socket closed');
+      },
+    };
+    const graph = new NeonKnowledgeGraph({
+      pool,
+      tenantId: 't',
+      resolveEmbeddingClient: () => (published ? client : undefined),
+    });
+    await graph.ingestTurn(TURN);
+    await settle();
+    assert.equal(hasVectorWrite(queries), false);
+    assert.equal(hasAttemptBump(queries), false, 'the withdrawal is not the node\'s failure');
+  });
+
+  it('#2298 — a vector that arrives after its provider was withdrawn is not written', async () => {
+    const { pool, queries } = makeFakePool(graphResponder);
+    let published = true;
+    const client = {
+      async embed(): Promise<number[]> {
+        published = false;
+        return [0.1, 0.2, 0.3];
+      },
+    };
+    const graph = new NeonKnowledgeGraph({
+      pool,
+      tenantId: 't',
+      resolveEmbeddingClient: () => (published ? client : undefined),
+    });
+    await graph.ingestTurn(TURN);
+    await settle();
+    assert.equal(hasVectorWrite(queries), false);
+    assert.equal(hasAttemptBump(queries), false);
+  });
+
   it('a resolver that throws degrades to unavailable rather than breaking ingest', async () => {
     const { pool, queries } = makeFakePool(graphResponder);
     const graph = new NeonKnowledgeGraph({

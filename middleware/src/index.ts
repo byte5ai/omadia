@@ -43,7 +43,9 @@ import {
   PostgresGeneratedObjectStore,
   type GeneratedObjectStore,
 } from './services/generatedObjects.js';
-import { GENERATED_OBJECTS_SERVICE_NAME } from '@omadia/plugin-api';
+import { FILE_LINK_RENEWAL_SERVICE_NAME, GENERATED_OBJECTS_SERVICE_NAME } from '@omadia/plugin-api';
+import { createFileLinkRenewalRegistry } from './services/fileLinkRenewal.js';
+import { createFileLinkRenewRouter } from './routes/fileLinkRenew.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
 import { createUpdateAuditStore } from './update/auditStore.js';
@@ -159,7 +161,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, isWebChatSessionId, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, isWebChatSessionId, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, withBulkPromotionGate, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -218,6 +220,7 @@ import {
   PLUGIN_DOMAINS_ADMIN_PATH,
   mountDevGraph,
   mountDevLoopbackGuard,
+  resolveDevLoopbackOnly,
   mountKnowledgeGraphAdmin,
 } from './routes/graphRouterMounts.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
@@ -1715,6 +1718,11 @@ async function main(): Promise<void> {
     },
   });
   serviceRegistry.provide(GENERATED_OBJECTS_SERVICE_NAME, generatedObjects);
+  // ADR-0266 (#1964) — Office and Diagrams register a renewer for their signed
+  // download links; `POST /api/v1/files/renew` re-signs an expired one.
+  const fileLinkRenewal = createFileLinkRenewalRegistry();
+  serviceRegistry.provide(FILE_LINK_RENEWAL_SERVICE_NAME, fileLinkRenewal);
+
   // #2310 / ADR-0273 — `@omadia/channel-api` asks the kernel to drop the
   // public MCP binding of a key it deleted. The pool is resolved per call (it
   // arrives with the graph plugin); the vault check keeps live keys bound.
@@ -1777,6 +1785,11 @@ async function main(): Promise<void> {
   // context recall), whoever provides `processMemory`.
   serviceRegistry.decorateOnProvide<ProcessMemoryService>('processMemory', (inner) =>
     labelProcessMemory(inner, discretionStore),
+  );
+  // #2294 — bulk promotion runs the live path's discretion check on every
+  // stored turn, whoever provides `bulkPromotion`.
+  serviceRegistry.decorateOnProvide<BulkPromotionService>('bulkPromotion', (inner) =>
+    withBulkPromotionGate(inner, discretionStore),
   );
   serviceRegistry.provide('consultation', consultationBroker);
   // The offering snapshot is read once the pool exists (after plugin
@@ -4381,6 +4394,9 @@ async function main(): Promise<void> {
   // until then (and without Postgres) such chats belong to nobody.
   let resolveLegacyChatOwner: LegacyChatOwner = () => Promise.resolve(undefined);
   const legacyChatOwner: LegacyChatOwner = () => resolveLegacyChatOwner();
+  // #2292 — the user store a memory purge uses to end a purged person's
+  // open web sessions; bound with the users table below.
+  let purgeSessionUserStore: UserStore | undefined;
 
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
@@ -4550,7 +4566,10 @@ async function main(): Promise<void> {
     app.use(
       '/api/v1/admin/bulk-promote',
       requireAuth,
-      createBulkPromotionRouter({ service: bulkPromotionService }),
+      createBulkPromotionRouter({
+        service: bulkPromotionService,
+        ...(graphPool ? { adminAudit: new AdminAuditLog(graphPool) } : {}),
+      }),
     );
     console.log(
       '[middleware] bulk-promotion endpoint ready at /api/v1/admin/bulk-promote',
@@ -4658,10 +4677,36 @@ async function main(): Promise<void> {
     : undefined;
   if (syncDurableRules) void syncDurableRules();
 
+  // ADR-0266 (#1964) — renew an expired Office/Diagram download link for a
+  // signed-in caller (the web chat reaches it as /bot-api/v1/files/renew).
+  app.use(
+    '/api/v1/files',
+    requireAuth,
+    createFileLinkRenewRouter({ registry: fileLinkRenewal }),
+  );
+
   app.use(
     '/api/v1/admin/memory/purge',
     requireAuth,
     createMemoryPurgeRouter({
+      // #2292 — the user store is built further down (with the auth routes);
+      // bound late like `resolveLegacyChatOwner`. Unbound (no users table)
+      // there are no accounts whose sessions could be open.
+      revokeAccountSessions: async (accountIds) => {
+        const users = purgeSessionUserStore;
+        if (!users) return 0;
+        let revoked = 0;
+        for (const id of accountIds) {
+          // One account failing must not report the whole purge as failed
+          // after every layer is already gone; it is logged instead.
+          try {
+            if (await users.update(id, { revokeSessions: true })) revoked++;
+          } catch (err) {
+            console.error(`[memory-purge] could not end the sessions of account ${id}:`, err);
+          }
+        }
+        return revoked;
+      },
       store: memoryStore,
       ...(knowledgeGraph ? { knowledgeGraph } : {}),
       ...(graphPool ? { graphPool } : {}),
@@ -6358,6 +6403,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    purgeSessionUserStore = userStore;
     linkableUsers.current = userStore;
     resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
@@ -8053,7 +8099,13 @@ async function main(): Promise<void> {
   // #1350 — the loopback guard covers the whole `/api/dev` prefix, including
   // the plugin routes `pluginRouteRegistry.mountAll(app)` mounts further down
   // (the `@omadia/memory` browser). It must stay ahead of both mounts.
-  mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });
+  // #2275 (ADR-0260): under NODE_ENV=production the prefix is loopback-only
+  // regardless of DEV_ENDPOINTS_LOOPBACK_ONLY.
+  const devLoopbackOnly = resolveDevLoopbackOnly({
+    loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY,
+    nodeEnv: process.env['NODE_ENV'],
+  });
+  mountDevLoopbackGuard(app, { loopbackOnly: devLoopbackOnly });
   if (
     mountDevGraph(app, requireAuth, {
       graph: knowledgeGraph,
@@ -8062,7 +8114,7 @@ async function main(): Promise<void> {
   ) {
     console.log(
       `[middleware] DEV endpoints enabled at ${DEV_GRAPH_PATH} (auth: required${
-        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
+        devLoopbackOnly ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
       })`,
     );
   }

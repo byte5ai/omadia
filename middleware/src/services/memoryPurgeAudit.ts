@@ -43,6 +43,9 @@ export interface MemoryPurgeCounts {
    *  the ones that should go but could not (producer inactive, delete failed). */
   generatedFiles?: number;
   generatedPending?: number;
+  /** #2292 — accounts (`users.id`) of the person whose open web sessions the
+   *  purge ends; planned = accounts found, deleted = sessions versions bumped. */
+  sessionsRevoked?: number;
 }
 
 export interface MemoryPurgeAuditStart {

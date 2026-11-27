@@ -103,3 +103,20 @@ export function dateOrderForColumn(nonEmpty: readonly string[]): DateOrder | und
   }
   return undefined;
 }
+
+/**
+ * #2302 (ADR-0267) — a date range bound from a `query_rows` filter in the
+ * ISO form the cells are stored in, read with the import's parser: every
+ * shape listed above, day-first unless only month-first fits
+ * (`04/19/2024`). `undefined` when the value is not a date in either
+ * reading.
+ */
+export function normaliseDateFilterValue(value: string): string | undefined {
+  const order = dateOrderForColumn([value]);
+  return order === undefined ? undefined : normaliseDateCell(value, order);
+}
+
+/** The bound shapes `normaliseDateFilterValue` reads — named in the tool
+ *  error for a date range filter it could not parse. */
+export const DATE_FILTER_FORMATS =
+  'ISO `yyyy-mm-dd` or `yyyy-mm-ddThh:mm[:ss]` (optional `Z` or `±hh:mm`), `d.m.yyyy` or `d/m/yyyy` (day-first; `m/d/yyyy` only when the day is above 12), each optionally followed by `hh:mm[:ss]`';

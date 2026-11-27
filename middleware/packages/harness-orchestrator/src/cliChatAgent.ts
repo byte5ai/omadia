@@ -16,11 +16,13 @@ import type {
   ChatTurnInput,
   ChatStreamEvent,
   ChatStreamObserver,
+  DiagramAttachment,
   FollowUpOption,
+  OutgoingFileAttachment,
   PendingUserChoice,
   SemanticAnswer,
 } from '@omadia/channel-sdk';
-import { stripKnownAiDisclosureLines } from '@omadia/channel-sdk';
+import { stripKnownAiDisclosureLines, toSemanticAnswer } from '@omadia/channel-sdk';
 import type {
   DispatchableToolSpec,
   ToolDispatchService,
@@ -56,6 +58,13 @@ import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
 import { TOOLS_OFF_DIRECTIVE, UNATTENDED_DIRECTIVE, UNATTENDED_DROPPED_TOOLS, isToolsOffTurn, isUnattendedTurn } from './toolsOffTurn.js';
+import { fastLaneCliHint } from './fastLaneHandoff.js';
+import {
+  CALLER_PRIVACY_SUB_AGENT_DIRECTIVE,
+  callerPrivacyTools,
+  withCallerPrivacyDispatch,
+} from './cliCallerPrivacy.js';
+import { REPLAYED_ANSWER_MASKED_NOTE } from './replayedAnswerNote.js';
 import {
   OMADIA_MCP_SERVER_NAME,
   OMADIA_MCP_TOOL_PREFIX,
@@ -985,6 +994,13 @@ export interface CliChatAgentDeps {
    */
   readonly drainTurnCards?: () => CliTurnCards;
   /**
+   * #2303 (ADR-0177) — drain the files and diagrams this turn's loopback tool
+   * calls filed (Office, Diagrams). Called once, inside the turn's captured
+   * context: the sinks key their buffers on the turn id the loopback calls ran
+   * under. Wired to `orchestrator.drainCliTurnAttachments()`; unset → none.
+   */
+  readonly drainTurnAttachments?: () => CliTurnAttachments;
+  /**
    * #1582 — the AI disclosure (AI Act Art. 50) for this turn's answer: the
    * marking line folded in on the conversation's first turn, and the
    * structured carrier for every turn. Wired by `buildOrchestratorForAgent`
@@ -1213,6 +1229,14 @@ async function raceRecallDeadline<T>(
 interface ResolvedCliHistory {
   readonly turns: readonly CliPriorTurn[];
   readonly available: boolean;
+  /** #2341 — a replayed answer reaches the child with masked spans. */
+  readonly answersMasked?: boolean;
+}
+
+/** #2303 — the outputs a CLI turn's tools produced, for the `done` event. */
+export interface CliTurnAttachments {
+  readonly attachments?: DiagramAttachment[];
+  readonly fileAttachments?: OutgoingFileAttachment[];
 }
 
 /**
@@ -1591,6 +1615,7 @@ export class CliChatAgent implements ChatAgent {
     // #2194 — the answer the lifecycle released (the withheld line when the
     // egress check refused it), not the CLI's raw result.
     let releasedAnswer: string | undefined;
+    let outputs: CliTurnAttachments = {};
 
     while (true) {
       const step = await lifecycle.next();
@@ -1608,17 +1633,45 @@ export class CliChatAgent implements ChatAgent {
           this.runHook('onUsage', () => onUsage(usage));
         }
         const disclosed = this.disclose(releasedAnswer ?? parser.finalAnswer(), input);
+        // #2303 — the turn's files and diagrams, in the channel-agnostic shape.
+        const attachments = toSemanticAnswer({ answer: '', toolCalls: 0, iterations: 0, ...outputs }).attachments;
         return {
           text: disclosed.answer,
           ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
+          ...(attachments ? { attachments } : {}),
         };
       }
-      if (step.value.type === 'done') releasedAnswer = step.value.answer;
+      if (step.value.type === 'done') {
+        releasedAnswer = step.value.answer;
+        outputs = {
+          ...(step.value.attachments ? { attachments: step.value.attachments } : {}),
+          ...(step.value.fileAttachments ? { fileAttachments: step.value.fileAttachments } : {}),
+        };
+      }
       if (hooks?.onEvent) {
         const onEvent = hooks.onEvent;
         const event = step.value;
         this.runHook('onEvent', () => onEvent(event));
       }
+    }
+  }
+
+  /** #2303 — {@link CliChatAgentDeps.drainTurnAttachments} in the turn's
+   *  context; a failing drain delivers nothing and never breaks the turn. */
+  private drainTurnOutputs(turnContext: CapturedTurnContext): CliTurnAttachments {
+    const drain = this.deps.drainTurnAttachments;
+    if (drain === undefined) return {};
+    try {
+      const drained = turnContext.runInTurnContext(() => drain());
+      return {
+        ...(drained.attachments?.length ? { attachments: drained.attachments } : {}),
+        ...(drained.fileAttachments?.length ? { fileAttachments: drained.fileAttachments } : {}),
+      };
+    } catch (error) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('CLI turn attachment drain failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {};
     }
   }
 
@@ -1750,6 +1803,8 @@ export class CliChatAgent implements ChatAgent {
     input: ChatTurnInput,
     priorTurns: readonly CliPriorTurn[],
     recalledContext?: string,
+    /** #2341 — a replayed answer or the recall was masked: say why its names look different. */
+    replayMasked = false,
   ): string {
     const lines: string[] = [];
 
@@ -1781,6 +1836,16 @@ export class CliChatAgent implements ChatAgent {
 
     if (typeof input.extraSystemHint === 'string' && input.extraSystemHint.trim().length > 0) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(input.extraSystemHint)}`);
+    }
+    // #2300 / ADR-0265 — the CLI cannot take a replayed tool round: a
+    // data-free note only, the fast lane's raw output stays out of the prompt.
+    if (input.fastLaneCall !== undefined) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(fastLaneCliHint(input.fastLaneCall))}`);
+    }
+
+    // #2341 — kernel prose, data-free (`replayedAnswerNote.ts`).
+    if (replayMasked) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(REPLAYED_ANSWER_MASKED_NOTE)}`);
     }
 
     // #2317 (ADR-0278) — the conversation's data block (routine deliveries).
@@ -1948,6 +2013,7 @@ export class CliChatAgent implements ChatAgent {
     }
 
     const masked: CliPriorTurn[] = [];
+    let answersMasked = false;
     try {
       for (const turn of usable) {
         const userMessage = await maskReplayedText(privacy, turn.userMessage);
@@ -1958,6 +2024,7 @@ export class CliChatAgent implements ChatAgent {
           );
           return { turns: [], available: false };
         }
+        if (assistantAnswer !== turn.assistantAnswer) answersMasked = true;
         masked.push({ userMessage, assistantAnswer });
       }
     } catch (error) {
@@ -1969,7 +2036,7 @@ export class CliChatAgent implements ChatAgent {
       });
       return { turns: [], available: false };
     }
-    return { turns: masked, available };
+    return { turns: masked, available, answersMasked };
   }
 
   /**
@@ -2207,6 +2274,7 @@ export class CliChatAgent implements ChatAgent {
       // outright otherwise.
       // A tool-less turn binds no `memory` either: nothing could call it.
       const memory = toolsOff ? undefined : await this.bindMemory(input, turnContext);
+      let callerTools: readonly DispatchableToolSpec[] = [];
       if (!toolsOff) {
         if (memory !== undefined) {
           tools = withCliMemoryTool(tools);
@@ -2216,9 +2284,21 @@ export class CliChatAgent implements ChatAgent {
         if (privacy !== undefined && privacy.tools.length > 0) {
           tools = [...tools, ...privacy.tools];
         }
+        // #2301 / ADR-0268 — a sub-agent asked inside a guarded turn works
+        // under that turn's handle: v4 verb tools, restored inputs, re-masked
+        // results (the render stays with the calling turn).
+        callerTools =
+          privacy === undefined && turnContext.callerPrivacy !== undefined
+            ? callerPrivacyTools(turnContext.callerPrivacy)
+            : [];
+        if (callerTools.length > 0) tools = [...tools, ...callerTools];
         const memoryDispatch = turnMemoryDispatch(this.deps.dispatch, memory?.handler);
         const dispatch: LoopbackDispatch =
-          privacy !== undefined ? privacy.wrapDispatch(memoryDispatch) : memoryDispatch;
+          privacy !== undefined
+            ? privacy.wrapDispatch(memoryDispatch)
+            : turnContext.callerPrivacy !== undefined
+              ? withCallerPrivacyDispatch(turnContext.callerPrivacy, memoryDispatch)
+              : memoryDispatch;
 
         server = createLoopbackServer({
           dispatch,
@@ -2306,7 +2386,9 @@ export class CliChatAgent implements ChatAgent {
           // ADR-0195 — the data-plane contract, as the in-process prompt has it.
           privacy !== undefined && !toolsOff && privacy.tools.length > 0
             ? `${this.deps.systemPrompt ?? ''}\n${privacy.directive}`
-            : this.deps.systemPrompt,
+            : !toolsOff && callerTools.length > 0
+              ? `${this.deps.systemPrompt ?? ''}\n${CALLER_PRIVACY_SUB_AGENT_DIRECTIVE}`
+              : this.deps.systemPrompt,
           // #1102 — derive the honesty sentence from what THIS turn actually
           // advertised, so it names only genuinely-absent capabilities.
           absentKernelCapabilities(tools.map((tool) => tool.name)),
@@ -2423,7 +2505,9 @@ export class CliChatAgent implements ChatAgent {
 
       // We send one fully composed plain-text prompt so the child process stays stateless and
       // deterministic for tests; replaying prior turns here mirrors the CLI's single-shot mode.
-      child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled));
+      // #2341 — a masked replayed answer or a masked recall block gets the note.
+      const replayMasked = history.answersMasked === true || wireRecalled !== recalled.text;
+      child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled, replayMasked));
 
       while (true) {
         while (lineQueue.length > 0) {
@@ -2610,6 +2694,9 @@ export class CliChatAgent implements ChatAgent {
         // streamed preview taken back first; nothing derived from it (the
         // record's annotations, cards, excerpt, promotion) goes with it.
         const guarded = await this.guardTurnAnswer(terminalDone.answer, input, turnContext);
+        // #2303 — drained either way (the buffers must not wait for eviction);
+        // a withheld answer carries none of them.
+        const outputs = this.drainTurnOutputs(turnContext);
         // ADR-0195 — the receipt rides the `done`, withheld or not.
         let receipt: CliPrivacyReceiptFields = {};
         if (privacy !== undefined) {
@@ -2650,6 +2737,7 @@ export class CliChatAgent implements ChatAgent {
           ...(released.answerSource !== undefined ? { answerSource: released.answerSource } : {}),
           ...(released.answerIsError === true ? { answerIsError: true } : {}),
           ...(released.maskedValues !== undefined ? { maskedValues: released.maskedValues } : {}),
+          ...outputs,
           ...receipt,
         };
       }

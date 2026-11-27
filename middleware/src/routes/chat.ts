@@ -21,7 +21,7 @@ import type {
 } from '@omadia/orchestrator';
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
-import { mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
+import { chatViewer, mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
 import {
@@ -95,11 +95,36 @@ const ChatRequestSchema = z.object({
  * passed as an explicit `origin`, which is a change to make deliberately, not
  * to inherit from a debug label.
  */
-function resolveScope(parsed: z.infer<typeof ChatRequestSchema>): string {
-  if (parsed.scope) return `http-${parsed.scope}`;
+function resolveScope(
+  parsed: { readonly scope?: string | undefined; readonly sessionId?: string | undefined },
+  req: Request,
+): string {
+  // #2291 (ADR-0180 residual) — a debug `scope` and the unlabelled bucket are bound to
+  // the signed-in account like a chat is: another account sending the same
+  // label lands in its own bucket, so it neither steers this account's turn
+  // nor shares its transcript or attachment bindings. A `sessionId` is a
+  // stored chat, checked by `mayUseChatSession` instead. Without an account
+  // (an API caller without a session) the labels stay as they were. The
+  // account comes FIRST: `sanitizeScope` cuts transcript and graph keys at 80
+  // characters, and a long label must not cut the account off.
+  const account = accountBucketPrefix(req);
+  if (parsed.scope) return `http-${account}${parsed.scope}`;
   if (parsed.sessionId) return parsed.sessionId;
-  return 'http-default';
+  return account ? `http-${account}default` : 'http-default';
 }
+
+/**
+ * `<account>~` for a signed-in session, `''` otherwise. The account is the
+ * session's `sub` (`users.id`), the same key that owns a chat (`chatViewer`,
+ * ADR-0180), so a label binds exactly like a chat does.
+ */
+function accountBucketPrefix(req: Request): string {
+  const account = chatViewer(req);
+  return account && USER_ID_RE.test(account) ? `${account}${ACCOUNT_BUCKET_SEPARATOR}` : '';
+}
+
+/** Separates a caller label from the owning account in an HTTP turn bucket. */
+const ACCOUNT_BUCKET_SEPARATOR = '~';
 
 /**
  * Mid-turn steering request. Same `scope`/`sessionId` correlation fields as a
@@ -266,7 +291,7 @@ function httpRoutineContext(
     // elsewhere, and without a sessionId there is no chat to deliver into —
     // the web sender then refuses `create` with a message saying so.
     conversationRef: webChatConversationRef(
-      resolveScope(body),
+      resolveScope(body, req),
       body.scope ? undefined : body.sessionId,
     ),
     // Cold-start outreach to OTHER people is a channel-governance decision; the
@@ -559,7 +584,7 @@ export function createChatRouter(
 
     try {
       const userId = resolveUserId(req);
-      const sessionScope = resolveScope(parsed.data);
+      const sessionScope = resolveScope(parsed.data, req);
       // #1756 — routine output delivered into this chat is part of it.
       const deliveriesHint = await routineDeliveriesFor(options, parsed.data.sessionId);
       // W4-1: the whole turn runs inside the identity scope. `run` (not
@@ -827,12 +852,12 @@ export function createChatRouter(
       // event, which is before any tool (and therefore any MCP call) runs. See
       // the warning on `turnContext.enter`.
       const iterator = turnContext.runGenerator(
-        chatTurnContext(req, resolveScope(parsed.data)),
+        chatTurnContext(req, resolveScope(parsed.data, req)),
         () =>
           chat.chatStream(
             {
               userMessage: parsed.data.message,
-              sessionScope: resolveScope(parsed.data),
+              sessionScope: resolveScope(parsed.data, req),
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
               ...(deliveriesHint ? { conversationContextHint: deliveriesHint } : {}),
@@ -945,7 +970,7 @@ export function createChatRouter(
       res.status(404).json({ error: 'not_found', message: `chat session ${parsed.data.sessionId} not found` });
       return;
     }
-    const sessionScope = resolveScope(parsed.data);
+    const sessionScope = resolveScope(parsed.data, req);
     const result = steeringBus.enqueue(sessionScope, parsed.data.message);
     if (!result.live) {
       res.status(409).json({

@@ -828,6 +828,9 @@ export interface ContextMemoryDto {
   /** The union the SERVER accepts. Rendered in preference to the local
    *  constant so the control follows the middleware, not the bundle. */
   modes: readonly string[];
+  /** #2290 / ADR-0261 — when migration 0122 moved this agent from `off` to
+   *  `members` (ISO string); `null`/absent once an operator chose a mode. */
+  switchedFromOffAt?: string | null;
 }
 
 /** Read the W5 memory-ACL rollout mode of one agent (issue #899). */
@@ -853,9 +856,13 @@ export async function setAgentContextMemory(
   mode: ContextMemoryMode,
   expectedRevision?: number,
 ): Promise<{ ok: boolean; mode: ContextMemoryMode; revision?: number }> {
+  // #2290 / ADR-0261 — `off` makes this a shared agent (one memory for every
+  // account and key); the server only accepts it with `shared: true`. The UI
+  // asks for that acknowledgement before it calls this.
+  const body = { mode, ...(mode === 'off' ? { shared: true } : {}), ...revisionField(expectedRevision) };
   return callJson<{ ok: boolean; mode: ContextMemoryMode; revision?: number }>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/context-memory`,
-    { method: 'PUT', body: JSON.stringify({ mode, ...revisionField(expectedRevision) }) },
+    { method: 'PUT', body: JSON.stringify(body) },
   );
 }
 
@@ -955,6 +962,8 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   // Spec 2042 §5.11 — `PUT …/context-memory` refuses `off` for an agent that
   // holds capability grants.
   'context_memory_required',
+  // #2290 / ADR-0261 — `off` sent without `shared: true`.
+  'context_memory_shared_required',
   // #1889 / ADR-0216 — `PUT …/identity` with an `expected_revision` the
   // stored identity has moved past (another tab or operator saved first).
   'identity_revision_conflict',

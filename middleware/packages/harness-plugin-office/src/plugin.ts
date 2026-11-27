@@ -1,6 +1,8 @@
 import {
+  FILE_LINK_RENEWAL_SERVICE_NAME,
   GENERATED_OBJECTS_SERVICE_NAME,
   PRIVACY_REDACT_SERVICE_NAME,
+  type FileLinkRenewalService,
   type GeneratedObjectsService,
   type NativeToolAttachment,
   type PluginContext,
@@ -10,6 +12,7 @@ import { createTigrisStore } from '@omadia/diagrams';
 import { turnContext } from '@omadia/orchestrator';
 
 import { createDocumentsRouter } from './documentsRouter.js';
+import { createDocumentLinkRenewer, DOCUMENT_LINK_ROUTE_PREFIX } from './linkRenewer.js';
 
 /** The producer id the kernel files this plugin's files under (ADR-0187). */
 const PRODUCER_ID = '@omadia/plugin-office';
@@ -137,9 +140,18 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
   // then the prefix is closed — `404 public_path.not_granted` for everyone. The
   // `/dl` segment exists because a public-path claim must be at least two
   // segments deep — `/documents` alone is refused as too broad a surface.
-  const disposeRoute = ctx.routes.register('/documents/dl', router, {
+  const disposeRoute = ctx.routes.register(DOCUMENT_LINK_ROUTE_PREFIX, router, {
     auth: 'custom',
   });
+  // #1964 (ADR-0266) — expired links are renewed through the kernel route
+  // `POST /api/v1/files/renew`. Optional: without the kernel service an expired
+  // link needs the file created again.
+  const disposeRenewer = ctx.services
+    .get<FileLinkRenewalService>(FILE_LINK_RENEWAL_SERVICE_NAME)
+    ?.registerRenewer(
+      DOCUMENT_LINK_ROUTE_PREFIX,
+      createDocumentLinkRenewer({ secret: signingSecret, ttlSec: signedUrlTtlSec, publicBaseUrl }),
+    );
 
   ctx.log(
     `[office] ready (bucket=${tigrisBucket}, tenant=${tenantId}, dataset=lazy, privacyNow=${ctx.services.has(PRIVACY_REDACT_SERVICE_NAME) ? 'yes' : 'not-yet'})`,
@@ -151,6 +163,7 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
       disposeXlsx();
       disposeDocx();
       disposeDeleter?.();
+      disposeRenewer?.();
       disposeRoute();
     },
   };

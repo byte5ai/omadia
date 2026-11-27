@@ -620,7 +620,7 @@ export class ToolDispatchService {
         );
       }
       // #1841 — a `memory` result is masked through this turn's map.
-      return fromTool(cap(isMemoryNoteTool(name) ? await maskMemoryNoteResult(privacy, result) : result));
+      return fromTool(cap(isMemoryNoteTool(name) ? await maskMemoryNoteResult(privacy, result, name) : result));
     }
     // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
     const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)

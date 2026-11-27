@@ -24,6 +24,7 @@ import {
 } from '../../packages/harness-orchestrator/src/cliTurnPrivacy.js';
 import type { PrivacyTurnHandle } from '../../packages/harness-orchestrator/src/privacyHandle.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
+import { REPLAYED_ANSWER_MASKED_NOTE } from '../../packages/harness-orchestrator/src/replayedAnswerNote.js';
 import type { ChatStreamEvent } from '../../packages/harness-channel-sdk/src/chatAgent.js';
 
 const REAL = 'Marc Demo';
@@ -185,6 +186,31 @@ describe('CliChatAgent under a privacy guard (ADR-0195)', () => {
     });
   });
 
+  it('#2341 — a masked recall block alone brings the replayed-answer note', async () => {
+    const run = async (recalledText: string) => {
+      const spawned: Spawned[] = [];
+      const agent = agentWith(
+        {
+          privacyGuarded: () => true,
+          turnPrivacy: () => fakePrivacy([]),
+          recallContext: async () => ({ text: recalledText }),
+        },
+        spawned,
+        ['ok'],
+        'ok',
+      );
+      for await (const _event of agent.chatStream({ userMessage: 'und weiter?', sessionScope: 'sess-2341' })) {
+        // drain
+      }
+      return spawned[0]!.stdin;
+    };
+    const head = REPLAYED_ANSWER_MASKED_NOTE.split('\n')[0]!;
+    const masked = await run(`Letzte Antwort: ${REAL} gründete die Stadt.`);
+    assert.ok(!masked.includes(REAL), masked);
+    assert.ok(masked.includes(head), masked);
+    assert.equal((await run('Letzte Antwort: die Stadt ist alt.')).includes(head), false);
+  });
+
   it('ends a turn with a blocked mask with the notice, before any spawn, and finalizes', async () => {
     const spawned: Spawned[] = [];
     const log: string[] = [];
@@ -250,6 +276,27 @@ describe('CliChatAgent under a privacy guard (ADR-0195)', () => {
     assert.ok(!spawned[0]!.stdin.includes(REAL));
     // The answer goes back to the calling model: surrogates stay.
     assert.equal(answer.text, `Antwort ${SURROGATE}`);
+  });
+
+  it('a sub-agent under a caller handle with the v4 data plane gets the sub-agent directive (#2301)', async () => {
+    const spawned: Spawned[] = [];
+    const caller = {
+      maskUserPrompt: async (text: string) => ({
+        outcome: 'masked' as const,
+        maskedText: mask(text),
+        spans: [],
+        degraded: false,
+      }),
+      v4ToolSpecs: () => [{ name: 'v4_count', description: 'count', input_schema: { type: 'object' } }],
+    } as unknown as PrivacyTurnHandle;
+    const agent = agentWith({}, spawned, ['ok'], 'ok');
+    await turnContext.run(
+      { turnId: 'parent', turnDate: '2026-11-26', privacyHandle: caller },
+      // The fake CLI reports no MCP server; only the spawn arguments matter.
+      () => agent.chat({ userMessage: 'Wie viele?' }).catch(() => undefined),
+    );
+    const prompt = spawned[0]!.argv[spawned[0]!.argv.indexOf('--system-prompt') + 1] ?? '';
+    assert.match(prompt, /DATENSCHUTZ \(Privacy Shield\)/);
   });
 
   it('a sub-agent whose prompt the caller handle cannot mask is not spawned', async () => {

@@ -94,6 +94,12 @@ export interface TriggerEnvelope {
   readonly deliveryRef: unknown;
   readonly discretion: TriggerDiscretion | null;
   readonly createdBy: string;
+  /**
+   * #2339 — the zone the trigger renders `{{now}}`/`{{until}}` and runs a
+   * cron in when the request names none: the creating person's zone, else
+   * the instance's (`PROACTIVE_TIMEZONE`). Absent = UTC, as before.
+   */
+  readonly timezone?: string;
 }
 
 export const POST_PLACEHOLDERS: ReadonlySet<string> = new Set([
@@ -339,7 +345,7 @@ export function validateTriggerRequest(
   let fireAt: Date | null = null;
   let intervalSeconds: number | null = null;
   let cron: string | null = null;
-  let timezone: string | null = null;
+  let timezone: string | null = env.timezone ?? null;
   let eventId: string | null = null;
   let eventFilter: unknown = null;
   let maxRuns: number | null = null;

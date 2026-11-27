@@ -141,7 +141,11 @@ and the restore, and the receipt rides the `done`. A blocked mask ends the turn
 before the spawn. A guarded turn without a handle (none could be built, or
 `OMADIA_PRIVACY_FORCE_GUARDED` without a running guard) is refused before the
 spawn. A CLI sub-agent asked inside a guarded turn masks through the calling
-turn's handle and returns its answer unrestored; the Builder and preview-chat
+turn's handle and returns its answer unrestored. Since #2301 (ADR-0268) it also
+gets the v4 verb tools served by that handle (`v4_render_answer` stays with the
+calling turn and is refused), its tool inputs get the turn's prompt surrogates
+restored (tools that run on model input keep them) and its results are
+re-masked (`cliCallerPrivacy.ts`); the Builder and preview-chat
 CLI sub-agents are operator jobs outside the shield, refused only under the org
 policy (ADR-0196).
 
@@ -1267,7 +1271,7 @@ of the turn carries all of it.
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b) | `guardIntegrationEgress`, before the call runs |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b). A tool whose input and output leave the instance only with the answer (Office `create_xlsx`/`create_docx`) declares `none`: the answer's people egress gates its file (#2338, ADR-0298). Diagrams declares its effect at activation (`ToolRegistrationOptions.sideEffects`, ADR-0299): `none` only while its Kroki endpoint is internal (private address or name, or the setup field `kroki_internal`; never `kroki.io`), else checked like a write, since the source and chart data go to Kroki. Gap: a withheld streamed answer leaves the tool outputs in the client's trace (#2342) | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
 at disclosure level `none` a consultation is regenerated without memory and without
@@ -1492,6 +1496,14 @@ that). Both signers put the route prefix into the HMAC payload
 only its own key layout (`documents/<tenant>/<sha256>/<file>` vs
 `<tenant>/<sha256>.png`). Revoking one route's public-path grant therefore ends
 session-less access to that plugin's objects; the other route does not serve them.
+
+**Renewing an expired link (#1964, ADR-0266).** `POST /api/v1/files/renew` re-signs an
+expired link for the same key, never a different one, and only for a signed-in session,
+only when the producing plugin accepts its own signature (expiry ignored, own key layout)
+and only within 30 days of the original expiry (`410 file_link.too_old` after). Accepted
+risk: any signed-in account that holds an old link can renew it within that window — it
+could fetch the file while the link was valid. Refusals are logged with a hashed key id,
+never the URL or signature. Channel users without a session cannot renew.
 
 ## 5-1. Stored attachments: stated by the adapter, bound at upload (#1960, #1962, ADR-0178)
 
@@ -2589,7 +2601,11 @@ requests, and only there, the shield acts on four kinds of text:
   earlier context (`maskedContextSpans`, #1541) and never as masked in the
   user's message. It fails closed like prompt masking (below): a
   failing C1 falls back to C0, and a detection failure or a surviving value
-  blocks the turn (`PromptMaskBlockedError`).
+  blocks the turn (`PromptMaskBlockedError`). When a replayed answer (or the
+  recalled chat context) crossed the wire with masked spans, the turn gets a
+  data-free kernel note that placeholders in its earlier answers are the
+  shield's and are no reason to correct them (#2341,
+  `replayedAnswerNote.ts`, CLI path included).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
   upload, the user messages a channel replays in `priorTurns`, live steering text
@@ -2630,8 +2646,14 @@ requests, and only there, the shield acts on four kinds of text:
   prefetched `/memories` index are masked through the reading turn's map
   (`maskUserPrompt`, origin `context`; blocked ⇒ withheld). A stored text that
   carries a surrogate the reading turn minted (a note from before the fix) is
-  withheld with a notice. Residuals: an old note's pool person name the reading
-  turn did not mint is not recognisable; and because notes now hold real values,
+  withheld with a notice; since #2296 so is one with a reserved-shape surrogate
+  (`PLATZHALTER-*`, a pool name at `example.net`) of any earlier turn — per entry
+  (a listing line, a `query_processes` hit; ADR-0296) — and the stored-process
+  tools (`write_process`/`edit_process` restore, `query_processes`/
+  `run_stored_process` re-mask) follow the same rule. Process ids are opaque
+  (`process:<uuid>`, ADR-0295), so restored titles never reach the model
+  through an id. Residuals: an old note's
+  pool person name the reading turn did not mint is not recognisable; and because notes now hold real values,
   a value the reading turn's mask does not detect (a C1 name seen in the prompt
   context but not in the note, or a turn degraded to C0 after a C1 outage)
   reaches the model in clear — the same residual as recalled turns. Every tool result text a model gets, digests,
@@ -3201,7 +3223,8 @@ These tool results skip the digest:
   for its `list_datasets` and `get_schema` operations
   (`INTERN_EXEMPT_OPERATIONS`, ADR-0197); `query_rows` stays interned.
 - **Field-exempt tools** (#1768, ADR 0241). `INTERN_FIELD_EXEMPT_TOOLS` (same
-  file, pinned by the same test) lists `manage_routine` only. Its JSON result
+  file, pinned by the same test) lists `manage_routine` and, since #2339, the
+  trigger tools (below). Its JSON result
   reaches the model in clear minus the keys the list names (`prompt`,
   `lastRunError`, the smart-card sidecar `_pendingRoutineList`), removed at
   every depth by `fieldExemptModelCopy`. Everything else in it is the user's
@@ -3211,6 +3234,14 @@ These tool results skip the digest:
   orchestrator and sub-agent seams re-mask echoed values (#1544);
   `ToolDispatchService` does not, like for exempt tools. The public MCP
   endpoint refuses the tool (`isPubliclyServableTool`, §ADR 0142).
+  Since #2339 (ADR-0297) the agent's trigger tools (`on_event`, `wake_at`,
+  `wake_every`, `list_triggers`, `cancel_trigger`) are field-exempt too: id,
+  kind, state, times with their zone (`atLocal`), cron, event id, action
+  types, runs and cost reach the model in clear; `purpose` (written on the
+  restored input, so it may carry real names), `lastOutcome`, `pausedBecause`
+  and a target's operator `label` are withheld. The same seam rules apply:
+  `ToolDispatchService` does not re-mask echoed values, the public MCP
+  endpoint refuses the tools.
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,
@@ -5387,6 +5418,9 @@ Confirmed empirically against a deployment under our control: uncredentialed
    convention.
 3. `DEV_ENDPOINTS_LOOPBACK_ONLY=true` (optional, default off) additionally
    refuses any `/api/dev` request that did not arrive over a loopback socket.
+   Under `NODE_ENV=production` (the shipped image) the guard is always on,
+   whatever the setting says (#2275, ADR-0260): the dev routes read every
+   account's memory, so a copied flag must not reach remote sessions.
    `mountDevLoopbackGuard` mounts it on the `/api/dev` prefix ahead of both the
    graph browser and the session plugin routes (`pluginRouteRegistry.mountAll`,
    and hot-installed ones after it), so it covers the `@omadia/memory` browser
@@ -8026,11 +8060,11 @@ has no user or whitelist management, so it is not a way out of an
   loopback peers (`req.ip`); with `TRUSTED_PROXY_ADDRESSES` containing `loopback` these reads count
   as proxied; any channel plugin can read any plugin's granted paths regardless of its own network
   allowlist.
-- **Fast-lane hand-off** (ADR-0221). After a miss whose query ran, the raw tool output (max 12 000
-  characters) reaches the agent as part of the per-turn system hint, masked through the turn's
-  privacy map like any `extraSystemHint`. Under a Privacy Shield the output is never included.
-  The block is tagged `<fast_lane_tool_output>` and declared data, not instruction; this is a prompt
-  rule, not an enforced boundary (accepted prompt-injection residual).
+- **Fast-lane hand-off** (ADR-0265, supersedes ADR-0221). After a miss whose query ran, the call
+  (max 12 000 characters of output) is replayed as the agent's first tool round: a `tool_use` with
+  the input masked through the turn's prompt map and a `tool_result` produced by `dispatchTool`
+  with the handler skipped, so the Privacy Shield interns it like any result of that tool and the
+  output never enters a system block. The subscription CLI gets only a data-free note.
 
 ## 11. Reviewer checklist
 

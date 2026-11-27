@@ -1998,7 +1998,12 @@ als `safe-cleartext` freigibt. Der Rohwert verlässt `buildDatasetFromTable` nie
 Secret: `DATASET_LINK_KEY_SECRET`, sonst HKDF aus `VAULT_KEY`; fehlt beides,
 gibt es keine Key-Spalten und der `[dataset-imported]`-Block sagt das. Header im
 `__k_`-Namensraum werden beim Import abgewiesen; `query_rows`-`filters` auf
-`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Die Privacy-Shield-Verben
+`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Seit #2302 (ADR-0267)
+nimmt `query_rows` `gt`/`gte`/`lt`/`lte` auf `date`-Spalten: Zelle und Grenze
+werden als Zeitpunkt verglichen (Datum allein = Mitternacht), die Grenze liest
+der Import-Parser (ISO, `d.m.yyyy`, `d/m/yyyy`), sonst `invalid_date_value`;
+nicht ISO-förmige oder unmögliche Zellen fallen aus dem Bereich, Spalten mit
+verschlüsselten Zellen bleiben für jeden Filter gesperrt. Die Privacy-Shield-Verben
 `v4_union` (mit `renameRight`) und `v4_distinct` (`by`, `keep`) vereinen zwei
 `query_rows`-Seiten oder Dateien und kollabieren auf den Link-Key; Prompt-Regel
 d) im `privacyV4Block` trägt das Rezept. `POST /api/v1/datasets` liefert je
@@ -5256,9 +5261,24 @@ Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test
   schreibt keine Authorize-URL in den Modelltext.
 - **Tool-Ausgaben pro Turn (#1961, ADR-0177).** `PerTurnBuffer` (`@omadia/diagrams`); Office
   und Diagrams legen Ausgaben unter der Turn-ID ab, der Sink (im Turn-Kontext aufgerufen) leert
-  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`.
+  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`. Seit #2303 leert
+  auch ein CLI-Turn die Sinks (`CliChatAgentDeps.drainTurnAttachments` →
+  `Orchestrator.drainCliTurnAttachments`, im erfassten Turn-Kontext) und liefert die Dateien am
+  `done`-Event aus.
 - **Signierte Links routengebunden (#1979, ADR-0176).** HMAC über `<route prefix><key>.<exp>`,
   Router prüfen ihr Key-Layout.
+- **Abgelaufene Datei-Links erneuern (#1964, ADR-0266).** `POST /api/v1/files/renew`
+  (`routes/fileLinkRenew.ts`, hinter `requireAuth`; Web-Chat über `/bot-api/v1/files/renew`),
+  Body `{ url }` → `200 { url, expiresAt }`: neuer Link für denselben Key mit der normalen TTL
+  des Plugins, ohne neu zu rendern. Regel: Session + Signatur gültig bei ignoriertem `exp` +
+  ursprüngliches `exp` höchstens 30 Tage alt. Fehler `400 file_link.bad_request`,
+  `401 file_link.session_required`, `403 file_link.invalid_signature`,
+  `404 file_link.unknown_route`, `410 file_link.too_old`; Ablehnungen werden mit gehashter
+  Key-ID geloggt (`[file-links] renew refused`), nie mit URL/Signatur. Kernel-Service
+  `fileLinkRenewal@1` (`services/fileLinkRenewal.ts`, plugin-api 1.110.0): Office (`/documents/dl`)
+  und Diagrams (`/diagrams/dl`) registrieren je einen Renewer (`linkRenewer.ts`). Web-Chat:
+  `app/_components/chat/FileAttachments.tsx` + `app/_lib/fileLinkRenewal.ts` erneuern beim
+  Rendern, bei `onError` des Bildes oder beim Klick nach Ablauf.
 - **Attachments (#1960/#1962, ADR-0178).** `ChatTurnInput.storedAttachments`
   (`StoredTurnAttachment`, channel-sdk 0.3.16) ist die einzige Quelle für Storage-Keys; der
   `[attachments-info]`-Parser ist entfernt. Ingest bindet jeden Key an den Raum des Turns
@@ -5520,6 +5540,15 @@ Grenzen: `docs/security-architecture.md` §7c.
   `originAgent` (aus `<agentSlug>::…` der Turn-Scope) und die Member-Owner wie der
   Live-Pfad. Turns ohne Personen-Owner (`key:<id>`, Public API) sind keine Kandidaten.
   Ergebnis `promotePhase.skipped` zählt bewusst ausgelassene Turns.
+- **Diskretion im Bulk-Pfad (ADR-0263, #2294).** Der Kernel dekoriert `bulkPromotion@1`
+  (`withBulkPromotionGate`, `discretion/bulkPromotionGate.ts`): jeder Kandidat wird gegen die
+  gespeicherten Turn-Labels mit der Live-Flow-Regel geprüft (`mayPromote`, plugin-api 1.109.0);
+  verweigert = `skipped` + Audit `target: bulk-promotion`, Fehler = verweigert.
+- **Zurückholen (#2295).** `GET /api/v1/admin/bulk-promote/retired` listet ausgeschlossene
+  Turns (ID, Grund, Zeit, Agent), `POST …/unretire { turnId }` entfernt `promotionRetired`
+  (Admin-Audit `memory.promotion_unretire` vorab; Turns ohne Personen-Owner → 409). UI:
+  Admin › Bulk Promotion. `deleteExcerpt` schließt offene Excerpt-Paare
+  (`closed_reason: excerpt_deleted`).
 - **Auto-Merge** (`kg_auto_merge_enabled`, Default an; `kg_auto_merge_threshold`
   Default 0.98, Flag-Floor 0.90): löst nur Paare mit gleichem Text (Kind/Summary/
   Rationale ohne Groß-/Kleinschreibung, Leerraum, Satzzeichen) und entfernt nur
@@ -5725,6 +5754,9 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `GRAPH_EMBEDDING_BACKFILL_ENABLED`, `GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES`, `GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE`, `GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS` | Seeden die gleichnamigen Settings (`graph_embedding_backfill_*`) von `@omadia/knowledge-graph-neon`. `bootstrapKnowledgeGraphFromEnv` schreibt nur **gesetzte** Variablen und merkt sich im versteckten Key `_env_seeded`, welche Werte vom Boot stammen (`src/plugins/envSeededConfig.ts`). Ein vom Boot geschriebener Wert folgt der Variable bei jedem Boot (geändert oder, wenn die Variable wegfällt, entfernt → Plugin-Default). Speichert ein Operator den Wert im Store, gewinnt er; eine gesetzte Variable, die er überdeckt, loggt der Boot als `⚠ … is ignored`. Alt-Installationen ohne Marker: Werte gleich dem eingebauten Default (`true`/`5`/`20`/`5`, vom alten Migrationspfad immer geschrieben) zählen als Boot-Werte. Validierung in `config.ts` bleibt (Wert außerhalb des Bereichs stoppt den Boot). |
+| `MEMORY_SEED_DIR`, `MEMORY_SEED_MODE` | Seit #2299 nach derselben Regel (`memorySeedSeeds`, `seed_dir`/`seed_mode` von `@omadia/memory` bzw. `@omadia/memory-postgres`), bei jedem Boot. Ungesetztes `MEMORY_SEED_DIR` schreibt den Kernel-Default (aufgelöster Pfad `./seed/memory`) statt den Key zu löschen, weil der Plugin-Default (`memory-seed`) ein anderes Verzeichnis ist (`EnvSeed.fallback`, ADR-0264). |
+| `OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`, `GRAPH_EMBEDDING_MAX_CONCURRENT` | Seit #2299 nach derselben Regel für `@omadia/embeddings` (`ollama_base_url`, `ollama_model`, `max_concurrent`), bei jedem Boot statt des alten „Env gewinnt, wenn gesetzt“. Ungesetzte URL entfernt eine Boot-URL (kein Client); `max_concurrent` fällt auf den Kernel-Default `2` zurück (Plugin-Default wäre 4). Alt-Werte ohne Marker, die dem gesetzten Env-Wert entsprechen, zählen als Boot-Werte. |
+| `TOPIC_CLASSIFIER_MODEL`, `TOPIC_UPPER_THRESHOLD`, `TOPIC_LOWER_THRESHOLD` | Seit #2299 nach derselben Regel für `@omadia/orchestrator-extras` (`fact_extractor_model`, `topic_classifier_model`, `topic_*_threshold`), bei jedem Boot statt nur bei der Erstinstallation. |
 | `MEMORY_BACKEND` | Gilt nur, solange auf `/admin/memory-backend` keine Auswahl gespeichert ist. Die gespeicherte Auswahl (`memory_backend`) gewinnt bei **jedem** Boot und wird beim Provider-Wechsel auf den neu installierten Sibling übertragen (#1834, ADR-0192). |
 
 ### Self-Update und Release-Check (#432, #1381)
@@ -6001,7 +6033,7 @@ TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-P
 ADMIN_TOKEN                         # mount /api/admin (mutating memory; read-only
                                     # counters: /security/screening #749, /run-trace #1082)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
-DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
+DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669); unter NODE_ENV=production immer an (#2275)
 # Teams
 MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD, MICROSOFT_APP_TYPE=MultiTenant,
 MICROSOFT_APP_TENANT_ID
@@ -7049,10 +7081,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
   `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
 
-- **Fast-Lane-Übergabe als Verifier-Evidenz (ADR-0221, W15-17).** Der Answer-Verifier zählt den
-  `fastLaneHandoffHint` nicht als Beleg; Aussagen nur daraus können im `enforce`-Modus als
-  unbelegt gelten und einen Retry mit erneuter Abfrage auslösen. Den ausgeführten Aufruf in die
-  Evidenz des Verifiers geben.
 - **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
   `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
   `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
@@ -8892,7 +8920,8 @@ Erledigt durch #669: Statt eines `DEV_TOKEN` laufen alle `/api/dev/*`-Routen
 hinter dem `/api`-Session-Gate (Operator-Login). `DEV_ENDPOINTS_LOOPBACK_ONLY=true`
 bindet seit #1350 das ganze `/api/dev`-Präfix an Loopback, auch die
 Plugin-Route `/api/dev/memory`. Die Flag bleibt Dev-Scaffolding und auf
-deployten Umgebungen aus. Siehe `docs/security-architecture.md`.
+deployten Umgebungen aus. Unter `NODE_ENV=production` ist das Präfix seit
+#2275 (ADR-0260) immer Loopback-only. Siehe `docs/security-architecture.md`.
 
 ### Phase 10 — Ollama-basierte Entity-Extraction aus Prose
 
@@ -9065,10 +9094,11 @@ Antwort gibt.
 
 ---
 
-- **W00-Folgepunkte (2026-11-26):** (1) CLI-Agents leeren keine Attachment-Sinks — Office-/
-  Diagram-Ausgaben eines CLI-Turns werden nicht ausgeliefert (ADR-0177). (2) Per-User-MCP-Connect
-  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) Teams: Uploads
-  einer Nachricht, die die Themenwechsel-Karte auslöst, werden nach dem Klick nicht ingestiert.
+- **W00-Folgepunkte (2026-11-26):** (1) ~~CLI-Agents leeren keine Attachment-Sinks~~ — erledigt
+  mit #2303 (2026-11-27). (2) Per-User-MCP-Connect
+  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) ~~Teams: Uploads
+  einer Nachricht, die die Themenwechsel-Karte auslöst~~ — erledigt mit #2304
+  (`PendingTopicDecision.storedAttachments`, omadia-channel-teams Unreleased).
 
 ## 14. Commands (vom `middleware/`-Dir aus)
 
@@ -9542,6 +9572,11 @@ derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditAc
 (`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
 Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
 
+Prozess-IDs (#2296, ADR-0295): `process:<uuid>` (`newProcessId`), Neon-Migration 0040 schreibt
+alte `process:<scope>:<slug>`-IDs um und behält sie in `processes.legacy_id` (Lookups lösen
+beide Formen auf, Diskretions-Labels werden unter beiden gelesen). Gespeicherter Text mit
+Platzhaltern früherer Turns wird pro Eintrag zurückgehalten (`maskStoredTextPerEntry`, ADR-0296).
+
 Achse `user` seit ADR-0186 (#1840/#1842/#1843): `resolveUserSelector` (`services/memoryPurgeUser.ts`)
 liest omadia-User-ID, Konto-ID (`web:<users.id>`) oder `<kanal>~<id>`; geteilte
 `MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.100.0),
@@ -9549,6 +9584,11 @@ dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migratio
 `User`/`ChannelIdentity`-Knoten. Response-Felder zusätzlich `kgDeownedCount|kgExcerptCount|
 datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
 `omadiaUserId`.
+Seit ADR-0262 (#2292/#2293) liest `planPurge` alle `ChannelIdentity`-Knoten des Clusters
+(`KnowledgeGraph.listUserChannelIdentities?`, plugin-api 1.108.0) und löscht die Kontext-Bäume
+aller `<kanal>~<id>` im selben Lauf; die Konten (`web`-Identitäten) bekommen danach
+`session_version` hochgezählt (`revokeAccountSessions`, Preview `sessionAccountCount`, Result
+`sessionsRevoked`, Warnung `sessions_not_revoked`).
 
 Erzeugte Dateien (ADR-0187, #1986): Kernel-Service `generatedObjects@1`
 (`services/generatedObjects.ts`, Core-Migration 0119) — Office/Diagrams rufen `record(producer,
@@ -11775,7 +11815,16 @@ Leserkreis, Offenlegungsstufe).
     `writeCapabilities` (#542) oder MCP ohne `readOnlyHint` (gegen alle Labels
     geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, seit dem
     Contract-Schritt (S3b) wie `write` gegen alle Labels geprüft. Der Kern liefert die Deklaration über
-    `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen);
+    `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen).
+    Ein Tool, dessen Ein- und Ausgabe die Instanz nur mit der Antwort verlassen (Office
+    `create_xlsx`/`create_docx`), deklariert `none`; seine Datei prüft der Antwort-Ausgang
+    unten mit (#2338, ADR-0298). Diagrams deklariert beim Aktivieren
+    (`ToolRegistrationOptions.sideEffects`, ADR-0299): `none` nur bei internem Kroki
+    (private Adresse oder Name, `.flycast`/`.internal`/Compose-Name, oder Setup-Feld
+    `kroki_internal`; `kroki.io` nie), sonst wie `write`, denn Quelle und Chart-Daten gehen
+    an Kroki.
+    Offen: eine zurückgehaltene gestreamte Antwort lässt die Tool-Ausgaben (samt
+    signiertem Link) im Tool-Trace des Clients (#2342);
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
     Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile
@@ -11821,9 +11870,12 @@ Leserkreis, Offenlegungsstufe).
 - **Audit:** `discretion_flow_audit` (jede Verweigerung, jeder erlaubte
   kontextübergreifende Fluss; nur Label-IDs und Gründe, nie Inhalt).
 - **Context-Memory:** neue Agenten starten in `members` (Migration 0099);
-  bestehende werden bewusst NICHT umgestellt (würde ihre Notizen verbergen).
-  `PUT …/context-memory` mit `off` → 409 `context_memory_required`, wenn der Agent
-  Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
+  seit #2290 (Migration 0122, ADR-0261) sind auch bestehende Standard-Agents von
+  `off` auf `members` umgestellt; `context_memory_switched_at` treibt den Hinweis im
+  Memory-Tab (Notizen aus `off` bleiben im Agent-Tier, ungelesen). `off` ist jetzt
+  ein ausdrücklich gemeinsamer Agent: `PUT …/context-memory` mit `off` braucht
+  `shared: true` (sonst 409 `context_memory_shared_required`) und → 409
+  `context_memory_required`, wenn der Agent Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
   (kein Memory, die Route erlaubt für sie nur `off`).
 
 ### Kollegen im Prompt (`consultableColleagues`)
@@ -12038,6 +12090,18 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   24 h, max. 3; ein anderer Agent im selben Chat sieht sie nicht);
   `wrapChatAgentWithConversationContext` (vor dem Fast-Path) füllt `conversationContextHint`.
   Keine Plugin-Änderung nötig.
+- **Trigger-Zone (#2339, ADR-0297):** Ein Agent-Trigger ohne eigene `timezone` bekommt die
+  Zone des Users aus dem Turn (`userTimeZone`), sonst `PROACTIVE_TIMEZONE`
+  (`TriggerEnvelope.timezone`, gesetzt in `wiring.ts` `currentTurn`). Darin rendern
+  `{{now}}`/`{{until}}` und läuft ein `wake_every`-Cron. Die Tool-Antwort nennt `timezone`
+  immer und bei `wake_at` `atLocal` (Feuerzeit in dieser Zone).
+- **Lesbare Trigger-Bestätigung (#2339, ADR-0297):** Die Trigger-Tools stehen in
+  `INTERN_FIELD_EXEMPT_TOOLS`: Id, Zeiten, Zustand und Kosten gehen im Klartext ans Modell;
+  `purpose`, `lastOutcome`, `pausedBecause` und Ziel-`label` werden zurückgehalten.
+- **`manage_routine` `run_now` (#2339):** `RoutineRunner.startManualRun` prüft wie
+  `POST /routines/:id/trigger` (Eigentümer, aktiv, kein Lauf in Arbeit, Agent, Chat-Agent),
+  antwortet sofort und startet den Lauf losgelöst vom fragenden Turn
+  (`AsyncResource.bind` beim Bau des Runners); das Ergebnis kommt als Zustellung.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 
@@ -12114,13 +12178,15 @@ Ersetzt den Platzhalter aus #2007.
   Kennzeichnungs-Override und Audience.
 - **Fast-Lane-Übergabe** (`@omadia/fast-path` 0.7.0, ADR-0221 ergänzt ADR-0074):
   ein Miss nach gelaufener Abfrage trägt `ChatTriageOutcome.executed`;
-  `fastLaneHandoffHint` gibt Aufruf und (ohne Privacy Shield) Ausgabe als
-  `extraSystemHint` an den Agenten, als Daten markiert. Router kennt
+  seit #2300 (ADR-0265, löst ADR-0221 ab) trägt `ChatTurnInput.fastLaneCall`
+  den Aufruf; der Orchestrator spielt ihn als erste Tool-Runde ein
+  (`fastLaneToolRound`: `tool_use` + `tool_result` über `dispatchTool` mit
+  `prefetchedOutput`, also Shield/Ledger/Trace wie ein eigener Aufruf; der
+  Verifier zählt ihn). Kein Rohoutput mehr im System-Hint; der CLI-Pfad bekommt
+  nur einen datenfreien Hinweis. Router kennt
   `agent_no_tool`, bei nur einem Tool gilt Konfidenz 0,8. Eine geplante Spalte,
   die kein Datensatz füllt, ist eine falsche Map (`unmappable`).
 - **Setup-PATCH validiert `enum`** (#1998): wie der Install-Pfad; leerer Wert
   löscht ein optionales Enum, ein Pflicht-Enum kann nicht geleert werden.
 - **Web-Chat:** keine Nudge-Karte mehr (#1900, ADR-0021); der Session-Mirror
   speichert Antworten ohne `<!-- orchestrator:… -->`-Notizen (#1956).
-- **Offen (§13):** der Answer-Verifier zählt den Fast-Lane-Hint nicht als
-  Evidenz (ADR-0221, Folge-Punkt).

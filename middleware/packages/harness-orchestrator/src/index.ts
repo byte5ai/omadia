@@ -1163,6 +1163,7 @@ export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';
 export * from './discretion/toolFlow.js';
 export * from './discretion/labelledProcessMemory.js';
+export * from './discretion/bulkPromotionGate.js';
 // #1881 — a deleted agent's memory moves with its discretion labels.
 export { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
 

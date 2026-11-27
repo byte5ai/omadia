@@ -98,6 +98,36 @@ describe('applyEnvSeeds (ADR-0193)', () => {
   });
 });
 
+describe('applyEnvSeeds — #2299 additions', () => {
+  const DIR: EnvSeed = {
+    envName: 'MEMORY_SEED_DIR',
+    configKey: 'seed_dir',
+    value: '/app/seed/memory',
+    legacyDefault: '/app/seed/memory',
+    fallback: '/app/seed/memory',
+  };
+
+  it('writes the kernel fallback for an unset variable instead of removing the key', () => {
+    const r = applyEnvSeeds({}, [DIR], {});
+    assert.equal(r.config?.['seed_dir'], '/app/seed/memory');
+    const owned = applyEnvSeeds(r.config ?? {}, [{ ...DIR, value: '/custom' }], { MEMORY_SEED_DIR: '/custom' });
+    assert.equal(owned.config?.['seed_dir'], '/custom', 'the fallback stays boot-owned');
+  });
+
+  it('keeps an operator value over the fallback', () => {
+    const r = applyEnvSeeds({ seed_dir: '/operator', [ENV_SEEDED_MARKER_KEY]: '{}' }, [DIR], {});
+    assert.equal(r.config, null);
+  });
+
+  it('a pre-marker value equal to the set variable is boot-owned', () => {
+    const url: EnvSeed = { envName: 'OLLAMA_BASE_URL', configKey: 'ollama_base_url', value: 'http://a', legacyDefault: '' };
+    const first = applyEnvSeeds({ ollama_base_url: 'http://a' }, [url], { OLLAMA_BASE_URL: 'http://a' });
+    const next = applyEnvSeeds(first.config ?? {}, [{ ...url, value: 'http://b' }], { OLLAMA_BASE_URL: 'http://b' });
+    assert.equal(next.config?.['ollama_base_url'], 'http://b');
+    assert.deepEqual(next.shadowed, []);
+  });
+});
+
 describe('bootstrapKnowledgeGraphFromEnv — backfill seeds (#1858)', () => {
   const NEON = '@omadia/knowledge-graph-neon';
   const catalog = {

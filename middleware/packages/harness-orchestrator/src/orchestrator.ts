@@ -217,6 +217,7 @@ import {
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
 import { LoopGuard } from './loopGuard.js';
+import { fastLaneToolResultNote } from './fastLaneHandoff.js';
 import {
   TOOLS_OFF_DIRECTIVE,
   UNATTENDED_DIRECTIVE,
@@ -250,7 +251,7 @@ import { RunTraceCollector, shareEntityRefs, type InvocationHandle } from './run
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
-import type { CliTurnCards } from './cliChatAgent.js';
+import type { CliTurnAttachments, CliTurnCards } from './cliChatAgent.js';
 import type { CliTurnPrivacy } from './cliTurnPrivacy.js';
 import type { DispatchableToolSpec } from './toolDispatchService.js';
 import { CLI_MEMORY_RULES, type CliTurnMemory } from './cliMemoryTool.js';
@@ -269,7 +270,7 @@ import {
 import {
   isMemoryNoteTool,
   maskMemoryNoteResult,
-  maskMemoryNoteText,
+  maskStoredTextPerEntry,
   restoreMemoryNoteInput,
 } from './memoryNoteSurrogates.js';
 import {
@@ -320,6 +321,7 @@ import {
   type DiscretionTurnState,
 } from './discretion/turnLabels.js';
 import { conversationContextKey, once, ownerContextKey, readersFromAudience } from './discretion/turnSetup.js';
+import { withReplayedAnswerNote } from './replayedAnswerNote.js';
 import {
   consultationAllowsTool,
   consultationToolRefusal,
@@ -1605,6 +1607,32 @@ function turnIncompleteMarker(
 }
 
 /**
+ * #2300 — a tool input built from the user's words (the fast lane's resolved
+ * input), masked leaf by leaf through the turn's prompt map, so the replayed
+ * `tool_use` carries the same surrogates the model saw in the prompt.
+ */
+async function maskToolInputForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  value: unknown,
+): Promise<unknown> {
+  if (privacy === undefined) return value;
+  if (typeof value === 'string') return maskPromptForWire(privacy, value, 'context');
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    for (const item of value) out.push(await maskToolInputForWire(privacy, item));
+    return out;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = await maskToolInputForWire(privacy, item);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * Mask a wire-bound prompt text through the turn's privacy handle. Returns
  * the text unchanged when no handle is present, the operator flag is off,
  * or the text is empty — byte-identical legacy behavior. Throws
@@ -1692,6 +1720,8 @@ interface PriorContextRecall {
   readonly recallUsed?: boolean;
   readonly segments?: readonly string[];
   readonly priorContext: string | undefined;
+  /** #2341 — the injected copy differs from the stored text (spans masked). */
+  readonly priorContextMasked?: boolean;
 }
 
 /** The recalled prior-context block (knowledge-graph recall and the session
@@ -1754,8 +1784,13 @@ async function maskReplayedAnswerForWire(
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
-): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+): Promise<{
+  readonly messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /** #2341 — a replayed answer crossed the wire with masked spans. */
+  readonly answersMasked: boolean;
+}> {
   const pairs: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  let answersMasked = false;
   for (const t of priorTurns ?? []) {
     if (t.userMessage.trim().length > 0) {
       pairs.push({
@@ -1767,13 +1802,12 @@ async function maskPriorTurnsForWire(
     // the agent's words; replayed, the model starts writing it itself.
     const answer = stripKnownAiDisclosureLines(t.assistantAnswer);
     if (answer.trim().length > 0) {
-      pairs.push({
-        role: 'assistant',
-        content: await maskReplayedAnswerForWire(privacy, answer),
-      });
+      const content = await maskReplayedAnswerForWire(privacy, answer);
+      if (content !== answer) answersMasked = true;
+      pairs.push({ role: 'assistant', content });
     }
   }
-  return pairs;
+  return { messages: pairs, answersMasked };
 }
 
 /**
@@ -2868,6 +2902,10 @@ interface ToolDispatchMeta {
    *  (`NativeToolResult.postcondition`). The run trace carries them to the
    *  verifier, which raises a `tool_postcondition` claim. */
   postcondition?: { readonly issues: readonly string[] };
+  /** #2300 / ADR-0265 — IN: the output of a call the fast lane already ran.
+   *  The handler does not run again; the output takes every step after it
+   *  (shield, ledger, labels) like a fresh result. */
+  readonly prefetchedOutput?: string;
   /** #1920 / ADR-0272 — set by the dispatch when an MCP tool's result went to
    *  the model unmasked (operator bypass in force, or no privacy guard). */
   unmaskedMcpResult?: boolean;
@@ -4393,6 +4431,19 @@ export class Orchestrator {
   }
 
   /**
+   * #2303 (ADR-0177) — the files and diagrams a subscription-CLI turn's
+   * loopback tool calls produced. Called by `CliChatAgent` once, inside the
+   * CLI turn's context, so each sink returns only that turn's outputs.
+   */
+  public drainCliTurnAttachments(): CliTurnAttachments {
+    const { diagrams, files } = this.drainAttachments();
+    return {
+      ...(diagrams.length > 0 ? { attachments: diagrams } : {}),
+      ...(files.length > 0 ? { fileAttachments: files } : {}),
+    };
+  }
+
+  /**
    * Issue #1102 — drain the interactive-card state a subscription-CLI turn left
    * on the kernel-native tool instances, so the CliChatAgent can attach it to
    * its `done` event and the card / chips / slot-picker actually render.
@@ -4774,7 +4825,7 @@ export class Orchestrator {
       // The structured `recalled` payload stays raw — it goes to the UI, not
       // the model. Its stored-turn segments let C1 skip turns already scanned.
       const priorContext = await maskRecalledForWire(privacy, retrieved.text, retrieved.segments);
-      return { ...retrieved, priorContext };
+      return { ...retrieved, priorContext, priorContextMasked: priorContext !== retrieved.text };
     })();
     recall.catch(() => undefined);
     return recall;
@@ -5989,7 +6040,9 @@ export class Orchestrator {
     // #1841 / ADR-0191 — the listing names stored notes: masked through this
     // turn's map like a `memory` result. Withheld ⇒ no index; the model keeps
     // the ordinary read convention, whose results are masked the same way.
-    const listing = await maskMemoryNoteText(turnContext.current()?.privacyHandle, index.listing);
+    // #2296 / ADR-0296 — per entry: a note with an earlier turn's placeholder
+    // leaves the index, the others stay.
+    const listing = await maskStoredTextPerEntry(turnContext.current()?.privacyHandle, index.listing);
     if (!listing.ok) {
       console.log('[orchestrator] memory-index skipped reason=privacy-withheld');
       return undefined;
@@ -7209,7 +7262,7 @@ export class Orchestrator {
         ...(input.planHint !== undefined ? { planHint: input.planHint } : {}),
       });
     }
-    const { recalled, recallUsed, priorContext } = await recall;
+    const { recalled, recallUsed, priorContext, priorContextMasked } = await recall;
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — the same pass also resolves image attachments (Teams
     // Tigris storage_key, or a bare url for channels without a pre-fetch)
@@ -7265,9 +7318,15 @@ export class Orchestrator {
     // #361 — priorTurns replay persisted REAL values (turn N restored them
     // before persistence), so they are masked through the same turn map
     // before assembly. See maskPriorTurnsForWire.
-    const priorTurnMessages = await maskPriorTurnsForWire(
+    const { messages: priorTurnMessages, answersMasked: priorAnswersMasked } = await maskPriorTurnsForWire(
       privacyForPrompt,
       input.priorTurns,
+    );
+    // #2341 — the model is told that placeholders in its own replayed
+    // answers are the shield's, so it never "corrects" a correct answer.
+    const turnSystemHint = withReplayedAnswerNote(
+      effectiveExtraSystemHint,
+      priorAnswersMasked || priorContextMasked === true,
     );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Live chat history first. Each turn becomes a (user, assistant) pair —
@@ -7319,6 +7378,10 @@ export class Orchestrator {
     // Phase-1 Kemia hook — resolved ONCE at turn start. Empty when no
     // `responseGuard@1` provider is installed; identical cache shape then.
     const prependRules = await this.resolvePrependRules(messages);
+    // #2300 / ADR-0265 — the fast lane's executed call, as the first tool round.
+    const fastLaneRound = await this.fastLaneToolRound(input, turnMemory, traceCollector);
+    messages.push(...fastLaneRound);
+    if (fastLaneRound.length > 0) toolCalls += 1;
 
     // Round-loop guard + optional wall-clock budget. `forceFinalize` latches
     // once the guard (or the time budget) decides the turn must wrap up; the
@@ -7393,7 +7456,7 @@ export class Orchestrator {
               turnWorkingMode,
             ),
             priorContext,
-            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
+            withFinalizeHint(turnSystemHint, finalizePass),
           );
         // #1211 — `tools` / `tool_choice` depend on the provider a request
         // goes to, so the primary request and the fallback below each get
@@ -8595,7 +8658,7 @@ export class Orchestrator {
     // builds no `memoryUsed`, and its only consumer is the non-streaming Teams
     // card (`toSemanticAnswer`). Wire it through with the flag if a streaming
     // channel ever grows a Fresh-Check affordance.
-    const { recalled, priorContext } = await (startedRecall ??
+    const { recalled, priorContext, priorContextMasked } = await (startedRecall ??
       this.startPriorContextRecall(input, wireUserMessage, turnMemory, privacyForPrompt));
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
@@ -8648,9 +8711,15 @@ export class Orchestrator {
 
     // #361 — priorTurns are masked through the same turn map before
     // assembly; see chatInContextInner / maskPriorTurnsForWire.
-    const priorTurnMessages = await maskPriorTurnsForWire(
+    const { messages: priorTurnMessages, answersMasked: priorAnswersMasked } = await maskPriorTurnsForWire(
       privacyForPrompt,
       input.priorTurns,
+    );
+    // #2341 — the model is told that placeholders in its own replayed
+    // answers are the shield's, so it never "corrects" a correct answer.
+    const turnSystemHint = withReplayedAnswerNote(
+      effectiveExtraSystemHint,
+      priorAnswersMasked || priorContextMasked === true,
     );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Same in-memory history injection as chat() — see chatInContext().
@@ -8719,6 +8788,10 @@ export class Orchestrator {
 
     // Phase-1 Kemia hook — see chatInContextInner for rationale.
     const prependRules = await this.resolvePrependRules(messages);
+    // #2300 / ADR-0265 — see chatInContextInner.
+    const fastLaneRound = await this.fastLaneToolRound(input, turnMemory, traceCollector);
+    messages.push(...fastLaneRound);
+    if (fastLaneRound.length > 0) toolCalls += 1;
 
     // Round-loop guard + optional wall-clock budget — see chatInContextInner.
     const loopGuard = this.newLoopGuard();
@@ -8886,7 +8959,7 @@ export class Orchestrator {
               turnWorkingMode,
             ),
             priorContext,
-            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
+            withFinalizeHint(turnSystemHint, finalizePass),
           );
         // #2217 — a tool-less turn sends no tool definitions at all.
         const iterationTools = toolsForTurn(input, () => this.buildToolsList());
@@ -10183,6 +10256,7 @@ export class Orchestrator {
           ? input
           : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<NativeToolOutput> => {
+      if (meta?.prefetchedOutput !== undefined) return meta.prefetchedOutput;
       if (
         privacy !== undefined &&
         ctx !== undefined &&
@@ -10388,7 +10462,7 @@ export class Orchestrator {
         // result is masked through THIS turn's map (ADR-0191).
         return capExempt(
           isMemoryNoteTool(name)
-            ? await maskMemoryNoteResult(privacy, result)
+            ? await maskMemoryNoteResult(privacy, result, name)
             : remaskEchoedValues(privacy, result),
         );
       }
@@ -11106,6 +11180,53 @@ export class Orchestrator {
    *  helpers' own budgets never exceed them. */
   turnBudget(): { readonly maxTokens: number; readonly maxIterations: number } {
     return { maxTokens: this.maxTokens, maxIterations: this.maxIterations };
+  }
+
+  /**
+   * #2300 / ADR-0265 — the call the fast lane already ran before its miss,
+   * replayed as this turn's first tool round: the call as an assistant
+   * `tool_use`, its output as the `tool_result`, followed by a data-free
+   * kernel note. The output goes through {@link Orchestrator.dispatchTool}
+   * with the handler skipped, so the Privacy Shield, the replay ledger and the
+   * labels treat it like a fresh result of that tool, and the run trace lists
+   * the call (the verifier's evidence). The input is masked through the
+   * turn's prompt map first — the model only ever sees surrogates.
+   */
+  private async fastLaneToolRound(
+    input: ChatTurnInput,
+    turnMemory: TurnMemoryBinding | undefined,
+    traceCollector: RunTraceCollector | undefined,
+  ): Promise<Array<{ role: 'user' | 'assistant'; content: ContentBlock[] }>> {
+    const call = input.fastLaneCall;
+    if (call === undefined) return [];
+    const privacy = turnContext.current()?.privacyHandle;
+    const wireInput = await maskToolInputForWire(privacy, call.input);
+    const id = `toolu_fastlane_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const meta: ToolDispatchMeta = { replayed: false, prefetchedOutput: call.output };
+    const startedAt = Date.now();
+    const output = await this.dispatchTool(call.tool, wireInput, undefined, turnMemory, meta);
+    const isError = output.startsWith('Error:');
+    traceCollector?.recordOrchestratorToolCall(
+      {
+        callId: id,
+        toolName: call.tool,
+        durationMs: Date.now() - startedAt,
+        isError,
+        ...(meta.replayed ? { replayed: true } : {}),
+        ...(meta.postcondition ? { postcondition: meta.postcondition } : {}),
+      },
+      output,
+    );
+    return [
+      { role: 'assistant', content: [{ type: 'tool_use', id, name: call.tool, input: wireInput }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: id, content: output, ...(isError ? { is_error: true } : {}) },
+          { type: 'text', text: fastLaneToolResultNote(call) },
+        ],
+      },
+    ];
   }
 
   /** Opens a run-trace invocation for a domain tool; an internal helper's run
@@ -11833,7 +11954,10 @@ export class Orchestrator {
   private toolSystemOf(name: string): ToolSystem | undefined {
     const native = this.nativeTools.get(name);
     if (native?.agentId !== undefined) {
-      return { system: native.agentId, effect: isWriteCapableTool(native.writeCapabilities) ? 'write' : 'unknown' };
+      // #2338 / ADR-0299 — a declared write capability is a write; else the
+      // effect the plugin declared at registration; else the manifest decides.
+      const effect = isWriteCapableTool(native.writeCapabilities) ? 'write' : (native.sideEffects ?? 'unknown');
+      return { system: native.agentId, effect };
     }
     const domain = this.domainToolsByName.get(name);
     if (!domain || domain === this.consultTool) return undefined;

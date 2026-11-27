@@ -42,13 +42,14 @@ const INFRA = 'middleware or mount plumbing: carries requests, serves no data of
 
 export const ROUTES: Readonly<Record<string, Classification>> = {
   // Plugin routes.
-  'packages/harness-diagrams/src/plugin.ts PLUGIN /diagrams/dl': none('downloads a rendered diagram file, not memory'),
-  'packages/harness-plugin-office/src/plugin.ts PLUGIN /documents/dl': none('downloads a generated Office file, not memory'),
+  'packages/harness-diagrams/src/plugin.ts PLUGIN DIAGRAM_LINK_ROUTE_PREFIX': none('downloads a rendered diagram file (/diagrams/dl), not memory'),
+  'packages/harness-plugin-office/src/plugin.ts PLUGIN DOCUMENT_LINK_ROUTE_PREFIX': none('downloads a generated Office file (/documents/dl), not memory'),
   'packages/harness-memory/src/plugin.ts PLUGIN DEV_MEMORY_PREFIX': dev('raw /memories browser under /api/dev, behind DEV_ENDPOINTS_ENABLED; no production guard yet (#2275)'),
   'packages/harness-memory-postgres/src/plugin.ts PLUGIN DEV_MEMORY_PREFIX': dev('raw /memories browser under /api/dev, behind DEV_ENDPOINTS_ENABLED; no production guard yet (#2275)'),
   'src/channels/coreApi.ts PLUGIN channelId': none('channel inbound webhook: starts turns, whose recall the turn sweep covers'),
 
   // Infrastructure in src/index.ts.
+  'src/index.ts USE /api/v1/files createFileLinkRenewRouter': none('re-signs an expired Office/diagram download link (#1964, ADR-0266); reads no memory'),
   'src/index.ts USE (no path) cookieParser': none(INFRA),
   'src/index.ts USE (no path) express.json': none(INFRA),
   'src/index.ts USE (no path) createPluginRawBodyMount': none(INFRA),

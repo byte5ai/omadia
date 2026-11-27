@@ -4103,6 +4103,26 @@ export async function runBulkPromote(
   );
 }
 
+/** #2295 — a turn retired from promotion (ids and reason only). */
+export interface RetiredTurn {
+  turnId: string;
+  reason: string;
+  retiredAt: string;
+  agentSlug?: string;
+}
+
+export async function listRetiredTurns(limit = 100): Promise<RetiredTurn[]> {
+  const res = await getJson<{ turns: RetiredTurn[] }>(
+    `/v1/admin/bulk-promote/retired?limit=${String(limit)}`,
+  );
+  return res.turns;
+}
+
+/** #2295 — let a retired turn be promoted again (audited operator act). */
+export async function unretireTurn(turnId: string): Promise<void> {
+  await postJson<{ ok: boolean }>('/v1/admin/bulk-promote/unretire', { turnId });
+}
+
 // ── Slice 9 — Contradiction detection workflow ───────────────────────────────
 
 export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
@@ -4681,6 +4701,8 @@ export interface MemoryPurgePreviewResult {
   identityCount?: number;
   /** #1986 — generated Office/Diagram files deleted from the bucket. */
   generatedFileCount?: number;
+  /** #2292 — the person's accounts whose open web sessions the purge ends. */
+  sessionAccountCount?: number;
   /** #1840 — the person a user-axis selector resolved to. */
   resolvedUser?: { omadiaUserId: string; via: string };
   /** Top-level entries a re-seed resets and writes back (#1335). */
@@ -4701,6 +4723,8 @@ export interface MemoryPurgeResult {
   processesDeleted?: number;
   identityDeleted?: number;
   generatedFilesDeleted?: number;
+  /** #2292 — accounts whose open web sessions the purge ended. */
+  sessionsRevoked?: number;
   /** Files the re-seed wrote back; present only on a re-seed purge. */
   reseededFiles?: number;
   /** `memory_purge_audit` row id; absent when the purge was not recorded. */
@@ -6794,4 +6818,23 @@ export async function triggerUpdate(body: {
   confirm: string;
 }): Promise<{ accepted: boolean; targetVersion: string; auditId: string }> {
   return postJson(UPDATE_BASE, body);
+}
+
+// ---------------------------------------------------------------------------
+// #1964 (ADR-0266) — renew an expired Office/Diagram download link
+// ---------------------------------------------------------------------------
+
+export interface RenewedFileLink {
+  url: string;
+  /** Expiry of `url`, unix seconds. */
+  expiresAt: number;
+}
+
+/**
+ * Ask the kernel for a freshly signed link to the same file. Refusals carry
+ * `file_link.too_old` (410), `file_link.unknown_route` (404) or
+ * `file_link.invalid_signature` (403) as {@link ApiError.code}.
+ */
+export async function renewFileLink(url: string): Promise<RenewedFileLink> {
+  return postJson<RenewedFileLink>('/v1/files/renew', { url });
 }

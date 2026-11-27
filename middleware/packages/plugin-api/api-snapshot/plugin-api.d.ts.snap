@@ -361,6 +361,12 @@ export interface BulkPromoteRunOptions {
 scoreLimit?: number;
 promoteLimit?: number;
 threshold?: number;
+mayPromote?: (candidate: BulkPromoteCandidate) => Promise<boolean>;
+}
+export interface BulkPromoteCandidate {
+readonly turnId: string;
+readonly owners?: readonly string[];
+readonly agentSlug?: string;
 }
 export interface BulkScorePhaseResult {
 scanned: number;
@@ -383,7 +389,18 @@ durationMs: number;
 export interface BulkPromotionService {
 preview(threshold: number): Promise<BulkPromotePreview>;
 run(options?: BulkPromoteRunOptions): Promise<BulkPromoteRunResult>;
+listRetired?(options?: {
+limit?: number;
+}): Promise<RetiredTurn[]>;
+unretire?(turnId: string): Promise<UnretireOutcome>;
 }
+export interface RetiredTurn {
+readonly turnId: string;
+readonly reason: string;
+readonly retiredAt: string;
+readonly agentSlug?: string;
+}
+export type UnretireOutcome = 'unretired' | 'not_found' | 'no_person_owner';
 export declare const BULK_PROMOTION_SERVICE_NAME = "bulkPromotion";
 export declare const BULK_PROMOTION_CAPABILITY = "bulkPromotion@1";
 
@@ -1178,6 +1195,26 @@ outcome: 'sent';
 } | FollowupRefusal>;
 }
 
+// ===== fileLinkRenewal.d.ts =====
+export declare const FILE_LINK_RENEWAL_SERVICE_NAME = "fileLinkRenewal";
+export declare const FILE_LINK_RENEWAL_CAPABILITY = "fileLinkRenewal@1";
+export interface SignedFileLink {
+readonly key: string;
+readonly exp: number;
+readonly sig: string;
+}
+export interface RenewedFileLink {
+readonly url: string;
+readonly expiresAt: number;
+}
+export interface FileLinkRenewer {
+verifyIgnoringExpiry(link: SignedFileLink): boolean;
+sign(key: string): RenewedFileLink;
+}
+export interface FileLinkRenewalService {
+registerRenewer(routePrefix: string, renewer: FileLinkRenewer): () => void;
+}
+
 // ===== generatedObjects.d.ts =====
 export declare const GENERATED_OBJECTS_SERVICE_NAME = "generatedObjects";
 export declare const GENERATED_OBJECTS_CAPABILITY = "generatedObjects@1";
@@ -1248,6 +1285,7 @@ export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
 export * from './datasetId.js';
 export * from './generatedObjects.js';
+export * from './fileLinkRenewal.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
 export * from './boundaryPresets.js';
@@ -1348,6 +1386,7 @@ linkChannelIdentity?(input: ChannelIdentityLinkInput): Promise<ChannelIdentityLi
 countUserIdentity?(omadiaUserId: string): Promise<{
 count: number;
 }>;
+listUserChannelIdentities?(omadiaUserId: string): Promise<readonly UserChannelIdentity[]>;
 purgeUserIdentity?(omadiaUserId: string): Promise<{
 deletedNodes: number;
 }>;
@@ -1749,7 +1788,7 @@ actorChannelIdentityId?: string;
 reason?: string;
 systemActor?: string;
 }
-export declare const SYSTEM_AUDIT_ACTOR_UUID = "00000000-0000-0000-0000-000000000000";
+export declare const SYSTEM_AUDIT_ACTOR_UUID: typeof SYSTEM_ACTOR_OMADIA_USER_ID;
 export declare const PROMOTION_RETIRED_PROP = "promotionRetired";
 export interface MemorableKnowledgePurgeFilter {
 tenantId: string;
@@ -2045,6 +2084,11 @@ export declare function entityNodeId(ref: EntityRef): string;
 export declare function canonicalOwners(ids: readonly string[]): string[];
 export declare function ownersCoverAudience(owners: readonly string[] | undefined, audience: readonly string[]): boolean;
 export declare function userNodeId(omadiaUserId: string): string;
+export interface UserChannelIdentity {
+readonly channelKind: ChannelKind;
+readonly channelUserId: string;
+}
+export declare function parseChannelIdentityNodeId(externalId: string): UserChannelIdentity | null;
 export declare function channelIdentityNodeId(channelKind: ChannelKind, channelUserId: string): string;
 export declare function memorableKnowledgeNodeId(memorableId: string): string;
 export declare function palaiaExcerptNodeId(excerptId: string): string;
@@ -2123,6 +2167,8 @@ aggregate?: DatasetAggregate;
 limit: number;
 offset: number;
 }
+export declare const DATASET_DATE_VALUE_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]+)?)?Z?)?$";
+export declare function datasetDateTime(value: unknown): number | undefined;
 export declare function validateDatasetQueryOptions(columns: readonly DatasetColumnSchema[], opts: DatasetQueryOptions | undefined): NormalizedDatasetQuery;
 export declare const ENCRYPTED_DATASET_CELL_PREFIX = "enc1:";
 export declare function isEncryptedDatasetCell(value: unknown): boolean;
@@ -2616,6 +2662,7 @@ readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
 readonly piiFields?: readonly ToolPIIField[];
+readonly sideEffects?: 'read' | 'write' | 'none';
 readonly isAvailable?: () => boolean;
 }
 export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
@@ -3314,6 +3361,7 @@ readonly reason: string;
 };
 export interface UnresolvedSurrogateCountOptions {
 readonly unreadableLiterals?: boolean;
+readonly reservedShapes?: boolean;
 }
 export interface PrivacyGuardService {
 internToolResultV4(request: PrivacyToolResultV4Request): Promise<PrivacyToolResultV4Result>;
@@ -3363,6 +3411,7 @@ export declare const PROCESS_TITLE_REGEX: RegExp;
 export declare const PROCESS_DEDUP_DEFAULT_THRESHOLD = 0.9;
 export interface ProcessRecord {
 readonly id: string;
+readonly legacyId?: string;
 readonly scope: string;
 readonly title: string;
 readonly steps: readonly string[];
@@ -3454,6 +3503,7 @@ history(_id: string): Promise<readonly ProcessRecord[]>;
 }
 export declare function slugifyProcessTitle(title: string): string;
 export declare function buildProcessId(scope: string, title: string): string;
+export declare function newProcessId(): string;
 
 // ===== questionCard.d.ts =====
 export declare const CARD_QUESTION_KINDS: readonly ["single_choice", "multiple_choice", "ranking", "consent", "assignment", "text", "number", "date"];

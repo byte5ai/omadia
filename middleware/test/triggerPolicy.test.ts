@@ -178,3 +178,33 @@ describe('trigger times the model can state without a clock (E2E 2026-11-23)', (
     assert.match(res.message, /server time now: 2026-11-20T10:00:00\.000Z/);
   });
 });
+
+describe('#2339 a trigger takes the person\'s zone when it names none', () => {
+  const post = [{ type: 'post', template: 'aktuelle Uhrzeit: {{now}}' }];
+
+  it('a wake_at from a Berlin chat renders {{now}} in Berlin time', () => {
+    const res = validateTriggerRequest('wake_at', { purpose: 'p', time: '1m', until: '30m', actions: post }, env({ timezone: 'Europe/Berlin' }), DEFAULT_TRIGGER_LIMITS, NOW);
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.equal(res.value.timezone, 'Europe/Berlin');
+    const text = renderTemplate('{{now}}', {
+      purpose: 'p', runs: 1, remainingRuns: 0, until: res.value.until, now: NOW, rows: null, event: null, timezone: res.value.timezone,
+    });
+    assert.match(text, /11:00/, 'NOW is 10:00 UTC = 11:00 in Berlin');
+  });
+
+  it('a cron without its own zone runs in the person\'s zone; a named zone wins', () => {
+    const daily = { purpose: 'x', until: inDays(20), cron: '0 8 * * 1-5', max_runs: 20, actions: post };
+    const own = validateTriggerRequest('wake_every', daily, env({ timezone: 'Europe/Berlin' }), DEFAULT_TRIGGER_LIMITS, NOW);
+    assert.ok(own.ok, JSON.stringify(own));
+    assert.equal(own.value.timezone, 'Europe/Berlin');
+    const named = validateTriggerRequest('wake_every', { ...daily, timezone: 'America/New_York' }, env({ timezone: 'Europe/Berlin' }), DEFAULT_TRIGGER_LIMITS, NOW);
+    assert.ok(named.ok, JSON.stringify(named));
+    assert.equal(named.value.timezone, 'America/New_York');
+  });
+
+  it('without a zone on the envelope it stays UTC, as before', () => {
+    const res = validateTriggerRequest('wake_at', { purpose: 'p', time: '1m', until: '30m', actions: post }, env(), DEFAULT_TRIGGER_LIMITS, NOW);
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.equal(res.value.timezone, null);
+  });
+});

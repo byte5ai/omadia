@@ -9,6 +9,8 @@ import {
   CONVERSATION_HISTORY_NODE_TYPES,
   type ConversationHistoryPurgeFilter,
   channelIdentityNodeId,
+  parseChannelIdentityNodeId,
+  type UserChannelIdentity,
   SYSTEM_ACTOR_OMADIA_USER_ID,
   type ChannelKind,
   entityNodeId,
@@ -42,6 +44,7 @@ import {
   type DatasetSummary,
   validateDatasetQueryOptions,
   assertNoEncryptedQueryColumns,
+  DATASET_DATE_VALUE_PATTERN,
   datasetQueryValueColumns,
   ENCRYPTED_DATASET_CELL_PREFIX,
   type EntityCapturedTurnsHit,
@@ -125,7 +128,6 @@ import {
   type EmbeddingClient,
   normalizeDatasetUuid,
   PROMOTION_RETIRED_PROP,
-  SYSTEM_AUDIT_ACTOR_UUID,
   buildRecallTsQuery,
   isMemorableContentCorrection,
   INCONSISTENCY_MAX_LOST_VERDICTS,
@@ -333,6 +335,32 @@ interface DatasetRow {
  * (numeric ops on non-number columns, `contains` on non-string columns),
  * so every branch here is reachable only for a compatible pairing.
  */
+/**
+ * #2302 (ADR-0267) — a range filter on a `date` column, compared as
+ * `timestamp` (wall-clock; the cast drops a trailing `Z`, matching
+ * `datasetDateTime` in the in-memory backend). The cast only runs on a cell
+ * in `DATASET_DATE_VALUE_PATTERN`; any other cell (a `date` column imported
+ * before #1845 kept its raw spelling) is NULL and never matches, instead of
+ * failing the whole query on a cast error. `validateDatasetQueryOptions`
+ * already checked the bound.
+ */
+function dateRangeClause(
+  colParamIdx: number,
+  opSql: string,
+  value: DatasetFilter['value'],
+  params: unknown[],
+): string {
+  const cell = `data->>$${String(colParamIdx)}`;
+  params.push(DATASET_DATE_VALUE_PATTERN);
+  const patternIdx = params.length;
+  params.push(String(value));
+  const valueIdx = params.length;
+  // The pattern checks the shape only; `pg_input_is_valid` (Postgres 16+,
+  // ADR-0166) drops an impossible ISO-shaped cell (`2024-02-30`) instead of
+  // failing the whole query on the cast, as the in-memory backend does.
+  return `(CASE WHEN ${cell} ~ $${String(patternIdx)}::text AND pg_input_is_valid(${cell}, 'timestamp') THEN (${cell})::timestamp END) ${opSql} $${String(valueIdx)}::timestamp`;
+}
+
 function buildDatasetFilterClause(
   filter: DatasetFilter,
   columnType: DatasetColumnSchema['type'],
@@ -354,8 +382,9 @@ function buildDatasetFilterClause(
     case 'gte':
     case 'lt':
     case 'lte': {
-      params.push(Number(filter.value));
       const opSql = { gt: '>', gte: '>=', lt: '<', lte: '<=' }[filter.op];
+      if (columnType === 'date') return dateRangeClause(colParamIdx, opSql, filter.value, params);
+      params.push(Number(filter.value));
       return `${lhs} ${opSql} $${String(params.length)}::numeric`;
     }
     case 'contains': {
@@ -484,6 +513,20 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     this.resolveEmbeddingClient = opts.resolveEmbeddingClient;
     this.gateEpoch = opts.gateEpoch;
     this.accessTracker = opts.accessTracker;
+  }
+
+  /**
+   * #2298 — did the provider of `client` go away (uninstalled, switched,
+   * gate refused) while its embed was in flight? Then a failure of that embed
+   * is the withdrawal, not the node's: no attempt is counted, and the backfill
+   * re-embeds the node with whatever provider is approved next. Reading the
+   * resolver re-evaluates the gate, so a withdrawal no one has noticed yet is
+   * seen here: no client any more, or a moved epoch (a switch approves a new
+   * client only through a re-evaluation, which moves it).
+   */
+  private providerWithdrawn(fence: { moved(): boolean }): boolean {
+    if (fence.moved()) return true;
+    return this.currentEmbeddingClient() === undefined || fence.moved();
   }
 
   /**
@@ -1161,7 +1204,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     try {
       const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
-      if (fence.moved()) {
+      if (this.providerWithdrawn(fence)) {
         // The gate re-evaluated while we were embedding, so this vector came
         // from a client the current verdict no longer approves. Dropping it is
         // a clean no-op: the row keeps `embedding IS NULL` and no attempt is
@@ -1187,6 +1230,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (this.providerWithdrawn(fence)) {
+        console.error(
+          `[graph] embed for turn uuid=${turnUuid.slice(0, 8)}… ended with its provider withdrawn — no attempt counted, the backfill sweep re-embeds it`,
+        );
+        return;
+      }
       console.error(
         `[graph] embed failed turn uuid=${turnUuid.slice(0, 8)}…:`,
         message,
@@ -3601,6 +3650,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { count: Number(res.rows[0]?.count ?? '0') };
   }
 
+  async listUserChannelIdentities(omadiaUserId: string): Promise<readonly UserChannelIdentity[]> {
+    const res = await this.pool.query<{ external_id: string }>(
+      `SELECT ci.external_id
+         FROM graph_nodes u
+         JOIN graph_edges e ON e.to_node = u.id AND e.type = 'IS_IDENTITY_OF'
+         JOIN graph_nodes ci ON ci.id = e.from_node AND ci.type = 'ChannelIdentity'
+        WHERE u.tenant_id = $1 AND u.type = 'User' AND u.external_id = $2
+          AND ci.tenant_id = $1
+        ORDER BY ci.external_id`,
+      [this.tenantId, userNodeId(omadiaUserId)],
+    );
+    return res.rows
+      .map((r) => parseChannelIdentityNodeId(r.external_id))
+      .filter((v): v is UserChannelIdentity => v !== null);
+  }
+
   async purgeUserIdentity(omadiaUserId: string): Promise<{ deletedNodes: number }> {
     // graph_edges FK-cascades on node delete.
     const res = await this.pool.query(
@@ -4313,7 +4378,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     try {
       const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
-      if (fence.moved()) {
+      if (this.providerWithdrawn(fence)) {
         console.error(
           `[graph] discarded a previous-provider embedding for ${externalId} — the model gate re-evaluated mid-embed; the backfill sweep will re-embed it`,
         );
@@ -4331,6 +4396,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     } catch (err) {
       // Log + bump attempt counter so the backfill sweep can rate-limit.
       const message = err instanceof Error ? err.message : String(err);
+      if (this.providerWithdrawn(fence)) {
+        console.error(
+          `[graph] embed for ${externalId} ended with its provider withdrawn — no attempt counted, backfill will re-embed`,
+        );
+        return;
+      }
       console.error(
         `[graph] sync embed failed for ${externalId}: ${message} — backfill will retry`,
       );
@@ -5290,8 +5361,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       );
       this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
 
-      const excerptRow = await client.query<{ id: string }>(
-        `SELECT ex.id
+      const excerptRow = await client.query<{ id: string; external_id: string }>(
+        `SELECT ex.id, ex.external_id
            FROM graph_nodes mk
            JOIN graph_edges e ON e.to_node = mk.id AND e.type = 'EXCERPT_OF'
            JOIN graph_nodes ex ON ex.id = e.from_node AND ex.type = 'PalaiaExcerpt'
@@ -5314,6 +5385,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       await client.query(
         `DELETE FROM graph_nodes WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, hit.id],
+      );
+      // #2295 — an open duplicate pair naming the deleted excerpt has nothing
+      // left to decide; close it like the pairs of a deleted memory. A
+      // resolution that deleted this excerpt overwrites its own pair after.
+      await client.query(
+        `UPDATE graph_nodes
+            SET properties = properties || jsonb_build_object(
+                  'status', 'dismissed',
+                  'resolved_at', $3::text,
+                  'resolved_by', $4::text,
+                  'closed_reason', 'excerpt_deleted')
+          WHERE tenant_id = $1
+            AND type = 'ExcerptMergeCandidate'
+            AND properties->>'status' = 'open'
+            AND properties->'excerpt_pair' @> jsonb_build_array($2::text)`,
+        [this.tenantId, hit.external_id, new Date().toISOString(), resolvedByOf(actor)],
       );
 
       await this.writeAclAudit(client, {
@@ -6543,7 +6630,7 @@ function auditActorOf(actor: AclMutationOptions): {
 } {
   if (actor.systemActor) {
     return {
-      actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+      actorOmadiaUserId: SYSTEM_ACTOR_OMADIA_USER_ID,
       actorChannelIdentityId: actor.systemActor,
     };
   }

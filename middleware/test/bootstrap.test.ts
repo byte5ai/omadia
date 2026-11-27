@@ -581,6 +581,8 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
         seed_dir: '/test/seed/memory',
         seed_mode: 'missing',
         dev_memory_endpoints_enabled: 'true',
+        // #2299 — the steady state carries the ADR-0193 ownership marker.
+        _env_seeded: JSON.stringify({ seed_dir: '/test/seed/memory' }),
       },
     });
     const cat = makeCatalog([
@@ -590,6 +592,7 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
     const logs: string[] = [];
     await bootstrapMemoryFromEnv({
       config: makeConfig(true),
+      env: {},
       catalog: cat,
       registry: reg,
       vault: noopVault,
@@ -1032,7 +1035,12 @@ describe('bootstrapEmbeddingsFromEnv — env→config reconcile (overlay-on-exis
     await reg.register({ id: EMB_ID, installed_version: '0.1.0', installed_at: '2026-04-29T00:00:00Z', status: 'active', config });
   }
   function embDeps(reg: InMemoryInstalledRegistry, cfg: Config) {
-    return { config: cfg, vault: stubVault, registry: reg, catalog: embCatalog, log: () => {} };
+    // #2299 (ADR-0193) — the seeds read whether a variable is SET from the
+    // environment; mirror the test config into it.
+    const env = Object.fromEntries(
+      Object.entries(cfg as unknown as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+    );
+    return { config: cfg, env, vault: stubVault, registry: reg, catalog: embCatalog, log: () => {} };
   }
 
   it('reconciles ollama_base_url from env when overlay is added to an EXISTING install', async () => {
@@ -1048,14 +1056,14 @@ describe('bootstrapEmbeddingsFromEnv — env→config reconcile (overlay-on-exis
     assert.equal(cfg?.['ollama_model'], 'nomic-embed-text');
   });
 
-  it('is a no-op when stored ollama_base_url already matches env', async () => {
+  it('is a no-op once the stored config and its marker match env', async () => {
     const reg = new InMemoryInstalledRegistry();
     await seedEmb(reg, { ollama_base_url: 'http://ollama:11434', ollama_model: 'nomic-embed-text' });
+    const deps = embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text', concurrent: 2 }));
+    // The first boot after #2299 records the boot-owned values (one write).
+    await bootstrapEmbeddingsFromEnv(deps);
     const logs: string[] = [];
-    await bootstrapEmbeddingsFromEnv({
-      ...embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text' })),
-      log: (m: string) => logs.push(m),
-    });
+    await bootstrapEmbeddingsFromEnv({ ...deps, log: (m: string) => logs.push(m) });
     assert.equal(logs.some((l) => l.includes('reconciled')), false, 'no rewrite when already correct');
   });
 
@@ -1070,13 +1078,24 @@ describe('bootstrapEmbeddingsFromEnv — env→config reconcile (overlay-on-exis
     );
   });
 
-  it('reconciles a model-only change (URL already matches)', async () => {
+  it('follows a model change while the model is boot-owned (#2299)', async () => {
     const reg = new InMemoryInstalledRegistry();
-    await seedEmb(reg, { ollama_base_url: 'http://ollama:11434', ollama_model: 'old-model' });
-    await bootstrapEmbeddingsFromEnv(
-      embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text' })),
-    );
-    assert.equal(reg.get(EMB_ID)?.config?.['ollama_model'], 'nomic-embed-text');
+    await seedEmb(reg, { ollama_base_url: 'http://ollama:11434', ollama_model: 'nomic-embed-text' });
+    await bootstrapEmbeddingsFromEnv(embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text' })));
+    await bootstrapEmbeddingsFromEnv(embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'mxbai-embed-large' })));
+    assert.equal(reg.get(EMB_ID)?.config?.['ollama_model'], 'mxbai-embed-large');
+  });
+
+  it('keeps an operator model and logs the shadowed variable (ADR-0193)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, { ollama_base_url: 'http://ollama:11434', ollama_model: 'operator-model' });
+    const logs: string[] = [];
+    await bootstrapEmbeddingsFromEnv({
+      ...embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text' })),
+      log: (m: string) => logs.push(m),
+    });
+    assert.equal(reg.get(EMB_ID)?.config?.['ollama_model'], 'operator-model');
+    assert.ok(logs.some((l) => l.includes("OLLAMA_EMBEDDING_MODEL='nomic-embed-text' is ignored")));
   });
 
   it('reconciles max_concurrent on an existing install (same bug class as url)', async () => {
@@ -1085,7 +1104,16 @@ describe('bootstrapEmbeddingsFromEnv — env→config reconcile (overlay-on-exis
     await bootstrapEmbeddingsFromEnv(
       embDeps(reg, embCfg({ url: 'http://ollama:11434', concurrent: 8 })),
     );
-    assert.equal(reg.get(EMB_ID)?.config?.['max_concurrent'], 8);
+    assert.equal(reg.get(EMB_ID)?.config?.['max_concurrent'], '8');
+  });
+
+  it('removes a boot-owned URL once OLLAMA_BASE_URL is unset (#2299)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, {});
+    await bootstrapEmbeddingsFromEnv(embDeps(reg, embCfg({ url: 'http://ollama:11434' })));
+    await bootstrapEmbeddingsFromEnv(embDeps(reg, embCfg({ concurrent: 2 })));
+    assert.equal(reg.get(EMB_ID)?.config?.['ollama_base_url'], undefined);
+    assert.equal(reg.get(EMB_ID)?.config?.['max_concurrent'], '2', 'the kernel default, not the plugin\'s 4');
   });
 
   it('preserves unrelated operator config keys through the reconcile (wholesale register)', async () => {

@@ -25,7 +25,7 @@ import { agentOfTurnScope } from '@omadia/orchestrator-extras/dist/bulkPromotion
 import {
   INCONSISTENCY_MAX_LOST_VERDICTS,
   PROMOTION_RETIRED_PROP,
-  SYSTEM_AUDIT_ACTOR_UUID,
+  SYSTEM_ACTOR_OMADIA_USER_ID,
   type GraphNode,
   type KnowledgeGraph,
 } from '@omadia/plugin-api';
@@ -173,6 +173,48 @@ function mergeDetector(kg: KnowledgeGraph) {
   });
 }
 
+describe('#2295 · deleting an excerpt closes its open duplicate pairs', () => {
+  it('dismisses the open pair naming the deleted excerpt, keeps unrelated pairs', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const created = await kg.createMemorableKnowledge({
+      kind: 'reference',
+      summary: 'Ibis RAM',
+      createdBy: `web:${OWNER}`,
+      involvedOmadiaUserIds: [],
+      aclOwners: [OWNER],
+      palaiaExcerpts: { texts: ['Ibis has 64 GB', 'Ibis has 64GB of RAM', 'Ibis runs Debian'], source: 'hint' },
+    });
+    const mk = created.memorableKnowledgeNodeId;
+    const [x0, x1, x2] = await kg.listExcerptsForMemory(mk);
+    assert.ok(x0 && x1 && x2);
+    const pair = await kg.createExcerptMergeCandidate({ excerptAExternalId: x0.id, excerptBExternalId: x1.id, cosineSim: 0.98 });
+    const other = await kg.createExcerptMergeCandidate({ excerptAExternalId: x1.id, excerptBExternalId: x2.id, cosineSim: 0.97 });
+    assert.ok(pair && other);
+    await kg.deleteExcerpt(mk, x0.props.position, { actorOmadiaUserId: OWNER });
+    assert.equal(rawNode(kg, pair.id)?.props['status'], 'dismissed');
+    assert.equal(rawNode(kg, pair.id)?.props['closed_reason'], 'excerpt_deleted');
+    assert.equal(rawNode(kg, other.id)?.props['status'], 'open', 'a pair without the deleted excerpt stays');
+  });
+
+  it('a keep_a resolution still ends as resolved, not dismissed', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const created = await kg.createMemorableKnowledge({
+      kind: 'reference',
+      summary: 'Ibis RAM',
+      createdBy: `web:${OWNER}`,
+      involvedOmadiaUserIds: [],
+      aclOwners: [OWNER],
+      palaiaExcerpts: { texts: ['Ibis has 64 GB', 'Ibis has 64GB of RAM'], source: 'hint' },
+    });
+    const [x0, x1] = await kg.listExcerptsForMemory(created.memorableKnowledgeNodeId);
+    assert.ok(x0 && x1);
+    const pair = await kg.createExcerptMergeCandidate({ excerptAExternalId: x0.id, excerptBExternalId: x1.id, cosineSim: 0.98 });
+    assert.ok(pair);
+    const resolved = await kg.resolveExcerptMergeCandidate(pair.id, 'keep_a', { actorOmadiaUserId: OWNER });
+    assert.equal(resolved.props.status, 'resolved');
+  });
+});
+
 describe('ADR-0190 · safe auto-merge (#1835)', () => {
   it('never deletes a hand-saved correction; the pair stays open', async () => {
     const kg = new InMemoryKnowledgeGraph();
@@ -256,7 +298,7 @@ describe('ADR-0190 · safe auto-merge (#1835)', () => {
     assert.equal(await kg.getMemorableKnowledge(auto), null, 'auto copy retired');
     const audit = await kg.listMemoryAclAudit(auto);
     const del = audit.find((r) => r.action === 'delete');
-    assert.equal(del?.actorOmadiaUserId, SYSTEM_AUDIT_ACTOR_UUID);
+    assert.equal(del?.actorOmadiaUserId, SYSTEM_ACTOR_OMADIA_USER_ID);
     assert.equal(del?.actorChannelIdentityId, 'system:auto-merge');
     assert.match(del?.reason ?? '', /cosine=1\.000/);
     const resolved = await kg.listMergeCandidates({ viewerOmadiaUserId: OWNER, status: 'resolved' });

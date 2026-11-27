@@ -100,6 +100,13 @@ export interface AgentRow {
    */
   readonly contextMemory?: ContextMemoryMode;
   /**
+   * #2290 / ADR-0261 — when migration 0122 moved this agent from `off` to
+   * `members` (ISO string); `null`/absent when it did not or an operator has
+   * set a mode since. Drives the memory tab's notice that notes written under
+   * `off` sit in the agent tier, which `members` turns do not read.
+   */
+  readonly contextMemorySwitchedAt?: string | null;
+  /**
    * #1018 — the agent's own agent-to-agent switch (`agents.agent_to_agent`,
    * migration 0058). One half of the AND rule; the other half is the
    * `(channel, agent)` policy row. Optional and deny-default for the same
@@ -452,6 +459,8 @@ interface AgentDbRow {
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
   context_memory?: string | null;
+  /** #2290 — `agents.context_memory_switched_at`; absent before migration 0122. */
+  context_memory_switched_at?: Date | null;
   /** #1018 — `agents.agent_to_agent`; absent on a DB that predates 0058. */
   agent_to_agent?: string | null;
   /** #1876 — `agents.fast_lane`; absent on a DB that predates 0096. */
@@ -570,6 +579,9 @@ function mapAgent(row: AgentDbRow): AgentRow {
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
+    contextMemorySwitchedAt: row.context_memory_switched_at
+      ? row.context_memory_switched_at.toISOString()
+      : null,
     agentToAgent: parseAgentToAgentMode(row.agent_to_agent),
     fastLane: row.fast_lane !== false,
     modelPolicy: parseModelPolicy(row.model_policy),
@@ -746,6 +758,10 @@ export class ConfigStore {
          model_routing   = COALESCE($6::jsonb, model_routing),
          canvas_position = COALESCE($7::jsonb, canvas_position),
          context_memory  = COALESCE($8, context_memory),
+         -- #2290: any explicit mode write ends the migration notice.
+         context_memory_switched_at = CASE WHEN $8::text IS NULL
+                                           THEN context_memory_switched_at
+                                           ELSE NULL END,
          agent_to_agent  = COALESCE($9, agent_to_agent),
          model_policy    = COALESCE($10::jsonb, model_policy),
          fast_lane       = COALESCE($11, fast_lane),

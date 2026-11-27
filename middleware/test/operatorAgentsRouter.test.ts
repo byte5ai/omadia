@@ -133,7 +133,9 @@ interface AgentMem {
   status: 'enabled' | 'disabled';
   /** W5 memory-ACL rollout mode (#899). Optional exactly like the real
    *  `AgentRow`, so a row seeded without it models a pre-0050 agent. */
-  contextMemory?: 'off' | 'enforce' | 'enforce-strict';
+  contextMemory?: 'off' | 'enforce' | 'enforce-strict' | 'members';
+  /** #2290 — optional like the real row; absent models a pre-0122 agent. */
+  contextMemorySwitchedAt?: string | null;
   /** #1018 — optional like the real row; absent models a pre-0058 agent. */
   agentToAgent?: 'off' | 'on';
   /** #1033 — optional like the real row; absent models a pre-0059 agent. */
@@ -278,14 +280,20 @@ class FakeConfigStore {
       description: string | null;
       privacyProfile: 'strict' | 'default';
       status: 'enabled' | 'disabled';
-      contextMemory: 'off' | 'enforce' | 'enforce-strict';
+      contextMemory: 'off' | 'enforce' | 'enforce-strict' | 'members';
       agentToAgent: 'off' | 'on';
       modelPolicy: Record<string, unknown>;
     }>,
   ): Promise<AgentMem> {
     const row = this.agents.get(id);
     if (!row) return Promise.reject(new ConfigValidationError(`not found`));
-    const updated: AgentMem = { ...row, ...patch, updatedAt: new Date() };
+    const updated: AgentMem = {
+      ...row,
+      ...patch,
+      // #2290 — like the SQL store: an explicit mode write ends the notice.
+      ...(patch.contextMemory !== undefined ? { contextMemorySwitchedAt: null } : {}),
+      updatedAt: new Date(),
+    };
     this.agents.set(id, updated);
     return Promise.resolve(updated);
   }
@@ -1333,11 +1341,48 @@ describe('createOperatorAgentsRouter', () => {
         const res = await fetch(`${baseUrl}/public/context-memory`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ mode }),
+          body: JSON.stringify(mode === 'off' ? { mode, shared: true } : { mode }),
         });
         assert.equal(res.status, 200);
         assert.equal((await store.getAgentBySlug('public'))?.contextMemory, mode);
       }
+    });
+
+    it('PUT /:slug/context-memory refuses off without shared: true (#2290)', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      store.agents.set(agent.id, { ...agent, contextMemory: 'members' });
+      const res = await fetch(`${baseUrl}/public/context-memory`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'off' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal(
+        ((await res.json()) as { error: string }).error,
+        'context_memory_shared_required',
+      );
+      assert.equal((await store.getAgentBySlug('public'))?.contextMemory, 'members');
+      assert.equal(registry.reloadCalls, 0);
+    });
+
+    it('GET reports the 0122 switch until an operator sets a mode (#2290)', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      const at = '2026-11-27T08:00:00.000Z';
+      store.agents.set(agent.id, { ...agent, contextMemory: 'members', contextMemorySwitchedAt: at });
+      const before = (await (await fetch(`${baseUrl}/public/context-memory`)).json()) as {
+        switchedFromOffAt: string | null;
+      };
+      assert.equal(before.switchedFromOffAt, at);
+      const put = await fetch(`${baseUrl}/public/context-memory`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'members' }),
+      });
+      assert.equal(put.status, 200);
+      const after = (await (await fetch(`${baseUrl}/public/context-memory`)).json()) as {
+        switchedFromOffAt: string | null;
+      };
+      assert.equal(after.switchedFromOffAt, null);
     });
 
     it('PUT /:slug/context-memory rejects a mode outside the union with 400', async () => {

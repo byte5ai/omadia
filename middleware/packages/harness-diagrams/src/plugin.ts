@@ -1,5 +1,7 @@
 import {
+  FILE_LINK_RENEWAL_SERVICE_NAME,
   GENERATED_OBJECTS_SERVICE_NAME,
+  type FileLinkRenewalService,
   type GeneratedObjectsService,
   type NativeToolAttachment,
   type PluginContext,
@@ -8,7 +10,9 @@ import {
 import { DiagramService } from './diagramService.js';
 import { DiagramTool, diagramToolSpec, type DiagramBrandMemory } from './diagramTool.js';
 import { createDiagramsRouter } from './diagramsRouter.js';
+import { createDiagramLinkRenewer, DIAGRAM_LINK_ROUTE_PREFIX } from './linkRenewer.js';
 import { createKrokiClient } from './krokiClient.js';
+import { configFlag, isInternalKrokiEndpoint } from './krokiEndpoint.js';
 import { createTigrisStore } from './tigrisStore.js';
 
 /** The producer id the kernel files this plugin's renders under (ADR-0187). */
@@ -61,6 +65,10 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
   ctx.log('activating diagrams plugin');
 
   const krokiBaseUrl = ctx.config.require<string>('kroki_base_url');
+  // #2338 / ADR-0299 — a renderer inside the instance is no integration
+  // egress: the tool declares `none`. Any other endpoint keeps the
+  // write-like check (a turn with another conversation's label is refused).
+  const krokiInternal = isInternalKrokiEndpoint(krokiBaseUrl, configFlag(ctx.config.get<unknown>('kroki_internal')));
   const publicBaseUrl = ctx.config.require<string>('public_base_url');
   const tigrisBucket = ctx.config.require<string>('tigris_bucket');
   const tigrisEndpoint = ctx.config.require<string>('tigris_endpoint');
@@ -127,6 +135,7 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
     (input) => tool.handle(input),
     {
       promptDoc: SYSTEM_PROMPT_DOC,
+      ...(krokiInternal ? { sideEffects: 'none' as const } : {}),
       // Drains only the finishing turn's renders (#1961).
       attachmentSink: (): NativeToolAttachment[] | undefined => {
         const renders = tool.takeRenders(currentTurnId());
@@ -152,12 +161,21 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
   // `permissions.public_paths`, Store → plugin → "Grants"); before that the
   // prefix is closed — `404 public_path.not_granted` for everyone.
   // `/dl` because a public-path claim must be at least two segments deep.
-  const disposeRoute = ctx.routes.register('/diagrams/dl', router, {
+  const disposeRoute = ctx.routes.register(DIAGRAM_LINK_ROUTE_PREFIX, router, {
     auth: 'custom',
   });
+  // #1964 (ADR-0266) — expired links are renewed through the kernel route
+  // `POST /api/v1/files/renew`, so old chat messages keep their images.
+  // Optional: without the kernel service an expired link needs a new render.
+  const disposeRenewer = ctx.services
+    .get<FileLinkRenewalService>(FILE_LINK_RENEWAL_SERVICE_NAME)
+    ?.registerRenewer(
+      DIAGRAM_LINK_ROUTE_PREFIX,
+      createDiagramLinkRenewer({ secret: signingSecret, ttlSec: signedUrlTtlSec, publicBaseUrl }),
+    );
 
   ctx.log(
-    `[diagrams] ready (kroki=${krokiBaseUrl}, bucket=${tigrisBucket}, tenant=${tenantId})`,
+    `[diagrams] ready (kroki=${krokiBaseUrl}${krokiInternal ? ' internal' : ' external'}, bucket=${tigrisBucket}, tenant=${tenantId})`,
   );
 
   return {
@@ -165,6 +183,7 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
       ctx.log('deactivating diagrams plugin');
       disposeTool();
       disposeRoute();
+      disposeRenewer?.();
       disposeDeleter?.();
     },
   };

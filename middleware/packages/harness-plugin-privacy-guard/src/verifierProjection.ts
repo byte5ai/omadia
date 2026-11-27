@@ -28,7 +28,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { detectBaselineSync } from './promptMask.js';
-import { countUnresolvedForms } from './promptSurrogates.js';
+import { countUnresolvedForms, reservedSurrogateShapesIn } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
   asValueLiteral,
@@ -163,7 +163,9 @@ export function countUnresolvedSurrogates(
   map: PseudonymMap | undefined,
   options: UnresolvedSurrogateCountOptions = {},
 ): number {
-  if (map === undefined || map.reverse.size === 0) return 0;
+  // #2296 — reserved shapes of any turn, counted once each, also without a map.
+  const reserved = options.reservedShapes === true ? reservedShapesNotIn(text, map) : 0;
+  if (map === undefined || map.reverse.size === 0) return reserved;
   const lower = text.toLowerCase();
   const digitText = joinDigitGroups(text);
   const literals = indexByKind(findValueLiterals(text));
@@ -175,7 +177,14 @@ export function countUnresolvedSurrogates(
       carriesValueOf(literals, surrogate, failClosed),
   ).length;
   // #1528 — and the forms restore had no real value for.
-  return surrogates + countUnresolvedForms(text, map);
+  return surrogates + countUnresolvedForms(text, map) + reserved;
+}
+
+/** Reserved-shape surrogates in `text` that are not this map's own (those
+ *  the count above already has). */
+function reservedShapesNotIn(text: string, map: PseudonymMap | undefined): number {
+  const own = new Set([...(map?.reverse.keys() ?? [])].map((s) => s.toLowerCase()));
+  return [...reservedSurrogateShapesIn(text)].filter((hit) => !own.has(hit)).length;
 }
 
 function carriesDigitsOf(digitText: string, surrogate: string): boolean {

@@ -93,7 +93,15 @@ describe('#1842/#1843 · user erasure on Neon (real PG)', () => {
     assert.equal(trail[0]?.actorOmadiaUserId, OPERATOR);
 
     assert.equal((await kg.countUserIdentity(bea.omadiaUserId)).count, 2);
+    // #2293 — the purge reads the identities before it deletes them.
+    assert.deepEqual(await kg.listUserChannelIdentities(bea.omadiaUserId), [
+      { channelKind: 'telegram', channelUserId: '4711' },
+    ]);
+    assert.deepEqual(await kg.listUserChannelIdentities(alice.omadiaUserId), [
+      { channelKind: 'web', channelUserId: 'acc-alice' },
+    ]);
     assert.equal((await kg.purgeUserIdentity(bea.omadiaUserId)).deletedNodes, 2);
+    assert.deepEqual(await kg.listUserChannelIdentities(bea.omadiaUserId), []);
     assert.equal((await kg.countUserIdentity(bea.omadiaUserId)).count, 0);
     assert.equal(await kg.findOmadiaUserIdByChannelIdentity('telegram', '4711'), null);
     assert.equal((await kg.countUserIdentity(alice.omadiaUserId)).count, 2, 'Alice untouched');

@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
-import type { EmbeddingClient, EmbeddingProvider } from '@omadia/plugin-api';
+import { perCallerService, type EmbeddingClient, type EmbeddingProvider } from '@omadia/plugin-api';
 import type { Pool, PoolClient, QueryResult } from 'pg';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
@@ -254,6 +254,35 @@ describe('#1817 — a disposed model service refuses calls through a held refere
     registry.provide('embeddingClient', raw, 'p');
     const fresh = registry.get<EmbeddingClient>('embeddingClient');
     assert.deepEqual(await fresh?.embed('x'), [1]);
+  });
+});
+
+describe('#2298 — a per-caller factory registration is retractable', () => {
+  it('every client the factory handed out refuses once the registration is disposed', async () => {
+    const registry = new ServiceRegistry();
+    const calls: string[] = [];
+    const dispose = registry.provide(
+      'embeddingClient',
+      perCallerService(() => vectorClient([1], calls)),
+      '@omadia/embedding-adapter-openai',
+    );
+    const forA = registry.get<EmbeddingClient>('embeddingClient', { agentId: 'a', pluginId: 'a' });
+    const forB = registry.get<EmbeddingClient>('embeddingClient', { agentId: 'b', pluginId: 'b' });
+    assert.ok(forA && forB);
+    await forA.embed('before');
+
+    dispose();
+
+    await assert.rejects(forA.embed('after'), ModelServiceWithdrawnError);
+    await assert.rejects(forB.embed('after'), ModelServiceWithdrawnError);
+    assert.deepEqual(calls, ['before']);
+  });
+
+  it('a fresh factory registration after the dispose is usable', async () => {
+    const registry = new ServiceRegistry();
+    registry.provide('embeddingClient', perCallerService(() => vectorClient([1])), 'p')();
+    registry.provide('embeddingClient', perCallerService(() => vectorClient([2])), 'p');
+    assert.deepEqual(await registry.get<EmbeddingClient>('embeddingClient')?.embed('x'), [2]);
   });
 });
 

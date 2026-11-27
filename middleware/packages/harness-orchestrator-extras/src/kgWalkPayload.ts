@@ -10,7 +10,7 @@ import type {
  *
  * The recall carries three id-bearing legs:
  *   - `insights`  → MemorableKnowledge external_ids (`mk:<uuid>`) + a score
- *   - `processes` → Process external_ids (`process:<scope>:<slug>`) + a score
+ *   - `processes` → Process ids (`process:<uuid>`; older ones `process:<scope>:<slug>`, ADR-0295) + a score
  *   - `plans`     → Plan external_ids (`plan:<planId>`)
  *
  * We take those as the BFS frontier (hop 0) and ask the KG for the surrounding

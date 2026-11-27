@@ -132,7 +132,7 @@ export const editProcessToolSpec: NativeToolSpec = {
       id: {
         type: 'string',
         description:
-          'Bestehende Process-ID, z.B. `process:scope:backend-deploy-to-staging`. Aus `query_processes` oder einem vorherigen `write_process`-Result entnehmen.',
+          'Bestehende Process-ID (`process:<uuid>`). Aus `query_processes` oder einem vorherigen `write_process`-Result übernehmen, nie selbst bilden.',
       },
       title: {
         type: 'string',

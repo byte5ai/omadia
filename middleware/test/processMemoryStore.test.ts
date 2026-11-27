@@ -166,7 +166,7 @@ describe('NeonProcessMemoryStore', () => {
       assert.ok(/processes/i.test(queries[0]!.sql));
     });
 
-    it('inserts with deterministic id when no duplicate, returns ProcessRecord', async () => {
+    it('inserts with an opaque id when no duplicate, returns ProcessRecord (#2296)', async () => {
       const created = new Date('2026-05-08T12:00:00.000Z');
       const { pool, queries } = makeFakePool({
         rowsScript: [
@@ -208,7 +208,11 @@ describe('NeonProcessMemoryStore', () => {
       assert.ok(/INSERT INTO processes/i.test(queries[1]!.sql));
       // INSERT params include tenant + scope + body + steps json + visibility + vector lit.
       const insertParams = queries[1]!.params;
-      assert.equal(insertParams[0], 'process:s:backend-deploy-to-staging');
+      // #2296 / ADR-0295 — opaque: nothing of the title or scope in the id.
+      assert.match(
+        String(insertParams[0]),
+        /^process:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
       assert.equal(insertParams[1], 'tenant-test');
       assert.equal(insertParams[2], 's');
       assert.equal(insertParams[5], 'team');

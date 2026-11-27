@@ -36,6 +36,215 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
+
+- `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows
+  (ADR-0185, ADR-0190); `SYSTEM_AUDIT_ACTOR_UUID` is a deprecated alias of it (plugin-api
+  **1.108.0**) and no kernel code uses it any more. Same value, so stored audit rows and filters
+  are unchanged.
+
+### Fixed — a user purge covers all linked identities and ends web sessions (#2292, #2293, ADR-0262) (2026-11-27)
+
+- The `user` axis now reads every channel identity of the person's cluster
+  (`KnowledgeGraph.listUserChannelIdentities?`, plugin-api **1.108.0**, in-memory + Neon) and
+  purges the context trees `/memories/contexts/<agent>/user/<kind>~<id>` of all of them in the
+  same run, whichever id the operator typed.
+- The person's accounts (`web` identities) get `users.session_version` bumped after the purge,
+  so open web sessions stop carrying the deleted omadia user id. Preview `sessionAccountCount`,
+  result `sessionsRevoked`, warning `sessions_not_revoked` when no user store is wired; the
+  Danger Zone shows the count (en + de).
+
+### Fixed — debug `scope` turns and steering are bound to the account (#2291) (2026-11-27)
+
+- `POST /api/chat`, `/chat/stream` and `/chat/steer` with a debug `scope` (or neither `scope`
+  nor `sessionId`) used the caller-chosen label as the turn bucket, so another account with the
+  same label could steer the turn and shared its transcript bucket (ADR-0180 residual). For a
+  signed-in session the bucket is now `http-<users.id>~<scope>` / `http-<users.id>~default`
+  (account first, so the 80-character key cut cannot drop it);
+  requests without an account keep the old labels. Debug transcripts under the old labels stay
+  where they are.
+
+### Changed — agents on memory mode `off` move to `members` (#2290, ADR-0261) (2026-11-27)
+
+- **Migration** core **0122_context_memory_off_to_members** — every `standard` agent on
+  `context_memory = 'off'` becomes `members`, so each web account and each API key gets its own
+  memory; new column `agents.context_memory_switched_at` records the switch. Nothing is deleted:
+  notes written under `off` stay in the agent tier and are no longer read.
+- `GET …/context-memory` returns `switchedFromOffAt`; the memory tab shows a notice until an
+  operator saves a mode. `PUT …/context-memory` with `off` now needs `shared: true`
+  (`409 context_memory_shared_required`); the UI asks for a "shared agent" acknowledgement.
+
+### Security — `/api/dev` is loopback-only under `NODE_ENV=production` (#2275, ADR-0260) (2026-11-27)
+
+- With `DEV_ENDPOINTS_ENABLED=true` the dev graph and the memory browser read every account's
+  memory. Under `NODE_ENV=production` (baked into the shipped image) the `/api/dev` prefix is now
+  bound to loopback whatever `DEV_ENDPOINTS_LOOPBACK_ONLY` says (`resolveDevLoopbackOnly`,
+  `routes/graphRouterMounts.ts`); remote sessions get `403 dev.loopback_only`. The compose dev
+  stack (`NODE_ENV=development`) keeps the opt-in behaviour.
+- Tests: `test/devEndpoints/` covers the production case for graph + memory browser.
+
+### Changed — every boot-seeded setting follows the ADR-0193 rule (#2299, ADR-0264) (2026-11-27)
+
+- `MEMORY_SEED_DIR`/`MEMORY_SEED_MODE` (memory plugins), `OLLAMA_BASE_URL`/
+  `OLLAMA_EMBEDDING_MODEL`/`GRAPH_EMBEDDING_MAX_CONCURRENT` (`@omadia/embeddings`) and
+  `TOPIC_CLASSIFIER_MODEL`/`TOPIC_*_THRESHOLD` (`@omadia/orchestrator-extras`) now seed their
+  settings through `applyEnvSeeds` on every boot: a set variable writes a boot-owned value, an
+  unset one removes it, an operator value wins and a shadowed variable is logged. Before, memory
+  and topic settings were written on the first install only and the Ollama URL/model were forced
+  from the environment whenever set.
+- `EnvSeed.fallback` (ADR-0264): for `seed_dir` and `max_concurrent` an unset variable writes the
+  kernel default (the plugins' own defaults differ). A pre-marker value equal to the set variable
+  counts as boot-owned. Values are written as strings.
+
+### Fixed — retractable factory model services; withdrawn embeds count no attempt (#2298) (2026-11-27)
+
+- A model service registered as a per-caller factory (`perCallerService`) now goes through the
+  model gate too: every object the factory hands out is gated and tied to its registration, and
+  disposing the registration withdraws all of them (`ModelServiceWithdrawnError`), as ADR-0194
+  rule 3 already did for plain registrations (`modelGatewayServices.ts`).
+- The Neon stores (`embedAndStoreTurn`, `embedAndStoreNode`) no longer count an embedding
+  attempt — nor write the vector — when the provider was withdrawn while the embed ran (the
+  resolver has no client any more, or the gate epoch moved); the backfill re-embeds the node
+  with the next approved provider. Closes the two residuals ADR-0194 lists.
+
+### Fixed — excerpt pairs close with their excerpt; retired turns can be allowed again (#2295) (2026-11-27)
+
+- `deleteExcerpt` (both backends) dismisses every open `ExcerptMergeCandidate` naming the deleted
+  excerpt (`closed_reason: excerpt_deleted`), like the pairs of a deleted memory; a `keep_a` /
+  `keep_b` resolution still ends its own pair as `resolved`.
+- Operators can list turns retired from promotion (ADR-0190) and allow one again:
+  `GET /api/v1/admin/bulk-promote/retired`, `POST …/unretire { turnId }` (audit
+  `memory.promotion_unretire`, written first; 404 `bulk.unretire_not_found`, 409
+  `bulk.unretire_no_person_owner`). Admin › Bulk Promotion shows the list with "Allow again"
+  for `memory_deleted` and `discretion` (en + de). Decision recorded in ADR-0263. plugin-api **1.109.0**: `BulkPromotionService.listRetired?`, `unretire?`.
+
+### Fixed — bulk memory promotion runs the discretion check (#2294, ADR-0263) (2026-11-27)
+
+- Bulk promotion skipped `guardMemoryEgress`, so a stored turn that read another conversation
+  could be promoted into a tier whose readers may not know it. The kernel now decorates the
+  published `bulkPromotion@1` service (`withBulkPromotionGate`): every candidate is checked
+  against the label set its turn record stored, with the live flow rule (owners of a
+  member-scoped turn, otherwise unknown readers). Refused turns count as `skipped`, are
+  audited (`target: bulk-promotion`) and retired with reason `discretion`, so they do not block
+  later runs; a failed lookup refuses. plugin-api **1.109.0**:
+  `BulkPromoteRunOptions.mayPromote`, `BulkPromoteCandidate`.
+
+### Fixed — CLI agents deliver generated Office and diagram files (#2303, ADR-0177) (2026-11-27)
+
+- A subscription-CLI turn now drains the per-turn attachment sinks once, inside its captured turn
+  context (`CliChatAgentDeps.drainTurnAttachments` → `Orchestrator.drainCliTurnAttachments`), and
+  puts the files and diagrams on its `done` event (`attachments` / `fileAttachments`) and on the
+  semantic answer of `chat()`. A withheld answer carries none; the buffers are drained either way.
+  Closes the CLI follow-up named in ADR-0177.
+
+### Fixed — CLI sub-agents in a guarded turn get the v4 verb tools (#2301, ADR-0268) (2026-11-27)
+
+- A CLI sub-agent asked inside a turn under the Privacy Shield works under the calling turn's
+  handle like the main CLI turn: the loopback server offers the v4 verb tools (served by that
+  handle; `v4_render_answer` stays with the calling turn and is refused), tool inputs get the
+  turn's prompt surrogates restored and results are re-masked (`cliCallerPrivacy.ts`). Operator
+  jobs (Builder, preview chat) are unchanged (ADR-0196).
+
+### Fixed — Teams uploads held back by the topic-change card reach the click's turn (#2304) (2026-11-27)
+
+- `PendingTopicDecision.storedAttachments` (`@omadia/channel-sdk` **0.3.21**): a channel keeps the
+  uploads it stored with a message that triggered the topic card on the server-side pending entry
+  and passes them as `ChatTurnInput.storedAttachments` on the turn the click starts, so the kernel
+  binds them to the conversation and ingests them then (ADR-0178, binding at the turn that carries
+  them). Implemented in `omadia-channel-teams` (Unreleased, PR in that repo).
+
+### Changed — a fast-lane miss replays its executed call as a tool round (#2300, ADR-0265) (2026-11-27)
+
+- Owner decision 2026-11-27, supersedes ADR-0221: the call the fast lane already ran reaches the
+  agent as its first tool round (`tool_use` + `tool_result`) instead of a per-turn system hint.
+  The carrier is `ChatTurnInput.fastLaneCall` (`@omadia/channel-sdk` **0.3.21**); the orchestrator
+  produces the result through `dispatchTool` with the handler skipped, so the Privacy Shield
+  interns it (no duplicate query under a shield any more), the replay ledger records it and the
+  run trace lists it — the answer verifier counts it as evidence. A data-free kernel note follows
+  the result; the subscription CLI path gets only that note.
+
+### Fixed — `query_rows` accepts date range filters (#2302, ADR-0267) (2026-11-27)
+
+- `query_dataset` `query_rows` no longer refuses `gt`/`gte`/`lt`/`lte` on `date` columns (a v1
+  limit from before #1845 stored dates as ISO). Cells and bounds compare as wall-clock
+  timestamps (date-only = midnight) in both backends (Neon: guarded `::timestamp` cast,
+  in-memory: `datasetDateTime`, plugin-api **1.110.0**). The tool reads a string bound with the
+  import's parser (`normaliseDateFilterValue`: ISO, `d.m.yyyy`, `d/m/yyyy`, optional time); an
+  unreadable bound is `invalid_date_value` naming the accepted formats. Columns with encrypted
+  cells stay refused for every filter (`encrypted_column`, a range would be a bisection oracle);
+  non-ISO cells of datasets imported before #1845 never match a range.
+
+### Added — expired file and diagram links are renewed in the web chat (#1964, ADR-0266) (2026-11-27)
+
+- New kernel route `POST /api/v1/files/renew` (session-gated): body `{ url }` with an expired
+  `/documents/dl/…` or `/diagrams/dl/…` link returns a freshly signed link for the same key
+  (plugin's normal TTL), without re-generating the file. Rule: signed-in session, signature
+  valid with the expiry ignored, original expiry at most 30 days back; refusals `400`/`401`/
+  `403`/`404`/`410` with `file_link.*` codes, logged with a hashed key id only.
+- New kernel service `fileLinkRenewal@1` (plugin-api **1.110.0**); `@omadia/plugin-office`
+  0.1.8 and `@omadia/diagrams` 0.2.5 register a link renewer (`optional_requires:
+  fileLinkRenewal@1`).
+- Web chat: diagram images and file chips of older messages renew their link on render, on a
+  failed image load or on a click after expiry; a refusal shows a localized notice (en + de).
+  Teams cards and other channels keep expiring links.
+
+### Fixed — Office export in a web chat, false self-correction after a masked replay (W32 follow-up) (2026-11-27)
+
+- **#2338 — Office is no integration egress (ADR-0298).** `create_xlsx` and `create_docx`
+  declared no tool effect, so the discretion integration egress checked them like a write. A web
+  chat turn that carried any label from another conversation of the same person (recall, memory)
+  refused every export with `integration_undeclared`; Telegram turns without such a label worked.
+  The Office manifest now declares `capabilities[].side_effects: "none"`: Office renders
+  in-process, and the file reaches the person only with the answer, which the people egress
+  checks. Every other undeclared tool is still checked like a write.
+- **#2338 — Diagrams follows its Kroki endpoint (ADR-0299, owner decision).** `render_diagram`
+  sends its source, chart data included, to `kroki_base_url`. An internal renderer (loopback,
+  private address, `.internal`/`.flycast`/compose name, or the new setup field `kroki_internal`)
+  counts as a reader inside the instance, and the tool declares `none` through the new
+  `ToolRegistrationOptions.sideEffects` (plugin-api 1.111.0, Diagrams 0.2.6). `kroki.io` and other
+  external endpoints keep the write-like check, so a turn with another conversation's label renders
+  no diagram there. The boot line says `kroki=… internal|external`. Known gap: a withheld
+  streamed answer leaves the tool outputs (the signed link included) in the client's tool trace
+  (#2342).
+- **#2341 — a masked replayed answer comes with a kernel note.** A channel replays the agent's own
+  earlier answer in `priorTurns`; it reaches the model masked (ADR-0095), so names the agent wrote
+  (here: historical persons, detected by C1) come back as pseudonyms, and the model "corrected" a
+  correct earlier answer in an unrelated turn. When a replayed answer or the recalled chat context
+  crossed the wire with masked spans, the turn's system hint (and on the CLI path a
+  `System Hint` line) now says that placeholders in earlier answers are the shield's and must not
+  be corrected (`replayedAnswerNote.ts`). The note is data-free; the masking itself is unchanged.
+
+### Fixed — agent triggers in the person's zone, readable trigger confirmations, routine run-now (#2339, ADR-0297) (2026-11-27)
+
+Live test W37: a `wake_at` with a `post` template said `aktuelle Uhrzeit: 10:47` at 11:47 in
+Berlin, because a trigger without an own zone rendered `{{now}}` in UTC. An agent trigger now
+takes the person's zone from the turn, else `PROACTIVE_TIMEZONE` (`TriggerEnvelope.timezone`);
+a `wake_every` cron without `timezone` runs in it too. The tool answer names the zone and, for
+`wake_at`, `atLocal`. The trigger tools' answers no longer go to the model as a privacy-shield
+digest: they get ADR-0241's field-level exemption (id, times, state and cost in clear; purpose,
+last outcome, pause reason and target label withheld), so the agent can tell the person when it
+fires. `manage_routine` gains `run_now`: the trigger route's checks (owner, active, no run in
+flight, agent, chat agent) answered at once, then the routine's own prompt runs in the
+background, detached from the asking turn. No migration.
+
+### Fixed — stored processes follow the memory-note privacy rule; opaque process ids (#2296, ADR-0295, ADR-0296) (2026-11-27)
+
+- With `mask_user_prompt` on, `write_process` / `edit_process` input is restored to the user's
+  values before it is stored, and `query_processes` / `run_stored_process` results are re-masked
+  through the reading turn's map — the ADR-0191 rule the `memory` tool already follows. A write
+  whose placeholder cannot be mapped is refused.
+- **Process ids are opaque** (`process:<uuid>`, `newProcessId()`, plugin-api **1.112.0**): the old
+  `process:<scope>:<slug(title)>` would carry restored real values into an id the model reads.
+  **Neon migration 0040_process_opaque_ids** rewrites existing ids (history follows) and keeps the
+  old one in `processes.legacy_id`; `get`/`edit`/`history` resolve either form, and discretion
+  labels are read under both ids. `buildProcessId` is deprecated.
+- Stored text with a reserved-shape placeholder of an earlier turn (`PLATZHALTER-*`, a pool name
+  at `example.net`) is withheld **per entry**: a `/memories` listing line by line, a
+  `query_processes` result hit by hit; one note or process is one entry
+  (`maskStoredTextPerEntry`, `countUnresolvedSurrogates` option `reservedShapes`). Pool *person
+  names* in old notes stay undetectable (ADR-0191 residual). `@omadia/plugin-privacy-guard`
+  0.16.5.
+
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of

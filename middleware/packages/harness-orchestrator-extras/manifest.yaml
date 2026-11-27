@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/orchestrator-extras"
   name: "Agent Runtime Extras"
-  version: "0.3.0"
+  version: "0.3.1"
   kind: "system-module"
   domain: "core.orchestrator-extras"
   description:

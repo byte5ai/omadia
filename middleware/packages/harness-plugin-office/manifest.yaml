@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-office"
   name: "Headless Office"
-  version: "0.1.7"
+  version: "0.1.8"
   kind: "tool"
   domain: "productivity.office"
   description:
@@ -25,6 +25,9 @@ compat:
 # ADR-0187 (#1986) — generated files are recorded and deleted with chat and person.
 optional_requires:
   - "generatedObjects@1"
+  # ADR-0266 (#1964) — expired download links are renewed by the kernel route
+  # POST /api/v1/files/renew through this plugin's link renewer.
+  - "fileLinkRenewal@1"
 
 lifecycle:
   entry: "dist/plugin.js"
@@ -146,6 +149,15 @@ setup:
         en: "Tigris secret access key"
         de: "Tigris Secret Access Key"
       required: true
+
+# #2338 (ADR-0298) — what the tools do to their system: the file goes only into
+# this turn's answer, so the answer's people egress decides who gets it, not the
+# integration egress (an undeclared tool is checked like a write).
+capabilities:
+  - id: "create_xlsx"
+    side_effects: "none"
+  - id: "create_docx"
+    side_effects: "none"
 
 playbook:
   when_to_use: |

@@ -1848,6 +1848,13 @@
     "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
     "attachmentCachedSuffix": " · zwischengespeichert",
+    "fileTypeUnknown": "Datei",
+    "fileLink": {
+      "renewing": "Dieser Link ist abgelaufen. Er wird erneuert…",
+      "tooOld": "Dieser Datei-Link ist zu alt, um ihn zu erneuern. Bitte die Datei neu anfordern.",
+      "unavailable": "Diese Datei lässt sich hier nicht mehr erneuern (das Plugin, das sie erzeugt hat, ist nicht aktiv). Bitte die Datei neu anfordern.",
+      "failed": "Der Datei-Link konnte nicht erneuert werden. Chat neu laden oder die Datei neu anfordern."
+    },
     "clarifyKicker": "🤔 Rückfrage",
     "followUpsLabel": "Nächste Varianten",
     "verbosityLabel": "Antwortumfang",
@@ -2351,6 +2358,7 @@
       "unknown": "Request fehlgeschlagen: {detail}",
       "broad_reach_confirmation_required": "Diese Änderung gäbe dem Agenten Zugriff auf alle angebundenen Systeme und braucht deine ausdrückliche Bestätigung.",
       "identity_revision_conflict": "Diese Identität wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Stand zu sehen, und nimm deine Änderung dann erneut vor.",
+      "context_memory_shared_required": "Aus macht diesen Agenten zu einem gemeinsamen Agenten: alle Konten und API-Keys nutzen ein Memory. Bestätige das vor dem Speichern.",
       "config_revision_conflict": "Diese Einstellung wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Wert zu sehen, und nimm deine Änderung dann erneut vor."
     },
     "statusEnabled": "aktiviert",
@@ -2657,7 +2665,7 @@
     },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",
-      "hint": "Legt fest, ob dieser Agent ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. Neue Agenten starten mit „Geteilt unter den Anwesenden“; früher angelegte Agenten behalten ihren Modus. „Aus“ ist nicht möglich, solange der Agent Capability-Grants hat.",
+      "hint": "Legt fest, ob dieser Agent ein gemeinsames Memory hat oder ein eigenes pro Chat-Kontext (Team, Kanal, Direktnachricht). Agenten starten mit „Geteilt unter den Anwesenden“. Aus ist nur für Agenten gedacht, die alle gemeinsam nutzen sollen, und nicht möglich, solange der Agent Capability-Grants hat.",
       "loading": "Memory-Einstellung wird geladen…",
       "stateSummary": "Aktuell: {mode}",
       "stateUnknown": "Aktuell: unbekannt",
@@ -2673,7 +2681,7 @@
       "modes": {
         "off": {
           "label": "Aus",
-          "description": "Ein gemeinsames Memory für alle Turns, wie vor dieser Funktion — jedes Web-Chat-Konto und jeder API-Key liest, was die anderen dem Agenten zum Merken gegeben haben. Nicht möglich für einen Agenten mit Capability-Grants."
+          "description": "Gemeinsamer Agent: ein Memory für alle Turns — jedes Web-Chat-Konto und jeder API-Key liest, was die anderen dem Agenten zum Merken gegeben haben. Nur für Agenten, die alle teilen sollen; nicht möglich für einen Agenten mit Capability-Grants."
         },
         "enforce": {
           "label": "Je Kontext getrennt",
@@ -2687,7 +2695,11 @@
           "label": "Geteilt unter den Anwesenden",
           "description": "Wissen gehört den Personen, die dabei waren, als es entstand. Jeder Chat, an dem nur diese Personen teilnehmen, kann es nutzen, auch ein Einzelchat, ein Web-Chat oder die Turns eines API-Keys. Sobald jemand anderes dabei ist, bleibt es draußen."
         }
-      }
+      },
+      "switchedNotice": "Dieser Agent wurde am {date} von Aus auf „Geteilt unter den Anwesenden“ umgestellt; jedes Konto und jeder API-Key hat jetzt ein eigenes Memory. Notizen aus der Zeit mit Aus bleiben erhalten, werden aber nicht mehr gelesen. Wähle wieder Aus (gemeinsamer Agent), wenn alle sie nutzen sollen.",
+      "sharedHeading": "Aus macht diesen Agenten gemeinsam",
+      "sharedWarning": "Dann lesen und schreiben alle Web-Chat-Konten und alle API-Keys dieses Agenten ein Memory: Was sich eine Person merken lässt, können alle anderen lesen.",
+      "acknowledgeShared": "Dieser Agent ist zum Teilen gedacht; alle dürfen sein Memory lesen."
     },
     "teamsInstalls": {
       "heading": "Teams-Zuordnung",
@@ -6452,7 +6464,24 @@
     "scorePhaseTitle": "Schritt 1 · Bewerten",
     "promotePhaseTitle": "Schritt 2 · Übernehmen",
     "skipped": "übersprungen",
-    "skippedHint": "Bewusst ausgelassen, nicht fehlgeschlagen: ein Eintrag aus diesem Turn wurde gelöscht, verworfen oder zusammengeführt, dem Turn gehört keine Person (Public API), der Auszug fehlte oder die Antwort war Agenten-Erzählung. Ausgemusterte und besitzerlose Turns werden nicht erneut angeboten."
+    "skippedHint": "Bewusst ausgelassen, nicht fehlgeschlagen: ein Eintrag aus diesem Turn wurde gelöscht, verworfen oder zusammengeführt, dem Turn gehört keine Person (Public API), der Auszug fehlte oder die Antwort war Agenten-Erzählung. Ausgemusterte und besitzerlose Turns werden nicht erneut angeboten.",
+    "retired": {
+      "title": "Von der Übernahme ausgeschlossene Turns",
+      "intro": "Ein Turn wird ausgeschlossen, sobald ein Eintrag daraus gelöscht, verworfen oder zusammengeführt wurde, oder wenn er kein Wissen werden kann (keine Person besitzt ihn, Agent-Erzählung). Gib einen Turn wieder frei, damit der nächste Bulk-Lauf ihn berücksichtigt. Turns ohne Personen-Besitzer bleiben ausgeschlossen.",
+      "loading": "Wird geladen…",
+      "empty": "Keine Turns ausgeschlossen.",
+      "reason": "{reason, select, memory_deleted {Eintrag gelöscht} no_person_owner {Keine Person besitzt ihn} hygiene {Agent-Erzählung} discretion {Wissen aus einem anderen Gespräch} other {{reason}}}",
+      "allow": "Wieder freigeben",
+      "allowing": "Wird freigegeben",
+      "allowAria": "Turn {turnId} wieder für die Übernahme freigeben",
+      "errors": {
+        "bulk_unretire_not_found": "Dieser Turn ist nicht mehr ausgeschlossen.",
+        "bulk_unretire_no_person_owner": "Keine Person besitzt diesen Turn, daher kann er kein Wissen werden.",
+        "bulk_unretire_unsupported": "Diese Installation kann ausgeschlossene Turns nicht anzeigen oder freigeben.",
+        "audit_write_failed": "Die Änderung konnte nicht im Audit-Log festgehalten werden, daher wurde nichts geändert.",
+        "failed": "Die ausgeschlossenen Turns konnten nicht geladen oder geändert werden."
+      }
+    }
   },
   "adminUpdate": {
     "title": "Update",
@@ -6635,7 +6664,8 @@
       "user_selector_resolved": "Der Selektor ist {via, select, account_id {eine Konto-ID} channel_identity {eine Kanal-Identität} other {keine omadia-User-ID}}; der Purge arbeitet mit der omadia-User-ID {omadiaUserId} dieser Person.",
       "user_unknown": "Zu dieser ID gibt es keine Person: keinen Knowledge-Graph-Nutzer und kein Konto. Prüfe, ob du die omadia-User-ID oder die Konto-ID von der Nutzerseite kopiert hast.",
       "user_layers_unsupported": "Diese Installation kann {layers} der Person nicht löschen; sie bleiben.",
-      "generated_files_pending": "{count} erzeugte Dateien hätten gelöscht werden sollen, wurden es aber nicht: das Office- oder Diagramm-Plugin ist nicht aktiv, oder sein Bucket hat das Löschen abgelehnt. Sie werden beim nächsten Purge oder Löschen eines Chats gelöscht; die Lifecycle-Regel des Buckets bleibt die Rückfallebene."
+      "generated_files_pending": "{count} erzeugte Dateien hätten gelöscht werden sollen, wurden es aber nicht: das Office- oder Diagramm-Plugin ist nicht aktiv, oder sein Bucket hat das Löschen abgelehnt. Sie werden beim nächsten Purge oder Löschen eines Chats gelöscht; die Lifecycle-Regel des Buckets bleibt die Rückfallebene.",
+      "sessions_not_revoked": "Diese Installation kann die offenen Web-Sitzungen der Person nicht beenden: Sie arbeiten bis zur nächsten Anmeldung unter der gelöschten ID weiter. Lösche oder deaktiviere danach das Konto."
     },
     "errors": {
       "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
@@ -6667,7 +6697,8 @@
       "processes": "Gespeicherte Prozesse",
       "identity": "Identitätsknoten (Name, E-Mail)",
       "deowned": "Geteilte Fakten: nur diese Person wird als Eigentümer entfernt",
-      "generatedFiles": "Erzeugte Dateien (Office, Diagramme)"
+      "generatedFiles": "Erzeugte Dateien (Office, Diagramme)",
+      "sessions": "Web-Anmeldungen der Person beendet (Konten)"
     }
   },
   "adminDuplicates": {

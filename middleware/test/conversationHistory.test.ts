@@ -69,4 +69,18 @@ describe('ConversationHistoryStore', () => {
     assert.equal(s.get('s1').length, 1);
     assert.equal(s.get('s3').length, 1);
   });
+
+  it('keeps the uploads of a pending topic decision until it is cleared (#2304)', () => {
+    const s = new ConversationHistoryStore();
+    const upload = {
+      fileName: 'notiz.wav',
+      contentType: 'audio/wav',
+      storageKey: 'teams-attachments/conv/notiz.wav',
+      sizeBytes: 1024,
+    };
+    s.markPending('s1', { userMessage: 'Transkribiere das', askedAt: 1, storedAttachments: [upload] });
+    assert.deepEqual(s.getPending('s1')?.storedAttachments, [upload]);
+    s.clearPending('s1');
+    assert.equal(s.getPending('s1'), undefined);
+  });
 });

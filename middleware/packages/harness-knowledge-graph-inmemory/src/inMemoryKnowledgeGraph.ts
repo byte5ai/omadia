@@ -4,6 +4,8 @@ import {
   agentInvocationNodeId,
   agentScopePrefix,
   channelIdentityNodeId,
+  parseChannelIdentityNodeId,
+  type UserChannelIdentity,
   SYSTEM_ACTOR_OMADIA_USER_ID,
   type ChannelKind,
   CONVERSATION_HISTORY_NODE_TYPES,
@@ -40,6 +42,7 @@ import {
   type DatasetSummary,
   validateDatasetQueryOptions,
   assertNoEncryptedQueryColumns,
+  datasetDateTime,
   datasetQueryValueColumns,
   isEncryptedDatasetCell,
   type EntityRef,
@@ -120,7 +123,6 @@ import {
   type TurnIngestResult,
   type TurnSearchHit,
   PROMOTION_RETIRED_PROP,
-  SYSTEM_AUDIT_ACTOR_UUID,
   extractRecallSearchTerms,
   isMemorableContentCorrection,
   INCONSISTENCY_MAX_LOST_VERDICTS,
@@ -173,6 +175,20 @@ function isOperatorAuthored(node: GraphNode): boolean {
   return node.manuallyAuthored === true && !String(node.props['created_by'] ?? '').startsWith('auto:');
 }
 
+/** #2302 (ADR-0267) — a range filter on a `date` column, compared as dates
+ *  (`datasetDateTime`: wall-clock, date-only = midnight), the same as the
+ *  Neon backend's guarded `::timestamp` cast. A cell that is not a stored ISO
+ *  date (a column imported before #1845) never matches. */
+function compareDateRange(value: unknown, filter: DatasetFilter): boolean {
+  const a = datasetDateTime(value);
+  const b = datasetDateTime(filter.value);
+  if (a === undefined || b === undefined) return false;
+  if (filter.op === 'gt') return a > b;
+  if (filter.op === 'gte') return a >= b;
+  if (filter.op === 'lt') return a < b;
+  return a <= b;
+}
+
 /** #430 — one `dataset_rows` row's evaluation of a single `DatasetFilter`.
  *  Mirrors the SQL semantics `NeonKnowledgeGraph` builds over the JSONB
  *  column: numeric comparisons coerce both sides to `Number`, `contains`
@@ -215,6 +231,7 @@ function matchesDatasetFilter(
     case 'gte':
     case 'lt':
     case 'lte': {
+      if (columnType === 'date') return compareDateRange(value, filter);
       const a =
         typeof value === 'number'
           ? value
@@ -1561,7 +1578,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       memoryExternalId: memorableKnowledgeNodeId,
       ...(actor.systemActor
         ? {
-            actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+            actorOmadiaUserId: SYSTEM_ACTOR_OMADIA_USER_ID,
             actorChannelIdentityId: actor.systemActor,
           }
         : {
@@ -1829,6 +1846,14 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async countUserIdentity(omadiaUserId: string): Promise<{ count: number }> {
     return { count: this.userIdentityIds(omadiaUserId).length };
+  }
+
+  async listUserChannelIdentities(omadiaUserId: string): Promise<readonly UserChannelIdentity[]> {
+    const [, ...identities] = this.userIdentityIds(omadiaUserId);
+    return identities
+      .filter((id) => this.nodes.get(id)?.type === 'ChannelIdentity')
+      .map((id) => parseChannelIdentityNodeId(id))
+      .filter((v): v is UserChannelIdentity => v !== null);
   }
 
   async purgeUserIdentity(omadiaUserId: string): Promise<{ deletedNodes: number }> {
@@ -3195,6 +3220,22 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       if (edge.type !== 'EXCERPT_OF') continue;
       if (edge.from !== excerptExternalId) continue;
       this.edges.delete(key);
+    }
+    // #2295 — an open duplicate pair naming the deleted excerpt has nothing
+    // left to decide; close it like the pairs of a deleted memory. A
+    // resolution that deleted this excerpt overwrites its own pair after.
+    const deletedExcerpt = excerptExternalId;
+    for (const pair of this.nodes.values()) {
+      if (pair.type !== 'ExcerptMergeCandidate' || pair.props['status'] !== 'open') continue;
+      const exPair = pair.props['excerpt_pair'];
+      if (!Array.isArray(exPair) || !exPair.includes(deletedExcerpt)) continue;
+      pair.props = {
+        ...pair.props,
+        status: 'dismissed',
+        resolved_at: new Date().toISOString(),
+        resolved_by: resolvedByOf(actor),
+        closed_reason: 'excerpt_deleted',
+      };
     }
 
     // Audit-row on the MK.
