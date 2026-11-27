@@ -62,6 +62,14 @@ export interface SessionLogEntry {
    */
   speaker?: string;
   /**
+   * #1983 — `recording`: `userMessage` is a chunk of a transcript
+   * (`transcribe_recording`), not something the user said. The markdown
+   * labels it `**Recording:**` (with the speaker when known) instead of
+   * `**User:**`; the stored text carries the marker line
+   * (`recordingTranscript.ts`) that the context builder reads.
+   */
+  source?: 'recording';
+  /**
    * #584 WS I — override for the turn timestamp (ISO). Batch transcript
    * ingestion writes many entries in one tick; `turnNodeId(scope, time)` is
    * millisecond-keyed, so same-ms entries would silently upsert into ONE
@@ -177,6 +185,7 @@ export class SessionLogger {
         iterations: entry.iterations,
         entityRefs,
         ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
+        ...(entry.source !== undefined ? { source: entry.source } : {}),
       });
 
       const previous = (await this.store.fileExists(virtualPath))
@@ -395,6 +404,12 @@ function renderHeader(scope: string, day: string): string {
   ].join('\n');
 }
 
+/** The markdown label of a turn's first half (#1983). */
+function speakerLabel(speaker: string | undefined, source: 'recording' | undefined): string {
+  if (source === 'recording') return speaker ? `Recording — ${speaker}` : 'Recording';
+  return speaker ?? 'User';
+}
+
 function renderTurn(args: {
   time: string;
   userMessage: string;
@@ -403,6 +418,7 @@ function renderTurn(args: {
   iterations?: number;
   entityRefs: EntityRef[];
   speaker?: string;
+  source?: 'recording';
 }): string {
   const telemetry =
     args.toolCalls !== undefined || args.iterations !== undefined
@@ -418,7 +434,7 @@ function renderTurn(args: {
   return [
     `### ${args.time}Z`,
     '',
-    `**${args.speaker ?? 'User'}:**`,
+    `**${speakerLabel(args.speaker, args.source)}:**`,
     '',
     args.userMessage,
     '',

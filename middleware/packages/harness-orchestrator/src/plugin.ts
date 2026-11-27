@@ -76,6 +76,7 @@ import type { VerifierBundle } from '@omadia/verifier';
 import type { Pool } from 'pg';
 import { initUsageRecorder, setAmbientExecutionContext, setUsageContextProvider } from '@omadia/usage-telemetry';
 import { currentAgentTurnExecutionContext, currentUsageContext } from './turnContext.js';
+import { turnMayCarryUploads } from './attachmentToolAvailability.js';
 
 import {
   buildOrchestratorForAgent,
@@ -119,8 +120,10 @@ import {
 } from './runTraceObservability.js';
 import {
   TRANSCRIBE_RECORDING_TOOL_NAME,
+  TRANSCRIPTION_PROVIDER_STATE_SERVICE,
   TranscribeRecordingTool,
   transcribeRecordingToolSpec,
+  type TranscriptionProviderState,
 } from './tools/transcribeRecordingTool.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
@@ -1210,6 +1213,10 @@ export async function activate(
     reader: attachmentReader,
     getTranscription: (): TranscriptionService | undefined =>
       ctx.services.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
+    getProviderState: () =>
+      ctx.services.getOptional<() => TranscriptionProviderState>(
+        TRANSCRIPTION_PROVIDER_STATE_SERVICE,
+      )?.(),
     makeSessionLogger: (agentSlug): SessionLogger =>
       new SessionLogger(memoryStore, knowledgeGraph, undefined, agentSlug, runTraceStats),
   });
@@ -1218,6 +1225,8 @@ export async function activate(
     {
       handler: (input): Promise<string> => transcribeRecordingTool.handle(input),
       spec: transcribeRecordingToolSpec,
+      // #1976 — offered only on a turn that can carry an uploaded recording.
+      isAvailable: turnMayCarryUploads,
     },
   );
   ctx.log(

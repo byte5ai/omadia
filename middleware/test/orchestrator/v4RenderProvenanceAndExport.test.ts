@@ -10,6 +10,10 @@
  * #1559: a truncated render offers the full list as an Excel file, and the
  * Privacy Shield prompt rule a) tells the model to offer one, only when
  * `create_xlsx` is offered on the turn.
+ *
+ * #1972: "offered" includes the grant — an agent the Office plugin is not
+ * granted to gets no file offer, no file-generation rules and no forced
+ * file-build retry.
  */
 
 import { strict as assert } from 'node:assert';
@@ -58,7 +62,7 @@ interface Captured {
 }
 
 /** Fetch → filter (level ne 4711) → sort level desc → render a table → stop. */
-function scriptedProvider(): { provider: LlmProvider; requests: Captured[] } {
+function scriptedProvider(finalText = 'Fertig.'): { provider: LlmProvider; requests: Captured[] } {
   const requests: Captured[] = [];
   let step = 0;
   const lastDatasetId = (messages: unknown): string => {
@@ -110,7 +114,7 @@ function scriptedProvider(): { provider: LlmProvider; requests: Captured[] } {
           }),
         );
       }
-      return Promise.resolve(text('Fertig.'));
+      return Promise.resolve(text(finalText));
     },
     stream: () => {
       throw new Error('not used');
@@ -120,7 +124,12 @@ function scriptedProvider(): { provider: LlmProvider; requests: Captured[] } {
   return { provider: provider as unknown as LlmProvider, requests };
 }
 
-function registry(withExport: boolean): NativeToolRegistry {
+/** `none`: no Office plugin; `granted`/`ungranted`: registered by the Office
+ *  plugin, which the agent does or does not hold. */
+type ExportMode = 'none' | 'granted' | 'ungranted';
+const OFFICE_PLUGIN_ID = '@omadia/plugin-office';
+
+function registry(mode: ExportMode): NativeToolRegistry {
   const r = new NativeToolRegistry();
   r.register('hr_employees', {
     handler: () => Promise.resolve(JSON.stringify(HR_ROWS)),
@@ -131,8 +140,9 @@ function registry(withExport: boolean): NativeToolRegistry {
     } as never,
     domain: 'odoo.hr',
   });
-  if (withExport) {
+  if (mode !== 'none') {
     r.register('create_xlsx', {
+      agentId: OFFICE_PLUGIN_ID,
       handler: () => Promise.resolve('ok'),
       spec: {
         name: 'create_xlsx',
@@ -148,13 +158,16 @@ interface LoggedRow {
   readonly assistantAnswer: string;
 }
 
-async function runRenderTurn(withExport: boolean): Promise<{
+async function runRenderTurn(
+  mode: ExportMode,
+  finalText?: string,
+): Promise<{
   answer: string;
   requests: Captured[];
   logged: LoggedRow[];
 }> {
   const service: PrivacyGuardService = createPrivacyGuardService();
-  const { provider, requests } = scriptedProvider();
+  const { provider, requests } = scriptedProvider(finalText);
   const logged: LoggedRow[] = [];
   const sessionLogger = {
     log: (entry: LoggedRow): Promise<{ turnExternalId: string }> => {
@@ -168,7 +181,8 @@ async function runRenderTurn(withExport: boolean): Promise<{
     maxTokens: 1024,
     maxToolIterations: 8,
     domainTools: [],
-    nativeToolRegistry: registry(withExport),
+    nativeToolRegistry: registry(mode),
+    ...(mode === 'ungranted' ? { grantedPluginIds: ['@omadia/plugin-hr'] } : {}),
     privacyGuard: () => service,
     sessionLogger,
   } as unknown as ConstructorParameters<typeof Orchestrator>[0]);
@@ -190,7 +204,7 @@ function renderAck(requests: readonly Captured[]): string {
 
 describe('#1543 — the render ack and the persisted row carry the table provenance', () => {
   it('names source tool, steps, row count and columns — never a value or a filter literal', async () => {
-    const { requests, logged } = await runRenderTurn(false);
+    const { requests, logged } = await runRenderTurn('none');
     const ack = renderAck(requests);
     assert.ok(ack.includes('Table provenance'), ack);
     assert.ok(ack.includes('source tool `hr_employees`'), ack);
@@ -218,7 +232,7 @@ describe('#1543 — the render ack and the persisted row carry the table provena
   });
 
   it('the Privacy Shield prompt tells the model to re-run the query or say it is a new one', async () => {
-    const { requests } = await runRenderTurn(false);
+    const { requests } = await runRenderTurn('none');
     const system = requests[0]?.system ?? '';
     assert.ok(system.includes('Rückfragen zu einer früher gezeigten Tabelle'));
     assert.ok(system.includes('auf einer neuen Abfrage beruht'));
@@ -227,7 +241,7 @@ describe('#1543 — the render ack and the persisted row carry the table provena
 
 describe('#1559 — an Excel file is offered only when create_xlsx is offered', () => {
   it('without create_xlsx: the footer counts the omitted rows, no file; rule a) offers none', async () => {
-    const { answer, requests } = await runRenderTurn(false);
+    const { answer, requests } = await runRenderTurn('none');
     assert.ok(answer.includes('5 weitere Zeilen nicht angezeigt (50 von 55)'), answer);
     assert.ok(!answer.includes('Excel'), `footer promised a file: ${answer}`);
     const system = requests[0]?.system ?? '';
@@ -236,11 +250,39 @@ describe('#1559 — an Excel file is offered only when create_xlsx is offered', 
   });
 
   it('with create_xlsx: the footer and rule a) offer the full list as Excel', async () => {
-    const { answer, requests } = await runRenderTurn(true);
+    const { answer, requests } = await runRenderTurn('granted');
     assert.ok(answer.includes('5 weitere Zeilen nicht angezeigt (50 von 55)'), answer);
     assert.ok(answer.includes('Excel-Datei'), answer);
     const system = requests[0]?.system ?? '';
     assert.ok(system.includes('biete die vollständige Liste als Excel an'));
     assert.ok(!system.includes('Biete KEINE Excel'));
+  });
+});
+
+describe('#1972 — file export, file rules and the forced retry follow the agent grant', () => {
+  const ANNOUNCE = 'Ich erstelle jetzt die Excel-Datei mit allen Zeilen.';
+
+  it('ungranted create_xlsx: no file in the footer, no file rules, no dedup file step', async () => {
+    const { answer, requests } = await runRenderTurn('ungranted');
+    assert.ok(answer.includes('5 weitere Zeilen nicht angezeigt (50 von 55)'), answer);
+    assert.ok(!answer.includes('Excel'), `footer promised a file: ${answer}`);
+    const system = requests[0]?.system ?? '';
+    assert.ok(system.includes('Biete KEINE Excel'));
+    assert.ok(!system.includes('Datei-Erzeugung (Excel/Word)'));
+    assert.ok(!system.includes('wenn der User eine Datei will'));
+  });
+
+  it('granted create_xlsx: the file rules and the dedup file step are in the prompt', async () => {
+    const { requests } = await runRenderTurn('granted');
+    const system = requests[0]?.system ?? '';
+    assert.ok(system.includes('Datei-Erzeugung (Excel/Word)'));
+    assert.ok(system.includes('wenn der User eine Datei will'));
+  });
+
+  it('an announced file forces one retry only when the agent holds the tool', async () => {
+    const ungranted = await runRenderTurn('ungranted', ANNOUNCE);
+    const granted = await runRenderTurn('granted', ANNOUNCE);
+    assert.equal(granted.requests.length, ungranted.requests.length + 1);
+    assert.ok(!JSON.stringify(ungranted.requests).includes('NICHT aufgerufen'));
   });
 });

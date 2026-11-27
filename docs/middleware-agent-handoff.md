@@ -2394,6 +2394,21 @@ Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
 Provider-Wechsel einen Klassen-Ref bei.
 
+**Modell-Policy eines Agenten (#1870, #1871, #1877).** `PUT
+/operator/agents/:slug/model-policy` speichert und baut den Agenten neu:
+`runtimeChangeReasons` (`registry/applyDiff.ts`) kennt den Grund `model_policy`,
+der nächste Turn läuft also auf Primär, Effort und Fallback der neuen Policy.
+`validateModelPolicy` lehnt einen Provider ab, der keine Tool-Turns im
+In-Process-Loop kann (das Abo-CLI, ADR-0086): `400 model_policy_tool_incompatible`.
+GET und PUT melden `deferredProvider` nur noch ohne Provider-Pool und neu
+`primaryUnavailable`, wenn der Provider des Primärmodells gerade nicht nutzbar
+ist; die Modell-Karte zeigt das an. Im Turn gilt (`resolveTurnExecution`): kann
+der Pool das Primärmodell nicht bedienen, startet der Turn auf dem Fallback der
+Policy und ist als Fallback markiert (Receipt `fallbackUsed`, Chip
+`provider_fallback`); mit Fallback „Keiner“ (oder einem ebenfalls nicht
+nutzbaren Fallback) endet er mit der `system`-Notiz `model_unavailable`
+(plugin-api 1.102.0) statt still auf einem anderen Provider zu laufen.
+
 **Sub-Agents fallen auf das Orchestrator-Modell zurück.** Weil die Sub-Agents
 ihr Modell selbst auflösen, kann es nach einem Provider-Wechsel veralten — eine
 konkrete Claude-ID in `SUB_AGENT_MODEL` oder im Manifest läuft gegen den neuen
@@ -3439,6 +3454,18 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
 
+Welle 5 (#1974/#1981/#1984): Web Search und der OpenAI-Transkriptions-Adapter
+exportieren `verifyConnection` (Probe: eine Mini-Suche bzw. `GET /v1/models`;
+401/Auth-403 ⇒ `rejected`) und melden einen fehlenden Key per `ctx.status` als
+`needs_action` „Nicht konfiguriert“. Der Kernel publiziert
+`transcriptionProviderState@1` (`ready` / `not_configured` / `not_installed`,
+`adminTranscriptionProvider.ts`), damit `transcribe_recording` „nicht installiert“
+von „nicht konfiguriert“ trennt; die Orchestrator-Manifest-`optional_requires`
+nennt es. Ein Rollback ohne vorherigen Provider sagt das und liefert
+`details.previousProviderId: null`. Die OpenAI-Adapter (Transkription,
+Embeddings) deklarieren `api.openai.com` + `$config.allowed_hosts` und lehnen
+eine Base-URL auf einem anderen Host beim Aktivieren ab (ADR-0200).
+
 ### Laufende Agenten-Diskussionen: Sicht und Stopp für Operatoren (#2067)
 
 > **Ersetzt die Facilitation-Admin-Lens (#330 Runde 4).** Die Lens, ihre
@@ -3611,9 +3638,11 @@ erste, der sich bauen lässt, gewinnt:
    die den Abo-Fall repariert;
 4. `anthropic` als historischer Default.
 
-Credential-Quellen je Kandidat, in dieser Reihenfolge: eigener Vault-Scope,
-dann der Kernel-Pool `llmProviderPool` (liest den Orchestrator-Scope, teilt
-dessen Circuit-Breaker). Der `llmProviderCatalog` wird durchgereicht — ohne ihn
+Credential-Quelle (seit ADR-0215, #2240): nur der Kernel-Pool
+`llmProviderPool` (liest den Kernel-Scope `@omadia/orchestrator`, teilt dessen
+Circuit-Breaker); der eigene Vault-Scope zählt nur auf einem Host ohne Pool
+(Legacy, Unit-Tests). Stufe 2 fragt entsprechend, ob der Kernel-Scope einen
+Anthropic-Key hat. Der `llmProviderCatalog` wird durchgereicht — ohne ihn
 löst `claude-cli` auf das Default-Wire-Format `openai-compatible` auf und
 scheitert an der fehlenden `baseURL`; Wire-Format und `requiresApiKey: false`
 stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
@@ -3645,7 +3674,19 @@ Drift-Test hält beide gleich). `reactivateAfterProviderWrite`
 (`src/platform/providerDependents.ts`) baut bei einer **effektiven**
 Provider-Änderung (vorher `?? 'anthropic'` gegen nachher; unset → explizit
 `anthropic` zählt nicht) zuerst jedes installierte abhängige Plugin neu, dann das
-Plugin selbst. Die Reihenfolge ist tragend: der Orchestrator greift
+Plugin selbst. #1891: Ein Config- oder Secret-Write an ein **Provider-Plugin**
+(Manifest mit `llm_provider`-Block, z. B. `anthropic_base_url` von
+`@omadia/plugin-llm-anthropic`) zählt als Provider-Änderung für alle
+LLM-Plugins, die auf seiner Provider-Id laufen können
+(`llmPluginsUsingProvider`): erst das Provider-Plugin (es registriert den
+Deskriptor neu), dann in `rebuildOrder` die Agentenlaufzeit (immer, eine
+Modell-Policy kann den Provider pinnen), der Verifier nur bei passendem
+`llm_provider` (Default `anthropic`), extras bei passendem eigenem oder
+geerbtem Provider oder `anthropic`. Bleibt das Provider-Plugin selbst `errored`,
+wird nichts darauf neu gebaut und die Antwort ist
+`runtime.dependent_rebuild_failed` mit `dependentId` = Provider-Plugin,
+`primaryApplied: false`; ein Plugin, das nicht wieder hochkommt, kommt ebenso
+zurück. Die Reihenfolge ist tragend: der Orchestrator greift
 `factExtractor`, `contextRetriever` und `sessionBriefing` von extras eager in
 seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 (`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach
@@ -3761,6 +3802,26 @@ getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
 `test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
 
 ### Provider-Pool-Invalidierung bei Credential-Änderung (#1080)
+
+**Ein Kernel-Pool für die Systemmodule (#2240, ADR-0215).** Orchestrator,
+Verifier und orchestrator-extras bauen ihre Provider nur noch aus dem
+Kernel-`llmProviderPool` (`optional_requires: llmProviderPool@1`); Provider-API-Keys
+liegen in einem Vault-Scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
+(`src/platform/kernelProviderCredentials.ts`, Id weiter `@omadia/orchestrator`).
+Der LLM-Zugang schreibt nur dorthin und baut alle installierten LLM-Plugins neu
+(`llmPluginsToRebuild`). `consolidateProviderCredentials` läuft bei jedem Boot nach
+`runLegacyBootstrap` und vor der ersten Plugin-Aktivierung: Kopien in den Scopes
+von Verifier und extras werden pro Key-Name gelöscht (gleich dem Kernel-Key) oder
+als `superseded:<key>` (bei Kollision `#<n>`) beiseitegelegt — auch wenn der
+Kernel-Scope keinen Key hat: ein nur im Modul vorhandener Key wird bewusst nicht
+in den Kernel-Scope befördert (ADR-0084, Log verweist auf LLM-Zugang). Revoke im
+LLM-Zugang und der Provider-Purge beim Uninstall löschen auch die
+`superseded:`-Kopien. Ein Provider-API-Key an die
+Scopes von Verifier/extras über den Plugin-Editor wird mit
+`400 runtime.provider_key_in_kernel_scope` abgelehnt; beide Manifeste haben kein
+`anthropic_api_key`-Feld mehr (Versionen verifier 0.2.0, extras 0.3.0). Ein
+Provider-Key über den Secret-Editor des Orchestrators (Kernel-Scope) baut wie der
+LLM-Zugang alle installierten LLM-Plugins neu (`kernelCredentialWritten`). Der Verifier lehnt `claude-cli` vor dem Pool ab.
 
 Der Kernel-`llmProviderPool` memoisiert pro Provider-Id, auch ein negatives
 „kein Key". Deshalb hängt er an einem kernel-internen Write-Observer der
@@ -5359,7 +5420,6 @@ Jest.
 
 ```bash
 npm test         # alles
-npm run smoke:entity-refs   # E2E-Smoke ohne externe Creds
 ```
 
 ### Test-Dateien unter `middleware/test/`
@@ -5706,11 +5766,13 @@ MICROSOFT_APP_TENANT_ID
 DATASET_LINK_KEY_SECRET                    # openssl rand -hex 32
 # Diagram rendering (alle 7 müssen gesetzt sein, sonst wird Feature deaktiviert)
 KROKI_BASE_URL=http://localhost:8765       # Kroki-Gateway (lokal aus compose.yml)
-DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch
-DIAGRAM_PUBLIC_BASE_URL=http://localhost:3979  # Base-URL für signierte URLs
-DIAGRAM_SIGNED_URL_TTL_SEC=900             # 15 min
-DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
-DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
+DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch; nur beim
+                                           # ersten Auto-Install gelesen, danach Vault →
+                                           # Rotation über das Setup-Feld des Plugins (#1975)
+DIAGRAM_PUBLIC_BASE_URL=http://localhost:8080  # Base-URL für signierte URLs (Compose-Default)
+DIAGRAM_SIGNED_URL_TTL_SEC=3600            # 1 h, wie Manifest-Default und ADR-0137 (#1975)
+DIAGRAM_MAX_SOURCE_BYTES=1000000           # Quellcode-Cap
+DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit (auch Manifest-Default)
 # Object-storage (Tigris auf Fly, SeaweedFS lokal via docker-compose.storage.yaml — Fly auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
@@ -6726,6 +6788,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
   `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
   `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
+- **Kernel-Pool-Rest (#2240, ADR-0215).** Der OAuth-Fan-out
+  (`fanOutProviderOAuthTokens`) und der Back-compat-Key-Seed von `/setup`
+  (`anthropicKeyConsumers`) schreiben weiter Kopien in die Scopes von Verifier und
+  extras; die Module lesen sie nicht, die API-Key-Kopien räumt der nächste Boot auf.
+  Beide auf den Kernel-Scope verengen (OAuth: Hydration „newest wins“ über die
+  Scopes vorher prüfen).
 
 - **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
   ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
@@ -7872,8 +7940,9 @@ Der Orchestrator greift die Dienste von extras **und** Verifier eager in
 (`src/platform/providerDependents.ts`) baut deshalb den abgreifenden Plugin
 immer **nach** den abgegriffenen neu und ergänzt ihn, wenn er fehlt. Genutzt
 von `reactivateAfterProviderWrite` (direkte Zuweisung an extras/Verifier →
-danach Orchestrator), vom Settings-`PATCH` (Key landet in allen drei Scopes →
-Verifier, extras, Orchestrator) und vom OAuth-Fan-out
+danach Orchestrator), vom Settings-`PATCH` (Key landet seit ADR-0215 nur im
+Kernel-Scope; jeder installierte LLM-Plugin wird neu gebaut → Verifier, extras,
+Orchestrator) und vom OAuth-Fan-out
 `fanOutProviderOAuthTokens`. Der Subscription-Hand-off verschiebt den Rebuild
 (`deferCapturerRebuild`) und baut den Orchestrator nur dann einmal am Ende,
 wenn dessen eigener Schritt übersprungen wurde.
@@ -8578,7 +8647,7 @@ Werte ersetzen.
 3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<middleware-app>.fly.dev`.
 4. Smoke-Probe in Teams: "Flow A→B→C als Mermaid" → Card mit PNG.
 
-Lokale Reproduktion jederzeit via `docker compose up -d` + `npm run smoke:diagrams`.
+Lokale Reproduktion via `docker compose` mit Storage- und Diagrams-Overlay, dann im Chat ein Diagramm anfordern (die früheren `smoke:*`-Skripte sind gitignored und wurden mit #1988 aus `package.json` entfernt).
 
 ### Phase 12 — tenantId im TurnContext
 
@@ -8742,8 +8811,7 @@ npm run typecheck             # tsc --noEmit
 npm run lint                  # eslint src/
 npm run lint:fix              # eslint --fix
 npm run format                # prettier --write
-npm test                      # Node --test mit tsx-Loader, 63 Tests
-npm run smoke:entity-refs     # E2E-Smoke für EntityRef-Capture-Pfad
+npm test                      # Node --test mit tsx-Loader
 ```
 
 `npm run build` baut zuerst die Workspace-Pakete in Abhängigkeitsreihenfolge,
@@ -11314,6 +11382,27 @@ Spec 2042 §5.10, Kriterium 15. Branch `feat/2042-s3b-plugin-contract`.
   nennen (`field`, `[].field`, `<items>[].field`, optional `[N]` am Ende),
   tiefere Pfade werden ignoriert.
 
+
+### Gebundene Plugin-Services: graphPool, memoryStore-Bäume, Recall (ADR-0255/0256/0257, 2026-11-26)
+
+- **`graphPool` (ADR-0255, #2230):** Für jedes nicht gebündelte Plugin prüft
+  `borrowPool(…, { guardStatements: true })` jedes Statement mit
+  `src/platform/sqlTableGuard.ts`. Nennt es eine Kernel-Relation aus
+  `kernelSqlRelations.ts`, wirft es `SqlTableRefusedError`. Ebenso für `$$`, `DO`,
+  `CREATE FUNCTION`, SQL-Text-Funktionen und fremde `plg_`-Namen. Listener, `options`
+  und `_`-Interna des Pools sind verborgen. Eigentum an Kernel-Tabellen:
+  channel-teams (`teams_conversation_refs`, `teams_attachments`), dev-platform
+  (`dev_*`). **Neue Kernel-Tabelle → eine Zeile in `kernelSqlRelations.ts`**;
+  `test/kernelSqlRelations.test.ts` sagt, welche fehlt.
+- **`memoryStore@1` (ADR-0256, #2232):** Ein Plugin liest `core` und `_*` und ändert
+  nur die Bäume aus `permissions.memory.trees` (`src/platform/memoryTrees.ts`). Das
+  erste Plugin, das einen Baum benutzt, besitzt ihn (`/memories/_plugin-trees/<tree>.json`,
+  privat). `core` ist für Plugins read-only. `pairings` gehört über eine datierte
+  Legacy-Zeile `@omadia/channel-telegram`.
+- **Recall/Kuration (ADR-0257, #2231):** `BOUNDARY_ONLY_SERVICE_NAMES` in
+  `pluginServiceGrants.ts` löst nur für `GRAPH_BOUNDARY_IMPLEMENTERS` auf
+  (`graphBoundaryImplementers.ts`). `entityRefBus@1` ist für alle anderen Plugins
+  publish-only.
 
 ## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
 

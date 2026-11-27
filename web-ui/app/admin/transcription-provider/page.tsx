@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
@@ -38,6 +39,12 @@ export default function TranscriptionProviderPage(): React.ReactElement {
   const [switching, setSwitching] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const req = useRef(0);
+  const providers = page.kind === 'ready' ? page.state.providers : undefined;
+  const labelOf = useCallback(
+    (pluginId: string): string =>
+      providers?.find((p) => p.pluginId === pluginId)?.label ?? pluginId,
+    [providers],
+  );
 
   const reload = useCallback(async (): Promise<void> => {
     const mine = ++req.current;
@@ -66,13 +73,13 @@ export default function TranscriptionProviderPage(): React.ReactElement {
         await switchTranscriptionProvider(pluginId);
         await reload();
       } catch (err) {
-        setSwitchError(describeSwitchError(err, t));
+        setSwitchError(describeSwitchError(err, t, labelOf));
         await reload();
       } finally {
         setSwitching(null);
       }
     },
-    [reload, t],
+    [reload, t, labelOf],
   );
 
   return (
@@ -99,9 +106,7 @@ export default function TranscriptionProviderPage(): React.ReactElement {
             <h2 className="text-lg font-medium">{t('currentStateTitle')}</h2>
             <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
               <dt className="text-neutral-500">{t('activeProviderLabel')}</dt>
-              <dd>
-                {page.state.activeProviderId ?? t('noneActive')}
-              </dd>
+              <dd>{activeProviderLabel(page.state) ?? t('noneActive')}</dd>
               <dt className="text-neutral-500">{t('publishedLabel')}</dt>
               <dd>
                 {page.state.capabilityPublished
@@ -114,7 +119,13 @@ export default function TranscriptionProviderPage(): React.ReactElement {
             {page.state.activeProviderId !== null &&
               !page.state.capabilityPublished && (
                 <p className="mt-2 text-sm text-amber-700 dark:text-amber-400">
-                  {t('capabilityMissing')}
+                  {t('capabilityMissing')}{' '}
+                  <Link
+                    href={`/store/${encodeURIComponent(page.state.activeProviderId)}`}
+                    className="underline"
+                  >
+                    {t('openSetup')}
+                  </Link>
                 </p>
               )}
           </section>
@@ -162,15 +173,51 @@ export default function TranscriptionProviderPage(): React.ReactElement {
   );
 }
 
+/** #1981 — the active provider by its label, as the list below shows it. */
+function activeProviderLabel(state: TranscriptionProviderState): string | null {
+  const id = state.activeProviderId;
+  if (id === null) return null;
+  return state.providers.find((p) => p.pluginId === id)?.label ?? id;
+}
+
+/** `details.restoredProviderId` / `previousProviderId` of a rolled-back switch. */
+function rollbackDetails(body: string): {
+  restored: string | null;
+  previous: string | null | undefined;
+} {
+  try {
+    const details = (JSON.parse(body) as { details?: Record<string, unknown> } | null)?.details;
+    const restored = details?.['restoredProviderId'];
+    const previous = details?.['previousProviderId'];
+    return {
+      restored: typeof restored === 'string' ? restored : null,
+      // Absent on an older server: unknown, not "none".
+      previous: typeof previous === 'string' ? previous : previous === null ? null : undefined,
+    };
+  } catch {
+    return { restored: null, previous: undefined };
+  }
+}
+
 /** Map the router's error codes onto operator-readable text; anything
  *  unrecognised surfaces verbatim rather than as a generic shrug. */
 function describeSwitchError(
   err: unknown,
   t: ReturnType<typeof useTranslations<'adminTranscriptionProvider'>>,
+  labelOf: (pluginId: string) => string,
 ): string {
   if (err instanceof ApiError) {
     if (err.code === 'transcriptionProvider.target_unavailable') {
-      return t('switchTargetUnavailable');
+      // #1981 — say what actually happened, from the server's details.
+      const { restored, previous } = rollbackDetails(err.body);
+      if (restored !== null) {
+        return t('switchTargetUnavailableRestored', { provider: labelOf(restored) });
+      }
+      if (previous === null) return t('switchTargetUnavailableNoPrevious');
+      // An older server sends no `previousProviderId`: say only what is known.
+      return previous === undefined
+        ? t('switchTargetUnavailable')
+        : t('switchTargetUnavailableNoneLive');
     }
     if (err.code === 'transcriptionProvider.switch_in_progress') {
       return t('switchInProgress');

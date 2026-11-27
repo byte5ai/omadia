@@ -16,7 +16,7 @@ degrades to "no capability published" instead of failing activation — see
 
 | Surface | What it does |
 |---|---|
-| `web_search` (native tool) | Query → ranked results with title, URL, snippet, and citation objects. Attached to the orchestrator's tool list automatically. |
+| `web_search` (native tool) | Query → ranked results with title, URL, snippet, and citation objects. Offered only to agents the plugin is assigned to (`/operator/agents`, #1598). |
 | `webSearch@1` (capability) | Programmatic search for consuming plugins — declare `requires: ["webSearch@^1"]`. |
 
 ## Config keys (`setup.fields`)

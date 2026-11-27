@@ -166,6 +166,9 @@ export const ERROR_HELP_CODES = [
   'runtime.options_provider_failed',
   'runtime.options_provider_timeout',
   'runtime.options_unavailable',
+  // #2240 / ADR-0215 — a provider API key sent to the verifier's or extras'
+  // own scope; the key belongs under LLM access.
+  'runtime.provider_key_in_kernel_scope',
   'runtime.public_path_not_declared',
   'runtime.public_paths_unavailable',
   'runtime.sql_grants_unavailable',

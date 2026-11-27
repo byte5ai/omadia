@@ -2,7 +2,7 @@
 #
 # Adds the `kroki` + `kroki-mermaid` sidecars and the env that activates the
 # diagrams plugin (the `render_diagram` tool + signed PNG URLs at
-# /diagrams/<key>).
+# /diagrams/dl/<key>).
 #
 # REQUIRES the storage overlay — rendered diagrams are stored in object
 # storage, so always compose this WITH docker-compose.storage.yaml:
@@ -12,6 +12,13 @@
 # You must also set a signing secret in middleware/.env before the plugin
 # activates (the kernel skips auto-install while it is empty):
 #   DIAGRAM_URL_SECRET=$(openssl rand -hex 32)
+# DIAGRAM_PUBLIC_BASE_URL defaults to http://localhost:8080
+# (middleware/compose.defaults.env); set it in middleware/.env behind a proxy.
+# Neither is set under `environment:` below: that key beats every env_file,
+# so it would replace the values from middleware/.env (#1965).
+#
+# Download links answer 404 until an operator grants the public path:
+# Store → Diagrams → "Grants" → /diagrams/dl (Office: /documents/dl).
 
 services:
   middleware:
@@ -19,13 +26,6 @@ services:
       # In-network DNS name — the middleware reaches the Kroki gateway over
       # the shared `omadia` network, not the host's localhost.
       KROKI_BASE_URL: http://kroki:8000
-      # Host-side public base URL — the browser opens signed diagram URLs
-      # against the published host port, not the in-network service name.
-      DIAGRAM_PUBLIC_BASE_URL: http://localhost:8080
-      # Signing secret for diagram URLs. Set in middleware/.env
-      # (`openssl rand -hex 32`); the diagrams plugin stays inactive while
-      # this is empty.
-      DIAGRAM_URL_SECRET: ${DIAGRAM_URL_SECRET:-}
     depends_on:
       kroki:
         condition: service_started

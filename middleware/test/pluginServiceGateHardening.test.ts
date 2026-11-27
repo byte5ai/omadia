@@ -329,13 +329,13 @@ describe('#788 — a `provides:` entry is a claim, not a grant', () => {
     // dependency declaration was already paid for at activation and grants the
     // name outright.
     const catalog = catalogOf([
-      pluginOf({ id: CLAIMANT, requires: ['entityRefBus@^1'] }),
+      pluginOf({ id: CLAIMANT, requires: ['channelResolver@^1'] }),
     ]);
     const { ctx, registry } = makeCtx(CLAIMANT, catalog);
     const kg = { graph: true };
-    registry.provide('entityRefBus', kg, VICTIM);
-    assert.equal(ctx.services.get('entityRefBus'), kg);
-    assert.equal(classify(CLAIMANT, 'entityRefBus', catalog, registry), 'declared');
+    registry.provide('channelResolver', kg, VICTIM);
+    assert.equal(ctx.services.get('channelResolver'), kg);
+    assert.equal(classify(CLAIMANT, 'channelResolver', catalog, registry), 'declared');
   });
 
   it('leaves a name in BOTH `requires:` and `provides:` alone', () => {
@@ -346,19 +346,19 @@ describe('#788 — a `provides:` entry is a claim, not a grant', () => {
     const catalog = catalogOf([
       pluginOf({
         id: CLAIMANT,
-        requires: ['entityRefBus@^1'],
-        provides: ['entityRefBus@1'],
+        requires: ['channelResolver@^1'],
+        provides: ['channelResolver@1'],
       }),
     ]);
     const { ctx, registry } = makeCtx(CLAIMANT, catalog);
     const original = { original: true };
-    registry.provide('entityRefBus', original, VICTIM);
+    registry.provide('channelResolver', original, VICTIM);
     assert.equal(
-      ctx.services.get('entityRefBus'),
+      ctx.services.get('channelResolver'),
       original,
       'a wrapper must reach the thing it wraps',
     );
-    assert.equal(classify(CLAIMANT, 'entityRefBus', catalog, registry), 'declared');
+    assert.equal(classify(CLAIMANT, 'channelResolver', catalog, registry), 'declared');
   });
 
   it('leaves `optional_requires:` alone', () => {
@@ -831,21 +831,21 @@ describe('#788 follow-up — `replace` may not take a name the plugin cannot rea
     const catalog = catalogOf([
       pluginOf({
         id: ATTACKER,
-        requires: ['entityRefBus@^1'],
+        requires: ['channelResolver@^1'],
         provides: ['captureFilter@1'],
       }),
     ]);
     const { ctx, registry } = makeCtx(ATTACKER, catalog);
     const inner = { inner: true };
-    registry.provide('entityRefBus', inner, VICTIM);
+    registry.provide('channelResolver', inner, VICTIM);
 
-    assert.equal(ctx.services.get('entityRefBus'), inner);
+    assert.equal(ctx.services.get('channelResolver'), inner);
     const wrapped = { wraps: inner };
-    const undo = ctx.services.replace('entityRefBus', wrapped);
-    assert.equal(registry.get('entityRefBus'), wrapped);
+    const undo = ctx.services.replace('channelResolver', wrapped);
+    assert.equal(registry.get('channelResolver'), wrapped);
     undo();
     assert.equal(
-      registry.get('entityRefBus'),
+      registry.get('channelResolver'),
       inner,
       'the decorator must still unwind to the original on deactivate',
     );

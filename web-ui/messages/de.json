@@ -1445,6 +1445,10 @@
         "what": "Die Änderung wurde gespeichert, aber nicht jedes Plugin, das sie nutzt, ist neu gestartet.",
         "next": "Speichere erneut, um den Neustart zu wiederholen. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
       },
+      "provider_key_in_kernel_scope": {
+        "what": "Provider-API-Keys werden nicht mehr pro Plugin gespeichert. Agentenlaufzeit, Verifier und Hintergrund-Jobs nutzen alle die Keys unter LLM-Zugang.",
+        "next": "Trag den Key unter Admin → LLM-Zugang ein. Hier wurde nichts gespeichert."
+      },
       "empty_secrets_patch": {
         "what": "Beim Speichern war kein geänderter Wert dabei.",
         "next": "Ändere oder leere mindestens ein Feld, bevor du speicherst."
@@ -2316,6 +2320,7 @@
       "multi_orchestrator_unavailable": "Die Multi-Agent-Laufzeit ist nicht verfügbar.",
       "not_found": "Diesen Agenten gibt es nicht mehr — lad die Seite neu.",
       "plugin_not_assigned": "Dieses Plugin ist dem Agenten nicht mehr zugewiesen — lad die Seite neu.",
+      "model_policy_tool_incompatible": "Dieser Provider kann die Turns eines Agenten nicht ausführen: Das Abo-CLI beantwortet nur Anfragen ohne Tools. Wähle einen Provider mit API-Key.",
       "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
       "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
       "unknown": "Request fehlgeschlagen: {detail}",
@@ -2511,6 +2516,10 @@
       "sameRef": "Fallback und Primär sind dasselbe Modell — anderen Fallback wählen oder Keiner.",
       "sameProvider": "Gleicher Provider wie das primäre Modell — ein Ausfall des Providers trifft beide.",
       "deferred": "Das primäre Modell nennt {provider}, der Host läuft aber auf {active} und hat keinen Pool für {provider} — der Effort greift, der Modellwechsel nicht.",
+      "toolIncompatible": "Diese Richtlinie nennt {provider}, das die Turns dieses Agenten nicht ausführen kann (das Abo-CLI beantwortet nur Anfragen ohne Tools). Wähle einen Provider mit API-Key und speichere.",
+      "primaryUnavailable": "{provider} ist gerade nicht verfügbar (kein Key oder der Provider wurde entfernt). Mit Fallback „Keiner“ scheitern die Turns dieses Agenten mit einem Hinweis; mit Fallback laufen sie auf dem Fallback.",
+      "summaryUnavailableNoFallback": "{primary} nicht verfügbar · kein Fallback, Turns scheitern",
+      "summaryUnavailableWithFallback": "{primary} nicht verfügbar · läuft auf Fallback {fallback}",
       "fallbackNoVision": "Das Fallback-Modell kann keine Bilder lesen — bei Turns mit Anhängen läuft das primäre Modell ohne Fallback.",
       "primaryNoVision": "Das primäre Modell kann keine Bilder lesen.",
       "summaryAuto": "Auto ({model})",
@@ -4823,6 +4832,7 @@
       "permissions": {
         "memoryReads": "Memory · Reads",
         "memoryWrites": "Memory · Writes",
+        "memoryTrees": "Memory · Eigene Ordner",
         "graphReads": "Graph · Reads",
         "graphWrites": "Graph · Writes",
         "entitySystems": "Graph · Entity-Systeme",
@@ -4834,7 +4844,7 @@
         "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
         "publicPathsTitle": "Öffentliche (nicht authentifizierte) Pfade",
         "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
-        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
+        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird entfernt, wenn das Plugin deinstalliert wird.",
         "none": "Keine Berechtigungen deklariert.",
         "runtimeCredentials": "Laufzeit-Credentials",
         "sqlNotGranted": "Deklarieren ist nicht Erteilen: Das Plugin erhält erst eine Datenbankverbindung, wenn Sie nach der Installation unter „Freigaben“ zustimmen."
@@ -4945,6 +4955,7 @@
       "success": "Installation erfolgreich",
       "installNow": "Jetzt installieren",
       "unknownError": "Unbekannter Fehler.",
+      "missingPlugins": "Fehlende Plugins:",
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
       "updateActivationFailedLead": "Aktualisiert, aber das Plugin ist nicht gestartet.",
       "activationFailedLead": "Installiert, aber das Plugin ist nicht gestartet.",
@@ -6771,14 +6782,18 @@
     "publishedLabel": "Service published",
     "publishedYes": "ja — {provider}",
     "publishedNo": "nein",
-    "capabilityMissing": "Der aktive Adapter published keinen Service — er läuft, ist aber nicht konfiguriert (API-Key fehlt).",
+    "capabilityMissing": "Der aktive Adapter published keinen Service — er läuft, ist aber nicht konfiguriert (API-Key fehlt oder Endpoint-Host nicht freigegeben).",
+    "openSetup": "Setup-Felder öffnen",
     "providersTitle": "Installierte Provider",
     "noProviders": "Kein transcription@1-Adapter installiert. Zuerst einen aus dem Plugin-Store installieren (z.B. \"Transkription (OpenAI)\").",
     "activeBadge": "aktiv",
     "switchTo": "Aktivieren",
     "switching": "schaltet um…",
     "switchFailed": "Umschalten fehlgeschlagen: {message}",
-    "switchTargetUnavailable": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (API-Key fehlt) — der vorherige Provider wurde nach Möglichkeit wiederhergestellt.",
+    "switchTargetUnavailable": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert) — der vorherige Provider wurde nach Möglichkeit wiederhergestellt.",
+    "switchTargetUnavailableRestored": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert: API-Key fehlt oder Endpoint-Host nicht freigegeben) — der vorherige Provider ({provider}) wurde wiederhergestellt und ist aktiv.",
+    "switchTargetUnavailableNoneLive": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert) — der vorherige Provider ließ sich nicht wiederherstellen, es ist jetzt kein Provider aktiv.",
+    "switchTargetUnavailableNoPrevious": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert). Vorher war kein Provider aktiv, also ist jetzt keiner aktiv — vervollständige seine Setup-Felder und aktiviere ihn dann erneut.",
     "switchInProgress": "Ein anderer Wechsel läuft noch — der Zustand unten wurde neu gelesen; danach erneut versuchen.",
     "switchAlreadyActive": "Dieser Provider ist bereits aktiv."
   },

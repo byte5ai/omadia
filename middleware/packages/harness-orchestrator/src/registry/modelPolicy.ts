@@ -16,12 +16,16 @@
  *     and — if given — an effort that model declares; `fallback` must differ
  *     from `primary`. This REPLACES the old cross-provider rejection for the
  *     policy: primary and fallback may name different providers.
+ *     A provider that cannot run a tool turn in-process (the subscription
+ *     CLI, ADR-0086: it runs tool turns only as its own `run_loop`) is
+ *     refused with {@link ModelPolicyRefusedError} (#1871).
  *   - {@link resolveModelPolicyRuntime} is what the registry applies when it
  *     builds an agent: an explicit primary pins the model (and effort) and
  *     switches triage off; `auto` leaves the three-tier resolution alone.
- *     Until the turn loop can switch providers (W3), an explicit primary on a
- *     provider other than the active one is honoured for its EFFORT only and
- *     reported as `deferred`, never silently run on the wrong model.
+ *     With a provider pool the turn loop runs a primary on another provider
+ *     there (W3); only a host without a pool defers it (effort only).
+ *   - {@link describeModelPolicyRuntime} is the operator read-out: whether
+ *     the primary is deferred (no pool) or currently unavailable (#1877).
  */
 
 import type { EffortLevel, ModelInfo } from '@omadia/llm-provider';
@@ -74,6 +78,31 @@ export interface ModelPolicyValidationContext {
   resolveModel(provider: string, model: string): ModelInfo | undefined;
   /** `true` iff the provider is registered AND has a key (or is keyless). */
   usable(provider: string): Promise<boolean>;
+  /**
+   * #1871 — `true` iff the provider can run an agent's tool turn in the
+   * in-process loop. `false` for the subscription CLI (wire format
+   * `claude-cli`): it answers only tool-less or forced single-tool requests.
+   */
+  runsToolTurns(provider: string): boolean;
+}
+
+/** #1871 — the machine-readable code of a refused policy ref. */
+export const MODEL_POLICY_TOOL_INCOMPATIBLE = 'model_policy_tool_incompatible';
+
+/**
+ * #1871 — a policy the host must not run, with a code the UI localizes. The
+ * operator route answers it with 400 and its `code`. Not a subclass of
+ * `ConfigValidationError`: `configStore.ts` imports this module, so extending
+ * its class here would read it before it is initialised.
+ */
+export class ModelPolicyRefusedError extends Error {
+  constructor(
+    readonly code: typeof MODEL_POLICY_TOOL_INCOMPATIBLE,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ModelPolicyRefusedError';
+  }
 }
 
 async function validateRef(
@@ -85,6 +114,12 @@ async function validateRef(
   if (!info) {
     throw new ConfigValidationError(
       `${field}: model '${ref.model}' is not registered with provider '${ref.provider}'`,
+    );
+  }
+  if (!ctx.runsToolTurns(ref.provider)) {
+    throw new ModelPolicyRefusedError(
+      MODEL_POLICY_TOOL_INCOMPATIBLE,
+      `${field}: provider '${ref.provider}' cannot run an agent's tool turns (the subscription CLI answers only tool-less requests) — pick a provider with an API key`,
     );
   }
   if (!(await ctx.usable(ref.provider))) {
@@ -141,9 +176,9 @@ export interface ResolvedModelPolicy {
   /** `true` when an explicit primary was set: triage does not apply. */
   readonly pinned: boolean;
   /**
-   * The explicit primary names a provider other than the active one. The
-   * effort is still applied; the model switch waits for the multi-provider
-   * turn loop (W3). Surfaced so the DTO can say so instead of pretending.
+   * The explicit primary names a provider other than the active one. Without
+   * a provider pool only the effort applies; with one the turn loop runs the
+   * primary there (`primaryRef`), see {@link describeModelPolicyRuntime}.
    */
   readonly deferredProvider?: string;
 }
@@ -160,4 +195,49 @@ export function resolveModelPolicyRuntime(
     ...(onActive ? { model: ref.model } : { deferredProvider: ref.provider }),
     ...(ref.effort !== undefined ? { effort: ref.effort } : {}),
   };
+}
+
+/** What the operator read-out needs to know about the host. */
+export interface ModelPolicyReadoutContext {
+  readonly activeProvider?: string;
+  /** A provider pool is wired: the turn loop switches providers itself (W3). */
+  readonly switchesProviders: boolean;
+  usable(provider: string): Promise<boolean>;
+  /** #1871 — see {@link ModelPolicyValidationContext.runsToolTurns}. Absent = every provider can. */
+  runsToolTurns?(provider: string): boolean;
+}
+
+/** What the Model tab says about an explicit primary besides the policy. */
+export interface ModelPolicyReadout {
+  /** No provider pool: the primary's provider switch does not happen. */
+  readonly deferredProvider?: string;
+  /** #1877 — the primary's provider cannot be used now (no key, removed). */
+  readonly primaryUnavailable?: string;
+  /**
+   * #1871 — a policy saved before the write-time check names a provider that
+   * cannot run the agent's tool turns (the subscription CLI) as primary or
+   * fallback. The Model tab asks the operator to pick another one.
+   */
+  readonly toolIncompatible?: string;
+}
+
+/**
+ * #1871/#1877 — the read-out the route returns with a policy. `deferred` only
+ * when the switch really does not happen (no pool); `primaryUnavailable` when
+ * the provider has lost its key since the save, so the tab never claims a
+ * model the turn cannot run on.
+ */
+export async function describeModelPolicyRuntime(
+  policy: ModelPolicy,
+  ctx: ModelPolicyReadoutContext,
+): Promise<ModelPolicyReadout> {
+  const incompatible = [policy.primary, policy.fallback]
+    .filter(isModelRef)
+    .find((ref) => ctx.runsToolTurns?.(ref.provider) === false)?.provider;
+  const flag = incompatible !== undefined ? { toolIncompatible: incompatible } : {};
+  if (!isModelRef(policy.primary)) return flag;
+  const provider = policy.primary.provider;
+  if (!(await ctx.usable(provider))) return { ...flag, primaryUnavailable: provider };
+  const deferred = resolveModelPolicyRuntime(policy, ctx.activeProvider).deferredProvider;
+  return deferred !== undefined && !ctx.switchesProviders ? { ...flag, deferredProvider: deferred } : flag;
 }

@@ -36,6 +36,108 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — office files, attachments and transcription (Welle 5 W07-08) (2026-11-26)
+
+- **File export follows the agent's grant (#1972).** The Excel offer under a truncated
+  Privacy Shield table, the "Datei-Erzeugung" prompt rules 14/15, the dedup recipe's
+  `create_xlsx` step and the forced "file announced but not built" retry now need
+  `create_xlsx`/`create_docx` to be *granted to this agent* (same gate as the tool list,
+  #1598), not only registered. `Orchestrator.isNativeToolOfferedThisTurn`.
+- **Attachment tools are channel-neutral (#1976).** `read_attachment` and
+  `transcribe_recording` are offered only on a turn that came in through a messaging
+  channel (`turnMayCarryUploads`, `attachmentToolAvailability.ts`); the web chat and the
+  HTTP API have no upload. Their texts no longer name the internal `[attachments-info]`
+  block, and the not-found answer (`attachmentNotFound`) tells the model to say the file is
+  not available instead of asking for a re-upload.
+- **Dropped attachments are visible (#1978).** Auto-ingest writes an
+  `[attachment-not-ingested: <name>]` block with a plain reason (damaged, unsupported type,
+  not found in storage, no text) and a server warning for every file it cannot read; a
+  failed storage read is logged in `attachmentReaderFactory.ts`. A corrupt XLSX states
+  "the file is damaged or unreadable (not a valid XLSX workbook)"; the jszip text goes to the log only.
+  `ExtractResult` failures carry a `kind` (`PLAIN_EXTRACT_FAILURE`).
+- **`create_xlsx` formulas without the leading `=` (#1969).** The renderer strips one
+  leading `=` from inline formula cells and computed-column templates before the ADR-0140
+  formula policy reads them, so the file holds `<f>SUM(A2:A3)</f>`, not `==SUM(…)`. A
+  formula of only `=` is refused.
+- **`create_xlsx` strict type coercion (#1971).** Typed columns convert only ISO dates
+  (`YYYY-MM-DD`, optional time; without a zone read as UTC) and plain decimals (`.` as
+  decimal point). `""` and Odoo's `false` become empty cells in date/numeric columns;
+  `12.03.2024`, `März 2024`, `1.234,56`, `0x1F`, `Infinity` stay text and the tool result
+  lists them by address under `cellsKeptAsText` (never their values). `cellCoercion.ts`;
+  the column `type` description now names the accepted formats.
+- **Diagrams overlay keeps `middleware/.env` values (#1965).** `docker-compose.diagrams.yaml`
+  no longer sets `DIAGRAM_URL_SECRET` (an empty `${…:-}` replaced the value from
+  `middleware/.env`) or a hard-coded `DIAGRAM_PUBLIC_BASE_URL` under `environment:`; the URL
+  default `http://localhost:8080` moved to `middleware/compose.defaults.env`. The boot's skip
+  lines name each missing variable (`environment lacks DIAGRAM_URL_SECRET`).
+- **Diagrams reinstallable on a Postgres-memory stack (#1973).** Diagrams declares
+  `optional_requires: memoryStore@1` instead of `depends_on: @omadia/memory` and resolves it
+  at first use (ADR-0053); its row in `BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20` is retired.
+  `agent-reference-maximum` drops the same dependency. `install.missing_dependencies` carries
+  `details.missing`, and the Store drawer names the missing plugins (en/de).
+- **Signed-link secret and defaults (#1975).** Rotation is documented as each plugin's setup
+  field (`DIAGRAM_URL_SECRET` is read only on the boot that auto-installs). Env and Store
+  installs now share their defaults: TTL 3600 s (`DIAGRAM_SIGNED_URL_TTL_SEC`, was 900),
+  tenant `default` (manifests and plugin fallbacks, was `dev`), PNG cap 900000 bytes and
+  source cap 1000000 bytes (manifests, were 10 MiB / 1 MiB). Existing installs keep their
+  stored config; an install without a stored tenant (Store) or without `GRAPH_TENANT_ID`
+  (env) now prefixes keys with `default`, so its diagram cache starts empty once; signed
+  links already handed out keep working (the full key is in the URL). Because
+  `DIAGRAM_PUBLIC_BASE_URL` now has a stack default, a stack with only the storage overlay
+  and a `DIAGRAM_URL_SECRET` auto-installs Office, which it skipped before.
+- **Public-path texts (#1980).** The claim log says an ungranted prefix is closed
+  (`404 public_path.not_granted`) and points to Store → plugin → Grants; the Store text says
+  consent is removed on uninstall (en/de); Getting Started, the Office README and the plugin
+  comments say `/diagrams/dl` and `/documents/dl` must be granted before links work.
+- **Docs and metadata (#1988).** `.docx` provenance lists no `category`; URL paths read
+  `/diagrams/dl/<key>` and `/documents/dl/<key>`; the six `smoke:*` scripts that point at
+  gitignored files are gone from `middleware/package.json`; 14 bundled manifests say `MIT`
+  like their packages (guarded by `manifestLicenseParity.test.ts`); Web Search texts say the
+  plugin must be assigned to an agent and a provider/key change only needs a save.
+- **Connection probes and "not configured" (#1974).** `@omadia/plugin-web-search` and
+  `@omadia/transcription-adapter-openai` export `verifyConnection` (a one-result search,
+  resp. `GET /v1/models`; 401 or an auth 403 ⇒ `rejected`, red badge, tools withheld), so
+  "Test connection" works; a missing key reports `needs_action` "Nicht konfiguriert"
+  instead of a plain "Active".
+- **Transcription provider texts (#1981).** The admin page shows the active provider by its
+  label and links the setup fields when it publishes nothing; a rolled-back switch is
+  described from `details.restoredProviderId`/`previousProviderId` (en/de). The kernel
+  publishes `transcriptionProviderState@1` so `transcribe_recording` says "installed but not
+  configured" instead of "no provider installed"; with no previous provider the server no
+  longer says it "could not be restored".
+- **OpenAI adapters reach only declared hosts (#1984, ADR-0200).** The transcription and
+  embedding adapters declare `api.openai.com` plus `$config.allowed_hosts` instead of
+  placeholder names, and refuse a Base URL (or realtime URL) on any other host at
+  activation (`ctx.status` error, no service). **Operator step:** an installation that uses
+  a custom endpoint (Azure, Ollama's OpenAI endpoint, a local server) must list its host in
+  the new setup field "Additional allowed hosts", or the adapter stops publishing after the
+  update.
+- **Readable file-link errors (#1964, part).** `/diagrams/dl` and `/documents/dl` answer a
+  browser that opens an expired, missing or failing link with a short German/English HTML
+  page that says what happened and how to get the file again (`fileLinkErrorPage.ts`,
+  `sendFileLinkError`); images, Teams and other clients keep the plain-text body. Renewing
+  an expired link without re-creating the file is still open (#1964).
+- **Versions:** `@omadia/plugin-web-search` 0.2.2, `@omadia/transcription-adapter-openai`
+  0.1.1, `@omadia/embedding-adapter-openai` 0.1.1, `@omadia/diagrams` 0.2.3,
+  `@omadia/plugin-office` 0.1.6.
+- **Transcripts are recording content, kept whole (#1983, #1987).** `transcribe_recording`
+  stores every chunk with the marker line `[recording-transcript speaker="…"]`
+  (`recordingTranscript.ts`) and `SessionLogEntry.source: 'recording'`; the session log
+  labels it `**Recording:**`, and every replay of stored turns — context tail and recall
+  (`contextRetriever.ts`), session resume (`sessionBriefing.ts`), session summary
+  (`sessionSummaryGenerator.ts`) via `renderUserLine`, and the subscription-CLI history
+  (`cliChatAgent.ts`, `replayUserLine`) — renders it as quoted recording content instead of
+  `Nutzer:`/`User:`.
+  Transcript text is cut into chunks of at most 1,300 characters, below the session log's
+  1,500-character entry cap, so the log holds the full transcript; the tool result says
+  "vollständig im Session-Protokoll" only when the entries were written.
+
+### Fixed — agent model policy reaches the running agent; system modules on the kernel provider pool (#1870, #1871, #1877, #1891, #2240, ADR-0215) (2026-11-26)
+
+- **An agent's model policy reaches the running agent and fails visibly (#1870, #1871, #1877).** Saving an agent's model policy rebuilds the agent (`runtimeChangeReasons` reason `model_policy`); the next turn runs on the saved primary, effort and fallback, and the "Auto (…)" read-out follows. The policy refuses a provider that cannot run tool turns in the agent loop (the subscription CLI, ADR-0086) with `400 model_policy_tool_incompatible`, shown localized in the Model tab; `deferredProvider` is reported only when no provider pool switches the turn. When the pool cannot serve a pinned primary, a turn with a fallback starts on it and is marked as a fallback (receipt `fallbackUsed`, `provider_fallback` chip); with fallback "None" (or a fallback that is unavailable or cannot read the turn's images) it ends with the new system notice `model_unavailable` (plugin-api 1.102.0), worded per reason, instead of running silently on another provider — in chat, stream, verifier and routines alike (`ChatTurnResult.systemNotice`), and the working-mode classifier sends nothing to another provider either. GET/PUT model-policy return `primaryUnavailable` and, for a policy saved earlier with the subscription CLI, `toolIncompatible`; the Model tab shows both.
+- **A provider plugin's config change reaches every LLM plugin (#1891).** A config or secret write to a provider plugin (e.g. `anthropic_base_url` of `@omadia/plugin-llm-anthropic`) rebuilds the provider plugin, then in `rebuildOrder` the LLM plugins that may run on its provider (the agent runtime always, last; the verifier and orchestrator-extras when their provider chain names it); orchestrator-extras no longer keeps calling the old endpoint until a restart. A plugin that does not come back up — or a provider plugin that itself stays down, in which case nothing is rebuilt onto it — is reported as `runtime.dependent_rebuild_failed`.
+- **System modules use the kernel provider pool; provider keys in one vault scope (#2240, ADR-0215).** The verifier and orchestrator-extras build their providers from the kernel `llmProviderPool` only, like the agent runtime. Provider API keys live in one kernel vault scope (id `@omadia/orchestrator`); LLM access (and the orchestrator's own secret editor) writes only there and rebuilds every installed LLM plugin, so one rotation reaches all three. Boot migration `consolidateProviderCredentials` clears the verifier's and extras' scopes key by key: a copy equal to the kernel key is dropped, every other copy is renamed to `superseded:<key>` (numbered when taken) — never deleted, never logged, never promoted into the kernel scope (a key only a module held must be entered under LLM access; the boot log says so); idempotent. A revoke under LLM access and a provider plugin's uninstall also remove the `superseded:` copies. A provider API key sent to the verifier's or extras' own scope is refused with `400 runtime.provider_key_in_kernel_scope`; both manifests drop their `anthropic_api_key` field (`@omadia/verifier` 0.2.0, `@omadia/orchestrator-extras` 0.3.0). An install that ran extras on a dedicated Anthropic key now runs it on the LLM-access key (old key kept as `superseded:<key>`, boot log warns). The verifier now shares the pool's retry budget. ADR-0215 (Proposed) supersedes the pool part of ADR-0165.
+
 ### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
 
 - With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
@@ -121,6 +223,35 @@ changelog.
   `{ wouldAssign, unreadable }` and changes nothing. A real run writes `admin_audit`
   `chat.assign_orphans` (target `user:<users.id>`, `after: { owner, count }`) first and changes
   nothing if that fails. Unknown account 404, disabled account 409.
+
+### Security — bounded plugin services: graphPool table guard, declared memory trees, boundary-only recall (ADR-0255/0256/0257) (2026-11-26)
+
+- **#2230, ADR-0255:** a granted `graphPool` covers only the plugin's own tables. For every
+  plugin that is not bundled, `borrowPool` (`middleware/src/platform/borrowedPool.ts`) runs
+  each statement through `sqlTableGuard.ts` first. A statement that names a kernel relation
+  from `kernelSqlRelations.ts` is refused with `SqlTableRefusedError`
+  (`test/kernelSqlRelations.test.ts` keeps that list complete against every kernel
+  migration). So are dollar-quoted text, `DO`, `CREATE FUNCTION`, SQL-text functions
+  (`query_to_xml`, …), `standard_conforming_strings`/`set_config`, `pg_stats`,
+  `LISTEN`/`NOTIFY`, submittables and another plugin's `plg_` namespace. A query config is
+  copied before it runs. The guarded pool also hides its listeners, `options`, `Client` and
+  internals from `get` and reflection. It does not contain a hostile in-process upload
+  (ADR-0255 residual). channel-teams keeps `teams_conversation_refs`
+  / `teams_attachments`, and dev-platform keeps its `dev_*` tables. The canary sweep gains a
+  `graphPool` probe on Neon.
+- **#2232, ADR-0256:** through `memoryStore@1` a plugin reads `core` and the `_*` trees and
+  changes only the top-level trees its manifest declares: the new manifest field
+  `permissions.memory.trees` (`permissions_summary.memory_trees`, shown on the store page).
+  The first plugin to use a tree owns it (`/memories/_plugin-trees/<tree>.json`, private).
+  `core` is now read-only for plugins. `pairings` stays `@omadia/channel-telegram`'s
+  through a dated legacy row until its manifest declares it.
+- **#2231, ADR-0257:** `contextRetriever`, `sessionBriefing`, `palaiaExcerpt`,
+  `bulkPromotion`, `bulkInconsistencyDetect`, `bulkMergeDetect`, `bulkExcerptMergeDetect`,
+  `inconsistencyDetector`, `mergeCandidateDetector`, `nudgeProviders` and `graphLifecycle`
+  resolve only for the bundled boundary implementers
+  (`BOUNDARY_ONLY_SERVICE_NAMES`). `entityRefBus@1` is publish-only for every other plugin.
+  `GRAPH_BOUNDARY_IMPLEMENTERS` moved to `platform/graphBoundaryImplementers.ts`.
+- ADR-0044's status line now reads superseded in part by 0256, refined by 0255 and 0257.
 
 ### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
 

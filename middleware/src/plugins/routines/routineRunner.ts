@@ -85,6 +85,9 @@ export async function publishRoutineAnswer(
   result: ChatTurnResult,
 ): Promise<SemanticAnswer> {
   const answer = toSemanticAnswer(result);
+  // #1877 — the turn did not run (`model_unavailable`): the management
+  // layer's notice goes out as it is, never stamped as the agent's prose.
+  if (result.systemNotice) return answer;
   const { emitter, speaker } = orchestrator;
   if (!emitter || !speaker) return answer;
   const outcome = await emitter.emit({

@@ -8,10 +8,26 @@ import { z } from 'zod';
 
 import { isRecordingAttachment } from '../attachmentExtract.js';
 import type { SessionLogger } from '../sessionLogger.js';
-import type { AttachmentReader } from './readAttachmentTool.js';
+import { attachmentNotFound, type AttachmentReader } from './readAttachmentTool.js';
 import { turnContext } from '../turnContext.js';
+import { chunkTranscriptText, markRecordingText } from '../recordingTranscript.js';
 
 export const TRANSCRIBE_RECORDING_TOOL_NAME = 'transcribe_recording';
+
+/** #1981 — mirrors the kernel's `transcriptionProviderState@1` values. */
+export type TranscriptionProviderState = 'ready' | 'not_configured' | 'not_installed';
+export const TRANSCRIPTION_PROVIDER_STATE_SERVICE = 'transcriptionProviderState';
+
+/** #1981 — the error for a turn without a live `transcription@1`. */
+function noProviderError(state: TranscriptionProviderState | undefined): string {
+  if (state === 'not_configured') {
+    return 'Error: ein Transkriptions-Provider ist installiert, aber nicht konfiguriert (API-Key fehlt oder Endpoint nicht freigegeben) — der Operator trägt ihn im Setup-Formular des Plugins ein (Admin → Transkription).';
+  }
+  if (state === 'not_installed') {
+    return 'Error: kein Transkriptions-Provider installiert — der Operator muss ein transcription@1-Plugin (z.B. "Transkription (OpenAI)") installieren und konfigurieren.';
+  }
+  return 'Error: kein Transkriptions-Provider verfügbar — entweder ist keiner installiert, oder er ist nicht konfiguriert (API-Key fehlt). Der Operator prüft das unter Admin → Transkription.';
+}
 
 /**
  * `transcribe_recording` — #584 Workstream I (batch ingestion of recorded
@@ -48,7 +64,7 @@ export const transcribeRecordingToolSpec = {
   name: TRANSCRIBE_RECORDING_TOOL_NAME,
   description:
     'Transkribiert eine vom User hochgeladene AUDIO-Datei (Meeting-Mitschnitt, Anruf, Sprachnotiz) über ihren `storage_key` und legt das Transkript als Session-Protokoll ab (durchsuchbar, mit Sprecher-Attribution soweit verfügbar). ' +
-    'Die `storage_key`-Werte stehen im `[attachments-info]`-Block am Ende der User-Nachricht. ' +
+    'Den `storage_key` nennt der Anhang-Hinweis der Nachricht, mit der die Datei kam; er ist interne Technik — nenne ihn dem User nicht und frag ihn nie danach. ' +
     'Optional: `language_hints` (erwartete Sprachen, z.B. ["de","en"]), `keyword_hints` (Namen/Fachbegriffe, die im Audio vorkommen können) und `context` (Freitext zum Setting) verbessern die Genauigkeit deutlich — nutze sie, wenn Teilnehmer oder Thema bekannt sind.',
   input_schema: {
     type: 'object' as const,
@@ -56,7 +72,7 @@ export const transcribeRecordingToolSpec = {
       storage_key: {
         type: 'string',
         description:
-          'Der `storage_key` der Audio-Datei aus dem `[attachments-info]`-Block.',
+          'Der `storage_key` der Audio-Datei aus dem Anhang-Hinweis der Nachricht.',
       },
       language_hints: {
         type: 'array',
@@ -95,6 +111,12 @@ export interface TranscribeRecordingToolDeps {
   /** Late-bound: the provider plugin may (de)activate any time. */
   readonly getTranscription: () => TranscriptionService | undefined;
   /**
+   * #1981 — why no service is published: an installed adapter without a key
+   * is not "no provider installed". Absent (older kernel) or `undefined` =
+   * unknown, and the error names both causes.
+   */
+  readonly getProviderState?: () => TranscriptionProviderState | undefined;
+  /**
    * Per-call logger factory keyed by the CURRENT turn's agent slug, so
    * transcript turns land in the same per-agent graph partition the chat
    * turns of that agent use. `undefined` slug = legacy unqualified scope.
@@ -115,16 +137,14 @@ export class TranscribeRecordingTool {
         .join('; ')}`;
     }
     const service = this.deps.getTranscription();
-    if (!service) {
-      return 'Error: kein Transkriptions-Provider installiert — der Operator muss ein transcription@1-Plugin (z.B. "Transkription (OpenAI)") installieren und konfigurieren.';
-    }
+    if (!service) return noProviderError(this.deps.getProviderState?.());
 
     const key = parsed.data.storage_key;
     let transcript;
     try {
       const found = await this.deps.reader.readByStorageKey(key);
       if (!found) {
-        return `Error: attachment \`${key}\` not found (storage unconfigured or key unknown).`;
+        return attachmentNotFound(key);
       }
       // Both gates sit BEFORE the provider call: transcription is an egress
       // to an external service, so anything that is not a recording must be
@@ -206,25 +226,31 @@ export class TranscribeRecordingTool {
     let written = 0;
     for (const segment of segments) {
       if (segment.text.trim() === '') continue;
-      const candidateMs = baseMs + (segment.startMs ?? 0);
-      const entryMs = Math.max(candidateMs, lastMs + 1);
-      lastMs = entryMs;
-      const time = new Date(entryMs).toISOString();
-      await logger.log({
-        scope,
-        time,
-        userMessage: segment.text,
-        assistantAnswer: `_(Transkript-Ingest via ${transcript.provider}, Quelle: ${storageKey})_`,
-        ...(segment.speaker !== undefined ? { speaker: segment.speaker } : {}),
-        ...(userId !== undefined ? { userId } : {}),
-        // #1536 — raw speech of everyone in the recording, stored unmasked
-        // (the model saw it prompt-masked or as an interned tool result).
-        // Recall masks only detector-visible spans, so under a shield these
-        // utterances stay out of cross-session recall like any unprotected
-        // turn. The session's own tail keeps them.
-        unprotected: true,
-      });
-      written += 1;
+      // #1987 — below the session log's entry cap, so it keeps every word.
+      for (const chunk of chunkTranscriptText(segment.text)) {
+        const candidateMs = baseMs + (segment.startMs ?? 0);
+        const entryMs = Math.max(candidateMs, lastMs + 1);
+        lastMs = entryMs;
+        const time = new Date(entryMs).toISOString();
+        await logger.log({
+          scope,
+          time,
+          // #1983 — recording content, not a message of the uploader: the
+          // marker makes later turns render it as quoted recording text.
+          userMessage: markRecordingText(chunk, segment.speaker),
+          assistantAnswer: `_(Transkript-Ingest via ${transcript.provider}, Quelle: ${storageKey})_`,
+          source: 'recording',
+          ...(segment.speaker !== undefined ? { speaker: segment.speaker } : {}),
+          ...(userId !== undefined ? { userId } : {}),
+          // #1536 — raw speech of everyone in the recording, stored unmasked
+          // (the model saw it prompt-masked or as an interned tool result).
+          // Recall masks only detector-visible spans, so under a shield these
+          // utterances stay out of cross-session recall like any unprotected
+          // turn. The session's own tail keeps them.
+          unprotected: true,
+        });
+        written += 1;
+      }
     }
     return written;
   }
@@ -257,10 +283,15 @@ function renderResult(
         ? `Session-Protokoll: ${String(loggedEntries)} Einträge abgelegt`
         : 'Session-Protokoll: nicht abgelegt (kein Logger verfügbar)',
   ].join(' · ');
+  // #1987 — "complete in the session log" only when it was written there.
+  const whereComplete =
+    ingestFailure === undefined && loggedEntries > 0
+      ? ' — vollständig im Session-Protokoll'
+      : ' — nicht im Session-Protokoll abgelegt, der Rest ist nicht verfügbar';
   const text =
     transcript.text.length <= RESULT_TEXT_MAX
       ? transcript.text
-      : `${transcript.text.slice(0, RESULT_TEXT_MAX)}\n\n…[gekürzt, Original ${String(transcript.text.length)} Zeichen — vollständig im Session-Protokoll]`;
+      : `${transcript.text.slice(0, RESULT_TEXT_MAX)}\n\n…[gekürzt, Original ${String(transcript.text.length)} Zeichen${whereComplete}]`;
   return `Transkript von \`${key}\`\n${meta}\n\n${text}`;
 }
 
