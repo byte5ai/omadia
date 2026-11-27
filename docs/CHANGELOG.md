@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — agents on memory mode `off` move to `members` (#2290, ADR-0261) (2026-11-27)
+
+- **Migration** core **0120_context_memory_off_to_members** — every `standard` agent on
+  `context_memory = 'off'` becomes `members`, so each web account and each API key gets its own
+  memory; new column `agents.context_memory_switched_at` records the switch. Nothing is deleted:
+  notes written under `off` stay in the agent tier and are no longer read.
+- `GET …/context-memory` returns `switchedFromOffAt`; the memory tab shows a notice until an
+  operator saves a mode. `PUT …/context-memory` with `off` now needs `shared: true`
+  (`409 context_memory_shared_required`); the UI asks for a "shared agent" acknowledgement.
+
 ### Security — `/api/dev` is loopback-only under `NODE_ENV=production` (#2275, ADR-0260) (2026-11-27)
 
 - With `DEV_ENDPOINTS_ENABLED=true` the dev graph and the memory browser read every account's

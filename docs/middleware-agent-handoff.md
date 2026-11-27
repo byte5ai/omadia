@@ -11784,9 +11784,12 @@ Leserkreis, Offenlegungsstufe).
 - **Audit:** `discretion_flow_audit` (jede Verweigerung, jeder erlaubte
   kontextübergreifende Fluss; nur Label-IDs und Gründe, nie Inhalt).
 - **Context-Memory:** neue Agenten starten in `members` (Migration 0099);
-  bestehende werden bewusst NICHT umgestellt (würde ihre Notizen verbergen).
-  `PUT …/context-memory` mit `off` → 409 `context_memory_required`, wenn der Agent
-  Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
+  seit #2290 (Migration 0120, ADR-0261) sind auch bestehende Standard-Agents von
+  `off` auf `members` umgestellt; `context_memory_switched_at` treibt den Hinweis im
+  Memory-Tab (Notizen aus `off` bleiben im Agent-Tier, ungelesen). `off` ist jetzt
+  ein ausdrücklich gemeinsamer Agent: `PUT …/context-memory` mit `off` braucht
+  `shared: true` (sonst 409 `context_memory_shared_required`) und → 409
+  `context_memory_required`, wenn der Agent Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
   (kein Memory, die Route erlaubt für sie nur `off`).
 
 ### Kollegen im Prompt (`consultableColleagues`)

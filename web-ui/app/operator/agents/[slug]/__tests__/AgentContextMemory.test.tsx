@@ -15,8 +15,8 @@ import { AgentContextMemory } from '../_components/AgentContextMemory';
  *
  *  - enabling is gated behind seeing the three semantics, because an operator
  *    who has not read them will read the ACL's contract as a bug;
- *  - disabling is NOT gated — the safe direction must never be harder than
- *    the unsafe one;
+ *  - switching to Off is gated too since #2290 / ADR-0261: it makes the agent
+ *    shared, one memory for every account and API key;
  *  - a mode the client does not know narrows to `off`, so the panel can never
  *    claim an agent is enforcing when the runtime would route it as off.
  */
@@ -120,13 +120,26 @@ describe('AgentContextMemory (#899)', () => {
     expect(screen.getByRole('button', { name: /Save/i })).toBeDisabled();
   });
 
-  it('DISABLING needs no acknowledgement — the safe direction is never gated', async () => {
+  it('switching to Off asks to confirm a shared agent (#2290)', async () => {
+    // Off is one memory for every account and API key, so it is no longer
+    // the safe direction: it needs its own acknowledgement.
     const user = userEvent.setup();
     await render({ mode: 'enforce' });
     await user.click(screen.getByRole('radio', { name: /Off/i }));
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByText(/Off makes this a shared agent/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Save/i })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /meant to be shared/i }));
     await user.click(screen.getByRole('button', { name: /Save/i }));
     await waitFor(() => expect(mockSet).toHaveBeenCalledWith('sales-bot', 'off'));
+  });
+
+  it('shows the 0120 switch notice until a mode is saved (#2290)', async () => {
+    const user = userEvent.setup();
+    await render({ mode: 'members', modes: ['off', 'enforce', 'enforce-strict', 'members'], switchedFromOffAt: '2026-11-27T08:00:00.000Z' });
+    expect(screen.getByText(/was switched from Off/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: /Separate per context/i }));
+    await user.click(screen.getByRole('button', { name: /Save/i }));
+    await waitFor(() => expect(screen.queryByText(/was switched from Off/i)).not.toBeInTheDocument());
   });
 
   it('tightening enforce → enforce-strict needs no acknowledgement', async () => {

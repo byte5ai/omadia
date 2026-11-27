@@ -289,6 +289,12 @@ void _contextMemoryModesPin;
 
 const ContextMemorySchema = z.object({
   mode: z.enum(CONTEXT_MEMORY_MODES),
+  /**
+   * #2290 / ADR-0261 — `off` shares one memory across every account and API
+   * key, so it is an explicit "shared agent" choice: a standard agent is only
+   * switched to `off` with `shared: true`.
+   */
+  shared: z.boolean().optional(),
 });
 
 // #1018 — the agent-to-agent switches. Same two-endpoint shape as
@@ -2942,7 +2948,14 @@ export function createOperatorAgentsRouter(
       const mode: ContextMemoryMode = normalizeContextMemoryMode(
         agent.contextMemory,
       );
-      res.json({ slug: agent.slug, mode, modes: CONTEXT_MEMORY_MODES });
+      res.json({
+        slug: agent.slug,
+        mode,
+        modes: CONTEXT_MEMORY_MODES,
+        // #2290 / ADR-0261 — set while the agent runs on the `members` mode
+        // migration 0120 switched it to and no operator has chosen since.
+        switchedFromOffAt: agent.contextMemorySwitchedAt ?? null,
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -2967,6 +2980,16 @@ export function createOperatorAgentsRouter(
       // classified data: any capability grant can return such data, so an
       // agent that holds one keeps a context-memory boundary.
       if (body.mode === 'off' && !archetypeOmits(agent, 'memory')) {
+        // #2290 / ADR-0261 — `off` is one memory for every account and key;
+        // only an explicit "shared agent" choice gets it.
+        if (body.shared !== true) {
+          res.status(409).json({
+            error: 'context_memory_shared_required',
+            message:
+              'off shares one memory across all accounts and API keys; send shared: true to make this a shared agent',
+          });
+          return;
+        }
         const grants = (await live.store.listAgentPlugins(agent.id)).filter((p) => p.enabled);
         if (grants.length > 0) {
           res.status(409).json({

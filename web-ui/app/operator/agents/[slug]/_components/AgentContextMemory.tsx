@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -39,7 +39,8 @@ interface AgentContextMemoryProps {
  *    "the agent forgets across teams" but writes to a channel the plugin does
  *    not scope, or who expects API turns to reach the team tree, will read the
  *    result as a bug in the ACL rather than as its contract. Switching back to
- *    `off` needs no acknowledgement — the safe direction is never gated.
+ *    `off` makes the agent shared (#2290 / ADR-0261) and needs its own
+ *    acknowledgement; the server refuses it without `shared: true`.
  *
  * The mode list is INTERSECTED with the server's `modes` array: the server can
  * take a mode away (an older middleware that does not accept `enforce-strict`
@@ -62,11 +63,14 @@ export function AgentContextMemory(
   props: AgentContextMemoryProps,
 ): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const format = useFormatter();
   /** Mode as last confirmed by the server. `null` until the first load lands. */
   const [saved, setSaved] = useState<ContextMemoryMode | null>(null);
   const [modes, setModes] =
     useState<readonly ContextMemoryMode[]>(CONTEXT_MEMORY_MODES);
   const [selected, setSelected] = useState<ContextMemoryMode | null>(null);
+  /** #2290 — when migration 0120 switched this agent off `off`, if it did. */
+  const [switchedAt, setSwitchedAt] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -89,6 +93,7 @@ export function AgentContextMemory(
       const mode = parseContextMemoryMode(res.mode);
       setSaved(mode);
       setSelected(mode);
+      setSwitchedAt(typeof res.switchedFromOffAt === 'string' ? res.switchedFromOffAt : null);
       // Intersect, never union: an entry this bundle has no label for is
       // dropped rather than rendered. Falling back to the local constant when
       // nothing survives keeps an older or unexpected middleware from leaving
@@ -115,7 +120,13 @@ export function AgentContextMemory(
    * step whose semantics surprise an operator.
    */
   const needsAck = dirty && saved === 'off' && selected !== 'off';
-  const canSave = dirty && (!needsAck || acknowledged) && !saving;
+  /**
+   * #2290 / ADR-0261 — moving TO `off` makes this a shared agent: every
+   * account and API key then reads one memory. That is the step that can
+   * expose one person's notes to another, so it is gated too.
+   */
+  const needsSharedAck = dirty && saved !== 'off' && selected === 'off';
+  const canSave = dirty && (!(needsAck || needsSharedAck) || acknowledged) && !saving;
 
   const save = useCallback(async (): Promise<void> => {
     if (selected === null) return;
@@ -125,6 +136,8 @@ export function AgentContextMemory(
       const applied = parseContextMemoryMode(res.mode);
       setSaved(applied);
       setSelected(applied);
+      // Any saved choice ends the server's migration notice.
+      setSwitchedAt(null);
       setAcknowledged(false);
       setError(null);
     } catch (err: unknown) {
@@ -152,6 +165,17 @@ export function AgentContextMemory(
       <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
         {t('contextMemory.hint')}
       </p>
+
+      {switchedAt !== null && (
+        <div
+          role="note"
+          className="mb-3 rounded border border-[color:var(--border)] bg-[color:var(--bg)] p-3 text-xs text-[color:var(--fg-strong)]"
+        >
+          {t('contextMemory.switchedNotice', {
+            date: format.dateTime(new Date(switchedAt), { dateStyle: 'medium' }),
+          })}
+        </div>
+      )}
 
       {error && (
         <div
@@ -228,6 +252,30 @@ export function AgentContextMemory(
                   onChange={(e) => setAcknowledged(e.target.checked)}
                 />
                 <span>{t('contextMemory.acknowledge')}</span>
+              </label>
+            </div>
+          )}
+
+          {needsSharedAck && (
+            <div
+              role="note"
+              className="mt-3 rounded border border-[color:var(--danger-edge)] bg-[color:var(--bg)] p-3 text-xs"
+            >
+              <p className="mb-2 font-medium text-[color:var(--fg-strong)]">
+                {t('contextMemory.sharedHeading')}
+              </p>
+              <p className="mb-3 text-[color:var(--fg-muted)]">
+                {t('contextMemory.sharedWarning')}
+              </p>
+              <label className="flex cursor-pointer items-start gap-2 text-[color:var(--fg-strong)]">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={acknowledged}
+                  disabled={saving}
+                  onChange={(e) => setAcknowledged(e.target.checked)}
+                />
+                <span>{t('contextMemory.acknowledgeShared')}</span>
               </label>
             </div>
           )}

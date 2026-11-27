@@ -2349,7 +2349,8 @@
       "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
       "unknown": "Request fehlgeschlagen: {detail}",
       "broad_reach_confirmation_required": "Diese Änderung gäbe dem Agenten Zugriff auf alle angebundenen Systeme und braucht deine ausdrückliche Bestätigung.",
-      "identity_revision_conflict": "Diese Identität wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Stand zu sehen, und nimm deine Änderung dann erneut vor."
+      "identity_revision_conflict": "Diese Identität wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Stand zu sehen, und nimm deine Änderung dann erneut vor.",
+      "context_memory_shared_required": "Aus macht diesen Agenten zu einem gemeinsamen Agenten: alle Konten und API-Keys nutzen ein Memory. Bestätige das vor dem Speichern."
     },
     "statusEnabled": "aktiviert",
     "statusDisabled": "deaktiviert",
@@ -2655,7 +2656,7 @@
     },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",
-      "hint": "Legt fest, ob dieser Agent ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. Neue Agenten starten mit „Geteilt unter den Anwesenden“; früher angelegte Agenten behalten ihren Modus. „Aus“ ist nicht möglich, solange der Agent Capability-Grants hat.",
+      "hint": "Legt fest, ob dieser Agent ein gemeinsames Memory hat oder ein eigenes pro Chat-Kontext (Team, Kanal, Direktnachricht). Agenten starten mit „Geteilt unter den Anwesenden“. Aus ist nur für Agenten gedacht, die alle gemeinsam nutzen sollen, und nicht möglich, solange der Agent Capability-Grants hat.",
       "loading": "Memory-Einstellung wird geladen…",
       "stateSummary": "Aktuell: {mode}",
       "stateUnknown": "Aktuell: unbekannt",
@@ -2671,7 +2672,7 @@
       "modes": {
         "off": {
           "label": "Aus",
-          "description": "Ein gemeinsames Memory für alle Turns, wie vor dieser Funktion — jedes Web-Chat-Konto und jeder API-Key liest, was die anderen dem Agenten zum Merken gegeben haben. Nicht möglich für einen Agenten mit Capability-Grants."
+          "description": "Gemeinsamer Agent: ein Memory für alle Turns — jedes Web-Chat-Konto und jeder API-Key liest, was die anderen dem Agenten zum Merken gegeben haben. Nur für Agenten, die alle teilen sollen; nicht möglich für einen Agenten mit Capability-Grants."
         },
         "enforce": {
           "label": "Je Kontext getrennt",
@@ -2685,7 +2686,11 @@
           "label": "Geteilt unter den Anwesenden",
           "description": "Wissen gehört den Personen, die dabei waren, als es entstand. Jeder Chat, an dem nur diese Personen teilnehmen, kann es nutzen, auch ein Einzelchat, ein Web-Chat oder die Turns eines API-Keys. Sobald jemand anderes dabei ist, bleibt es draußen."
         }
-      }
+      },
+      "switchedNotice": "Dieser Agent wurde am {date} von Aus auf „Geteilt unter den Anwesenden“ umgestellt; jedes Konto und jeder API-Key hat jetzt ein eigenes Memory. Notizen aus der Zeit mit Aus bleiben erhalten, werden aber nicht mehr gelesen. Wähle wieder Aus (gemeinsamer Agent), wenn alle sie nutzen sollen.",
+      "sharedHeading": "Aus macht diesen Agenten gemeinsam",
+      "sharedWarning": "Dann lesen und schreiben alle Web-Chat-Konten und alle API-Keys dieses Agenten ein Memory: Was sich eine Person merken lässt, können alle anderen lesen.",
+      "acknowledgeShared": "Dieser Agent ist zum Teilen gedacht; alle dürfen sein Memory lesen."
     },
     "teamsInstalls": {
       "heading": "Teams-Zuordnung",
