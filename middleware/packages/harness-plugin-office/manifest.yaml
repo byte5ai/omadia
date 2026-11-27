@@ -107,7 +107,7 @@ setup:
         en: "Tenant prefix for keys"
         de: "Tenant-Prefix für Keys"
       required: false
-      default: "dev"
+      default: "default"
 
     - key: "signed_url_ttl_sec"
       type: "integer"

@@ -23,9 +23,23 @@
 const MAX_TEXT_CHARS = 20_000;
 const TRUNCATION_MARKER = '\n…[truncated]';
 
+/**
+ * #1978 — why a file yielded no text, in the terms a user understands. The
+ * `reason` beside it is the technical detail and goes to the server log only.
+ */
+export type ExtractFailureKind = 'image' | 'unsupported' | 'damaged' | 'empty';
+
 export type ExtractResult =
   | { ok: true; text: string }
-  | { ok: false; reason: string };
+  | { ok: false; kind: ExtractFailureKind; reason: string };
+
+/** #1978 — the plain reason a `[attachment-not-ingested]` block states. */
+export const PLAIN_EXTRACT_FAILURE: Readonly<Record<ExtractFailureKind, string>> = {
+  image: 'the file is an image and cannot be read as text',
+  unsupported: 'the file type is not supported',
+  damaged: 'the file is damaged or unreadable',
+  empty: 'the file contains no readable text',
+};
 
 /** Anthropic's vision API only accepts these four raster formats via a
  *  base64 image content-block. */
@@ -83,7 +97,7 @@ function capText(text: string): string {
 function finalize(text: string): ExtractResult {
   const cleaned = capText(collapseBlankLines(text));
   if (cleaned.length === 0) {
-    return { ok: false, reason: 'no extractable text content' };
+    return { ok: false, kind: 'empty', reason: 'no extractable text content' };
   }
   return { ok: true, text: cleaned };
 }
@@ -245,6 +259,7 @@ export async function extractAttachmentText(
   if (ct.startsWith('image/')) {
     return {
       ok: false,
+      kind: 'image',
       reason: 'image — embed via brand:// / vision, not text-extractable',
     };
   }
@@ -279,11 +294,12 @@ export async function extractAttachmentText(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `extraction failed: ${msg}` };
+    return { ok: false, kind: 'damaged', reason: `extraction failed: ${msg}` };
   }
 
   return {
     ok: false,
+    kind: 'unsupported',
     reason: `unsupported attachment type (contentType=${
       ct || 'unknown'
     }, ext=${ext || 'none'})`,

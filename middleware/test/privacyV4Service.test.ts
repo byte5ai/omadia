@@ -340,6 +340,44 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     assert.equal((await render('t-none', undefined))?.prose, '');
   });
 
+  it('keeps every render of a turn, joined in call order (#1769)', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-two-renders';
+    const renderOne = async (rows: unknown, prose: string): Promise<void> => {
+      const interned = await svc.internToolResultV4({
+        sessionId: 's',
+        turnId,
+        toolName: 'hr.leave',
+        rawResult: JSON.stringify(rows),
+      });
+      await svc.runV4Tool({
+        sessionId: 's',
+        turnId,
+        toolName: 'v4_render_answer',
+        input: {
+          datasetId: datasetIdOf(interned.digestText),
+          columns: ['employee', 'days'],
+          format: 'table',
+          prose,
+        },
+      });
+    };
+    await renderOne(HR_LEAVE.slice(0, 1), 'Erste Tabelle:');
+    await renderOne(HR_LEAVE.slice(1), 'Zweite Tabelle:');
+
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer);
+    const first = answer.text.indexOf('Erste Tabelle:');
+    const second = answer.text.indexOf('Zweite Tabelle:');
+    assert.ok(first >= 0 && second > first, 'both renders, in call order');
+    assert.ok(answer.text.includes(HR_LEAVE[0]?.employee ?? '?'));
+    assert.ok(answer.text.includes(HR_LEAVE[2]?.employee ?? '?'));
+    assert.equal(answer.prose, 'Erste Tabelle:\n\nZweite Tabelle:');
+    assert.equal(answer.isError, undefined);
+    assert.equal(new Set(answer.maskedValues).size, answer.maskedValues.length, 'distinct');
+    assert.equal(await svc.takeRenderedAnswerV4(turnId), undefined);
+  });
+
   it('takeRenderedAnswerV4 clears the stash after taking', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-clear';

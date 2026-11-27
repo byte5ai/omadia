@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import type { EntityRef } from '@omadia/plugin-api';
+import { DatasetQueryValidationError, type EntityRef } from '@omadia/plugin-api';
 
 const ref = (system: 'odoo' | 'confluence', model: string, id: number | string, name?: string): EntityRef => ({
   system,
@@ -358,11 +358,11 @@ describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
     assert.equal(count?.aggregateValue, 3);
   });
 
-  it('#430 fixup — caps grouped results at 200, matching the Neon backend LIMIT, sorted by value descending', async () => {
+  it('#1844 — pages through every group with limit/offset and reports totalGroups', async () => {
     const g = new InMemoryKnowledgeGraph();
     const rows = Array.from({ length: 250 }, (_, i) => ({
-      key: `k${String(i)}`,
-      amount: i, // distinct value per group so the sort order is unambiguous
+      key: `k${String(i).padStart(3, '0')}`,
+      amount: i % 10, // ties, so the key must break them for stable pages
     }));
     const { datasetId } = await g.ingestDataset({
       ownerOmadiaUserId: 'user-1',
@@ -375,23 +375,83 @@ describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
       rows,
     });
 
-    const result = await g.queryDatasetRows(datasetId, 'user-1', {
+    const seen: unknown[] = [];
+    for (let offset = 0; offset < 250; offset += 200) {
+      const page = await g.queryDatasetRows(datasetId, 'user-1', {
+        groupBy: 'key',
+        aggregate: { fn: 'sum', column: 'amount' },
+        limit: 200,
+        offset,
+      });
+      assert.equal(page?.totalGroups, 250);
+      assert.equal(page?.totalMatched, 250);
+      seen.push(...(page?.groups ?? []).map((gr) => gr.key));
+    }
+    assert.equal(seen.length, 250);
+    assert.equal(new Set(seen).size, 250, 'pages neither repeat nor skip a group');
+
+    const first = await g.queryDatasetRows(datasetId, 'user-1', {
       groupBy: 'key',
       aggregate: { fn: 'sum', column: 'amount' },
     });
-    assert.equal(result?.groups?.length, 200, 'must cap at 200 groups even though 250 unique keys exist');
-    // `totalMatched` still reflects every row, not just the returned groups.
-    assert.equal(result?.totalMatched, 250);
-    // Deterministic: sorted by value descending, so the 200 HIGHEST-amount
-    // groups survive (k249..k50), not the first 200 inserted (k0..k199).
-    const values = (result?.groups ?? []).map((gr) => gr.value);
-    assert.deepEqual(values, [...values].sort((a, b) => (b ?? 0) - (a ?? 0)));
-    assert.equal(result?.groups?.[0]?.key, 'k249');
-    assert.equal(
-      result?.groups?.some((gr) => gr.key === 'k0'),
-      false,
-      'the lowest-value group must be truncated away, not the last-inserted one',
+    assert.equal(first?.groups?.length, 50, 'default page size');
+    const values = (first?.groups ?? []).map((gr) => gr.value ?? 0);
+    assert.deepEqual(values, [...values].sort((a, b) => b - a));
+    assert.equal(first?.groups?.[0]?.key, 'k009', 'highest value, then lowest key');
+  });
+
+  it('#1844 — refuses group_by without an aggregate instead of dropping it', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [{ name: 'region', type: 'string' }],
+      rows: [{ region: 'North' }],
+    });
+    await assert.rejects(
+      g.queryDatasetRows(datasetId, 'user-1', { groupBy: 'region' }),
+      (err: unknown) =>
+        err instanceof DatasetQueryValidationError && err.code === 'group_by_requires_aggregate',
     );
+  });
+
+  it('#1849 — refuses filters and group_by on a column holding encrypted cells', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Customers',
+      sourceFileName: 'customers.csv',
+      columns: [
+        { name: 'name', type: 'string' },
+        { name: 'email', type: 'string' },
+      ],
+      rows: [
+        { name: 'Kai', email: 'enc1:AAAA' },
+        { name: 'Anna', email: 'enc1:BBBB' },
+        { name: 'Ben', email: 'plain@example.org' },
+      ],
+    });
+    for (const opts of [
+      { filters: [{ column: 'email', op: 'eq' as const, value: 'kai@example.com' }] },
+      { filters: [{ column: 'email', op: 'contains' as const, value: 'kai' }] },
+      { groupBy: 'email', aggregate: { fn: 'count' as const } },
+    ]) {
+      await assert.rejects(
+        g.queryDatasetRows(datasetId, 'user-1', opts),
+        (err: unknown) =>
+          err instanceof DatasetQueryValidationError &&
+          err.code === 'encrypted_column' &&
+          err.message.includes("'email'"),
+      );
+    }
+    // A clear column still filters and groups.
+    const byName = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'name', op: 'eq', value: 'Kai' }],
+    });
+    assert.equal(byName?.totalMatched, 1);
+    const unfiltered = await g.queryDatasetRows(datasetId, 'user-1', {});
+    assert.equal(unfiltered?.rows?.length, 3, 'reading the rows stays possible');
   });
 
   it('rejects an unknown filter column and an aggregate on a non-number column', async () => {

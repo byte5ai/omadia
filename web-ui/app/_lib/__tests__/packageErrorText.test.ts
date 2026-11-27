@@ -109,6 +109,21 @@ describe('storeErrorText (#1477) — one text for drawer, update and upload', ()
     );
   });
 
+  it('#1973 — names the missing plugins of install.missing_dependencies', () => {
+    const text = storeErrorText(
+      {
+        code: 'install.missing_dependencies',
+        message: 'plugin requires these parents to be installed first: @omadia/a, @omadia/b',
+        missing: ['@omadia/a', '@omadia/b'],
+      },
+      'fallback',
+      tFor('de'),
+      tRootFor('de'),
+    );
+    expect(text).toContain(deMessages.errorHelp.install.missing_dependencies.what);
+    expect(text).toMatch(/Fehlende Plugins: @omadia\/a, @omadia\/b$/);
+  });
+
   it('keeps the server message for a code nobody explains, then the fallback', () => {
     expect(storeErrorText({ code: 'x.y', message: 'srv' }, 'fb', tFor('en'), tRootFor('en'))).toBe('srv');
     expect(storeErrorText(null, 'fb', tFor('en'), tRootFor('en'))).toBe('fb');

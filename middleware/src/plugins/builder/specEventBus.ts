@@ -90,6 +90,7 @@ export type SpecBusEvent =
       buildN: number;
       reason?:
         | 'ok'
+        | 'writes_skipped'
         | 'activate_failed'
         | 'tool_failures'
         | 'no_tools'
@@ -98,7 +99,7 @@ export type SpecBusEvent =
       activateError?: string;
       results?: ReadonlyArray<{
         toolId: string;
-        status: 'ok' | 'timeout' | 'threw' | 'validation_failed';
+        status: 'ok' | 'auth_rejected' | 'skipped' | 'timeout' | 'threw' | 'validation_failed';
         durationMs: number;
         errorMessage?: string;
       }>;

@@ -204,7 +204,7 @@ describe('ConductorChatPane missing connectors + people', () => {
 
     expect(await screen.findByText('Missing connectors')).toBeInTheDocument();
     expect(screen.getByText('pleo.list_missing_receipts')).toBeInTheDocument();
-    expect(screen.getByText(/1 connector\(s\) missing/)).toBeInTheDocument();
+    expect(screen.getByText(/1 connector missing/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Connect MCP server' }));
     expect(screen.getByTestId('add-server-modal')).toHaveAttribute('data-query', 'pleo');
@@ -212,7 +212,7 @@ describe('ConductorChatPane missing connectors + people', () => {
 
     expect(screen.queryByTestId('add-server-modal')).not.toBeInTheDocument();
     expect(screen.getByText(/Step fetch now uses/)).toBeInTheDocument();
-    expect(screen.queryByText(/connector\(s\) missing/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connectors? missing/)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Show in designer' }));
     expect(lastGraph(onShow).steps[0]?.actionId).toBe('mcp:srv-1:list_missing_receipts');
@@ -270,7 +270,7 @@ describe('ConductorChatPane missing connectors + people', () => {
     await sendMessage();
     expect(await screen.findByText('Second draft.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Connect MCP server' })).not.toBeInTheDocument();
-    expect(screen.queryByText(/connector\(s\) missing/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connectors? missing/)).not.toBeInTheDocument();
   });
 
   it('shows the partial-directory hint and the not-found line', async () => {

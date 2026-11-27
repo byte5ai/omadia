@@ -109,3 +109,11 @@ Chosen option: **A**.
   `middleware/src/routes/chatSessionAccess.ts`, `middleware/src/routes/chat.ts`.
 - Tests: `middleware/test/chatSessionsOwner.test.ts`, `middleware/test/memoryAccess/canaryHttp.test.ts`.
 - Related: ADR-0019, ADR-0039, ADR-0040, ADR-0116.
+
+## Errata
+
+- 2026-11-26: The owner key is the session's `sub`, which is the account's `providerUserId`
+  (local: the lower-cased e-mail, Entra: the IdP subject), not `users.id` as written under
+  "Owner". The code compares `sub` throughout. Legacy chats on a multi-account instance can be
+  given to one account with the operator tool of
+  [ADR-0184](0184-owner-less-legacy-chats-are-assigned-by-an-operator-tool.md).

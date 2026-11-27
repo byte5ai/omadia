@@ -784,6 +784,13 @@ export interface ChatTurnResult {
   toolCalls: number;
   iterations: number;
   /**
+   * #1877 — the turn did not run and the management layer speaks instead:
+   * `answer` is this notice's text. `toSemanticAnswer` turns it into a
+   * `system` answer, so every entry point (chat, verifier, routines) shows the
+   * same notice.
+   */
+  systemNotice?: SystemNotice;
+  /**
    * Agentic run trace for the turn, suitable for rendering a tool-trace
    * panel. Present when a sessionScope was supplied (sub-agents + orchestrator
    * tool calls get recorded). Absent for fire-and-forget dev calls without a

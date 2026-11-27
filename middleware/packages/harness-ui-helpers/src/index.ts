@@ -11,6 +11,7 @@ export type { ListCardOptions, ListCardItemTemplate } from './templates/listCard
 export { renderKpiTiles } from './templates/kpiTiles.js';
 export type { KpiTilesOptions, KpiTile } from './templates/kpiTiles.js';
 export { interpolate, resolveExpression } from './templates/interpolate.js';
+export { summarizeToolError } from './templates/errorBanner.js';
 export type { InterpolateOptions } from './templates/interpolate.js';
 
 // B.12-4 — React-SSR helper for codegen-generated react-ssr UiRouters.

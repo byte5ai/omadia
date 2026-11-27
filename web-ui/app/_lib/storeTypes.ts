@@ -115,6 +115,10 @@ export interface PluginPermissionsSummary {
   sql?: { ledger: string; migrations?: string; handoff?: string };
   memory_reads: string[];
   memory_writes: string[];
+  /** ADR-0256 — top-level `/memories` trees the plugin's `memoryStore@1` may
+   *  change (`permissions.memory.trees`); the first plugin to use one owns
+   *  it. Optional: absent on store payloads from an older middleware. */
+  memory_trees?: string[];
   graph_reads: string[];
   graph_writes: string[];
   /** ADR-0167 (#2245) — systems the plugin may write entity nodes for

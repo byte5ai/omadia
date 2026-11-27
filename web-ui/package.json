@@ -23,7 +23,7 @@
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "i18n:check": "node scripts/i18n-validate.mjs",
+    "i18n:check": "node scripts/i18n-validate.mjs && node scripts/i18n-missing-keys.mjs --ceiling scripts/i18n-missing-keys-ceiling.json",
     "plugin-ui:css": "node scripts/build-plugin-ui-css.mjs",
     "plugin-ui:css:check": "node scripts/build-plugin-ui-css.mjs --check",
     "i18n:literals": "node scripts/i18n-literal-scan.mjs",

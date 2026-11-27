@@ -11,6 +11,7 @@
  */
 
 import { html, safe, type HtmlFragment } from '../html.js';
+import { renderErrorBanner } from './errorBanner.js';
 import { interpolate } from './interpolate.js';
 
 export interface ListCardItemTemplate {
@@ -168,9 +169,3 @@ function renderItem(item: unknown, template: ListCardItemTemplate): HtmlFragment
   return html`<li class="rounded-lg border border-slate-200 bg-white p-3">${body}</li>`;
 }
 
-function renderErrorBanner(message: string): HtmlFragment {
-  return html`<div class="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800">
-    <strong class="block text-sm font-semibold mb-1">Daten konnten nicht gelesen werden</strong>
-    <code class="block break-all text-rose-900/80">${message}</code>
-  </div>`;
-}

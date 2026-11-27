@@ -6,6 +6,7 @@ import {
   PAIRING_DISCOVERY_HANDLER_PATH,
   PAIRING_DISCOVERY_WELL_KNOWN_PATH,
 } from './app/_lib/pairingDiscoveryPaths';
+import { PROXY_MAX_BODY_BYTES } from './app/_lib/proxyBodyLimit';
 
 // next-intl plugin: wires `i18n/request.ts` into the Next compile so that
 // `getRequestConfig` is invoked on every RSC request and the resolved
@@ -30,6 +31,13 @@ const nextConfig: NextConfig = {
   // the standalone bundle so both variants are present.
   outputFileTracingIncludes: {
     '/**': ['./node_modules/@swc/helpers/**'],
+  },
+
+  experimental: {
+    // #1846 — `proxy.ts` (the login gate) buffers request bodies up to this
+    // size and truncates the rest; the 10 MB default broke dataset uploads
+    // between 10 and 25 MB with a bare HTTP 500. See `proxyBodyLimit.ts`.
+    proxyClientMaxBodySize: PROXY_MAX_BODY_BYTES,
   },
 
   // NB: /bot-api/* and /p/* are deliberately NOT rewrites. Next evaluates

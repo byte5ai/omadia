@@ -21,6 +21,7 @@
  * No I/O, no side effects — the result is purely a function of inputs.
  */
 
+import { isToolSmokePass } from './runtimeSmoke.js';
 import type { BuildError } from './buildErrorParser.js';
 import type { ManifestViolation } from './manifestLinter.js';
 import type {
@@ -110,7 +111,7 @@ function formatSmokeFailed(
   input: Extract<ComposeFixPromptInput, { kind: 'smoke_failed' }>,
 ): string {
   const all = input.smokeResults ?? [];
-  const failed = all.filter((r) => r.status !== 'ok');
+  const failed = all.filter((r) => !isToolSmokePass(r.status));
   const header = buildHeader(input.buildN, `runtime smoke test caught ${String(failed.length)} failing tool(s)`);
 
   if (failed.length === 0) {

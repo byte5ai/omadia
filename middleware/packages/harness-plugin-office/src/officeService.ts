@@ -72,6 +72,7 @@ export class OfficeService {
       sizeBytes: result.buffer.length,
       rowsWritten: result.rowsWritten,
       ...(result.renamedSheets ? { renamedSheets: result.renamedSheets } : {}),
+      ...(result.cellsKeptAsText ? { cellsKeptAsText: result.cellsKeptAsText } : {}),
       cacheHit,
     };
   }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0212](0212-public-mcp-answers-a-tool-error-as-a-tool-error.md) (a returned tool error is answered as a generic `isError` result, not refused)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers; issue #542 with the two-pass security review of #550

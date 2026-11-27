@@ -1966,10 +1966,25 @@ unlesbar (`[verschlüsselt — Schlüssel nicht verfügbar]`). Der v4-Shape-Clas
 läuft seitdem mit den **Identitäts**-Typen des C0-Baseline (E-Mail, IBAN,
 Telefon, Adresse, ID-Nummer — nicht `date`/`amount`) als `detector`-Booster
 (Telefonnummern-Spalte wäre sonst ein safe `id`-Handle; Datums-/Betragsspalten
-bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: die
-`query_rows`-DSL (`eq`/`contains`/`group_by`) arbeitet auf verschlüsselten
-Spalten über Ciphertext (jede Zelle unterschiedlich, frischer IV) — Filtern
-nach E-Mail funktioniert dort nicht; dafür sind die `__k_*`-Link-Keys da.
+bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: jede
+Zelle hat einen frischen IV, gespeicherte Werte einer verschlüsselten Spalte
+sind also nie vergleichbar. Seit #1849 lehnen beide Graph-Backends Filter und
+`group_by` auf einer Spalte mit mindestens einer `enc1:`-Zelle ab
+(`assertNoEncryptedQueryColumns`, Code `encrypted_column`) statt still 0
+Treffer bzw. eine Gruppe pro Zeile mit Ciphertext-Key zu liefern; das Modell
+liest die Zeilen ungefiltert und arbeitet mit den `v4_*`-Verben weiter.
+`group_by` braucht ein `aggregate`, `limit`/`offset` blättern durch die Gruppen,
+`totalGroups` nennt ihre Zahl (#1844, plugin-api 1.101.0).
+
+**Import (#1845/#1847/#1867):** CSV-Trennzeichen (`,` `;` Tab) wird erkannt,
+Nicht-UTF-8 als Windows-1252 dekodiert, doppelte Spaltennamen werden zu
+`a`, `a_2` (`datasetCsvDialect.ts`); Parser-Fehler haben Codes
+(`dataset.csv_unreadable` …), die die Admin-UI übersetzt. Datumszellen werden
+als ISO-8601 gespeichert (`datasetDates.ts`), Ziffernfolgen über 15 Stellen
+bleiben `string`. Maskiert wird die ganze Tabelle in einem linearen Durchlauf
+(`maskTableCells` im privacy-guard, ein Surrogat pro Wert und Tabelle), mit
+Event-Loop-Yields. Die web-ui puffert Request-Bodies bis 26 MiB
+(`proxyClientMaxBodySize`, `app/_lib/proxyBodyLimit.ts`, #1846).
 Schlägt das Internieren einer `query_dataset`-Seite fehl, hält der
 Orchestrator die Zeilen **zurück**, weil sie Klartext tragen. Seit #1267 gilt
 das für jedes Tool an jeder Naht (`internFailedNotice`, Abschnitt
@@ -2379,6 +2394,21 @@ Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
 Provider-Wechsel einen Klassen-Ref bei.
 
+**Modell-Policy eines Agenten (#1870, #1871, #1877).** `PUT
+/operator/agents/:slug/model-policy` speichert und baut den Agenten neu:
+`runtimeChangeReasons` (`registry/applyDiff.ts`) kennt den Grund `model_policy`,
+der nächste Turn läuft also auf Primär, Effort und Fallback der neuen Policy.
+`validateModelPolicy` lehnt einen Provider ab, der keine Tool-Turns im
+In-Process-Loop kann (das Abo-CLI, ADR-0086): `400 model_policy_tool_incompatible`.
+GET und PUT melden `deferredProvider` nur noch ohne Provider-Pool und neu
+`primaryUnavailable`, wenn der Provider des Primärmodells gerade nicht nutzbar
+ist; die Modell-Karte zeigt das an. Im Turn gilt (`resolveTurnExecution`): kann
+der Pool das Primärmodell nicht bedienen, startet der Turn auf dem Fallback der
+Policy und ist als Fallback markiert (Receipt `fallbackUsed`, Chip
+`provider_fallback`); mit Fallback „Keiner“ (oder einem ebenfalls nicht
+nutzbaren Fallback) endet er mit der `system`-Notiz `model_unavailable`
+(plugin-api 1.102.0) statt still auf einem anderen Provider zu laufen.
+
 **Sub-Agents fallen auf das Orchestrator-Modell zurück.** Weil die Sub-Agents
 ihr Modell selbst auflösen, kann es nach einem Provider-Wechsel veralten — eine
 konkrete Claude-ID in `SUB_AGENT_MODEL` oder im Manifest läuft gegen den neuen
@@ -2539,6 +2569,56 @@ Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
 `verifyErrorCode` beim abgelehnten Key, lässt das Feld sonst weg),
 `test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
 unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
+
+### MCP-Control-Center: Operator-Routen (Welle 5, 2026-11-26)
+
+**Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
+liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
+Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0116,
+geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
+`POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
+`transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`
+erlaubt) → 400 mit `code` (`name_required`, `endpoint_invalid`, …); doppelter Name → 409
+`name_taken` (auch Katalog-Import und Registries). Ein Nicht-UUID-`:id` unter `/mcp-servers/…`
+und `/mcp-registries/…` → 404 `not_found` vor jedem Handler (MCP-Präzedenz #1318/#1398; Conductor antwortet laut ADR-0038 mit 400).
+
+**Statische Header / API-Keys (#1912, ADR-0210):** `GET/PUT /api/v1/operator/mcp-servers/:id/headers`
+(und `headers` beim `POST /mcp-servers`), nur http/sse. Body `[{name, value?, secret}]`; ein geheimer
+Header wird als `{header_<name>}` in `mcp_servers.headers` gespeichert, der Wert liegt im Vault
+(`@omadia/mcp-config`, `<serverId>:header_<name>`), ohne `value` bleibt der gespeicherte. Geheime
+Config-Felder werden jetzt auch im Endpoint eingesetzt (`McpConfigService.getConfigEndpoint`); das
+Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzhaltern abgeglichen
+(`reconcileConfigSchema`), verschwundene Felder samt Vault-Secret gelöscht. UI:
+`web-ui/app/admin/mcp/ServerHeadersForm.tsx`.
+
+### MCP-Laufzeit: Re-Send-Regel, typisierte Ergebnisse, unbeaufsichtigte Aufrufer (Welle 5, ADR-0205/0206)
+
+- **Re-Send (ADR-0205):** `McpManager.callTool` sendet einen Call ohne Antwort
+  (Timeout, Verbindungsabbruch, HTTP 5xx) nur erneut, wenn der Server das Tool
+  `readOnlyHint`/`idempotentHint` deklariert (Discovery speichert beide), oder
+  wenn der Server ihn nachweislich nie bekam (Connect-Fehler, HTTP 404 auf
+  `Mcp-Session-Id` → neue Session). Sonst `Error: outcome unknown — …`. Jeder
+  Versuch bekommt eine `mcp_call_log`-Zeile. Ein gepoolter Eintrag fällt nur,
+  wenn die Verbindung wirklich weg ist, und nur unter seinem exakten Key
+  (`dropEntryIfCurrent`). Jeder `tools/call` trägt einen Progress-Token.
+- **Typisiert (ADR-0206):** `callToolResult(cfg, tool, args, replay?, { unattended })`
+  → `{ text, status }` mit `ok | tool_error | failed | auth_required |
+  input_required | blocked | outcome_unknown`. `callTool` liefert weiter nur
+  `text` (Plugin-Vertrag unverändert). Conductor-Invoker und Test-Call-Route
+  (`status`-Feld in der Antwort) lesen den Status, nie den Text.
+- **Unbeaufsichtigt:** `turnContext.mcpUnattended` (Routinen, Trigger, deren
+  Data-Actions) bzw. `opts.unattended` (Conductor) → kein OAuth-Flow, kein
+  geparkter Input, sondern typisierte Ablehnung. Wird in jedem neu gebauten
+  Scope mitgetragen wie `mcpUserKey`.
+- **Blockiert:** `McpAuthProvider.blockedReason(cfg)` — `per_user`-OAuth-Server
+  ohne Identität bekommen keinen Request. Server ohne OAuth laufen wie bisher.
+- **Routinen:** `routines.mcp_user_key` (Routines-Migration 0007) = `mcpUserKey`
+  des anlegenden Turns; der Lauf handelt als Owner.
+- **Audit-Caller:** `auditCaller` — Sub-Agent (`mcpSubAgentName`), API-Key
+  (`principalKind: 'api_key'`), Platzhalter-Turn (`turnIdIsPlaceholder`) = kein Turn.
+- **Data-Actions:** `readOnlyHint`-MCP-Tools sind eigene Read-Tools für
+  `deliver_data`; Zeilen kommen aus `structuredContent` (`mcpReadToolInvoker`,
+  `captureMcpStructured`).
 
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
@@ -3355,6 +3435,18 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
 
+Welle 5 (#1974/#1981/#1984): Web Search und der OpenAI-Transkriptions-Adapter
+exportieren `verifyConnection` (Probe: eine Mini-Suche bzw. `GET /v1/models`;
+401/Auth-403 ⇒ `rejected`) und melden einen fehlenden Key per `ctx.status` als
+`needs_action` „Nicht konfiguriert“. Der Kernel publiziert
+`transcriptionProviderState@1` (`ready` / `not_configured` / `not_installed`,
+`adminTranscriptionProvider.ts`), damit `transcribe_recording` „nicht installiert“
+von „nicht konfiguriert“ trennt; die Orchestrator-Manifest-`optional_requires`
+nennt es. Ein Rollback ohne vorherigen Provider sagt das und liefert
+`details.previousProviderId: null`. Die OpenAI-Adapter (Transkription,
+Embeddings) deklarieren `api.openai.com` + `$config.allowed_hosts` und lehnen
+eine Base-URL auf einem anderen Host beim Aktivieren ab (ADR-0200).
+
 ### Laufende Agenten-Diskussionen: Sicht und Stopp für Operatoren (#2067)
 
 > **Ersetzt die Facilitation-Admin-Lens (#330 Runde 4).** Die Lens, ihre
@@ -3527,9 +3619,11 @@ erste, der sich bauen lässt, gewinnt:
    die den Abo-Fall repariert;
 4. `anthropic` als historischer Default.
 
-Credential-Quellen je Kandidat, in dieser Reihenfolge: eigener Vault-Scope,
-dann der Kernel-Pool `llmProviderPool` (liest den Orchestrator-Scope, teilt
-dessen Circuit-Breaker). Der `llmProviderCatalog` wird durchgereicht — ohne ihn
+Credential-Quelle (seit ADR-0215, #2240): nur der Kernel-Pool
+`llmProviderPool` (liest den Kernel-Scope `@omadia/orchestrator`, teilt dessen
+Circuit-Breaker); der eigene Vault-Scope zählt nur auf einem Host ohne Pool
+(Legacy, Unit-Tests). Stufe 2 fragt entsprechend, ob der Kernel-Scope einen
+Anthropic-Key hat. Der `llmProviderCatalog` wird durchgereicht — ohne ihn
 löst `claude-cli` auf das Default-Wire-Format `openai-compatible` auf und
 scheitert an der fehlenden `baseURL`; Wire-Format und `requiresApiKey: false`
 stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
@@ -3561,7 +3655,19 @@ Drift-Test hält beide gleich). `reactivateAfterProviderWrite`
 (`src/platform/providerDependents.ts`) baut bei einer **effektiven**
 Provider-Änderung (vorher `?? 'anthropic'` gegen nachher; unset → explizit
 `anthropic` zählt nicht) zuerst jedes installierte abhängige Plugin neu, dann das
-Plugin selbst. Die Reihenfolge ist tragend: der Orchestrator greift
+Plugin selbst. #1891: Ein Config- oder Secret-Write an ein **Provider-Plugin**
+(Manifest mit `llm_provider`-Block, z. B. `anthropic_base_url` von
+`@omadia/plugin-llm-anthropic`) zählt als Provider-Änderung für alle
+LLM-Plugins, die auf seiner Provider-Id laufen können
+(`llmPluginsUsingProvider`): erst das Provider-Plugin (es registriert den
+Deskriptor neu), dann in `rebuildOrder` die Agentenlaufzeit (immer, eine
+Modell-Policy kann den Provider pinnen), der Verifier nur bei passendem
+`llm_provider` (Default `anthropic`), extras bei passendem eigenem oder
+geerbtem Provider oder `anthropic`. Bleibt das Provider-Plugin selbst `errored`,
+wird nichts darauf neu gebaut und die Antwort ist
+`runtime.dependent_rebuild_failed` mit `dependentId` = Provider-Plugin,
+`primaryApplied: false`; ein Plugin, das nicht wieder hochkommt, kommt ebenso
+zurück. Die Reihenfolge ist tragend: der Orchestrator greift
 `factExtractor`, `contextRetriever` und `sessionBriefing` von extras eager in
 seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 (`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach
@@ -3677,6 +3783,26 @@ getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
 `test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
 
 ### Provider-Pool-Invalidierung bei Credential-Änderung (#1080)
+
+**Ein Kernel-Pool für die Systemmodule (#2240, ADR-0215).** Orchestrator,
+Verifier und orchestrator-extras bauen ihre Provider nur noch aus dem
+Kernel-`llmProviderPool` (`optional_requires: llmProviderPool@1`); Provider-API-Keys
+liegen in einem Vault-Scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
+(`src/platform/kernelProviderCredentials.ts`, Id weiter `@omadia/orchestrator`).
+Der LLM-Zugang schreibt nur dorthin und baut alle installierten LLM-Plugins neu
+(`llmPluginsToRebuild`). `consolidateProviderCredentials` läuft bei jedem Boot nach
+`runLegacyBootstrap` und vor der ersten Plugin-Aktivierung: Kopien in den Scopes
+von Verifier und extras werden pro Key-Name gelöscht (gleich dem Kernel-Key) oder
+als `superseded:<key>` (bei Kollision `#<n>`) beiseitegelegt — auch wenn der
+Kernel-Scope keinen Key hat: ein nur im Modul vorhandener Key wird bewusst nicht
+in den Kernel-Scope befördert (ADR-0084, Log verweist auf LLM-Zugang). Revoke im
+LLM-Zugang und der Provider-Purge beim Uninstall löschen auch die
+`superseded:`-Kopien. Ein Provider-API-Key an die
+Scopes von Verifier/extras über den Plugin-Editor wird mit
+`400 runtime.provider_key_in_kernel_scope` abgelehnt; beide Manifeste haben kein
+`anthropic_api_key`-Feld mehr (Versionen verifier 0.2.0, extras 0.3.0). Ein
+Provider-Key über den Secret-Editor des Orchestrators (Kernel-Scope) baut wie der
+LLM-Zugang alle installierten LLM-Plugins neu (`kernelCredentialWritten`). Der Verifier lehnt `claude-cli` vor dem Pool ab.
 
 Der Kernel-`llmProviderPool` memoisiert pro Provider-Id, auch ein negatives
 „kein Key". Deshalb hängt er an einem kernel-internen Write-Observer der
@@ -4846,6 +4972,32 @@ Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
   sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
   Admin-Session.
 
+### Plugin Builder: Build-Status, Smoke, Drafts löschen (Welle 5, W20)
+
+- **Build-Status** (ADR-0230): `plugins/builder/previewWarmBuild.ts` ist der
+  einzige Emitter von `build_status` (Auto-Rebuild in `index.ts` und
+  Preview-Routen). `building` nur bei echtem Build, jedes `failed` genau einmal
+  mit `buildN` und stabilem Code; fehlende Test-Credentials bleiben `ok` mit
+  `missingSetupKey`. `GET /drafts/:id/preview/status` meldet einen grünen
+  letzten Build bei kaltem Cache als `ok` + `warm: false`;
+  `PUT|DELETE /drafts/:id/preview/secrets` planen einen Rebuild.
+- **Runtime-Smoke** (ADR-0232): eigene Stub-Aktivierung der frischen ZIP
+  (`smokeMode`, Stub-Werte `'smoke-test'`, Verzeichnis `<draft>-<rev>-smoke`),
+  nie der warme Preview-Handle; Tools mit `side_effects: 'write'` werden nicht
+  aufgerufen; `validation_failed` ist ein Fehlschlag, `auth_rejected` nicht.
+- **`DELETE /drafts/:id`** verwirft zusätzlich die Test-Credentials des Drafts
+  (Vault-Namespace `core.builder-preview:<user>:<draft>`).
+- **`DELETE /drafts/:id/permanent`** (nur Owner, nur bereits gelöschte Drafts,
+  sonst `404`) entfernt einen Draft endgültig; UI: „Endgültig löschen“ in der
+  Liste gelöschter Drafts.
+- **Täglicher Purge** (`plugins/builder/draftPurge.ts`, gestartet in
+  `index.ts`): gelöschte, veröffentlichte Drafts nach der Grace-Period samt
+  Test-Credentials. Unveröffentlichte gelöschte Drafts bleiben bis zum
+  endgültigen Löschen.
+- **Profil-Snapshots/Bundles** tragen `knowledge/slots.json` (Slot-Code);
+  Import stellt ihn wieder her (Draft-Quota vor jeder Plugin-Installation),
+  Rollback schreibt Spec + Slots in den Draft (nur eigener Draft).
+
 ### Plugin Builder: ein Turn pro Draft, Stopp auf dem Server (#2214)
 
 Seit #1899 läuft ein Builder-Turn nach einem Disconnect weiter. `DraftTurnLock`
@@ -5249,7 +5401,6 @@ Jest.
 
 ```bash
 npm test         # alles
-npm run smoke:entity-refs   # E2E-Smoke ohne externe Creds
 ```
 
 ### Test-Dateien unter `middleware/test/`
@@ -5349,10 +5500,17 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 
 | Variable | Wirkung |
 |---|---|
-| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Ob Compose-Deployments mit `false` ausgeliefert werden, ist nicht entschieden. |
+| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Der Compose-Stack setzt `false` (`middleware/compose.defaults.env`, ADR-0211, #1914): ein stdio-Kind läuft unter dem Middleware-User und kann `/proc/1/environ` (`VAULT_KEY`, `DATABASE_URL`) und `/data` lesen. Wieder einschalten mit `MCP_STDIO_ENABLED=true` in `middleware/.env`. |
 | `REGISTRY_URLS` | JSON-Liste `[{name,url,token?}]` der Plugin-Registries (Hub-Quellen). Wird **nur beim ersten Boot** gelesen (#1483): `seedRegistriesOnFirstBoot` schreibt die Liste nach `platform_settings` → `registry.list`; danach verwaltet Admin · Registries sie, und eine geleerte Liste bleibt über Neustarts leer. Ungesetzt → `hub.omadia.ai`; `'[]'` → Instanz ohne Registry (ZIP-Upload geht weiter). DB-loser Boot seedet weiterhin bei jedem Start. |
 | `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
+
+### Öffentlicher MCP-Endpunkt (#542, #1952, ADR-0142/0143)
+
+| Variable | Wirkung |
+|---|---|
+| `PUBLIC_MCP_ENABLED` | `true`/`false`, Default `false`. Mountet `POST /api/v1/mcp` (auch mit einem abschließenden `/`). Aus: keine Route. `serverInfo.version` ist die Build-Version (`OMADIA_VERSION`, sonst `unknown`). Jede authentifizierte Anfrage landet im Usage-Log des Keys (`/admin/api-keys`, #1936). |
+| `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING` | `true`/`false`, Default `false`. Ohne Privacy-Provider lehnt `tools/call` sonst jeden Aufruf ab. Nur für Installationen, deren freigegebene Tools nachweislich keine Personendaten tragen. |
 
 Die Outbound-Regel für operator-konfigurierte MCP-Ziele (Registry-URL, `http`-/`sse`-Endpoint) hat keine Env-Variable: Link-Local- und Cloud-Metadata-Ziele werden immer abgewiesen (400 bzw. 502 mit `code: blocked_host`), private und Loopback-Adressen bleiben erlaubt.
 
@@ -5377,7 +5535,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus). Fail-closed (#1535): Läuft kein `privacy.redact@1`-Provider, wird jeder Chat-Turn mit einer Absage beantwortet statt ungeschützt zu laufen (`PrivacyShieldRequiredError`); Turns auf dem Abo-CLI-Provider (`claude-cli`), der keinen Shield hat, werden immer abgelehnt. Instanz, Admin-UI und Store laufen weiter, damit der Guard repariert werden kann. |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus). Fail-closed (#1535): Läuft kein `privacy.redact@1`-Provider, wird jeder Chat-Turn mit einer Absage beantwortet statt ungeschützt zu laufen (`PrivacyShieldRequiredError`); Turns auf dem Abo-CLI-Provider (`claude-cli`) laufen seit ADR-0195 mit eigenem Privacy-Handle und werden nur abgelehnt, wenn keins gebaut werden kann (kein Guard aktiv). Instanz, Admin-UI und Store laufen weiter, damit der Guard repariert werden kann. |
 
 **Sichtbarkeit (#1508, #1507).** `GET /api/v1/admin/runtime/privacy-posture`
 (hinter `requireAuth`, nicht in `/health`) liefert
@@ -5589,11 +5747,13 @@ MICROSOFT_APP_TENANT_ID
 DATASET_LINK_KEY_SECRET                    # openssl rand -hex 32
 # Diagram rendering (alle 7 müssen gesetzt sein, sonst wird Feature deaktiviert)
 KROKI_BASE_URL=http://localhost:8765       # Kroki-Gateway (lokal aus compose.yml)
-DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch
-DIAGRAM_PUBLIC_BASE_URL=http://localhost:3979  # Base-URL für signierte URLs
-DIAGRAM_SIGNED_URL_TTL_SEC=900             # 15 min
-DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
-DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
+DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch; nur beim
+                                           # ersten Auto-Install gelesen, danach Vault →
+                                           # Rotation über das Setup-Feld des Plugins (#1975)
+DIAGRAM_PUBLIC_BASE_URL=http://localhost:8080  # Base-URL für signierte URLs (Compose-Default)
+DIAGRAM_SIGNED_URL_TTL_SEC=3600            # 1 h, wie Manifest-Default und ADR-0137 (#1975)
+DIAGRAM_MAX_SOURCE_BYTES=1000000           # Quellcode-Cap
+DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit (auch Manifest-Default)
 # Object-storage (Tigris auf Fly, SeaweedFS lokal via docker-compose.storage.yaml — Fly auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
@@ -6609,6 +6769,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
   `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
   `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
+- **Kernel-Pool-Rest (#2240, ADR-0215).** Der OAuth-Fan-out
+  (`fanOutProviderOAuthTokens`) und der Back-compat-Key-Seed von `/setup`
+  (`anthropicKeyConsumers`) schreiben weiter Kopien in die Scopes von Verifier und
+  extras; die Module lesen sie nicht, die API-Key-Kopien räumt der nächste Boot auf.
+  Beide auf den Kernel-Scope verengen (OAuth: Hydration „newest wins“ über die
+  Scopes vorher prüfen).
 
 - **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
   ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
@@ -7064,10 +7230,9 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   über die Platzhalter-Map des Turns (Restore in der Antwort), als eigener
   Egress des Turns gebucht; `blocked` lässt den Turn scheitern. Wiederholte
   User-Nachrichten folgen weiter dem Flag. Offen: Ein Provider ohne
-  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an), und
-  der Abo-CLI-Replay (`CliChatAgent.maskHistory`, heute ohne Handle und damit
-  inert) maskiert Antworten noch über `maskUserPrompt`; beim Einbau eines
-  Handles dort (#1087) dieselbe Regel übernehmen.
+  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an). Der
+  Abo-CLI-Replay (`CliChatAgent.maskHistory`) hat seit ADR-0195 ein Handle und
+  maskiert Antworten über `maskReplayedAnswer` nach derselben Regel.
 - **Plugin-Permissions sind keine Sandbox.** Die Manifest-`permissions`
   schalten nur die `PluginContext`-Accessoren frei. Ein Plugin läuft als
   vertrauenswürdiges JavaScript im Middleware-Prozess und erreicht globales
@@ -7347,7 +7512,9 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   und die Naht lässt sie heute unverändert durch. Ausnahme: Die Schema-Absage
   für ein Steuerzeichen (`… control character U+0001 …`) kommt als
   `U[masked:phone]` beim Modell an, weil C0 `+0001` als Telefonnummer liest.
-- **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Abo-CLI-Pfad** läuft seit ADR-0195 (#2239) mit eigenem Privacy-Handle; die
+  Builder-/Preview-Sub-Agents laufen als Operator-Jobs außerhalb des Shields
+  (ADR-0196).
 - **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
   Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
   `Error:`-Texte nur als Withheld-Notice und kann sich nicht am Hinweis
@@ -7684,6 +7851,9 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
 Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 
+- **Alt-Chats ohne Owner zuordnen (ADR-0184):** `POST /api/v1/admin/chats/assign-orphans`
+  `{ userId: <users.id>, dryRun? }` stempelt allen besitzerlosen Chats die `providerUserId` des
+  Kontos (= Session-`sub`); erst Dry-run, Audit-Zeile `chat.assign_orphans` vor der Änderung.
 - ~~**Per-User-Ownership der Chat-Sessions.**~~ Erledigt mit #1762 (ADR-0180): der Server
   stempelt `ownerUserId` (Session-`sub`) beim ersten PUT, alle Routen unter
   `/api/chat/sessions` und Chat-Turns/Steer mit fremder `sessionId` antworten 404. Eine
@@ -7751,8 +7921,9 @@ Der Orchestrator greift die Dienste von extras **und** Verifier eager in
 (`src/platform/providerDependents.ts`) baut deshalb den abgreifenden Plugin
 immer **nach** den abgegriffenen neu und ergänzt ihn, wenn er fehlt. Genutzt
 von `reactivateAfterProviderWrite` (direkte Zuweisung an extras/Verifier →
-danach Orchestrator), vom Settings-`PATCH` (Key landet in allen drei Scopes →
-Verifier, extras, Orchestrator) und vom OAuth-Fan-out
+danach Orchestrator), vom Settings-`PATCH` (Key landet seit ADR-0215 nur im
+Kernel-Scope; jeder installierte LLM-Plugin wird neu gebaut → Verifier, extras,
+Orchestrator) und vom OAuth-Fan-out
 `fanOutProviderOAuthTokens`. Der Subscription-Hand-off verschiebt den Rebuild
 (`deferCapturerRebuild`) und baut den Orchestrator nur dann einmal am Ende,
 wenn dessen eigener Schritt übersprungen wurde.
@@ -8457,7 +8628,7 @@ Werte ersetzen.
 3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<middleware-app>.fly.dev`.
 4. Smoke-Probe in Teams: "Flow A→B→C als Mermaid" → Card mit PNG.
 
-Lokale Reproduktion jederzeit via `docker compose up -d` + `npm run smoke:diagrams`.
+Lokale Reproduktion via `docker compose` mit Storage- und Diagrams-Overlay, dann im Chat ein Diagramm anfordern (die früheren `smoke:*`-Skripte sind gitignored und wurden mit #1988 aus `package.json` entfernt).
 
 ### Phase 12 — tenantId im TurnContext
 
@@ -8621,8 +8792,7 @@ npm run typecheck             # tsc --noEmit
 npm run lint                  # eslint src/
 npm run lint:fix              # eslint --fix
 npm run format                # prettier --write
-npm test                      # Node --test mit tsx-Loader, 63 Tests
-npm run smoke:entity-refs     # E2E-Smoke für EntityRef-Capture-Pfad
+npm test                      # Node --test mit tsx-Loader
 ```
 
 `npm run build` baut zuerst die Workspace-Pakete in Abhängigkeitsreihenfolge,
@@ -11199,6 +11369,27 @@ Spec 2042 §5.10, Kriterium 15. Branch `feat/2042-s3b-plugin-contract`.
   nennen (`field`, `[].field`, `<items>[].field`, optional `[N]` am Ende),
   tiefere Pfade werden ignoriert.
 
+
+### Gebundene Plugin-Services: graphPool, memoryStore-Bäume, Recall (ADR-0255/0256/0257, 2026-11-26)
+
+- **`graphPool` (ADR-0255, #2230):** Für jedes nicht gebündelte Plugin prüft
+  `borrowPool(…, { guardStatements: true })` jedes Statement mit
+  `src/platform/sqlTableGuard.ts`. Nennt es eine Kernel-Relation aus
+  `kernelSqlRelations.ts`, wirft es `SqlTableRefusedError`. Ebenso für `$$`, `DO`,
+  `CREATE FUNCTION`, SQL-Text-Funktionen und fremde `plg_`-Namen. Listener, `options`
+  und `_`-Interna des Pools sind verborgen. Eigentum an Kernel-Tabellen:
+  channel-teams (`teams_conversation_refs`, `teams_attachments`), dev-platform
+  (`dev_*`). **Neue Kernel-Tabelle → eine Zeile in `kernelSqlRelations.ts`**;
+  `test/kernelSqlRelations.test.ts` sagt, welche fehlt.
+- **`memoryStore@1` (ADR-0256, #2232):** Ein Plugin liest `core` und `_*` und ändert
+  nur die Bäume aus `permissions.memory.trees` (`src/platform/memoryTrees.ts`). Das
+  erste Plugin, das einen Baum benutzt, besitzt ihn (`/memories/_plugin-trees/<tree>.json`,
+  privat). `core` ist für Plugins read-only. `pairings` gehört über eine datierte
+  Legacy-Zeile `@omadia/channel-telegram`.
+- **Recall/Kuration (ADR-0257, #2231):** `BOUNDARY_ONLY_SERVICE_NAMES` in
+  `pluginServiceGrants.ts` löst nur für `GRAPH_BOUNDARY_IMPLEMENTERS` auf
+  (`graphBoundaryImplementers.ts`). `entityRefBus@1` ist für alle anderen Plugins
+  publish-only.
 
 ## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
 

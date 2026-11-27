@@ -2,10 +2,12 @@ import { z } from 'zod';
 
 import {
   safeParseAgentSpec,
+  uiRouteMissingArgs,
   validateSpecForCodegen,
   type AgentSpec,
   type SpecValidationIssue,
 } from '../agentSpec.js';
+import { validateSpec } from '../manifestLinter.js';
 import type { BuilderTool } from './types.js';
 
 const InputSchema = z.object({}).strict();
@@ -50,7 +52,9 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
       };
     }
 
-    const issues: LintIssue[] = [];
+    // #1795 — the manifest linter (the `patch_spec` gate) over the stored
+    // spec, so a violation that reached the draft another way is reported.
+    const issues: LintIssue[] = lintManifest(draft.spec, ctx.knownPluginIds);
 
     // 1. Zod validation
     const parsed = safeParseAgentSpec(draft.spec);
@@ -92,6 +96,19 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
       });
     }
 
+    // 2b. #1808 — dashboard pages bound to a tool whose required input
+    //     data_binding.args does not set (warning: the build still works).
+    for (const m of uiRouteMissingArgs(spec)) {
+      issues.push({
+        severity: 'warning',
+        code: 'ui_route_data_binding_missing_args',
+        message:
+          `ui_routes['${m.routeId}'] calls tool '${m.toolId}' without its required ` +
+          `input: ${m.missing.join(', ')}. Set them in data_binding.args, or the page never shows data.`,
+        path: `/ui_routes[id=${m.routeId}]/data_binding/args`,
+      });
+    }
+
     // 3. Catalog-name collision (warning, since it might be intentional)
     issues.push(...lintNameCollision(spec.name, ctx.catalogToolNames()));
 
@@ -115,6 +132,18 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
     return { ok: issues.every((i) => i.severity !== 'error'), issues };
   },
 };
+
+function lintManifest(
+  spec: unknown,
+  knownPluginIds: () => readonly string[],
+): LintIssue[] {
+  return validateSpec(spec, { knownPluginIds }).violations.map((v) => ({
+    severity: 'error',
+    code: `manifest.${v.kind}`,
+    message: v.message,
+    path: v.path,
+  }));
+}
 
 /**
  * #1022 — `identity.description` is a locale map, and the `en:` side must

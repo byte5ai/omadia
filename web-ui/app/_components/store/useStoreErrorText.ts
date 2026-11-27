@@ -37,7 +37,12 @@ export function parseStoreErrorBody(body: string): StoreErrorBody | null {
     return null;
   }
   const rec = parsed as Record<string, unknown>;
-  const out: { code?: string; message?: string; params?: Record<string, string> } = {};
+  const out: {
+    code?: string;
+    message?: string;
+    params?: Record<string, string>;
+    missing?: string[];
+  } = {};
   if (typeof rec['code'] === 'string') out.code = rec['code'];
   if (typeof rec['message'] === 'string') out.message = rec['message'];
   const params = rec['params'];
@@ -47,6 +52,13 @@ export function parseStoreErrorBody(body: string): StoreErrorBody | null {
         (e): e is [string, string] => typeof e[1] === 'string',
       ),
     );
+  }
+  const details = rec['details'];
+  if (details && typeof details === 'object' && !Array.isArray(details)) {
+    const missing = (details as Record<string, unknown>)['missing'];
+    if (Array.isArray(missing)) {
+      out.missing = missing.filter((m): m is string => typeof m === 'string');
+    }
   }
   return out;
 }

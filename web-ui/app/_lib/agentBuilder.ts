@@ -264,6 +264,9 @@ export interface McpServerNode {
   status: NodeStatus;
   lastDiscoveredAt: string | null;
   discoveredTools: McpDiscoveredTool[];
+  /** #1916 — outcome of the last security re-scan; absent on older middleware. */
+  lastScanAt?: string | null;
+  lastScanError?: string | null;
   /** Marketplace provenance (issue #455); absent on older middleware builds. */
   source?: 'manual' | 'marketplace';
   registryId?: string | null;
@@ -305,6 +308,38 @@ export async function getMcpServerConfig(id: string): Promise<McpServerConfigSta
   return callJson<McpServerConfigState>(
     `/v1/operator/mcp-servers/${encodeURIComponent(id)}/config`,
   );
+}
+
+/** #1912 — one static header of an http/sse MCP server. A secret header never
+ *  carries its value back: `value` is `null`, `secretSet` says whether the
+ *  Vault holds one. */
+export interface McpServerHeader {
+  name: string;
+  secret: boolean;
+  value: string | null;
+  secretSet?: boolean;
+}
+
+/** #1912 — what the header editor saves. Omit `value` on a secret header to
+ *  keep the stored secret. */
+export interface McpServerHeaderInput {
+  name: string;
+  secret: boolean;
+  value?: string;
+}
+
+export async function getMcpServerHeaders(id: string): Promise<{ headers: McpServerHeader[] }> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(id)}/headers`);
+}
+
+export async function saveMcpServerHeaders(
+  id: string,
+  headers: McpServerHeaderInput[],
+): Promise<{ headers: McpServerHeader[] }> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(id)}/headers`, {
+    method: 'PUT',
+    body: JSON.stringify({ headers }),
+  });
 }
 
 /** Save a server's config: schema (incl. per-field secret flags), non-secret
@@ -1266,7 +1301,9 @@ export async function exportSkill(id: string): Promise<string> {
  *  stable, locale-independent discriminator the pane renders from; `message` is
  *  the server's English fallback, for API consumers and logs. */
 export interface PublicMcpKeyBindingWarning {
-  code: 'key_id_unknown' | 'agent_id_unknown';
+  /** #1949 — `key_revoked`/`key_expired`: the key exists but cannot
+   *  authenticate; only `key_id_unknown` can be a typo. */
+  code: 'key_id_unknown' | 'key_revoked' | 'key_expired' | 'agent_id_unknown';
   message: string;
 }
 
@@ -1298,6 +1335,9 @@ export interface UpsertPublicMcpKeyBindingInput {
    *  RE-ARMS a revoked key, so this pane never sends it implicitly — un-parking
    *  goes through `restorePublicMcpKeyBinding` instead. */
   enabled?: boolean;
+  /** #1949 — overwrite an existing binding of this key. Without it the server
+   *  answers 409 `binding_exists` with the stored binding. */
+  replace?: boolean;
 }
 
 export async function listPublicMcpKeyBindings(): Promise<PublicMcpKeyBindingsResponse> {
@@ -1342,6 +1382,8 @@ export async function restorePublicMcpKeyBinding(
 
 export interface McpServersListResponse {
   servers: McpServerNode[];
+  /** #1957 — `MCP_STDIO_ENABLED` of this deployment; absent on older middleware. */
+  stdioEnabled?: boolean;
 }
 
 export async function listMcpServers(): Promise<McpServersListResponse> {

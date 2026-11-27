@@ -8,11 +8,18 @@ import { stringify as stringifyYaml } from 'yaml';
 
 import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
+import type { AgentSpecSkeleton } from '../plugins/builder/types.js';
+import { QuotaExceededError, type DraftQuota } from '../plugins/builder/draftQuota.js';
 import type { BuiltInOptOutStore } from '../plugins/builtInOptOuts.js';
 import { findActiveProviderCollision } from '../plugins/capabilityResolver.js';
 import {
+  bundleKnowledgeBaseName,
+  isDraftSourceFile,
+  parseBundleSlots,
   reconstructSpecFromBundle,
   SpecReconstructError,
+  BUNDLE_SLOTS_FILE,
+  BUNDLE_SPEC_FILE,
 } from '../plugins/builder/specFromBundle.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -20,6 +27,7 @@ import type { PackageUploadService } from '../plugins/packageUploadService.js';
 import {
   ProfileBundleImporter,
   type ImportErrorCode,
+  type PersistedBundlePayload,
 } from '../plugins/profileBundleImporter.js';
 import {
   builtInProfilesDir,
@@ -74,6 +82,12 @@ interface ProfilesDeps {
    *  When absent, the import-bundle route still accepts `target=profile`
    *  for Bootstrap-Profile imports. */
   draftStore?: DraftStore;
+  /** #1787 — the Builder draft cap. A bundle import that creates a draft
+   *  checks it like create / restore / clone do. Absent in tests only. */
+  draftQuota?: DraftQuota;
+  /** #1788 — called after a rollback restored a Builder draft's spec and
+   *  slots, so the preview rebuilds from the restored state. */
+  onDraftRestored?: (userEmail: string, draftId: string) => void;
   /** Phase 2.4 — uploaded package index. Required for the import-bundle
    *  route to verify pinned plugins against the local catalog. */
   uploadedPackageStore?: UploadedPackageStore;
@@ -91,6 +105,67 @@ interface ProfilesDeps {
 }
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+/**
+ * #1788 — write a snapshot's `spec.json` (and `slots.json`, captured since
+ * #1787) back into the Builder draft. The spec is restored as stored: a draft
+ * spec may be mid-construction, so it is not schema-validated here, only
+ * required to be a JSON object. A snapshot without `slots.json` restores the
+ * spec only and says so.
+ */
+async function restoreDraftFromSnapshot(
+  draftStore: DraftStore,
+  draft: { id: string; userEmail: string },
+  knowledge: ReadonlyArray<{ filename: string; content: Buffer }>,
+): Promise<{ spec: boolean; slots: boolean }> {
+  const byName = (name: string): Buffer | undefined =>
+    knowledge.find((k) => bundleKnowledgeBaseName(k.filename) === name)?.content;
+  const specBytes = byName(BUNDLE_SPEC_FILE);
+  let spec: AgentSpecSkeleton | null = null;
+  if (specBytes && specBytes.byteLength > 0) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(specBytes.toString('utf8'));
+    } catch (err) {
+      throw new SpecReconstructError('snapshot spec.json is not valid JSON', err);
+    }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      throw new SpecReconstructError('snapshot spec.json is not a JSON object');
+    }
+    spec = raw as AgentSpecSkeleton;
+  }
+  const slots = parseBundleSlots(byName(BUNDLE_SLOTS_FILE));
+  if (spec === null && slots === null) return { spec: false, slots: false };
+  await draftStore.update(draft.userEmail, draft.id, {
+    ...(spec !== null ? { spec } : {}),
+    ...(slots !== null ? { slots } : {}),
+  });
+  return { spec: spec !== null, slots: slots !== null };
+}
+
+/** One plugin pin of an imported bundle, as the import response reports it. */
+interface ImportedPluginInfo {
+  id: string;
+  version: string;
+  was_existing: boolean;
+  vendored: boolean;
+  /** #1787 — the installed version this import replaced (up or down). The
+   *  import dialog shows it, so a swap of the live plugin is never silent. */
+  replaced_version?: string;
+  /** #1811 — the same id + version was already installed; it was kept. */
+  kept_installed?: boolean;
+}
+
+function toImportedPluginInfo(p: PersistedBundlePayload['plugins'][number]): ImportedPluginInfo {
+  return {
+    id: p.id,
+    version: p.version,
+    was_existing: !p.installed,
+    vendored: p.vendored,
+    ...(p.replacedVersion !== undefined ? { replaced_version: p.replacedVersion } : {}),
+    ...(p.keptInstalled ? { kept_installed: true } : {}),
+  };
+}
 
 /** Raw-body parser for the agent.md and knowledge-file uploads. Parses EVERY
  *  request, whatever its Content-Type: `type: '*\/*'` skips a request without
@@ -365,6 +440,24 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
           : undefined;
       const userEmail = actorOf(req);
 
+      // #1787 — check the draft cap before anything is installed: the
+      // importer installs vendored plugins before onPersist creates the
+      // draft, so a later check would swap the live plugin and then refuse.
+      // Without an explicit target the bundle may still turn out to be a
+      // profile import; at the cap it is refused too (the cap is 50 drafts),
+      // rather than risking the silent swap. onPersist checks again.
+      if (explicitTarget !== 'profile' && deps.draftQuota) {
+        try {
+          await deps.draftQuota.assertCanCreate(userEmail);
+        } catch (err) {
+          if (err instanceof QuotaExceededError) {
+            res.status(409).json({ code: err.code, message: err.message, quota: err.snapshot });
+            return;
+          }
+          throw err;
+        }
+      }
+
       const importer = new ProfileBundleImporter({
         uploadedPackageStore: deps.uploadedPackageStore,
         catalog: deps.catalog,
@@ -379,13 +472,10 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
         profileId: string;
         draftId?: string;
         divergedAssets: string[];
-        plugins: Array<{
-          id: string;
-          version: string;
-          was_existing: boolean;
-          vendored: boolean;
-        }>;
+        plugins: ImportedPluginInfo[];
         specSource: 'spec_json' | 'agent_md_fallback' | 'profile_no_spec';
+        /** #1787 — whether the bundle carried the draft's slot code. */
+        slotsRestored?: boolean;
       };
       // These slots are written from inside the importer's onPersist
       // closure. TypeScript's control-flow analysis cannot follow closure
@@ -396,7 +486,8 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
         outcome: Outcome | null;
         conflict: { divergedAssets: string[] } | null;
         specReconstructFailed: SpecReconstructError | null;
-      } = { outcome: null, conflict: null, specReconstructFailed: null };
+        quotaExceeded: QuotaExceededError | null;
+      } = { outcome: null, conflict: null, specReconstructFailed: null, quotaExceeded: null };
 
       try {
         const result = await importer.import({
@@ -412,10 +503,11 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
                 k.filename === 'knowledge/spec.json' ||
                 k.filename === 'spec.json',
             );
+            const slotsJsonEntry = payload.knowledge.find(
+              (k) => bundleKnowledgeBaseName(k.filename) === BUNDLE_SLOTS_FILE,
+            );
             const knowledgeWithoutSpecJson = payload.knowledge.filter(
-              (k) =>
-                k.filename !== 'knowledge/spec.json' &&
-                k.filename !== 'spec.json',
+              (k) => !isDraftSourceFile(k.filename),
             );
 
             if (target === 'draft') {
@@ -425,6 +517,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
                 );
               }
               let reconstructed;
+              let bundleSlots: Record<string, string> | null;
               try {
                 reconstructed = reconstructSpecFromBundle({
                   bundleAgentMd: payload.agentMd,
@@ -432,6 +525,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
                   fallbackName:
                     explicitName ?? payload.manifest.profile.name,
                 });
+                bundleSlots = parseBundleSlots(slotsJsonEntry?.content);
               } catch (err) {
                 if (err instanceof SpecReconstructError) {
                   sideChannel.specReconstructFailed = err;
@@ -440,13 +534,24 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
                 throw err;
               }
 
+              if (deps.draftQuota) {
+                try {
+                  await deps.draftQuota.assertCanCreate(userEmail);
+                } catch (err) {
+                  if (err instanceof QuotaExceededError) sideChannel.quotaExceeded = err;
+                  throw err;
+                }
+              }
               const draft = await deps.draftStore.create(
                 userEmail,
                 reconstructed.name,
               );
+              // #1787 — the slot code travels as knowledge/slots.json; a
+              // bundle from before that keeps the empty slots of a new draft.
               await deps.draftStore.update(userEmail, draft.id, {
                 spec: reconstructed.spec,
                 name: reconstructed.name,
+                ...(bundleSlots !== null ? { slots: bundleSlots } : {}),
               });
 
               await liveStorage!.setAgentMd(
@@ -471,13 +576,9 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
                 profileId: draft.id,
                 draftId: draft.id,
                 divergedAssets: [],
-                plugins: payload.plugins.map((p) => ({
-                  id: p.id,
-                  version: p.version,
-                  was_existing: !p.installed,
-                  vendored: p.vendored,
-                })),
+                plugins: payload.plugins.map(toImportedPluginInfo),
                 specSource: reconstructed.source,
+                slotsRestored: bundleSlots !== null,
               };
               return;
             }
@@ -526,12 +627,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
               importedAs: 'profile',
               profileId: manifestProfileId,
               divergedAssets: diverged,
-              plugins: payload.plugins.map((p) => ({
-                id: p.id,
-                version: p.version,
-                was_existing: !p.installed,
-                vendored: p.vendored,
-              })),
+              plugins: payload.plugins.map(toImportedPluginInfo),
               specSource: 'profile_no_spec',
             };
           },
@@ -546,6 +642,11 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
               code: 'bundle.invalid_spec_json',
               message: sideChannel.specReconstructFailed.message,
             });
+            return;
+          }
+          if (sideChannel.quotaExceeded) {
+            const q = sideChannel.quotaExceeded;
+            res.status(409).json({ code: q.code, message: q.message, quota: q.snapshot });
             return;
           }
           if (sideChannel.conflict) {
@@ -580,6 +681,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
           plugins_installed: out.plugins,
           diverged_assets: out.divergedAssets,
           spec_source: out.specSource,
+          ...(out.slotsRestored !== undefined ? { slots_restored: out.slotsRestored } : {}),
         };
         if (out.draftId) responseBody['draft_id'] = out.draftId;
         res.json(responseBody);
@@ -856,6 +958,12 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
       res.status(500).json({ code: err.code, message: err.message });
       return;
     }
+    if (err instanceof SpecReconstructError) {
+      // #1788 — the snapshot's draft source (spec.json / slots.json) is
+      // unusable; nothing in the draft was written.
+      res.status(422).json({ code: 'profile_snapshot.draft_source_invalid', message: err.message });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ code: 'profile_snapshot.internal', message });
   };
@@ -1110,10 +1218,27 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
         return;
       }
       const operator = actorOf(req);
+      // #1788 — a Builder draft lives in the draft store, not in the profile
+      // storage; restoring only agent.md + knowledge left the draft (and the
+      // next build) untouched while the UI reported the rollback as done.
+      const draft = deps.draftStore ? await deps.draftStore.findById(id) : null;
+      // Drafts are owner-scoped (ADR-0058): a rollback that writes into the
+      // draft store must not revert another operator's draft.
+      if (draft && draft.userEmail !== operator) {
+        res.status(404).json({
+          code: 'profile_snapshot.not_found',
+          message: `no snapshot ${sid} for profile ${id}`,
+        });
+        return;
+      }
+      let draftRestored: { spec: boolean; slots: boolean } | null = null;
       const result = await snapshotService!.rollback({
         snapshotId: sid,
         operator,
         onPersist: async (payload) => {
+          if (draft && deps.draftStore) {
+            draftRestored = await restoreDraftFromSnapshot(deps.draftStore, draft, payload.knowledge);
+          }
           // Restore agent.md
           await liveStorage!.setAgentMd(id, payload.agentMd, operator);
           // Restore knowledge files. Strategy: write each captured file,
@@ -1122,9 +1247,9 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
           // it completes, the knowledge dir matches the snapshot exactly.
           const wantedFilenames = new Set<string>();
           for (const k of payload.knowledge) {
-            const baseName = k.filename.startsWith('knowledge/')
-              ? k.filename.slice('knowledge/'.length)
-              : k.filename;
+            const baseName = bundleKnowledgeBaseName(k.filename);
+            // A draft's spec.json / slots.json went into the draft above.
+            if (draft && isDraftSourceFile(baseName)) continue;
             await liveStorage!.setKnowledgeFile(id, baseName, k.content, operator);
             wantedFilenames.add(baseName);
           }
@@ -1154,7 +1279,9 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
         },
         applied_at: result.appliedAt.toISOString(),
         diverged_assets: result.divergedAssets,
+        ...(draftRestored ? { draft_restored: draftRestored } : {}),
       });
+      if (draft && draftRestored) deps.onDraftRestored?.(draft.userEmail, draft.id);
     } catch (err) {
       handleSnapshotError(err, res);
     }

@@ -185,6 +185,9 @@ function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
     // scope and carries only `mcpUserKey` across. Kept descriptive so a stray
     // log line from this scope is still attributable.
     turnId: `http-chat-${sessionScope}`,
+    // #1921 — a tool that runs in this scope (subscription CLI, fast path)
+    // is not audited under the placeholder.
+    turnIdIsPlaceholder: true,
     turnDate: today(),
     ...(identity ? { mcpUserKey: identity } : {}),
   };

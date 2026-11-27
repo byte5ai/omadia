@@ -48,7 +48,7 @@ export const readAttachmentToolSpec = {
   name: READ_ATTACHMENT_TOOL_NAME,
   description:
     'Liest den TEXT-Inhalt eines Dokuments (.docx, .pdf, .md, .txt, .json), das ein User in DIESEM Chat hochgeladen hat, über seinen `storage_key`. ' +
-    'Die `storage_key`-Werte stehen im `[attachments-info]`-Block der Nachricht, mit der die Datei kam. Dateien aus anderen Chats und von Tools erzeugte Dateien (Office, Diagramme) liest es nicht. ' +
+    'Den `storage_key` nennt der Anhang-Hinweis der Nachricht, mit der die Datei kam; er ist interne Technik — nenne ihn dem User nicht und frag ihn nie danach. Dateien aus anderen Chats und von Tools erzeugte Dateien (Office, Diagramme) liest es nicht. ' +
     'In der Regel ist der Dokumentinhalt bereits automatisch als `[attachment-content: …]`-Block in die Nachricht eingebettet — nutze dieses Tool nur, wenn der Inhalt fehlt, abgeschnitten wurde, oder du eine frühere Datei dieses Chats erneut lesen willst. ' +
     'Tabellen (CSV, XLSX) liest es NICHT: sie werden beim Hochladen als Dataset importiert, ihre Zeilen liest du mit `query_dataset`. ' +
     'Bilder sind NICHT text-extrahierbar (die werden separat als Vision-Input behandelt).',
@@ -58,7 +58,7 @@ export const readAttachmentToolSpec = {
       storage_key: {
         type: 'string',
         description:
-          'Der `storage_key` der Datei aus dem `[attachments-info]`-Block (z.B. `uploads/2026/abc123.docx`).',
+          'Der `storage_key` aus dem Anhang-Hinweis der Nachricht (z.B. `uploads/2026/abc123.docx`).',
       },
     },
     required: ['storage_key'],
@@ -80,6 +80,19 @@ function tabularRefusal(storageKey: string, format: TabularFormat): string {
     'A table uploaded to the chat is imported as a dataset (see its `[dataset-imported]` block): read its rows with `query_dataset` ' +
     '(`list_datasets` gives the `dataset_id`, then `get_schema` and `query_rows`). ' +
     'If no dataset exists for it, tell the user the table could not be read; do not guess its contents.'
+  );
+}
+
+/**
+ * #1976 — the not-found answer. Says what the model may tell the user in any
+ * channel: no such file here. It must not send the user to re-upload or to
+ * internal markup they never see.
+ */
+export function attachmentNotFound(storageKey: string): string {
+  return (
+    `Error: no uploaded file with storage key \`${storageKey}\` is available in this conversation. ` +
+    'Tell the user that file is not available here, without naming the storage key or any internal block, ' +
+    'and do not guess its contents.'
   );
 }
 
@@ -106,7 +119,7 @@ export class ReadAttachmentTool {
       if (!found) {
         // Same answer for an unknown key and for a key bound to another chat
         // (#1960): the model learns nothing about a foreign file's existence.
-        return `Error: attachment \`${key}\` not found (storage unconfigured, key unknown, or not uploaded in this chat).`;
+        return attachmentNotFound(key);
       }
       // The storage key stands in for a missing file name: keys end in the
       // upload's name or extension (`createAttachmentReader` derives the
