@@ -133,7 +133,7 @@ interface AgentMem {
   /** W5 memory-ACL rollout mode (#899). Optional exactly like the real
    *  `AgentRow`, so a row seeded without it models a pre-0050 agent. */
   contextMemory?: 'off' | 'enforce' | 'enforce-strict' | 'members';
-  /** #2290 — optional like the real row; absent models a pre-0120 agent. */
+  /** #2290 — optional like the real row; absent models a pre-0122 agent. */
   contextMemorySwitchedAt?: string | null;
   /** #1018 — optional like the real row; absent models a pre-0058 agent. */
   agentToAgent?: 'off' | 'on';
@@ -1301,7 +1301,7 @@ describe('createOperatorAgentsRouter', () => {
       assert.equal(registry.reloadCalls, 0);
     });
 
-    it('GET reports the 0120 switch until an operator sets a mode (#2290)', async () => {
+    it('GET reports the 0122 switch until an operator sets a mode (#2290)', async () => {
       const agent = await store.createAgent({ slug: 'public', name: 'Public' });
       const at = '2026-11-27T08:00:00.000Z';
       store.agents.set(agent.id, { ...agent, contextMemory: 'members', contextMemorySwitchedAt: at });

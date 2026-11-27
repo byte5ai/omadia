@@ -2953,7 +2953,7 @@ export function createOperatorAgentsRouter(
         mode,
         modes: CONTEXT_MEMORY_MODES,
         // #2290 / ADR-0261 — set while the agent runs on the `members` mode
-        // migration 0120 switched it to and no operator has chosen since.
+        // migration 0122 switched it to and no operator has chosen since.
         switchedFromOffAt: agent.contextMemorySwitchedAt ?? null,
       });
     } catch (err) {

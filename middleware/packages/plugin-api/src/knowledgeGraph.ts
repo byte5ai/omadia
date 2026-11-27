@@ -367,7 +367,7 @@ export interface KnowledgeGraph {
    */
   countUserIdentity?(omadiaUserId: string): Promise<{ count: number }>;
   /**
-   * #2293 (1.107.0) — the channel identities linked to the person's `User`
+   * #2293 (1.108.0) — the channel identities linked to the person's `User`
    * cluster, e.g. `{ channelKind: 'telegram', channelUserId: '42' }`. Lets a
    * user purge reach the per-channel context trees of every identity in one
    * run. Empty when no cluster has this id. Optional.
@@ -1765,7 +1765,7 @@ export interface AclMutationOptions {
 /**
  * ADR-0190 — the actor uuid an audit row carries when a kernel job acted.
  *
- * @deprecated since 1.107.0 (#2297): the same value as
+ * @deprecated since 1.108.0 (#2297): the same value as
  * {@link SYSTEM_ACTOR_OMADIA_USER_ID}; use that one. Kept as an alias so
  * plugins compiled against it keep building; removed with the next major.
  */

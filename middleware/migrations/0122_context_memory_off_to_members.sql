@@ -29,4 +29,4 @@ UPDATE agents
    AND context_memory_switched_at IS NULL;
 
 COMMENT ON COLUMN agents.context_memory_switched_at IS
-  '#2290 / ADR-0261: set when migration 0120 moved the agent from off to members; cleared by the next operator mode change.';
+  '#2290 / ADR-0261: set when migration 0122 moved the agent from off to members; cleared by the next operator mode change.';

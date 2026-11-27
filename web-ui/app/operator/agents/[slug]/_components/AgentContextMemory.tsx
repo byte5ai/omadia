@@ -69,7 +69,7 @@ export function AgentContextMemory(
   const [modes, setModes] =
     useState<readonly ContextMemoryMode[]>(CONTEXT_MEMORY_MODES);
   const [selected, setSelected] = useState<ContextMemoryMode | null>(null);
-  /** #2290 — when migration 0120 switched this agent off `off`, if it did. */
+  /** #2290 — when migration 0122 switched this agent off `off`, if it did. */
   const [switchedAt, setSwitchedAt] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);

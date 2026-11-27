@@ -9513,7 +9513,7 @@ dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migratio
 datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
 `omadiaUserId`.
 Seit ADR-0262 (#2292/#2293) liest `planPurge` alle `ChannelIdentity`-Knoten des Clusters
-(`KnowledgeGraph.listUserChannelIdentities?`, plugin-api 1.107.0) und löscht die Kontext-Bäume
+(`KnowledgeGraph.listUserChannelIdentities?`, plugin-api 1.108.0) und löscht die Kontext-Bäume
 aller `<kanal>~<id>` im selben Lauf; die Konten (`web`-Identitäten) bekommen danach
 `session_version` hochgezählt (`revokeAccountSessions`, Preview `sessionAccountCount`, Result
 `sessionsRevoked`, Warnung `sessions_not_revoked`).
@@ -11789,7 +11789,7 @@ Leserkreis, Offenlegungsstufe).
 - **Audit:** `discretion_flow_audit` (jede Verweigerung, jeder erlaubte
   kontextübergreifende Fluss; nur Label-IDs und Gründe, nie Inhalt).
 - **Context-Memory:** neue Agenten starten in `members` (Migration 0099);
-  seit #2290 (Migration 0120, ADR-0261) sind auch bestehende Standard-Agents von
+  seit #2290 (Migration 0122, ADR-0261) sind auch bestehende Standard-Agents von
   `off` auf `members` umgestellt; `context_memory_switched_at` treibt den Hinweis im
   Memory-Tab (Notizen aus `off` bleiben im Agent-Tier, ungelesen). `off` ist jetzt
   ein ausdrücklich gemeinsamer Agent: `PUT …/context-memory` mit `off` braucht

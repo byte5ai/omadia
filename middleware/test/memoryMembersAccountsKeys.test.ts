@@ -1,5 +1,5 @@
 /**
- * #2290 / ADR-0261 — what migration 0120 changes for one agent used by two
+ * #2290 / ADR-0261 — what migration 0122 changes for one agent used by two
  * web accounts and two API keys. On `members` each account and each key gets
  * its own tier: a note one of them saves is not readable by the others. On
  * `off` (now only for explicitly shared agents) all four share one tree.

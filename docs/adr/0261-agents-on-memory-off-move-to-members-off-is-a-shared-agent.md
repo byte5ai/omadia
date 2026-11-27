@@ -34,7 +34,7 @@ operator make an agent shared on purpose?
 
 Chosen option: **A**.
 
-- **Migration** core `0120_context_memory_off_to_members.sql`: every agent with
+- **Migration** core `0122_context_memory_off_to_members.sql`: every agent with
   `context_memory = 'off'` and archetype `standard` becomes `members`;
   `agents.context_memory_switched_at` records when. Other archetypes stay as they are: an
   archetype that omits memory (the facilitator) is kept on `off` by the operator API, and SQL

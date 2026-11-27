@@ -40,13 +40,13 @@ changelog.
 
 - `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows
   (ADR-0185, ADR-0190); `SYSTEM_AUDIT_ACTOR_UUID` is a deprecated alias of it (plugin-api
-  **1.107.0**) and no kernel code uses it any more. Same value, so stored audit rows and filters
+  **1.108.0**) and no kernel code uses it any more. Same value, so stored audit rows and filters
   are unchanged.
 
 ### Fixed — a user purge covers all linked identities and ends web sessions (#2292, #2293, ADR-0262) (2026-11-27)
 
 - The `user` axis now reads every channel identity of the person's cluster
-  (`KnowledgeGraph.listUserChannelIdentities?`, plugin-api **1.107.0**, in-memory + Neon) and
+  (`KnowledgeGraph.listUserChannelIdentities?`, plugin-api **1.108.0**, in-memory + Neon) and
   purges the context trees `/memories/contexts/<agent>/user/<kind>~<id>` of all of them in the
   same run, whichever id the operator typed.
 - The person's accounts (`web` identities) get `users.session_version` bumped after the purge,
@@ -66,7 +66,7 @@ changelog.
 
 ### Changed — agents on memory mode `off` move to `members` (#2290, ADR-0261) (2026-11-27)
 
-- **Migration** core **0120_context_memory_off_to_members** — every `standard` agent on
+- **Migration** core **0122_context_memory_off_to_members** — every `standard` agent on
   `context_memory = 'off'` becomes `members`, so each web account and each API key gets its own
   memory; new column `agents.context_memory_switched_at` records the switch. Nothing is deleted:
   notes written under `off` stay in the agent tier and are no longer read.

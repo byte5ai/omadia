@@ -811,7 +811,7 @@ export interface ContextMemoryDto {
   /** The union the SERVER accepts. Rendered in preference to the local
    *  constant so the control follows the middleware, not the bundle. */
   modes: readonly string[];
-  /** #2290 / ADR-0261 — when migration 0120 moved this agent from `off` to
+  /** #2290 / ADR-0261 — when migration 0122 moved this agent from `off` to
    *  `members` (ISO string); `null`/absent once an operator chose a mode. */
   switchedFromOffAt?: string | null;
 }

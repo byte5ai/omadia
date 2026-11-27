@@ -133,7 +133,7 @@ describe('AgentContextMemory (#899)', () => {
     await waitFor(() => expect(mockSet).toHaveBeenCalledWith('sales-bot', 'off'));
   });
 
-  it('shows the 0120 switch notice until a mode is saved (#2290)', async () => {
+  it('shows the 0122 switch notice until a mode is saved (#2290)', async () => {
     const user = userEvent.setup();
     await render({ mode: 'members', modes: ['off', 'enforce', 'enforce-strict', 'members'], switchedFromOffAt: '2026-11-27T08:00:00.000Z' });
     expect(screen.getByText(/was switched from Off/i)).toBeInTheDocument();

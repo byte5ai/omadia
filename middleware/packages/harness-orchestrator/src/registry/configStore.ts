@@ -100,7 +100,7 @@ export interface AgentRow {
    */
   readonly contextMemory?: ContextMemoryMode;
   /**
-   * #2290 / ADR-0261 — when migration 0120 moved this agent from `off` to
+   * #2290 / ADR-0261 — when migration 0122 moved this agent from `off` to
    * `members` (ISO string); `null`/absent when it did not or an operator has
    * set a mode since. Drives the memory tab's notice that notes written under
    * `off` sit in the agent tier, which `members` turns do not read.
@@ -429,7 +429,7 @@ interface AgentDbRow {
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
   context_memory?: string | null;
-  /** #2290 — `agents.context_memory_switched_at`; absent before migration 0120. */
+  /** #2290 — `agents.context_memory_switched_at`; absent before migration 0122. */
   context_memory_switched_at?: Date | null;
   /** #1018 — `agents.agent_to_agent`; absent on a DB that predates 0058. */
   agent_to_agent?: string | null;

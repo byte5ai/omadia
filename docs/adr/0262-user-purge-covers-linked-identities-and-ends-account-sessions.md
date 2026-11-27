@@ -33,7 +33,7 @@ every renewal until a real sign-in, so new turns, datasets and processes carried
 
 Chosen option: **A**.
 
-- **Identities.** `KnowledgeGraph.listUserChannelIdentities?` (plugin-api 1.107.0, kernel-only
+- **Identities.** `KnowledgeGraph.listUserChannelIdentities?` (plugin-api 1.108.0, kernel-only
   in the bounded graph services; in-memory and Neon) lists the `ChannelIdentity` nodes of the
   person's `User` cluster. `planPurge` (`routes/memoryPurge.ts`) adds the context trees of
   every `<kind>~<id>` to the scratch targets, so preview and delete count and remove them in

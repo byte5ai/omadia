@@ -1,11 +1,11 @@
 /**
- * #2290 / ADR-0261 — migration 0120 moves standard agents on context-memory
+ * #2290 / ADR-0261 — migration 0122 moves standard agents on context-memory
  * mode `off` to `members`, leaves every other mode and every non-standard
  * archetype alone, and records the switch for the memory tab's notice. The
  * notice ends with the next explicit mode write through `ConfigStore`.
  *
  * Runs the core series up to 0119 first (from a copy of the directory without
- * 0120), seeds agents as an instance before this change would hold them, then
+ * 0122), seeds agents as an instance before this change would hold them, then
  * applies the full series.
  */
 
@@ -30,10 +30,10 @@ const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
 });
 
 const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
-const MIGRATION = '0120_context_memory_off_to_members.sql';
+const MIGRATION = '0122_context_memory_off_to_members.sql';
 const SCHEMA = `cm_off_members_${String(process.pid)}`;
 
-describe('migration 0120 — context memory off → members (#2290)', { skip: !pgAvailable }, () => {
+describe('migration 0122 — context memory off → members (#2290)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   let beforeDir: string;
 
