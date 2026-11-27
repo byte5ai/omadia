@@ -8066,6 +8066,38 @@ has no user or whitelist management, so it is not a way out of an
   with the handler skipped, so the Privacy Shield interns it like any result of that tool and the
   output never enters a system block. The subscription CLI gets only a data-free note.
 
+## 10zd. Web-chat uploads (#2336, ADR-0310, 2026-11-27)
+
+New surface: `POST /api/chat/uploads` and `DELETE /api/chat/uploads` (behind `requireAuth`,
+`middleware/src/routes/chatUploads.ts`), plus `attachments` on `/api/chat` and
+`/api/chat/stream`.
+
+- **Who:** a session with an omadia account (`omadia_user_id`, else 401), in a chat the caller
+  may use (`mayUseChatSession`, ADR-0180, else 404). The delete route also needs a ledger row
+  of this account and chat for the key, else 404 like a missing one.
+- **What is stored:** extension allow-list (recordings, pdf, docx, txt, md, csv, xlsx, png,
+  jpg, gif, webp); the content type is the kernel's for the extension, never the browser's.
+  25 MiB per file (multer memory storage, `files: 1`), 100 uploads per account and chat.
+  The file name is NFC-normalised and reduced to letters, marks, digits and `._ -`, so it
+  cannot carry a path or break the model's `[attachments-info]` line.
+- **Binding:** the key `web-chat/<chat>/<uuid>/<name>` is bound to the chat at upload
+  (ADR-0178) and filed in the `generated_objects` ledger (ADR-0187); if either write fails the
+  object is deleted again. A turn accepts a key only with this chat's layout and binding;
+  reads keep the binding and audience-floor checks of `read_attachment`.
+- **Privacy:** uploads take the channel path: ingest, Privacy Shield masking, and
+  prompt-masked transcripts for the turn's own uploads (ADR-0198).
+
+### Residual risks
+
+- No content sniffing: a file with an allowed extension but other bytes is stored; the
+  extractors (pdf-parse, mammoth, xlsx, vision guard) then fail or refuse it. Follow-up:
+  magic-byte check per type.
+- No per-account rate limit: up to 25 MiB per request is held in memory until written, and the
+  100-per-chat count is read before the write (two parallel uploads can pass it by one each).
+  Follow-up if abuse shows: per-account quota and limiter.
+- Without Postgres, bindings and ledger rows live in memory; after a restart old uploads are
+  unreadable and not deleted with their chat (bucket lifecycle rule remains the backstop).
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

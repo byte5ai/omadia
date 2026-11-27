@@ -239,7 +239,7 @@ that date.
 | 0175 | [An MCP OAuth flow completes only in the session of the user who started it; authorize URLs never reach model text](0175-mcp-oauth-callback-completes-only-for-the-starter.md) | Accepted | 2026-11-26 |
 | 0176 | [A signed download link is bound to the route that issued it](0176-signed-download-links-are-bound-to-their-route.md) | Accepted | 2026-11-26 |
 | 0177 | [Files and diagrams a tool produces are delivered only with the turn that produced them](0177-tool-outputs-are-delivered-per-turn.md) | Accepted | 2026-11-26 |
-| 0178 | [Stored attachments come only from channel adapters, as structured data, and are bound to their conversation at upload](0178-attachments-come-only-from-channel-adapters-and-bind-at-upload.md) | Accepted | 2026-11-26 |
+| 0178 | [Stored attachments come only from channel adapters, as structured data, and are bound to their conversation at upload](0178-attachments-come-only-from-channel-adapters-and-bind-at-upload.md) | Accepted — refined in part by [0310](0310-web-chat-uploads-are-stated-by-the-kernel-route-that-stored-them.md) | 2026-11-26 |
 | 0180 | [A web chat belongs to the account that created it; legacy chats go to the only account or to nobody](0180-web-chats-belong-to-the-creating-account.md) | Accepted | 2026-11-26 |
 | 0181 | [A new memory belongs to its saver; sharing goes only through add-owner, to real users](0181-a-new-memory-belongs-to-its-saver.md) | Accepted | 2026-11-26 |
 | 0182 | [Web chat, web routines and Public API turns carry an origin built from the account or API key](0182-web-and-api-turns-carry-an-account-or-key-origin.md) | Accepted | 2026-11-26 |

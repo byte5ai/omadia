@@ -70,6 +70,7 @@ export const ROUTES: Readonly<Record<string, Classification>> = {
   'src/index.ts USE /api/v1/operator/mcp-oauth/callback createOptionalSession': none(INFRA),
 
   // Per-person memory routes.
+  'src/index.ts USE /api createChatUploadsRouter': none('#2336 (ADR-0310) — stores and deletes the session user\'s own uploads to their own chat (ledger rows of that account and chat only); reads no memory'),
   'src/index.ts USE /api createChatRouter': viewer('chat turns: recall, tools and the stream bounded to the turn\'s viewer', TURN_SWEEP, 'client-stream'),
   'src/index.ts USE /api/chat createChatSessionsRouter': viewer('lists and reads only the session user\'s own chats (#1762)', HTTP_SWEEP, 'GET /api/chat/sessions'),
   'src/index.ts USE /api/v1/memory createMemoryRouter': viewer('memorable knowledge read with the session user as viewer', HTTP_SWEEP, 'GET /api/v1/memory'),

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted — refined in part by [ADR-0310](0310-web-chat-uploads-are-stated-by-the-kernel-route-that-stored-them.md)
+(the web chat's kernel route states uploads from keys a request names, checked against their binding)
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (wave 5, W00 security fast track; issues #1960, #1962)

@@ -7,8 +7,10 @@ Proposed
 - **Date:** 2026-11-27
 - **Deciders:** Owner decision of 2026-11-27 (the web chat gets file uploads like Teams and
   Telegram), shaped by recommendation in wave 7, W41 (#2336, rest of #1985); reversible.
-- **Supersedes:** —; applies [ADR-0178](0178-attachments-come-only-from-channel-adapters-and-bind-at-upload.md)
-  to the web chat, which has no channel plugin
+- **Supersedes:** refines in part [ADR-0178](0178-attachments-come-only-from-channel-adapters-and-bind-at-upload.md):
+  its rule "HTTP routes never fill `storedAttachments` from a request" gets one exception, the
+  web chat's own routes, which accept only keys their upload route stored and bound to the
+  same chat; every other rule of ADR-0178 applies unchanged
 
 ## Context and Problem Statement
 
