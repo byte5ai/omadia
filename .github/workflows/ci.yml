@@ -388,7 +388,11 @@ jobs:
           # contract after migrations (memoryAccess/aclAfterMigrations.pg, 3
           # tests, step 4d) and the lifecycle invariants (memoryAccess/
           # lifecycle*.pg, 11 tests, step 5).
-          PG_TEST_FLOOR: '847'
+          # 847 → 858 with the canary sweep's raw-tool-result check (memory-ACL
+          # step 6), which adds known-leak todos for #2333 and #2334 to
+          # canarySweepOff.pg and canarySweepEnforce.pg. Re-pinned to the
+          # measured total: ran=858 (4 todo) on 5ddf9cbf plus step 6.
+          PG_TEST_FLOOR: '858'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
