@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Fix — an undecided answer's disclosure line follows the user message (#2367, ADR-0331) (2026-11-27)
+
+The short English routine answer "It's 4:42 PM … on Friday, …" got the German AI-disclosure
+line: it has two English function words, below ADR-0320's minimum, and the operator default is
+German. The line's language is now the answer's, else the language of the turn's user message
+(a routine's prompt), else `ai_disclosure_locale` (`disclosureLocaleOf`,
+`disclosureForChannel(channelKind, answer, userMessage)`). `detectAnswerLocale` also decides a
+text with two function words of one language and none of the other.
+
 ### Fix — a new web chat id must be lower case (#2361, ADR-0330) (2026-11-27)
 
 A client-chosen web chat id `ABC` folded to the transcript directory and graph key of a chat

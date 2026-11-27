@@ -127,3 +127,34 @@ describe('the disclosure line follows the answer language (#2353, ADR-0320)', ()
     assert.ok(de.text.endsWith(DE_LINE), de.text);
   });
 });
+
+describe('an undecided answer follows the user message (#2367, ADR-0331)', () => {
+  const SHORT_EN = "It's 4:42 PM (Europe/Berlin) on Friday, November 27, 2026.";
+
+  it('decides a short text that shows only one language', () => {
+    assert.equal(detectAnswerLocale(SHORT_EN), 'en');
+    assert.equal(detectAnswerLocale('Es ist 16:42 Uhr.'), undefined);
+    assert.equal(detectAnswerLocale('Wie spät ist es?'), 'de');
+    assert.equal(detectAnswerLocale('Anna Schmidt'), undefined);
+    // Single letters are labels as often as words (review of #2367).
+    assert.equal(detectAnswerLocale('Raum A, Gebäude A'), undefined);
+    assert.equal(detectAnswerLocale('Klasse I, Typ A'), undefined);
+  });
+
+  it('the short English routine answer gets the English line', async () => {
+    const result = await orchestratorAnswering(SHORT_EN).chat({ userMessage: 'Tell me the time.' });
+    assert.ok(result.text.endsWith(EN_LINE), result.text);
+  });
+
+  it('an undecided answer takes the language of the user message before the operator locale', async () => {
+    const en = await orchestratorAnswering('42').chat({ userMessage: 'How many are there?' });
+    assert.ok(en.text.endsWith(EN_LINE), en.text);
+    const de = await orchestratorAnswering('42', 'en').chat({ userMessage: 'Wie viele gibt es?' });
+    assert.ok(de.text.endsWith(DE_LINE), de.text);
+  });
+
+  it('the answer language still wins over the user message', async () => {
+    const result = await orchestratorAnswering(GERMAN).chat({ userMessage: 'How many are there?' });
+    assert.ok(result.text.endsWith(DE_LINE), result.text);
+  });
+});

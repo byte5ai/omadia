@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Proposed — refined by [ADR-0331](0331-an-undecided-answer-takes-the-language-of-the-user-message.md) (an undecided answer takes the user message's language)
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers (wave 7, W43; #2353; decision after recommendation, reversible)

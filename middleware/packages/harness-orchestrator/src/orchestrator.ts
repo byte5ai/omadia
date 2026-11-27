@@ -16,7 +16,7 @@ import {
 } from './answerVerbosity.js';
 import {
   DEFAULT_ANSWER_LANGUAGE,
-  detectAnswerLocale,
+  disclosureLocaleOf,
   type AnswerLanguage,
 } from './answerLanguage.js';
 import {
@@ -5336,7 +5336,13 @@ export class Orchestrator {
     input: ChatTurnInput,
     answer?: string,
   ): AiDisclosure | undefined {
-    return this.disclosureForChannel(turnChannelKind(input), answer);
+    // #2367 — the user's message decides an undecided answer's language; a
+    // call without an answer (a notice locale) keeps the operator's locale.
+    return this.disclosureForChannel(
+      turnChannelKind(input),
+      answer,
+      answer !== undefined ? input.userMessage : undefined,
+    );
   }
 
   /**
@@ -5349,13 +5355,15 @@ export class Orchestrator {
   disclosureForChannel(
     channelKind: string | undefined,
     answer?: string,
+    userMessage?: string,
   ): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
     // #2353 / ADR-0320 — the line is written in the language of the answer it
-    // is appended to (the answer follows the user, ADR-0220). The operator's
-    // `ai_disclosure_locale` decides only when the answer shows no clear
-    // German or English.
-    const locale = detectAnswerLocale(answer) ?? setup?.locale;
+    // is appended to (the answer follows the user, ADR-0220). #2367 /
+    // ADR-0331 — an undecided answer takes the language of the user's message
+    // (a routine's prompt). The operator's `ai_disclosure_locale` decides only
+    // when neither shows a clear German or English.
+    const locale = disclosureLocaleOf(answer, userMessage) ?? setup?.locale;
     // #648 — the precedence lives in ONE place now. `/health`, the boot log and
     // the operator dashboard project the same function over every channel; a
     // second copy of these rules here would let the reported posture disagree
