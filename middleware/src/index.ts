@@ -158,7 +158,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, isWebChatSessionId, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -207,6 +207,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { createChannelDeliveryContext } from './plugins/routines/routineDeliveryContext.js';
 import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
   DEV_GRAPH_PATH,
@@ -3914,6 +3915,17 @@ async function main(): Promise<void> {
       ],
       log: (msg) => console.log(msg),
     });
+    // #2316 (ADR-0279) — a channel chat's recent routine deliveries as
+    // conversation context of its turns (`conversationContext@1`, read by the
+    // orchestrator plugin per turn). The web chat reads its own document.
+    serviceRegistry.provide(
+      'conversationContext',
+      createChannelDeliveryContext({
+        store: () => routinesHandle?.store,
+        isWebChatScope: isWebChatSessionId,
+        timeZone: config.PROACTIVE_TIMEZONE,
+      }),
+    );
     // Phase 5B: publish the channel-facing surface so dynamic-imported
     // channel plugins can late-resolve all routines callbacks (capture-
     // turn, proactive-send registration, action handler, smart-card

@@ -7010,7 +7010,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
-  pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
+  pro Prozess); Zustellungs-Kontext für Kanal-Routinen von vor #2316 (ohne `origin_scope`);
   Zustellungen und Transkripte ohne Komplett-Rewrite pro Lauf (#1753, Rest); Graph-Knoten
   gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
@@ -11998,6 +11998,13 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   `ChatTurnInput.conversationContextHint` trägt den Block aus `routineDeliveriesHint`; kein
   Fast-Path-Pass-Through-Grund; maskiert wie `extraSystemHint`, aber bei Block/Fehler fällt nur
   der Block aus dem Turn (`wireConversationContextHint`, CLI `maskContextOrDrop`).
+- **Zustellungs-Kontext in Kanal-Chats (#2316, ADR-0279, Routines-Migration 0013):**
+  `routines.origin_scope` = Session-Scope des anlegenden Kanal-Turns (`manage_routine` create);
+  Kernel-Service `conversationContext@1` (`createChannelDeliveryContext`, boundary-only) liest
+  die gelieferten Läufe der Routinen des Turn-Agenten (`RoutineStore.recentDeliveriesForScope`,
+  24 h, max. 3; ein anderer Agent im selben Chat sieht sie nicht);
+  `wrapChatAgentWithConversationContext` (vor dem Fast-Path) füllt `conversationContextHint`.
+  Keine Plugin-Änderung nötig.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 

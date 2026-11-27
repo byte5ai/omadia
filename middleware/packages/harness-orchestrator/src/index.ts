@@ -1164,3 +1164,5 @@ export {
 
 // #1976 — is this turn one that can carry an upload (channel turn)?
 export { turnMayCarryUploads } from './attachmentToolAvailability.js';
+export { wrapChatAgentWithConversationContext } from './conversationContextAgent.js';
+export type { ConversationContextLookup } from './conversationContextAgent.js';

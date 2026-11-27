@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Added — routine deliveries are context in Teams, Telegram, Slack, Discord and WhatsApp chats (#2316, ADR-0279) (2026-11-27)
+
+A routine created in a channel chat now remembers that chat's session scope (routines
+migration **0013**, `routines.origin_scope`). The next turns in that chat get the routine's
+recent deliveries (24 hours, at most three) as conversation context, like the web chat
+(ADR-0244). The kernel serves them through the boundary-only `conversationContext@1`; no
+channel plugin changes. Routines created before this change get no context.
+
 ### Fixed — a routine delivery no longer disables the fast path or blocks a chat's turns (#2317, ADR-0278) (2026-11-27)
 
 The chat's recent routine deliveries now travel as `ChatTurnInput.conversationContextHint`
