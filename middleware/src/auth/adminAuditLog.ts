@@ -113,6 +113,12 @@ export type AuditAction =
   // #1347 — operator consent for a plugin's unauthenticated public paths and
   // its SQL grant. `before`/`after` carry the granted set, so the history
   // survives a revoke that DELETEs the grant row.
+  // ADR-0225 — an operator linked a channel account (Telegram, …) to an
+  // omadia account, or removed that link. The actor is the operator who
+  // offered the link; `target` is `channel_identity:<kind>:<id>`,
+  // `before`/`after` the linked `users.id`.
+  | 'channel_identity.link'
+  | 'channel_identity.unlink'
   | 'plugin.grants_change'
   // #1347 — a plugin finished its install wizard / was removed. The uninstall
   // row lists the grants that left with it.

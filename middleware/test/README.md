@@ -112,6 +112,40 @@ operator-only by design. Known leaks are listed once, in `canarySweepSuite.ts` `
 with the modes where they were confirmed; the same sighting anywhere else
 fails.
 
+Completeness guards (step 4) catch what the sweeps cannot see coming:
+
+- `surfaceInventory.test.ts` reads every mounted route, native tool and
+  `PluginContext` method from the source and fails on one missing from the
+  hand-written `surfaceClassification.ts` (`no-memory`, `viewer-scoped`,
+  `operator-only`, `dev-only`, each with a reason; a viewer-scoped entry names
+  the test that proves its filter). Classify a new surface from what its code
+  does.
+- `middleware/eslint/viewerlessGraphReads.mjs` makes knowledge-graph reads that
+  take no viewer a lint error outside an allowlist with a reason per file;
+  `viewerlessGraphReads.test.ts` checks the rule fires and no entry is stale.
+- `memoryDefaults.test.ts` pins the defaults that decide who reads what on an
+  unconfigured deployment. Change one only together with the CHANGELOG and the
+  oracle.
+- `aclAfterMigrations.pg.test.ts` writes the world into a schema migrated to
+  an older graph migration (`BASE`), applies the rest as a boot does, and runs
+  the ACL contract against `migrated()`, the world as the migrations are
+  documented to leave it. A new migration that rewrites visibility or owners
+  goes into `migrated()` by hand, from its documented intent.
+
+Lifecycle invariants (step 5) run the real jobs that change memory after it is
+written. `lifecycle.ts` seeds the world on Neon and wraps each job: the
+memorable-knowledge search is read for every viewer and mode before and after,
+and a canary someone gains without an ACL audit row from that job fails
+(`guarded`). What a job creates is checked against the oracle for an item of
+its shape (`assertOracleBounds`). `lifecycleInvariants.pg.test.ts` covers the
+jobs that write memory (identity resolution, promotion, bulk promotion, the
+scratch reaper, owner removal), `lifecycleCleanup.pg.test.ts` those that age,
+replay, merge and erase it (decay with a 90-day fake clock, backfill,
+auto-merge, the user purge of ADR-0186). `lifecycleInvariants.test.ts` runs
+random owner/edit/delete sequences with `fast-check` on the in-memory graph
+and checks that scope keys never collide. Add a new lifecycle job to one of
+the two files, inside `guarded`.
+
 The seed mints each person's omadia user id through identity resolution, as a
 login or Teams message would (`Seeded.users`); `USERS` in `world.ts` holds the
 Teams (AAD) ids. Memories list their owners in both forms, as production

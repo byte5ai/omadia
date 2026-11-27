@@ -1,6 +1,11 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
+import {
+  VIEWERLESS_GRAPH_READ_ALLOWLIST,
+  VIEWERLESS_GRAPH_READ_SELECTORS,
+} from './eslint/viewerlessGraphReads.mjs';
+
 export default tseslint.config(
   {
     ignores: ['dist/**', 'node_modules/**'],
@@ -51,6 +56,18 @@ export default tseslint.config(
     ],
     rules: {
       '@typescript-eslint/no-restricted-imports': 'off',
+    },
+  },
+  {
+    // Memory-ACL plan step 4b: no new knowledge-graph read without a viewer.
+    rules: {
+      'no-restricted-syntax': ['error', ...VIEWERLESS_GRAPH_READ_SELECTORS],
+    },
+  },
+  {
+    files: Object.keys(VIEWERLESS_GRAPH_READ_ALLOWLIST),
+    rules: {
+      'no-restricted-syntax': 'off',
     },
   },
 );

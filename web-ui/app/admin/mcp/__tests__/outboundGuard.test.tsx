@@ -87,6 +87,10 @@ describe('mcpErrors helpers', () => {
   it('recognises only the two guard codes', () => {
     expect(mcpGuardCode(apiError(400, 'POST /s', { code: 'stdio_disabled' }))).toBe('stdio_disabled');
     expect(mcpGuardCode(apiError(400, 'POST /s', { code: 'blocked_host' }))).toBe('blocked_host');
+    // #2306 — the stdio user switch failed (MCP_STDIO_RUN_AS set): a guard refusal too.
+    expect(
+      mcpGuardCode(apiError(502, 'POST /s', { code: 'stdio_isolation_unavailable' })),
+    ).toBe('stdio_isolation_unavailable');
     expect(mcpGuardCode(apiError(502, 'POST /s', { code: 'transport_failed' }))).toBeNull();
   });
 });

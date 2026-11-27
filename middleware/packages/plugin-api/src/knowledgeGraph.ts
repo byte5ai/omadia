@@ -361,6 +361,20 @@ export interface KnowledgeGraph {
     channelUserId: string,
   ): Promise<string | null>;
   /**
+   * ADR-0225 / ADR-0280 (1.107.0) — point a channel identity at another
+   * User-Cluster on an operator's decision, or back to a fresh 1:1 cluster of
+   * its own. Optional; a backend without it cannot link channel accounts.
+   *
+   * `target` set: the identity (created if missing) leaves its current cluster
+   * and joins `user:<target.omadiaUserId>`, which must exist (`user_not_found`
+   * otherwise). The node records the link as `linkedUserId` / `linkedBy` /
+   * `linkedAt`. `target` null: only a linked identity is unlinked
+   * (`not_linked` otherwise); it gets a fresh 1:1 cluster and the link props
+   * are removed. Nothing the identity wrote is moved in either direction.
+   * Kernel-only: plugins reach it through the kernel's link service.
+   */
+  linkChannelIdentity?(input: ChannelIdentityLinkInput): Promise<ChannelIdentityLinkResult>;
+  /**
    * #1843 (1.100.0) — the person's identity nodes: the `User` cluster root
    * and every `ChannelIdentity` linked to it (they carry display name and
    * e-mail). `count` 0 means no cluster with this id. Optional.
@@ -1501,7 +1515,42 @@ export interface ResolveOrCreateChannelIdentityResult {
    * whole point — that sibling is who authorized the token.
    */
   clusterAuthSubject?: { provider: string; providerUserId: string };
+  /**
+   * ADR-0225 — the `users.id` an operator linked this identity to
+   * ({@link KnowledgeGraph.linkChannelIdentity}). Absent for an identity that
+   * joined its cluster by itself (verified e-mail, AAD oid) or stands alone.
+   * The kernel reads it to run a plugin channel turn as that account.
+   */
+  linkedUserId?: string;
 }
+
+/** Payload for {@link KnowledgeGraph.linkChannelIdentity}. */
+export interface ChannelIdentityLinkInput {
+  channelKind: ChannelKind;
+  channelUserId: string;
+  /** The account to join, or `null` to unlink. */
+  target: {
+    /** Cluster root of the account (`user:<omadiaUserId>` must exist). */
+    omadiaUserId: string;
+    /** The account's `users.id`, stored as `linkedUserId`. */
+    userId: string;
+    /** `users.id` of the operator who issued the link. */
+    linkedBy?: string;
+  } | null;
+  /** Shown on a newly created identity node. */
+  displayName?: string;
+}
+
+export interface ChannelIdentityLinkResult {
+  channelIdentityNodeId: string;
+  /** The cluster the identity belongs to after the call. */
+  omadiaUserId: string;
+  /** The cluster it belonged to before; absent for a new identity. */
+  previousOmadiaUserId?: string;
+}
+
+/** The ChannelIdentity props that carry an operator link (ADR-0225). */
+export const CHANNEL_IDENTITY_LINK_PROPS = ['linkedUserId', 'linkedBy', 'linkedAt'] as const;
 
 /**
  * The ChannelIdentity node properties that carry {@link
@@ -1778,6 +1827,9 @@ export interface MemorableKnowledgePurgeFilter {
    * #1842 (1.100.0): erases that OWNER, not every entry they share. An entry
    * they own alone is deleted; an entry with other owners stays and only
    * loses them as owner (one `memory_acl_audit` `shrink` row each).
+   * #2279: the owner is every id of the person, as for
+   * {@link ConversationHistoryPurgeFilter.userId}: the omadia user id plus
+   * each channel identity's `<kind>:<id>` and AAD object id.
    */
   aclOwner?: string;
   /** Actor of the `shrink` audit rows an `aclOwner` purge writes. Default:

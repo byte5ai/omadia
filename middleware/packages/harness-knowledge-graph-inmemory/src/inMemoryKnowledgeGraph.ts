@@ -26,6 +26,9 @@ import {
   canonicalOwners,
   ownersCoverAudience,
   type ChannelIdentityIngest,
+  type ChannelIdentityLinkInput,
+  type ChannelIdentityLinkResult,
+  CHANNEL_IDENTITY_LINK_PROPS,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
   type DatasetColumnType,
@@ -1005,6 +1008,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           isNewIdentity: false,
           isNewCluster: false,
           ...this.clusterAuthSubject(cluster.id),
+          ...linkedUserIdOf(existing.props),
         };
       }
     }
@@ -1126,6 +1130,96 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     };
   }
 
+  /** ADR-0225 — see {@link KnowledgeGraph.linkChannelIdentity}. */
+  async linkChannelIdentity(input: ChannelIdentityLinkInput): Promise<ChannelIdentityLinkResult> {
+    const identityExtId = channelIdentityNodeId(input.channelKind, input.channelUserId);
+    const now = new Date().toISOString();
+    const existing = this.nodes.get(identityExtId);
+    const identity = existing && existing.type === 'ChannelIdentity' ? existing : undefined;
+    const previousCluster = identity ? this.identityClusterOf(identity.id) : undefined;
+
+    if (input.target === null) {
+      if (!identity || typeof identity.props['linkedUserId'] !== 'string') {
+        throw Object.assign(new Error('not_linked'), { code: 'not_linked' });
+      }
+      const omadiaUserId = randomUUID();
+      const clusterId = userNodeId(omadiaUserId);
+      this.upsertNode({
+        id: clusterId,
+        type: 'User',
+        props: {
+          omadiaUserId,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          ...(typeof identity.props['displayName'] === 'string'
+            ? { displayName: identity.props['displayName'] }
+            : {}),
+        },
+      });
+      this.nodes.set(identity.id, { ...identity, props: withoutLinkProps(identity.props) });
+      this.moveIdentity(identity.id, clusterId);
+      return {
+        channelIdentityNodeId: identityExtId,
+        omadiaUserId,
+        ...(previousCluster ? { previousOmadiaUserId: previousCluster.omadiaUserId } : {}),
+      };
+    }
+
+    const clusterId = userNodeId(input.target.omadiaUserId);
+    const cluster = this.nodes.get(clusterId);
+    if (!cluster || cluster.type !== 'User') {
+      throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+    }
+    const linkProps = {
+      linkedUserId: input.target.userId,
+      linkedAt: now,
+      ...(input.target.linkedBy ? { linkedBy: input.target.linkedBy } : {}),
+    };
+    if (identity) {
+      this.nodes.set(identity.id, {
+        ...identity,
+        props: { ...withoutLinkProps(identity.props), ...linkProps, lastSeenAt: now },
+      });
+    } else {
+      this.upsertNode({
+        id: identityExtId,
+        type: 'ChannelIdentity',
+        props: {
+          channelKind: input.channelKind,
+          channelUserId: input.channelUserId,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          ...(input.displayName ? { displayName: input.displayName } : {}),
+          ...linkProps,
+        },
+      });
+    }
+    this.moveIdentity(identityExtId, clusterId);
+    return {
+      channelIdentityNodeId: identityExtId,
+      omadiaUserId: input.target.omadiaUserId,
+      ...(previousCluster ? { previousOmadiaUserId: previousCluster.omadiaUserId } : {}),
+    };
+  }
+
+  /** The User-Cluster an identity node belongs to. */
+  private identityClusterOf(identityId: string): { id: string; omadiaUserId: string } | undefined {
+    const link = [...this.edges.values()].find(
+      (e) => e.type === 'IS_IDENTITY_OF' && e.from === identityId,
+    );
+    const cluster = link ? this.nodes.get(link.to) : undefined;
+    if (!cluster || cluster.type !== 'User') return undefined;
+    return { id: cluster.id, omadiaUserId: String(cluster.props['omadiaUserId'] ?? '') };
+  }
+
+  /** Replaces every IS_IDENTITY_OF edge of the identity by one to `clusterId`. */
+  private moveIdentity(identityId: string, clusterId: string): void {
+    for (const [key, edge] of this.edges) {
+      if (edge.type === 'IS_IDENTITY_OF' && edge.from === identityId) this.edges.delete(key);
+    }
+    this.addEdge({ type: 'IS_IDENTITY_OF', from: identityId, to: clusterId });
+  }
+
   /**
    * The IdP subject of the cluster's most recently seen authenticating
    * identity — issue #568. Spread into the result, so a cluster with no
@@ -1179,6 +1273,21 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     let skippedRequired = 0;
     let skippedDerivedFrom = 0;
 
+    // DERIVED_FROM targets — Turn nodes only. #2278: a MK derived from an
+    // unprotected Turn is stamped itself, so it stays skipped under a shield
+    // after the Turn (and its edge) is deleted. Like Neon.
+    const derivedTurns: GraphNode[] = [];
+    for (const turnExtId of input.derivedFromTurnIds ?? []) {
+      const node = this.nodes.get(turnExtId);
+      if (!node || node.type !== 'Turn') {
+        skippedDerivedFrom++;
+        continue;
+      }
+      derivedTurns.push(node);
+    }
+    const unprotected =
+      input.unprotected === true || derivedTurns.some((t) => t.props['unprotected'] === true);
+
     const initialOwners = input.aclOwners ?? [];
     this.upsertNode({
       id: mkExtId,
@@ -1200,7 +1309,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           : {}),
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
         // #1536 — holds values no shield masked; recall under a shield skips it.
-        ...(input.unprotected === true ? { unprotected: true } : {}),
+        ...(unprotected ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -1243,13 +1352,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       this.addEdge({ type: 'REQUIRES', from: mkExtId, to: entityExtId });
     }
 
-    for (const turnExtId of input.derivedFromTurnIds ?? []) {
-      const node = this.nodes.get(turnExtId);
-      if (!node || node.type !== 'Turn') {
-        skippedDerivedFrom++;
-        continue;
-      }
-      this.addEdge({ type: 'DERIVED_FROM', from: mkExtId, to: turnExtId });
+    for (const turn of derivedTurns) {
+      this.addEdge({ type: 'DERIVED_FROM', from: mkExtId, to: turn.id });
     }
 
     // Slice 6.5 — atomic excerpt persistence. Mirrors NeonKnowledgeGraph.
@@ -1575,6 +1679,26 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   }
 
   /**
+   * #1843 / #2279 — every id a person's rows may carry. Mirrors Neon
+   * `personIdsSql`: the omadia user id, plus the AAD object id (a Teams turn's
+   * `userId`, the owner Teams auto-promotion writes) and the `<kind>:<id>` (a
+   * channel turn's `userId`) of each of their channel identities.
+   */
+  private personIds(omadiaUserId: string): Set<string> {
+    const ids = new Set<string>([omadiaUserId]);
+    const userNode = userNodeId(omadiaUserId);
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'IS_IDENTITY_OF' || edge.to !== userNode) continue;
+      const identity = this.nodes.get(edge.from);
+      if (identity?.type !== 'ChannelIdentity') continue;
+      const aad = identity.props['aadObjectId'];
+      if (typeof aad === 'string') ids.add(aad);
+      ids.add(identity.id);
+    }
+    return ids;
+  }
+
+  /**
    * True when an MK node matches a Danger-Zone purge filter. The
    * in-memory store is single-tenant, so `filter.tenantId` is accepted
    * for interface parity but not matched against (every node is in the
@@ -1583,6 +1707,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   private matchesMkPurgeFilter(
     node: GraphNode,
     filter: MemorableKnowledgePurgeFilter,
+    owners: ReadonlySet<string> | undefined,
   ): boolean {
     if (node.type !== 'MemorableKnowledge') return false;
     if (
@@ -1591,32 +1716,31 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     ) {
       return false;
     }
-    if (filter.aclOwner !== undefined) {
-      const owners = Array.isArray(node.props['acl_owners'])
-        ? (node.props['acl_owners'] as string[])
-        : [];
-      if (!owners.includes(filter.aclOwner)) return false;
-    }
+    if (owners !== undefined && !ownersOf(node).some((id) => owners.has(id))) return false;
     return true;
   }
 
   /**
    * #1842 — split a purge selection: with `aclOwner`, an entry that has
    * another owner is de-owned, only entries the person owns alone go.
+   * `personIds` is every id of the `aclOwner` (#2279).
    */
   private memorableKnowledgePurgeSets(filter: MemorableKnowledgePurgeFilter): {
     remove: GraphNode[];
     deown: GraphNode[];
+    personIds: ReadonlySet<string>;
   } {
+    const personIds =
+      filter.aclOwner !== undefined ? this.personIds(filter.aclOwner) : undefined;
     const remove: GraphNode[] = [];
     const deown: GraphNode[] = [];
     for (const node of this.nodes.values()) {
-      if (!this.matchesMkPurgeFilter(node, filter)) continue;
+      if (!this.matchesMkPurgeFilter(node, filter, personIds)) continue;
       const shared =
-        filter.aclOwner !== undefined && ownersOf(node).some((id) => id !== filter.aclOwner);
+        personIds !== undefined && ownersOf(node).some((id) => !personIds.has(id));
       (shared ? deown : remove).push(node);
     }
-    return { remove, deown };
+    return { remove, deown, personIds: personIds ?? new Set() };
   }
 
   private excerptIdsOf(mkIds: ReadonlySet<string>): string[] {
@@ -1641,11 +1765,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   async purgeMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
   ): Promise<MemorableKnowledgePurgeResult> {
-    const { remove, deown } = this.memorableKnowledgePurgeSets(filter);
+    const { remove, deown, personIds } = this.memorableKnowledgePurgeSets(filter);
     const removedUser = filter.aclOwner !== undefined ? userNodeId(filter.aclOwner) : undefined;
     for (const node of deown) {
       const before = ownersOf(node);
-      const after = before.filter((id) => id !== filter.aclOwner);
+      const after = before.filter((id) => !personIds.has(id));
       // ADR-0181 — like removeOwner: the entry leaves the person's list too.
       for (const [key, edge] of this.edges.entries()) {
         if (edge.type === 'INVOLVED' && edge.from === node.id && edge.to === removedUser) {
@@ -1740,19 +1864,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const scope = node.props['scope'];
       return typeof scope === 'string' && matchesAgentScopePrefix(scope, prefix);
     };
-    // The omadia user id plus the AAD ids of its channel identities: a Teams
-    // Turn stores the AAD id, its Run the omadia id.
     const userNode = filter.userId !== undefined ? userNodeId(filter.userId) : undefined;
-    const userIds = new Set<unknown>();
-    if (filter.userId !== undefined && userNode !== undefined) {
-      userIds.add(filter.userId);
-      for (const identity of sources(userNode, 'IS_IDENTITY_OF')) {
-        const aad = this.nodes.get(identity)?.props['aadObjectId'];
-        if (typeof aad === 'string') userIds.add(aad);
-        // #1843 — a channel turn stores the identity's `<kind>:<id>`.
-        userIds.add(identity);
-      }
-    }
+    const userIds: ReadonlySet<unknown> =
+      filter.userId !== undefined ? this.personIds(filter.userId) : new Set();
     const userMatches = (node: GraphNode): boolean =>
       userNode === undefined ||
       userIds.has(node.props['userId']) ||
@@ -4047,4 +4161,16 @@ function resolvedByOf(actor: AclMutationOptions): string | null {
 /** An audience that canonicalises to no owner matches nothing (mirrors Neon's `EMPTY_AUDIENCE`). */
 function isEmptyAudience(audience: readonly string[] | undefined): boolean {
   return audience !== undefined && canonicalOwners(audience).length === 0;
+}
+
+/** `{ linkedUserId }` when the identity carries an operator link (ADR-0225). */
+function linkedUserIdOf(props: Record<string, unknown>): { linkedUserId?: string } {
+  const linked = props['linkedUserId'];
+  return typeof linked === 'string' && linked !== '' ? { linkedUserId: linked } : {};
+}
+
+/** The props without the operator-link keys. */
+function withoutLinkProps(props: Record<string, unknown>): Record<string, unknown> {
+  const drop = new Set<string>(CHANNEL_IDENTITY_LINK_PROPS);
+  return Object.fromEntries(Object.entries(props).filter(([key]) => !drop.has(key)));
 }

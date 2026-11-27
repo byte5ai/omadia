@@ -5608,6 +5608,7 @@
       "transportDeprecated": "Veraltet",
       "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
       "stdioHint": "Ein stdio-Server läuft als Prozess im Middleware-Container, unter dem Benutzer der Middleware. Seine eigene Umgebung ist minimal, er kann aber die Umgebung und das Datenverzeichnis der Middleware lesen, darunter VAULT_KEY und DATABASE_URL, und damit jedes gespeicherte Secret. Füge nur Befehle hinzu, denen du vertraust. Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
+      "stdioHintIsolated": "Ein stdio-Server läuft als Prozess im Middleware-Container, unter einem eigenen OS-Benutzer. Er bekommt keine Umgebung der Middleware und kann weder ihr Datenverzeichnis noch ihre Secrets lesen. Alle stdio-Server teilen sich diesen einen Benutzer: Ein stdio-Server kann die Konfigurationswerte und Dateien der anderen stdio-Server lesen. Netz und CPU des Containers teilt er ebenfalls. Füge nur Befehle hinzu, denen du vertraust. Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
       "showDeprecatedTransports": "Veraltete Transports anzeigen",
       "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
@@ -5770,6 +5771,7 @@
       "browseOnlyHint": "Dieser Registry-Eintrag hat keinen verbindbaren Endpoint — er verweist nur auf die Quelle (ein selbst gehosteter Server). Hoste ihn selbst und füge ihn dann manuell über „Server hinzufügen\" hinzu.",
       "authHintRemote": "🔒 braucht evtl. Autorisierung",
       "authHintLocal": "lokal (stdio): läuft in der Middleware und kann ihre Secrets lesen",
+      "authHintLocalIsolated": "lokal (stdio): eigener Benutzer, geteilt mit anderen stdio-Servern",
       "addRegistry": "Registry hinzufügen",
       "addRegistryConfirm": "Registry hinzufügen",
       "removeRegistry": "Registry entfernen",
@@ -5871,7 +5873,8 @@
     },
     "guard": {
       "blockedHost": "Diese Adresse ist aus Sicherheitsgründen gesperrt. Ein MCP-Server oder eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen; private und Intranet-Adressen sind erlaubt. Ändere die URL. Grund: {detail}",
-      "stdioDisabled": "stdio-MCP-Server sind auf dieser Installation deaktiviert (MCP_STDIO_ENABLED=false). Nutze stattdessen einen Remote-Server (http) oder setze MCP_STDIO_ENABLED=true für die Middleware und starte sie neu. Grund: {detail}"
+      "stdioDisabled": "stdio-MCP-Server sind auf dieser Installation deaktiviert (MCP_STDIO_ENABLED=false). Nutze stattdessen einen Remote-Server (http) oder setze MCP_STDIO_ENABLED=true für die Middleware und starte sie neu. Grund: {detail}",
+      "stdioIsolationUnavailable": "stdio-MCP-Server müssen auf dieser Installation unter einem eigenen OS-Benutzer laufen (MCP_STDIO_RUN_AS), der Benutzerwechsel funktioniert aber nicht, deshalb wurde kein Prozess gestartet. Behebe den Wechsel: Das Image braucht sudo, den Benutzer und seine sudoers-Regel, und der Container muss setuid erlauben (kein `no-new-privileges`). Nur als bewusste letzte Möglichkeit MCP_STDIO_RUN_AS leer setzen: stdio-Server laufen dann unter dem Benutzer der Middleware und können jedes gespeicherte Secret lesen. Grund: {detail}"
     },
     "addModal": {
       "title": "MCP-Server verbinden",

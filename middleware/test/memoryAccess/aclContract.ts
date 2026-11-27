@@ -65,8 +65,8 @@ export function turnSearchOptions(
   return { ...base, teamVisibility: settings.teamVisibility };
 }
 
-const CANARY = /CANARY-[A-Z]+-\d{5}Z/g;
-const canariesIn = (text: string): string[] => text.match(CANARY) ?? [];
+export const CANARY = /CANARY-[A-Z]+-\d{5}Z/g;
+export const canariesIn = (text: string): string[] => text.match(CANARY) ?? [];
 
 interface Mismatch {
   readonly viewer: string;
@@ -88,7 +88,7 @@ function report(count: number, mismatches: readonly Mismatch[]): string {
  * Viewers worth querying: every main-tenant viewer, plus one from the other
  * tenant (it reads its own graph, so a main canary there is a tenant leak).
  */
-function contractViewers(): Viewer[] {
+export function contractViewers(): Viewer[] {
   const all = allViewers();
   return [
     ...all.filter((v) => v.tenant === 'main'),
@@ -106,7 +106,7 @@ const LIMIT = 50;
  * queried groups scores exactly 0 and one inside scores 1/√k for k groups.
  * 0.1 admits every member up to k = 100; the world has 30 groups.
  */
-const MIN_SIMILARITY = 0.1;
+export const MIN_SIMILARITY = 0.1;
 
 function batchVector(groups: readonly number[]): number[] {
   const v = axis(groups[0]!);
@@ -142,7 +142,7 @@ async function search(
  * be truncated, so the groups are split in half and asked again; a single
  * group (≤ 27 items) never reaches the cap.
  */
-async function admittedIn(
+export async function admittedIn(
   seeded: Seeded,
   v: Viewer,
   store: ContractStore,

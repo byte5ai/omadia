@@ -1722,6 +1722,36 @@ Not part of this change: channel-teams still uses its own copy of the verifier
 "Expose an API" setup (`access_as_user` scope, Teams client pre-authorization)
 on the bot's app registration.
 
+## 5b-2. Channel accounts linked to omadia accounts (#1995, ADR-0225, ADR-0280)
+
+A linked channel account (Telegram today) runs its turns as the omadia account: the account's
+cluster id, principal and IdP subject, so also its `per_user` MCP tokens. What guards that:
+
+- **Only an operator creates a link.** `CoreApi.channelIdentityLinks.offerLink` resolves the
+  operator from the session cookie of the plugin's admin request (same path as
+  `ctx.operatorAuth`); the plugin never names the actor. The account must be active.
+- **The person proves control of the channel account.** The offer is single-use, lives at most
+  15 minutes, and is redeemed with the sender the platform attested (Telegram `/start <token>`).
+- **Per plugin.** Offer, redeem, `linkOf` and unlink refuse a channel type the calling plugin
+  does not hold (`ChannelTypeClaims`); `web` and `api` cannot be linked.
+- **Audited before it changes anything.** `channel_identity.link` (actor: the offering
+  operator) and `channel_identity.unlink` (actor: the session) go to `admin_audit` first;
+  without an audit store no offer is made.
+- **Kernel-only graph write.** `KnowledgeGraph.linkChannelIdentity` is `kernel-only` in the
+  bounded graph services (ADR-0044).
+
+Accepted residual risks (ADR-0280):
+
+- **Turn attestation stays the channel plugin's.** The turn path reads the link from the
+  identity a plugin channel turn states through `origin` + `userId`. The kernel does not check
+  that the calling plugin holds `origin.channelType`, exactly as it already trusts a channel's
+  `userRef` for Teams identities (`handleTurnStream`, see the `mcpUserKey` comment in
+  `orchestrator.ts`). A malicious installed channel plugin could therefore speak as a linked
+  account. Follow-up #2324: stamp or check the origin channel type per plugin in the kernel.
+- **Disabling an account does not unlink it.** Its linked channel accounts keep running as the
+  account (and its `per_user` keys) until an operator unlinks them in the channel's admin UI.
+  The user purge (ADR-0186) removes linked identities with the cluster.
+
 ## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
 
 Since #983 an orchestrator refuses a domain tool whose plugin is not in its
@@ -2802,9 +2832,13 @@ none.
 Content derived from such a turn follows it (#1536). Under a shield the
 memory, excerpt and durable recall legs skip a MemorableKnowledge stamped
 `unprotected` (`MemorableKnowledgeIngest.unprotected`) or linked by
-`DERIVED_FROM` to an `unprotected` Turn; the edge check also covers
-auto-promoted memories stored before the stamp existed (raw MCP results and
-rule promotions stored before it carry neither and stay recallable). The stamp is written where no edge can carry
+`DERIVED_FROM` to an `unprotected` Turn. `createMemorableKnowledge` stamps a
+memory itself when one of its `derivedFromTurnIds` is `unprotected`, and graph
+migration `0039_memorable_knowledge_unprotected_from_turn` stamped the existing
+ones (#2278): the edge goes when the Turn is deleted (user purge, history
+purge), and a memory marked by the edge alone then reached shielded turns.
+Raw MCP results and rule promotions stored before the stamp existed carry
+neither and stay recallable. The stamp is also written where no edge can carry
 it: a bypassed MCP result ingested into the graph (epic #459), and a `_rules/`
 file the durable-rules hook promotes from a turn without a shield or with a
 bypassed tool (no turn context reads as unprotected). As with turns, an
@@ -7415,10 +7449,13 @@ leave a record of who did it.
   known channel identity (a Telegram user without an account); the response
   names the resolved id (`resolvedUser`, warning `user_selector_resolved`), and
   a uuid nobody has gets `user_unknown` instead of a silent "nothing to
-  delete". Turns are matched by the identity's `<kind>:<id>` too. A remembered
-  fact the person owns alone is deleted with its excerpts; one shared with
-  other owners only loses the person (a `memory_acl_audit` `shrink` row with
-  the operator as actor). With a resolved person the purge also deletes their
+  delete". Turns and remembered facts are matched by every id of the person:
+  the omadia user id, each channel identity's `<kind>:<id>` and its AAD object
+  id (a Teams turn stores it, and Teams auto-promotion owns a memory by it,
+  #2279). A remembered fact the person owns alone, under any of those ids, is
+  deleted with its excerpts; one shared with other owners only loses all of
+  the person's ids (a `memory_acl_audit` `shrink` row with the operator as
+  actor). With a resolved person the purge also deletes their
   datasets, the processes they created (`processes.created_by_omadia_user_id`,
   migration 0038; processes stored before it have no creator and are not
   selected) and their `User` / `ChannelIdentity` nodes (name, e-mail) — last,
@@ -7531,18 +7568,51 @@ placeholder deletes its Vault secret. A secret placed in the endpoint URL can
 still be quoted by an upstream or transport error message; a header avoids
 that. Deleting a server deletes its config secrets.
 
-**stdio trust model (ADR-0211, #1914).** For transport `stdio` the endpoint is
-a command line. The middleware splits it and starts it as its own child
-process, so it runs as the middleware's OS user with the same filesystem and
-network access. Its own environment is minimal (the SDK defaults plus the
-server's config values), but that is not a boundary: the middleware is PID 1
-under the same user, so the child can read `/proc/1/environ` (`VAULT_KEY`,
-`CREDENTIAL_KEYCHAIN_KEY`, `DATABASE_URL`, provider keys) and the data
-directory (`/data/.dev-vault.key` when no `VAULT_KEY` is set). With those it
-can decrypt every stored secret. A stdio server is therefore inside the
-middleware's trust domain; for a command the admin typed that is the admin's
-own power, for a catalog entry it is third-party npm code with the same
-access. The add-server form and the catalog card of a stdio entry say so.
+**stdio trust model (ADR-0211, #1914; ADR-0270, #2306).** For transport `stdio`
+the endpoint is a command line. The middleware splits it and starts it as its
+own child process. The child never inherits the middleware's environment: it
+gets the MCP SDK's safe base (HOME, LOGNAME, PATH, SHELL, TERM, USER), the
+locale variables `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ` and the server's own config
+values (`stdioLaunch`).
+
+With `MCP_STDIO_RUN_AS` set (the container image sets `omadia-mcp`), the child
+is started through `sudo -n -E -H -u omadia-mcp --`. The sudoers rule
+(`/etc/sudoers.d/omadia-mcp`) lets `node` start commands as that user only,
+never as root; `SETENV` lets the config env pass through `execve`, never on the
+command line, which every user can read. The child runs under its own UID with
+its own home (`/home/omadia-mcp`, `0700`), so it cannot read the middleware's
+`/proc/<pid>/environ` (`VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY`, `DATABASE_URL`,
+provider keys), and the entrypoint keeps `/data` at `0700` owned by `node` on
+every start, so the Vault, the dev vault key, uploads and CLI logins are closed
+to it. Before the first stdio spawn the connect guard probes the switch
+(`sudo … -- true`); if it fails, the connect is refused with
+`stdio_isolation_unavailable` and nothing is started. There is no fallback to
+the middleware's user.
+
+Each server gets its own npm cache (`$HOME/.npm-cache/<hash of the server id>`,
+created under `umask 077` by a small `/bin/sh` shim between sudo and the
+server). That separates caches, not servers: all stdio children share the one
+run-as UID, so a hostile stdio server can read the other stdio servers'
+`/proc/<pid>/environ` (their config values, Vault secrets of their rows
+included), files and caches (accepted in ADR-0270; one UID per server is the
+follow-up). `/home/node` is `0700` too. On Fly the entrypoint sets the Machines
+API socket `/.fly/api` to `0600` when it is present (open check: not verified
+live).
+
+What stays shared, accepted in ADR-0270: the container's network namespace
+(Postgres, sidecars and the middleware's own port on loopback are reachable,
+without their credentials), CPU and memory, and `/proc` without `hidepid`
+(other processes' command lines are visible; they carry no secrets). A
+deployment that wants more can remount `/proc` with `hidepid=2` or restrict the
+network on the host side.
+
+Without `MCP_STDIO_RUN_AS` (from-source runs, the desktop app) the child runs
+as the middleware's OS user, and the ADR-0211 trust model holds: it can read
+`/proc/1/environ` and the data directory and so every stored secret. For a
+command the admin typed that is the admin's own power; for a catalog entry it
+is third-party npm code with the same access. The add-server form and the
+catalog card of a stdio entry say which of the two models applies
+(`stdioIsolated` in `GET /api/v1/operator/mcp-servers`).
 Catalog imports only write
 `npx -y -- <package>` and check the package name against a strict npm-name
 grammar (`NPM_NAME_RE`); a manual entry accepts any command. Saving a stdio
@@ -7579,10 +7649,14 @@ who wants stdio servers sets `true` in `middleware/.env` (ADR-0211).
 - With stdio on, an admin can run any command in the middleware container.
   Restricting manual stdio entries to the catalog grammar unless the operator
   opts in to free command lines is deferred.
-- With stdio on, every stdio server (and every catalog package it pulls) can
-  read the middleware's keys and so every stored secret (accepted, ADR-0211).
-  Isolating stdio children (separate UID, hidden `/proc`, no `/data`) is the
-  open follow-up.
+- With stdio on and `MCP_STDIO_RUN_AS` unset (from-source, desktop), every
+  stdio server (and every catalog package it pulls) can read the middleware's
+  keys and so every stored secret (accepted, ADR-0211). The container image
+  runs stdio children as `omadia-mcp` instead (ADR-0270); they keep the
+  container's network and an unhidden `/proc`, and they share that one user,
+  so stdio servers can read each other's config values.
+- Fly: whether `/.fly/api` (Machines API socket) is present and reachable by a
+  non-root user is an open check; the entrypoint restricts it when present.
 ## 10q. The admin audit trail: one actor rule, one read route (#1315, #1347)
 
 `admin_audit` is append-only; nothing in the code updates or deletes a row.

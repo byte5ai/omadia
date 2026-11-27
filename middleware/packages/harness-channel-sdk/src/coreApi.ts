@@ -10,6 +10,7 @@ import type { ConversationSendProvider } from './conversationSend.js';
 import type { AgentIdentityProvider, DefaultChannelKeyProvider } from './agentIdentity.js';
 import type { ConversationMessageEvent } from './conversationMessage.js';
 import type { AttachmentReadResult } from './outgoing.js';
+import type { ChannelIdentityLinks } from './channelIdentityLinks.js';
 import type {
   ChannelReadinessProvider,
   MeetingSourceProvider,
@@ -329,4 +330,11 @@ export interface CoreApi {
    * event, the kernel drops what no subscribed engine listens for.
    */
   emitSessionEvent?(event: SessionEvent): void;
+
+  /**
+   * ADR-0225 — link a channel account to an omadia account through the
+   * kernel (channel-sdk 0.3.19). Optional — feature-detect; without it a
+   * channel must not claim a link ("allowed to chat", never "connected as").
+   */
+  channelIdentityLinks?: ChannelIdentityLinks;
 }
