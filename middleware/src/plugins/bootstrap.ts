@@ -18,6 +18,7 @@ import type { InstalledAgent, InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
+import { applyEnvSeeds, type EnvSeed } from './envSeededConfig.js';
 
 const DIAGRAMS_TOOL_ID = '@omadia/diagrams';
 const OFFICE_TOOL_ID = '@omadia/plugin-office';
@@ -119,6 +120,11 @@ export interface BootstrapDeps {
    * like `onPluginRemoved`). A throwing hook is logged, never fatal.
    */
   onPluginInstalled?: (pluginId: string) => void;
+  /**
+   * #1858 — raw environment, to tell a SET variable from a schema default
+   * (ADR-0193). Absent → `process.env`.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** #1481 — true (and logged) when the operator uninstalled this built-in. */
@@ -505,6 +511,63 @@ async function migrateAnthropicKeyToCanonical(
 // Memory (extension-kind built-in, no secrets → always auto-install)
 // ---------------------------------------------------------------------------
 
+type MemoryBackendChoice = 'postgres' | 'inmemory';
+
+/** The operator's saved backend choice, read from whichever memoryStore
+ *  provider entry carries it. `undefined` when no valid choice is saved. */
+function persistedMemoryBackend(
+  deps: BootstrapDeps,
+): MemoryBackendChoice | undefined {
+  const raw =
+    (deps.registry.get(MEMORY_POSTGRES_ID)?.config?.['memory_backend'] as
+      | string
+      | undefined) ??
+    (deps.registry.get(MEMORY_TOOL_ID)?.config?.['memory_backend'] as
+      | string
+      | undefined);
+  return raw === 'postgres' || raw === 'inmemory' ? raw : undefined;
+}
+
+/**
+ * Resolve the effective memory backend for this boot.
+ *
+ * Precedence:
+ *   1. Persisted operator choice (set via the admin UI, stored as
+ *      `memory_backend` config on the active provider's registry entry) wins —
+ *      so a UI switch survives every restart even when the container env
+ *      disagrees. The boot carries the choice over onto the provider it
+ *      installs, because it removes the entry the choice was saved on
+ *      (ADR-0192, #1834).
+ *   2. else, an explicit `MEMORY_BACKEND` env value, when set.
+ *   3. else, the derived default: `DATABASE_URL ? 'postgres' : 'inmemory'`.
+ *      This makes Postgres sharp by default whenever a DB is configured —
+ *      mirroring the KG neon/inmemory selection.
+ *
+ * Hard guard: the Postgres store consumes the shared `graphPool` that only
+ * the Neon KG publishes (i.e. `DATABASE_URL` must be set). When Postgres is
+ * requested without it, we fall back to `inmemory` rather than boot into a
+ * provider whose `requires: graphPool@^1` can never resolve.
+ */
+function resolveMemoryBackend(
+  deps: BootstrapDeps,
+  persisted: MemoryBackendChoice | undefined,
+): MemoryBackendChoice {
+  const log = deps.log ?? ((m) => console.log(m));
+  const derivedDefault: MemoryBackendChoice = deps.config.DATABASE_URL
+    ? 'postgres'
+    : 'inmemory';
+  let backend: MemoryBackendChoice =
+    persisted ?? deps.config.MEMORY_BACKEND ?? derivedDefault;
+
+  if (backend === 'postgres' && !deps.config.DATABASE_URL) {
+    log(
+      `[bootstrap] memory backend 'postgres' requested but DATABASE_URL is unset — the Postgres store needs the Neon graphPool; falling back to 'inmemory'`,
+    );
+    backend = 'inmemory';
+  }
+  return backend;
+}
+
 /**
  * Seeds the selected memoryStore provider into the registry on first boot,
  * migrating the legacy MEMORY_SEED_DIR / MEMORY_SEED_MODE env vars into
@@ -518,50 +581,6 @@ async function migrateAnthropicKeyToCanonical(
  * `DEV_ENDPOINTS_ENABLED` on every boot so a container-env flip takes
  * effect on restart (see the reconcile path below).
  */
-/**
- * Resolve the effective memory backend for this boot.
- *
- * Precedence:
- *   1. Persisted operator choice (set via the admin UI, stored as
- *      `memory_backend` config on the active provider's registry entry) wins —
- *      so a UI switch survives a restart even when the container env disagrees.
- *   2. else, an explicit `MEMORY_BACKEND` env value, when set.
- *   3. else, the derived default: `DATABASE_URL ? 'postgres' : 'inmemory'`.
- *      This makes Postgres sharp by default whenever a DB is configured —
- *      mirroring the KG neon/inmemory selection.
- *
- * Hard guard: the Postgres store consumes the shared `graphPool` that only
- * the Neon KG publishes (i.e. `DATABASE_URL` must be set). When Postgres is
- * requested without it, we fall back to `inmemory` rather than boot into a
- * provider whose `requires: graphPool@^1` can never resolve.
- */
-function resolveMemoryBackend(deps: BootstrapDeps): 'postgres' | 'inmemory' {
-  const log = deps.log ?? ((m) => console.log(m));
-  // Persisted operator choice (UI): read from whichever provider is active.
-  const persisted =
-    (deps.registry.get(MEMORY_POSTGRES_ID)?.config?.['memory_backend'] as
-      | string
-      | undefined) ??
-    (deps.registry.get(MEMORY_TOOL_ID)?.config?.['memory_backend'] as
-      | string
-      | undefined);
-  const derivedDefault: 'postgres' | 'inmemory' = deps.config.DATABASE_URL
-    ? 'postgres'
-    : 'inmemory';
-  let backend: 'postgres' | 'inmemory' =
-    persisted === 'postgres' || persisted === 'inmemory'
-      ? persisted
-      : (deps.config.MEMORY_BACKEND ?? derivedDefault);
-
-  if (backend === 'postgres' && !deps.config.DATABASE_URL) {
-    log(
-      `[bootstrap] memory backend 'postgres' requested but DATABASE_URL is unset — the Postgres store needs the Neon graphPool; falling back to 'inmemory'`,
-    );
-    backend = 'inmemory';
-  }
-  return backend;
-}
-
 export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
@@ -569,7 +588,9 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
     ? 'true'
     : 'false';
 
-  const backend = resolveMemoryBackend(deps);
+  // Read the saved choice BEFORE the swap below removes the entry it lives on.
+  const persisted = persistedMemoryBackend(deps);
+  const backend = resolveMemoryBackend(deps, persisted);
   const targetId =
     backend === 'postgres' ? MEMORY_POSTGRES_ID : MEMORY_TOOL_ID;
   const otherId =
@@ -587,23 +608,29 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
   }
 
   // Idempotent: target already installed → reconcile only the env-driven
-  // dev-endpoints flag (operator-owned keys like seed_dir stay untouched).
+  // dev-endpoints flag and the carried-over backend choice (operator-owned
+  // keys like seed_dir stay untouched).
   if (deps.registry.has(targetId)) {
     const entry = deps.registry.get(targetId);
-    if (
-      entry &&
-      entry.config?.['dev_memory_endpoints_enabled'] !== desiredDevEndpoints
-    ) {
+    if (!entry) return;
+    const devFlagDrift =
+      entry.config?.['dev_memory_endpoints_enabled'] !== desiredDevEndpoints;
+    const choiceDrift =
+      persisted !== undefined && entry.config?.['memory_backend'] !== persisted;
+    if (devFlagDrift || choiceDrift) {
       await deps.registry.register({
         ...entry,
         config: {
           ...entry.config,
           dev_memory_endpoints_enabled: desiredDevEndpoints,
+          ...(persisted !== undefined ? { memory_backend: persisted } : {}),
         },
       });
-      log(
-        `[bootstrap] ⚐ ${targetId} dev_memory_endpoints_enabled reconciled to '${desiredDevEndpoints}'`,
-      );
+      if (devFlagDrift) {
+        log(
+          `[bootstrap] ⚐ ${targetId} dev_memory_endpoints_enabled reconciled to '${desiredDevEndpoints}'`,
+        );
+      }
     }
     return;
   }
@@ -626,6 +653,10 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
       seed_dir: deps.config.MEMORY_SEED_DIR,
       seed_mode: deps.config.MEMORY_SEED_MODE,
       dev_memory_endpoints_enabled: desiredDevEndpoints,
+      // Carry the operator's saved choice over: the swap above removed the
+      // entry it was saved on, and without it the next boot would fall back
+      // to the environment (#1834).
+      ...(persisted !== undefined ? { memory_backend: persisted } : {}),
     },
   });
 
@@ -931,7 +962,18 @@ export async function bootstrapKnowledgeGraphFromEnv(
     log(
       `[bootstrap] ⚐ knowledge-graph dual-active conflict — removed ${dropId}, kept ${keepId} (neon DSN ${neonUsable ? 'present' : 'absent'})`,
     );
+    // ADR-0193 "every boot" holds on a self-healing boot too.
+    if (deps.registry.has(KNOWLEDGE_GRAPH_NEON_ID)) {
+      await reconcileNeonBackfillSeeds(deps, log);
+    }
     return;
+  }
+
+  // #1858 (ADR-0193): the backfill variables follow the environment on every
+  // boot while their value is boot-owned; an operator value wins and a set
+  // variable it shadows is logged.
+  if (deps.registry.has(KNOWLEDGE_GRAPH_NEON_ID)) {
+    await reconcileNeonBackfillSeeds(deps, log);
   }
 
   if (otherInstalled) {
@@ -968,21 +1010,13 @@ export async function bootstrapKnowledgeGraphFromEnv(
   if (deps.config.GRAPH_TENANT_ID && deps.config.GRAPH_TENANT_ID !== 'default') {
     config['graph_tenant_id'] = deps.config.GRAPH_TENANT_ID;
   }
-  if (databaseUrl) {
-    // Backfill knobs only matter for the Neon backend.
-    config['graph_embedding_backfill_enabled'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_ENABLED,
-    );
-    config['graph_embedding_backfill_interval_minutes'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES,
-    );
-    config['graph_embedding_backfill_batch_size'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE,
-    );
-    config['graph_embedding_backfill_max_attempts'] = String(
-      deps.config.GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS,
-    );
-  }
+  // Backfill knobs only matter for the Neon backend. Only SET variables are
+  // written (ADR-0193); an unset one leaves the plugin default in charge.
+  const seeded =
+    targetId === KNOWLEDGE_GRAPH_NEON_ID
+      ? (applyEnvSeeds(config, neonBackfillSeeds(deps), deps.env ?? process.env)
+          .config ?? config)
+      : config;
 
   await deps.registry.register({
     id: targetId,
@@ -990,11 +1024,67 @@ export async function bootstrapKnowledgeGraphFromEnv(
     installed_at: new Date().toISOString(),
     status: 'active',
     origin: 'bundled',
-    config,
+    config: seeded,
   });
 
   log(
     `[bootstrap] ⚐ auto-installed ${targetId} (database_url=${databaseUrl ? '(set)' : '(unset → in-memory backend)'})`,
+  );
+}
+
+/** The four `GRAPH_EMBEDDING_BACKFILL_*` variables and the Neon config keys
+ *  they seed (#1858). `value` is the validated `Config` value. */
+function neonBackfillSeeds(deps: BootstrapDeps): EnvSeed[] {
+  const c = deps.config;
+  return [
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_ENABLED',
+      configKey: 'graph_embedding_backfill_enabled',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_ENABLED),
+      legacyDefault: 'true',
+    },
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES',
+      configKey: 'graph_embedding_backfill_interval_minutes',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES),
+      legacyDefault: '5',
+    },
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE',
+      configKey: 'graph_embedding_backfill_batch_size',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE),
+      legacyDefault: '20',
+    },
+    {
+      envName: 'GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS',
+      configKey: 'graph_embedding_backfill_max_attempts',
+      value: String(c.GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS),
+      legacyDefault: '5',
+    },
+  ];
+}
+
+/** Re-apply the backfill seeds to an installed Neon entry on every boot. */
+async function reconcileNeonBackfillSeeds(
+  deps: BootstrapDeps,
+  log: (msg: string) => void,
+): Promise<void> {
+  const entry = deps.registry.get(KNOWLEDGE_GRAPH_NEON_ID);
+  if (!entry) return;
+  const result = applyEnvSeeds(
+    entry.config ?? {},
+    neonBackfillSeeds(deps),
+    deps.env ?? process.env,
+  );
+  for (const s of result.shadowed) {
+    log(
+      `[bootstrap] ⚠ ${KNOWLEDGE_GRAPH_NEON_ID}: ${s.envName}='${s.envValue}' is ignored — the plugin setting ${s.configKey}='${s.stored}' was set by an operator and wins (change it in the plugin settings)`,
+    );
+  }
+  if (result.config === null) return;
+  await deps.registry.register({ ...entry, config: result.config });
+  log(
+    `[bootstrap] ⚐ ${KNOWLEDGE_GRAPH_NEON_ID}: embedding-backfill settings reconciled from the environment`,
   );
 }
 

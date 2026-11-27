@@ -1159,16 +1159,25 @@ export interface McpAuthStatus {
    *  `per_user` server means every call fails closed until an identity is
    *  available or the operator opts into `service` delegation. */
   identityResolved?: boolean;
+  /** The provider metadata could not be read right now; issuer and mode are
+   *  placeholders while this is set. */
+  discoveryUnavailable?: boolean;
+  /** #1924 — the metadata was read and is unusable: why. */
+  discoveryError?: string;
+  /** #1933 — `service` delegation: one authorization shared by every caller. */
+  sharedAuthorization?: boolean;
 }
 
-/** Switch a server's delegation mode (W0-1). */
+/** Switch a server's delegation mode (W0-1). #1933 — switching to `service`
+ *  needs `confirm: true`; the caller asks the operator first. */
 export async function setMcpServerDelegation(
   serverId: string,
   delegation: McpDelegation,
+  opts: { readonly confirm?: boolean } = {},
 ): Promise<{ id: string; delegation: McpDelegation }> {
   return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/delegation`, {
     method: 'PUT',
-    body: JSON.stringify({ delegation }),
+    body: JSON.stringify({ delegation, ...(opts.confirm ? { confirm: true } : {}) }),
   });
 }
 

@@ -292,7 +292,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
             disabled={busy !== null}
             className="lg:col-span-1"
           >
-            {busy === 'upsert' ? '…' : 'Add'}
+            {busy === 'upsert' ? '…' : t('add')}
           </Button>
         </div>
         <p className="mt-2 text-xs text-[color:var(--fg-muted)]">{t('entryHint')}</p>

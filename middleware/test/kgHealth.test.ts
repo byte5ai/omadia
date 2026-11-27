@@ -246,6 +246,55 @@ describe('buildKgHealth', () => {
  * because the registry entry said `active`. These cases pin the one field that
  * can contradict the registry.
  */
+describe('buildKgHealth — published embedding client (#1816)', () => {
+  const EMBEDDINGS_LOCAL = '@omadia/embedding-adapter-local';
+
+  it('an active keyless adapter with no published client reports embeddings OFF with its own warning', async () => {
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_LOCAL }]),
+      undefined,
+      undefined,
+      false,
+    );
+    assert.equal(h.embeddings, false);
+    assert.equal(h.semanticRecall, false);
+    assert.equal(h.durableTier, false);
+    assert.equal(h.processReuse, false);
+    assert.equal(h.warnings.length, 1);
+    assert.match(h.warnings[0]!, /'@omadia\/embedding-adapter-local' is active but publishes no embedding client/);
+    assert.match(h.warnings[0]!, /model weights/);
+  });
+
+  it('an active OpenAI adapter with no published client names the missing key', async () => {
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI }]),
+      undefined,
+      undefined,
+      false,
+    );
+    assert.equal(h.embeddings, false);
+    assert.match(h.warnings[0]!, /API key/);
+  });
+
+  it('a published client keeps the active adapter healthy', async () => {
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_LOCAL }]),
+      undefined,
+      undefined,
+      true,
+    );
+    assert.equal(h.embeddings, true);
+    assert.deepEqual(h.warnings, []);
+  });
+
+  it('without any provider the generic warning stays, not the missing-client one', async () => {
+    const h = buildKgHealth(await reg([{ id: KG_NEON }]), undefined, undefined, false);
+    assert.equal(h.embeddings, false);
+    assert.ok(h.warnings.some((w) => w.includes('embeddings disabled')));
+    assert.ok(!h.warnings.some((w) => w.includes('publishes no embedding client')));
+  });
+});
+
 describe('buildKgHealth — pg pool liveness (#665)', () => {
   it('reports the pool dead and leads with it, so it cannot read as a degradation', async () => {
     const h = buildKgHealth(await reg([{ id: KG_NEON }]), undefined, {

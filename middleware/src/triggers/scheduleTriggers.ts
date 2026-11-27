@@ -108,7 +108,7 @@ export function createScheduleTriggerScheduler(deps: ScheduleTriggerDeps): Sched
           cron: row.cron,
           timezone: row.timezone,
           until: until.toISOString(),
-          max_runs: cronRunsUntil(row.cron, until, now, limits.maxRunsCap),
+          max_runs: cronRunsUntil(row.cron, until, now, limits.maxRunsCap, row.timezone),
           actions: [{ type: 'turn', instruction: schedulePrompt(row) }],
           budget: {
             per_firing_usd: limits.perFiringUsdMax,

@@ -111,7 +111,10 @@ export default function DetailPanel({
         </Button>
 
         {node.type === 'MemorableKnowledge' && (
+          // key: a new entry gets a fresh section — its tab, inputs and
+          // loaded audit belong to the entry they were opened for (#1854).
           <MemoryAclSection
+            key={node.id}
             memory={node}
             onDeleted={() => onMemoryDeleted?.(node.id)}
           />

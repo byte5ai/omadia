@@ -11,7 +11,7 @@
  * closed and what is still deliberately orchestrator-only.
  */
 
-import { internFailedNotice, isInternExemptCall } from './privacyInternPolicy.js';
+import { fieldExemptModelCopy, internFailedNotice, isInternExemptCall } from './privacyInternPolicy.js';
 import {
   isMemoryNoteTool,
   maskMemoryNoteResult,
@@ -612,6 +612,11 @@ export class ToolDispatchService {
       // #1841 — a `memory` result is masked through this turn's map.
       return fromTool(isMemoryNoteTool(name) ? await maskMemoryNoteResult(privacy, result) : result);
     }
+    // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
+    const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)
+      ? undefined
+      : fieldExemptModelCopy(name, result);
+    if (fieldExempt !== undefined) return fromTool(fieldExempt);
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.

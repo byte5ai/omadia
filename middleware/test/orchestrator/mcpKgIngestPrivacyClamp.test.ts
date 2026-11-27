@@ -103,7 +103,10 @@ function maskingPrivacyService(): PrivacyGuardService {
 
 /** Runs one turn that calls the ingest-flagged MCP tool; returns the stored
  *  rationales. `stamps` collects each row's `unprotected` (#1536). */
-async function ingestOneResult(stamps: Array<boolean | undefined> = []): Promise<string[]> {
+async function ingestOneResult(
+  stamps: Array<boolean | undefined> = [],
+  toolResult: string = RAW_RESULT,
+): Promise<string[]> {
   const rationales: string[] = [];
   const knowledgeGraph = new Proxy(
     {
@@ -128,7 +131,7 @@ async function ingestOneResult(stamps: Array<boolean | undefined> = []): Promise
     domain: 'mcp.crm',
     mcpServerId: SERVER_ID,
     mcpServerName: 'CRM',
-    handle: () => Promise.resolve(RAW_RESULT),
+    handle: () => Promise.resolve(toolResult),
   } as unknown as DomainTool;
   const privacy = maskingPrivacyService();
   const orchestrator = new Orchestrator({
@@ -167,7 +170,7 @@ describe('MCP → Knowledge-Graph ingestion honours the org privacy clamp', () =
     assert.deepEqual(stamps, [undefined], 'a digest holds no value: not stamped');
     assert.equal(rationales[0]!.includes(EMAIL), false, `raw value stored: ${rationales[0]!}`);
     assert.equal(rationales[0]!.includes('K-1001'), false, `raw value stored: ${rationales[0]!}`);
-    assert.equal(rationales[0], 'Fields: customer, email (values masked)');
+    assert.equal(rationales[0], '2 fields (names and values masked)');
   });
 
   it('control — without the clamp the bypassed server still stores its raw result', async () => {
@@ -184,6 +187,16 @@ describe('MCP → Knowledge-Graph ingestion honours the org privacy clamp', () =
     assert.equal(rationales[0], RAW_RESULT);
     // #1536 — the raw result is stamped, so recall under a shield skips it.
     assert.deepEqual(stamps, [true]);
+  });
+
+  it('#1934 — a failed call is not ingested, bypassed or not', async () => {
+    setMcpKgIngestServers([SERVER_ID]);
+    setMcpPrivacyBypassServers([SERVER_ID]);
+    delete process.env[CLAMP];
+
+    const rationales = await ingestOneResult([], 'Error: MCP tool "crm" failed: upstream 500');
+
+    assert.deepEqual(rationales, []);
   });
 
   it('a server that is not bypassed stores the digest with or without the clamp', async () => {

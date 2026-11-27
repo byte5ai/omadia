@@ -43,12 +43,15 @@ export default function AdminUserEditPage(): React.ReactElement {
 
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // #1765 — named in the delete confirmation: they are deleted with the account.
+  const [routineCount, setRoutineCount] = useState<number | null>(0);
 
   async function load(): Promise<void> {
     if (!id) return;
     try {
       const res = await getAdminUser(id);
       setState({ kind: 'ready', user: res.user });
+      setRoutineCount(res.routine_count === undefined ? 0 : res.routine_count);
       setDisplayName(res.user.display_name);
       setStatus(res.user.status);
     } catch (err) {
@@ -118,7 +121,13 @@ export default function AdminUserEditPage(): React.ReactElement {
   }
 
   async function handleDelete(): Promise<void> {
-    if (!window.confirm(t('edit.confirmDelete'))) {
+    const confirmText =
+      routineCount === null
+        ? t('edit.confirmDeleteRoutinesUnknown')
+        : routineCount > 0
+          ? t('edit.confirmDeleteWithRoutines', { count: routineCount })
+          : t('edit.confirmDelete');
+    if (!window.confirm(confirmText)) {
       return;
     }
     setDeleteError(null);

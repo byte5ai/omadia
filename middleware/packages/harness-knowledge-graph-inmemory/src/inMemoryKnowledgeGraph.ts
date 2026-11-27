@@ -1285,6 +1285,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     opts: ListMemorableKnowledgeOptions = {},
   ): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+    const offset = Math.max(0, Math.floor(opts.offset ?? 0));
     const userExtId = userNodeId(omadiaUserId);
     if (!this.nodes.has(userExtId)) return [];
     const hits: GraphNode[] = [];
@@ -1303,9 +1304,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     hits.sort((a, b) => {
       const at = String(a.props['created_at'] ?? '');
       const bt = String(b.props['created_at'] ?? '');
-      return bt.localeCompare(at);
+      return bt.localeCompare(at) || b.id.localeCompare(a.id);
     });
-    return hits.slice(0, limit);
+    return hits.slice(offset, offset + limit);
   }
 
   // ─── Slice 3 — ACL mutations + audit ──────────────────────────────────

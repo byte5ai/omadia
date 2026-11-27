@@ -170,6 +170,14 @@ export async function probeGraphPool(
  * `undefined` when no neon backend is active (nothing to gate) or when the
  * plugin never got as far as evaluating — both read as "no gate opinion", and
  * the registry projection stands alone.
+ *
+ * `embeddingClientPublished` (#1816) is whether the service registry holds an
+ * `embeddingClient` right now. The registry projection above cannot see the
+ * keyless adapter's model weights or the OpenAI adapter's vault key, so an
+ * active adapter that stood down (weights missing, no key) used to read as
+ * "embeddings on". When the caller passes it, a provider without a published
+ * client counts as off and gets its own warning. `undefined` keeps the
+ * registry-only projection (callers that have no service registry at hand).
  */
 /**
  * #1822 — what recall without vectors means for a user: the full-text leg
@@ -182,6 +190,7 @@ export function buildKgHealth(
   registry: InstalledRegistry,
   gate?: EmbeddingGateStatus,
   poolProbe?: PoolProbe,
+  embeddingClientPublished?: boolean,
 ): KgHealth {
   const isActive = (id: string): boolean => registry.get(id)?.status === 'active';
 
@@ -218,10 +227,16 @@ export function buildKgHealth(
     ollamaEmbeddings ||
     isActive(EMBEDDINGS_OPENAI_ID) ||
     isActive(EMBEDDINGS_LOCAL_ID);
+  // #1816 — the projection above counts an ACTIVE keyless/OpenAI adapter as
+  // configured because the registry cannot see weights or vault keys. The
+  // service registry can: an adapter that stood down published no client, and
+  // nothing gets embedded. Same evidence the admin page uses
+  // (`capabilityPublished`), so /health and the page can no longer disagree.
+  const clientMissing = providerConfigured && embeddingClientPublished === false;
   // A configured provider whose vectors the gate refuses writes NOTHING. That
   // is not "embeddings on with a caveat", it is embeddings off.
   const gateBlocked = gate !== undefined && !gate.vectorWritesAllowed;
-  const embeddings = providerConfigured && !gateBlocked;
+  const embeddings = providerConfigured && !clientMissing && !gateBlocked;
 
   const durable = backend === 'neon';
   // Both semantic recall and the durable tier need an embedding client to query.
@@ -242,7 +257,9 @@ export function buildKgHealth(
   }
   if (backend !== 'none' && !embeddings) {
     warnings.push(
-      providerConfigured && gateBlocked
+      clientMissing
+        ? describeMissingClient(registry)
+        : providerConfigured && gateBlocked
         ? describeGateBlock(gate)
         : `embeddings disabled: semantic recall, the durable tier and process-reuse are all inactive — ${KEYWORD_ONLY_RECALL}; set OLLAMA_BASE_URL / enable the embeddings overlay, or install an alternative embeddingClient provider`,
     );
@@ -306,6 +323,29 @@ function describeColumnMigration(gate: EmbeddingGateStatus): string {
     'until the embedding backfill has re-embedded the corpus. This only ever follows a confirmed ' +
     'provider switch under Admin → Embedding provider; set auto_migrate_vector_columns=false to ' +
     'forbid the rewrite even there and require a hand-written column migration instead.'
+  );
+}
+
+/**
+ * #1816 — an embedding adapter is active in the registry but published no
+ * `embeddingClient`. Names the adapter and the usual cause per adapter, so the
+ * operator lands on Admin → Embedding provider rather than on a URL hint that
+ * does not apply to a keyless adapter.
+ */
+function describeMissingClient(registry: InstalledRegistry): string {
+  const active = [EMBEDDINGS_LOCAL_ID, EMBEDDINGS_OPENAI_ID, EMBEDDINGS_ID].find(
+    (id) => registry.get(id)?.status === 'active',
+  );
+  const cause =
+    active === EMBEDDINGS_LOCAL_ID
+      ? 'its model weights are missing or it was activated before they finished downloading'
+      : active === EMBEDDINGS_OPENAI_ID
+        ? 'it holds no usable API key'
+        : 'its activation published nothing';
+  return (
+    `embedding provider '${active ?? '(unknown)'}' is active but publishes no embedding client (${cause}) — ` +
+    'no vectors are being written, so semantic recall, the durable tier and process-reuse are all ' +
+    'inactive (FTS-only). Open Admin → Embedding provider to load the model or reactivate the provider'
   );
 }
 

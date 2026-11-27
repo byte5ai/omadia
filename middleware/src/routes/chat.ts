@@ -30,6 +30,7 @@ import {
 } from '../platform/lastTurnOutcome.js';
 import type { ManageRoutineContext } from '../plugins/routines/manageRoutineTool.js';
 import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
+import { routineDeliveriesHint } from '../plugins/routines/routineDeliveryContext.js';
 import {
   WEB_ROUTINE_CHANNEL,
   webChatConversationRef,
@@ -178,6 +179,21 @@ function webTurnOrigin(req: Request): { origin?: ReturnType<typeof webAccountOri
  *    fallback. A `per_user` server then fails closed exactly as W0-1 intends;
  *    inventing a substitute is the confused deputy that fix closed.
  */
+/**
+ * #1756 — the labelled block of the chat's recent routine deliveries, or
+ * undefined (no saved chat, no store, none delivered). A store failure only
+ * loses the block, never the turn.
+ */
+async function routineDeliveriesFor(
+  options: Pick<CreateChatRouterOptions, 'getChatSessionStore' | 'chatSessionStore' | 'timeZone'>,
+  sessionId: string | undefined,
+): Promise<string | undefined> {
+  const store = options.getChatSessionStore?.() ?? options.chatSessionStore;
+  if (!sessionId || !store) return undefined;
+  const session = await store.get(sessionId).catch(() => null);
+  return session ? routineDeliveriesHint(session.messages, options.timeZone) : undefined;
+}
+
 function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
   const identity = sessionIdentity(req);
   return {
@@ -293,6 +309,8 @@ function writeEvent(res: Response, event: unknown): void {
 }
 
 export interface CreateChatRouterOptions {
+  /** #1756 — the zone routine delivery times are named in (`PROACTIVE_TIMEZONE`). */
+  timeZone?: string;
   /** Resolves tool names to installed-agent metadata so `tool_use` events
    *  carry agent pills for the UI. Optional — when absent (e.g. in tests),
    *  events are forwarded unchanged. */
@@ -521,6 +539,8 @@ export function createChatRouter(
     try {
       const userId = resolveUserId(req);
       const sessionScope = resolveScope(parsed.data);
+      // #1756 — routine output delivered into this chat is part of it.
+      const deliveriesHint = await routineDeliveriesFor(options, parsed.data.sessionId);
       // W4-1: the whole turn runs inside the identity scope. `run` (not
       // `enter`) because a plain async call's own async chain bounds it.
       // OM-82: the routines principal wraps it on the OUTSIDE, so the CLI
@@ -534,6 +554,7 @@ export function createChatRouter(
               sessionScope,
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
+              ...(deliveriesHint ? { extraSystemHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),
@@ -775,6 +796,8 @@ export function createChatRouter(
       // OM-100b: an error EVENT ends the stream normally — neither runtime
       // throws for a failed turn — so the outcome has to be read off the wire.
       let streamError: string | undefined;
+      // #1756 — routine output delivered into this chat is part of it.
+      const deliveriesHint = await routineDeliveriesFor(options, parsed.data.sessionId);
       await withRoutinePrincipal(routinePrincipal, async () => {
       // W4-1: `runGenerator`, NOT `run`/`enter`. `enterWith` binds the store to
       // the async resource executing at that instant, and an async generator is
@@ -791,6 +814,7 @@ export function createChatRouter(
               sessionScope: resolveScope(parsed.data),
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
+              ...(deliveriesHint ? { extraSystemHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),

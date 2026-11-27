@@ -9,6 +9,7 @@ import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPrompt
 import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js';
 import { throwIfAskAborted, type AskObserver, type AskOptions } from './tools/domainQueryTool.js';
 import {
+  fieldExemptModelCopy,
   internFailedNotice,
   isInternExemptCall,
   runsOnModelInput,
@@ -751,6 +752,13 @@ export class LocalSubAgent {
             : remaskEchoedValues(privacy, result),
           ...carried,
         };
+      }
+      // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
+      const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)
+        ? undefined
+        : fieldExemptModelCopy(toolName, result);
+      if (fieldExempt !== undefined) {
+        return { output: remaskEchoedValues(privacy, fieldExempt), ...carried };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,

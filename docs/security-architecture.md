@@ -812,6 +812,13 @@ This keeps the supply chain explicit:
   callers (workflows, routines, triggers) never start an OAuth flow and never
   park an input request; they get a typed `auth_required` / `input_required`
   failure.
+- MCP `service` delegation (one authorization for every caller of a server) is
+  switched on only with an explicit confirmation and is written to the admin
+  audit (`mcp_server.delegation_change`, ADR-0208). Reading a server's OAuth
+  status never registers a client at the provider; an automatically acquired
+  client and its vault secret are removed with the last server of its issuer.
+  Binary MCP content never reaches a model as base64 text, and a result the
+  shield does not intern is capped at the shield's intern size (ADR-0207).
   Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).
@@ -860,6 +867,20 @@ not read).
   `src/platform/pluginServiceGrants.ts`). Other plugins reach models through
   `ctx.llm`, in their caller's context; an archetype plugin's `ctx.llm` works
   only inside an execution scope.
+- **A removed model provider receives no further request** (#1815, #1817,
+  ADR-0194). When the registration of a gated model service
+  (`embeddingClient`, `transcription`, `decisionModel`) is disposed —
+  uninstall, deactivation, reactivation, switch, or the dispose of a
+  `replace()` wrapper — the kernel marks that wrapper withdrawn
+  (`withdrawModelService`, `src/platform/modelGatewayServices.ts`). Every
+  later model call through a reference someone still holds rejects with
+  `ModelServiceWithdrawnError` and never reaches the adapter, whatever the
+  adapter's own `close()` does (an OpenAI-compatible client keeps its key and
+  base URL). The consumers resolve the service per call, so the refusal only
+  shows when a new consumer captures one; the knowledge-graph gate withdraws
+  its approved client the moment the registry stops publishing it. Gap:
+  a per-caller factory registration is a function and cannot be marked; no
+  model service is registered that way.
 - **One agent's envelope for a system module.** `agentEnvelope@1`
   (`src/platform/agentEnvelopeService.ts`) resolves an agent by `agents.id`
   to its own chat agent: a lookup in the live agent registry, no model, no
@@ -3132,6 +3153,17 @@ These tool results skip the digest:
   user's restored values (`runsOnModelInput`). `query_dataset` is exempt only
   for its `list_datasets` and `get_schema` operations
   (`INTERN_EXEMPT_OPERATIONS`, ADR-0197); `query_rows` stays interned.
+- **Field-exempt tools** (#1768, ADR 0241). `INTERN_FIELD_EXEMPT_TOOLS` (same
+  file, pinned by the same test) lists `manage_routine` only. Its JSON result
+  reaches the model in clear minus the keys the list names (`prompt`,
+  `lastRunError`, the smart-card sidecar `_pendingRoutineList`), removed at
+  every depth by `fieldExemptModelCopy`. Everything else in it is the user's
+  own routine state, the user-chosen routine **name** included: that name
+  reaches the model unmasked. A result that is not a JSON object or array, and
+  an `Error:` result, are not projected and take the normal path. The
+  orchestrator and sub-agent seams re-mask echoed values (#1544);
+  `ToolDispatchService` does not, like for exempt tools. The public MCP
+  endpoint refuses the tool (`isPubliclyServableTool`, §ADR 0142).
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,
@@ -7422,6 +7454,23 @@ neither the omadia id, an AAD id nor an identity's `<kind>:<id>` (a Teams `29:`
 id without an AAD id) when its run trace was never ingested, since the
 `BELONGS_TO` edge to the user cluster is the only other link. A login after an
 identity purge creates a new cluster with a new omadia user id.
+
+**A deleted agent's state and a reused slug (#1881, ADR-0218).** Memory, graph
+scopes and public MCP key bindings are keyed by the agent's slug, and a delete
+frees the slug. So a delete (`DELETE /api/v1/operator/agents/:slug`, after the
+registry reload) moves `/memories/orchestrators/<slug>` and
+`/memories/contexts/<slug>` under the tombstone's placeholder slug
+(`deleted-<id prefix>`; discretion labels move with the notes) and removes the
+slug's `public_mcp_key_bindings` rows. The moved trees stay purgeable here
+(axis `agent`, selector = the placeholder slug, shown in the delete response
+as `slug_state.moved_to_slug` and in the `agent.slug_state_moved` audit row). The graph
+cannot be moved (its external ids embed the scope), so creating an agent with
+a slug that still has graph history, curated memory (`origin_agent`), a memory
+tree or a binding is refused with `409 slug_state_remains` until it is purged
+here; a check that cannot answer refuses with `503 slug_state_unverifiable`.
+Not covered: web chat tabs of the deleted agent, the Quality Guard's
+`agent_overrides`, routines (#1745), and the graph provider's tuning tables
+keyed by slug (ADR-0218 lists them).
 
 ## 10p. MCP outbound targets and stdio servers (#1341, #1342)
 

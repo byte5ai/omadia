@@ -209,6 +209,14 @@ src/
   geclaimt hat, sonst `deriveChannelType` der ID; der API-Kanal bindet bewusst unter
   `@omadia/channel-api`). Default-Agent-Tabelle, Binding-Formular und Routing-Tester
   bieten nur diese an (`web-ui/app/_lib/channelTypes.ts`), nie eine geratene Plugin-ID.
+  Der Server prüft dieselbe Liste (#1879, `routes/registeredChannelTypes.ts`):
+  `PUT /api/v1/operator/agents/:slug/bindings` lehnt ein **neues** Binding unter einem
+  Typ, den kein installiertes Kanal-Plugin routet, mit `400 unknown_channel_type`
+  (`channel_type`, `known_channel_types`) ab; ein Binding, das der Agent schon hat,
+  darf bleiben. `POST /resolve-channel` antwortet für einen unbekannten Typ ebenso
+  mit 400 statt mit „fallback“. Migration `0117_channel_api_binding_type` schreibt
+  alte `channel-api`-Bindings mit `key:`-Schlüssel auf `@omadia/channel-api` um,
+  wenn kein Binding desselben Schlüssels unter dem echten Typ existiert.
 - **Sprache der Notices:** `ChatTurnInput.locale` (additiv). Der Management-Layer
   füllt sie aus der Resolve-Locale; der Identity-Guard formuliert seine Notice darin
   vor der Agent- bzw. Instanzsprache.
@@ -266,6 +274,43 @@ src/
 - **System-Prompt:** Spricht Deutsch, liest zu Turn-Start `/memories/_rules`,
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
+
+### Identitätsschicht eines Agenten (#1878)
+
+`assembleAgentIdentity` (`harness-orchestrator/src/agentIdentityLayers.ts`)
+baut den Identitätsabschnitt jedes Agenten in fester Reihenfolge: Basis
+(plattformweite `assistant_identity`, sonst `DEFAULT_AGENT_IDENTITY`) →
+Steckbrief → Name → Identitätsregeln (#2056) → Rollenvertrag des Archetyps
+(#2060). Die Basis wird **nur** durch eigenen Verhaltenstext des Agenten
+ersetzt (`agent_identities.instructions` nicht leer). Hat der Agent nur
+Charakter, Grenzen oder Schmeichel-Bremse, hängt der kompilierte
+`composed_prompt` **hinter** die Basis (`AgentRow.identityHasOwnInstructions`
+= `false` → `identityReplacesBase: false`); vorher ersetzte schon eine einzelne
+Grenze die Plattform-Identität. Die Varianten pro Modellfamilie (#1033) laufen
+durch dieselbe Funktion und behalten damit Basis, Name und Steckbrief.
+
+**Prompt-Vorschau (#1890):** `identityPreamble` (gleiche Datei) hängt an den
+Identitätsabschnitt die Sprachzeile, die Zeile gegen angekündigte Tool-Aufrufe
+und den Antwortumfang-Block; `buildSystemPrompt` beginnt mit genau diesem Text.
+Der gebaute Agent trägt ihn als `BuiltOrchestrator.identityPrompt`, und
+`GET/PUT /api/v1/operator/agents/:slug/identity` liefern ihn als
+`identity_prompt` (`null`, solange der Agent nicht gebaut ist; die Web-UI zeigt
+dann nur `composed_prompt` mit Hinweis). Die Vorschau liest also den laufenden
+Agenten, kein zweites Rendering. Davor steht im Turn nur der
+Quality-Guard-Block; ein Arbeitsmodus folgt direkt auf die Identität,
+Werkzeuge, Datum und Gesprächskontext danach (ADR-0077).
+
+**Charakter-Regler gegen die Modell-Grundhaltung (#1893, ADR-0217):** Ein
+Reglerwert ist eine Zielstufe; `personaDelta.ts` schreibt nur den Abstand zur
+Grundhaltung der Modellfamilie, auf der der Agent läuft. Die Familie liefert
+`inferPersonaFamily` (`harness-orchestrator/src/personaFamily.ts`, auch
+`Orchestrator.familyOf`): `haiku`/`sonnet`/`opus`/`fable`, die Anbieter-Familien
+aus `basePersonas.ts`, sonst `unknown` — nicht mehr pauschal Sonnet. Bei
+„Auto" löst `OrchestratorRegistry.runModelFor` (= `resolveAgentRunModel`, die
+Auflösung des Builds) das Modell auf. Fable hat eine eigene, von Opus
+abgeleitete Grundhaltung. Die Identity-Routen liefern
+`persona_baseline: { family, axes }`; der Editor zeigt sie als
+„Modell-Standard"-Punkt und Radar-Referenz, eine ungesetzte Achse steht darauf.
 
 ### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
 
@@ -674,7 +719,13 @@ Credential-Änderung automatisch mit.
   sie (`PackagelessEntries.tsx`). Abgeleitet bei jedem Lesen: die Registry wird
   nicht umgeschrieben, nichts wird automatisch gelöscht; „Paket“ heißt
   Uploaded- oder Built-in-Store, nicht Katalog (ein Manifest ohne Code zählt
-  nicht).
+  nicht). Seit #1942 auch auf der Agenten-Seite: die Plugin-Listen des
+  Operator-Agent-Routers (`GET /api/v1/operator/agents`, `GET …/:slug/plugins`)
+  tragen pro Zuweisung `package_missing` (Option `hasPackage`, dieselbe Prüfung),
+  „Zugewiesene Plugins“ zeigt dafür „Paket fehlt — läuft nicht“. Die Boot-Warnung
+  nennt für die Canvas-IDs (`@omadia/ui-orchestrator`, `@omadia/ui-channel`,
+  `@omadia/canvas-core`, `RELOCATED_PACKAGES`) die Quelle
+  `byte5ai/omadia-ui-support`.
 - **Eigener Readiness-State.** `computeReadiness` (`plugins/readiness.ts`)
   liest zusätzlich die gepushte Status-Lage und liefert
   **`connection_failed`**, wenn `ctx.status` auf `error` steht — egal ob aus
@@ -2620,6 +2671,25 @@ Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzh
   `deliver_data`; Zeilen kommen aus `structuredContent` (`mcpReadToolInvoker`,
   `captureMcpStructured`).
 
+### MCP-Grants, Result-Safety, OAuth-UX (Welle 5, ADR-0207/0208)
+
+- **Routen-Verträge:** `POST /mcp-servers/:id/discover` → 409 `mcp_tool_list_empty`, wenn
+  ein Server nach einer vollen Liste plötzlich keine Tools meldet (alte Liste bleibt);
+  `POST …/authorize` → 422 `mcp_oauth_discovery_failed` (`code`, `message`);
+  `PUT …/delegation` und `PUT /mcp-grants` mit `delegation: 'service'` → 409
+  `delegation_confirmation_required` ohne `confirm: true`, malformed id → 404; Admin-Audit
+  `mcp_server.delegation_change`. `auth-status` hat neu `discoveryError` und
+  `sharedAuthorization`.
+- **Grants:** Core-Migration (Unique-Index `agent_tool_grants_subagent_uidx`) macht
+  Sub-Agent-Grants idempotent; Helper bekommen die entdeckten Deskriptoren; nicht mehr
+  angebotene Tools gehen an kein Modell; native Namen >64 Zeichen bekommen `_<8hex>`,
+  Kollisionen → `mcp_tool_name_collision`.
+- **Result-Safety:** Bild/Audio/Blob → Platzhalter; `capToolResultText` (200k) auf den
+  nicht internierten Pfaden; KG-Ingest ohne Fehler/Auth-Prompts, Digest nur Anzahlen.
+- **OAuth:** `describeAuth` registriert nie (DCR wie beworben, Ablehnung beim Connect
+  gemerkt); `forgetClient` beim Löschen des letzten Servers eines Issuers (nur DCR/CIMD,
+  fail-closed); `onAuthFailure(cfg, failure)`.
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
@@ -3930,6 +4000,37 @@ Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
 Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
 `web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
 
+**Alle Verbraucher folgen live (#1815/#1817/#1855, ADR-0194).** orchestrator-extras
+löst `embeddingClient@1` pro Aufruf auf (`liveEmbeddingClient.ts`: Recall,
+Widerspruchs- und Duplikaterkennung, Themenerkennung); der `topicDetector` ist
+publiziert, sobald ein LLM da ist, und antwortet ohne Anbieter mit
+continue-default. `memoryFeatureStatus.topicDetector` wird beim Lesen berechnet.
+Das KG-Gate prüft bei jedem Lesen von Client, Schreibfreigabe oder Epoche, ob die
+Registry den freigegebenen Client noch publiziert; sonst Rückzug (Writes aus,
+Epoche +1, Backfill gestoppt) und Neubewertung in place — Deinstallieren oder
+Deaktivieren braucht also keinen Admin-Klick mehr. Der Kernel markiert ein
+entsorgtes Modell-Service-Registrat (`embeddingClient`, `transcription`,
+`decisionModel`) als zurückgezogen: Aufrufe über eine gehaltene Referenz werfen
+`ModelServiceWithdrawnError`. Der Recall-Judge löst `class:fast` pro Aufruf auf,
+solange `kg_recall_relevance_judge_model` leer ist. Tests:
+`test/embeddingLiveRebind1815.test.ts`.
+
+**Admin-UX und Schwellen-Provenienz (#1814/#1816/#1818/#1857).** `capabilityGap` kennt
+zusätzlich `weights-ready-reactivate` (keyloser Adapter allein installiert, Gewichte
+vollständig, nur Reaktivieren fehlt). `GET /` liefert `installableProviders` (Store-Anbieter,
+nicht installiert) und `dedupThresholdProvenance` (`default` | `recommended` | `operator`).
+Die empfohlene `process_dedup_threshold` trägt ihren Ursprung im kernel-synthetischen
+KG-Config-Key `_process_dedup_threshold_recommended_by`
+(`src/routes/embeddingDedupThreshold.ts`): `/reactivate` und `/switch` gleichen sie an den
+neuen Anbieter an (`dedupThreshold` in beiden Responses, `reason` zusätzlich `cleared` und
+`unchanged`), das Deinstallieren eines Anbieters entfernt den für ihn empfohlenen Wert
+(`onUninstalled`). Ein Operator-Wert bleibt immer. `/health` zählt einen aktiven Adapter
+ohne publizierten Client als „Embeddings aus“ (`buildKgHealth(…, embeddingClientPublished)`).
+Kollisionstext von Store und Install-Endpoint: `describeProviderCollision`
+(`capabilityResolver.ts`). Tests: `test/embeddingDedupThreshold.test.ts`,
+`test/kgHealth.test.ts`, `test/adminEmbeddingProvider{Route,Reactivate}.test.ts`,
+`test/storeProviderCollision.test.ts`, `web-ui/app/_lib/__tests__/providerAdminLink.test.ts`.
+
 ### Run-Trace- und Capture-Filter-Zähler: `GET /api/admin/run-trace` (#684 / #1082)
 
 Die Run-Trace-Outcomes (#684) und die Zahl der vom Capture-Filter als
@@ -4860,6 +4961,31 @@ Operator-Jobs: die Routentabelle steht in `platform/operatorJobRoutes.ts`
 (Agent-Builder-Skill-Verdict, Plugin-Builder-Turn/-Preview, Workflow-Designer,
 Memory- und Issue-Tools).
 
+### Slug-gebundener Zustand eines gelöschten Agenten (#1881, ADR-0218)
+
+Memory, Graph-Scopes und Public-MCP-Key-Bindings hängen am Slug, der Delete gibt
+den Slug frei. `platform/agentSlugState.ts` (Option `slugState` des
+Operator-Agents-Routers, verdrahtet in `src/index.ts`):
+
+- **`DELETE /api/v1/operator/agents/:slug`** verschiebt nach dem Registry-Reload
+  `/memories/orchestrators/<slug>` und `/memories/contexts/<slug>` unter den
+  Platzhalter-Slug des Tombstones (`deleted-<id>`, über `LabelledMemoryStore`,
+  damit Discretion-Labels mitwandern) und löscht die `public_mcp_key_bindings`
+  des Slugs. Antwort (`slug_state`) und Audit `agent.slug_state_moved` nennen,
+  was passiert ist (`moved_to_slug`, `memory_moved`, `mcp_bindings_removed`,
+  `failures`). Ein Fehler blockiert den Delete nicht.
+- **Danach purgebar** über den Danger-Zone-Purge (ADR-0120), Achse `agent`,
+  Selektor = Platzhalter-Slug.
+- **`POST /api/v1/operator/agents`** und **`POST …/onboarding/first-agent`**
+  lehnen einen Slug ab, unter dem noch Zustand liegt (Graph-Verlauf `<slug>::…`,
+  `MemorableKnowledge` mit `origin_agent`, Memory-Baum, Binding):
+  `409 slug_state_remains` mit `remaining`; Prüfung nicht möglich →
+  `503 slug_state_unverifiable`. Der Graph wird nicht verschoben (externe IDs
+  enthalten den Scope); Abhilfe ist der Purge des alten Slugs.
+- Nicht abgedeckt (ADR-0218): Web-Chat-Tabs des alten Agenten, Quality-Guard
+  `agent_overrides`, Routinen (#1745), slug-gebundene Tuning-Tabellen des
+  Graph-Providers.
+
 ### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
 
 Router `routes/operatorAgents.ts` unter `/api/v1/operator/agents`, der
@@ -4922,6 +5048,25 @@ Bestätigung gilt, wenn ein solcher Agent Default-Agent wird
 /:slug/plugins`) antworten auf einen **neuen** Grant eines Plugins, das kein
 Capability-Plugin ist, mit `400 not_a_capability_plugin`. Bestehende Zeilen
 bleiben und lassen sich weiter umschalten.
+
+**Sitzungen lösen/löschen** (`POST /:slug/drain`, `POST /:slug/kill`, #1884).
+Beide wirken auf die Web-Chats, die an den Agenten gebunden sind (`snapshot`,
+ADR-0146): `drain` löst die Bindung und behält den Verlauf, `kill` löscht den Chat
+auf dem Server. Unbekannter Slug → `404 not_found`; Antwort `{ ok, affected }`, die
+Agenten-Seite zeigt die Zahl. Die Bindung ist server-eigen wie `resetAt`: ein
+Client-`PUT /api/chat/sessions/:id` kann sie weder setzen noch entfernen
+(`mergeServerProactiveMessages`); vorher ging sie mit dem ersten Client-PUT
+verloren, und `drain`/`kill` fanden nie einen Chat. Grenze: ein Browser, der einen
+gelöschten Chat noch lokal hat, legt ihn beim nächsten Laden wieder an (ohne
+Bindung); der Bestätigungstext sagt das.
+
+**Agent anlegen: Fehlercodes** (`POST /api/v1/operator/agents`, #1885). Ein
+Slug, der nicht `AGENT_SLUG_RE` entspricht (exportiert von `@omadia/orchestrator`,
+`configStore.ts`), ist `400 invalid_body` mit `issues[].path = 'slug'` statt
+`409 config_validation`; ein vergebener Slug ist `409 slug_taken` (`slug`). Die
+Agenten-Seite übersetzt diese Codes (`useAgentApiErrorText.ts`), behält die
+Formularwerte bis zur Antwort, und das `pattern` der Slug-Felder kompiliert unter
+dem `v`-Flag der Browser (`web-ui/app/_lib/agentSlug.ts`).
 
 **Entfernt** (ohne Kompatibilitätsschicht)
 - `POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
@@ -5363,6 +5508,23 @@ migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
 - **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
   von #430 für die Begründung; offener Folge-Task.
 
+### `/api/v1/memory`: Paging und 404 für Nicht-Owner (#1853, 2026-11-26)
+
+`middleware/src/routes/memory.ts` — der HTTP-Vertrag der Memorable-Knowledge-Routen:
+
+- **Liste mit Cursor.** `GET /api/v1/memory?limit=&cursor=` liefert `{ …, nextCursor }`.
+  `limit` 1–500 (Default 50), `cursor` ist opak (der `nextCursor` der vorigen Antwort).
+  Nach einer vollen Seite fragt die Route eine Probe-Zeile ab; `nextCursor` ist `null`,
+  wenn danach nichts mehr kommt — die letzte Seite bietet kein leeres „Mehr laden“.
+  Die Seite `/memories` lädt nach. Getragen von `ListMemorableKnowledgeOptions.offset`
+  (plugin-api 1.99.0), beide KG-Backends sortieren mit Tie-Break auf der Id.
+- **Nicht-Owner bekommen 404.** Owner-Prüfungen (Owner hinzufügen/entfernen, Audit)
+  antworten `404 { code: 'memory.not_found' }` statt früher `403 memory.not_an_owner` —
+  dieselbe Antwort wie für eine unbekannte Id, damit die Route nicht verrät, dass ein
+  Eintrag existiert (ADR-0019 Offenlegung „none“, ADR-0104 Fehler-Envelope). Kein neues ADR.
+- **Audit-Aktion `delete_excerpt`** hat Label und Badge in der Web-UI
+  (`web-ui/app/_lib/memoryAuditLabels.ts`).
+
 ---
 
 ## 8. Skills
@@ -5496,6 +5658,12 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `KG_AUTO_MERGE_ENABLED` | Fallback für den Manifest-Schalter `kg_auto_merge_enabled` der Agent Runtime Extras. Gelesen wird die Variable nur, wenn die gespeicherte Plugin-Config das Feld **nicht** enthält (Installationen von vor dem Feld); eine frische Installation bekommt den Manifest-Default `true` in die Config, danach entscheidet der Schalter in der Admin-UI. `false` = Duplikate werden nur gelistet (ab cosine 0.95), nie automatisch aufgelöst. Unset und Feld fehlt = an. |
+### Env-Variablen, die Plugin-Settings seeden (#1858, ADR-0193)
+
+| Variable | Wirkung |
+|---|---|
+| `GRAPH_EMBEDDING_BACKFILL_ENABLED`, `GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES`, `GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE`, `GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS` | Seeden die gleichnamigen Settings (`graph_embedding_backfill_*`) von `@omadia/knowledge-graph-neon`. `bootstrapKnowledgeGraphFromEnv` schreibt nur **gesetzte** Variablen und merkt sich im versteckten Key `_env_seeded`, welche Werte vom Boot stammen (`src/plugins/envSeededConfig.ts`). Ein vom Boot geschriebener Wert folgt der Variable bei jedem Boot (geändert oder, wenn die Variable wegfällt, entfernt → Plugin-Default). Speichert ein Operator den Wert im Store, gewinnt er; eine gesetzte Variable, die er überdeckt, loggt der Boot als `⚠ … is ignored`. Alt-Installationen ohne Marker: Werte gleich dem eingebauten Default (`true`/`5`/`20`/`5`, vom alten Migrationspfad immer geschrieben) zählen als Boot-Werte. Validierung in `config.ts` bleibt (Wert außerhalb des Bereichs stoppt den Boot). |
+| `MEMORY_BACKEND` | Gilt nur, solange auf `/admin/memory-backend` keine Auswahl gespeichert ist. Die gespeicherte Auswahl (`memory_backend`) gewinnt bei **jedem** Boot und wird beim Provider-Wechsel auf den neu installierten Sibling übertragen (#1834, ADR-0192). |
 
 ### Self-Update und Release-Check (#432, #1381)
 
@@ -6043,7 +6211,9 @@ getrennt: sie steuert den Ton relativ zur Modell-Baseline, nicht den Umfang.
 **Pro Agent (Phase 2, Migration `0063_agent_identity_verbosity.sql`):**
 `agent_identities.verbosity` (gleiche fünf Werte, CHECK-Constraint, `NULL` =
 installationsweite Einstellung übernehmen). Gepflegt im Identity-Tab der
-Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` mit
+Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` (seit #1889 /
+ADR-0216 mit optionalem `expected_revision`: veraltete Revision → `409
+identity_revision_conflict`, nichts geschrieben; die Web-UI sendet es immer) mit
 zod-Enum, Store `agentIdentityStore.ts`. Der Registry-Join
 (`AGENT_SELECT` → `identity_verbosity` → `AgentRow.answerVerbosity`) reicht ihn
 als `AgentRuntimeConfig.answerVerbosity` an `buildOrchestratorForAgent`, wo er
@@ -6794,6 +6964,14 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
+  Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
+  pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
+  Zustellungen und Transkripte ohne Komplett-Rewrite pro Lauf (#1753, Rest); Graph-Knoten
+  gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
+  `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
+  `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
 
 - **Fast-Lane-Übergabe als Verifier-Evidenz (ADR-0221, W15-17).** Der Answer-Verifier zählt den
   `fastLaneHandoffHint` nicht als Beleg; Aussagen nur daraus können im `enforce`-Modus als
@@ -10090,6 +10268,16 @@ Zwei Grenzen, die bewusst offen bleiben:
 
 ## Quality Guard: Grenzen stapeln sich, sie überschreiben nicht (#1104, 2026-09-21)
 
+> **Überholt seit #1569/#1610, UI-Text korrigiert mit #1894 (2026-11-26):** Ein Feld, das der
+> Agent selbst setzt (eigene Grenzen bzw. eigene Stufe der Schmeichel-Bremse), **ersetzt** den
+> Quality-Guard-Wert für dieses Feld — `responseGuardProfileFor`
+> (`harness-orchestrator/src/agentQuality.ts`) sagt dem Guard „nichts von dir“ für jedes
+> eigene Feld. Nur offen gelassene Felder kommen vom Guard. Der Limits-Tab bietet dafür
+> „Nicht gesetzt (Vorgabe des Quality Guard gilt)“ getrennt von „Aus“; ein Wechsel des
+> `quality`-Blocks lädt die Registry neu (`PUT /:slug/identity`, `qualityChanged`), weil
+> „nicht gesetzt“ → „aus“ denselben Prompt kompiliert, aber den Guard-Default abschaltet.
+> Der folgende Abschnitt beschreibt den Stand vor #1569.
+
 Boundaries sind an **zwei** unabhängigen Stellen konfigurierbar, und beide landen
 zusammen im System-Prompt — das ist kein Bug, aber es war nirgends dokumentiert.
 Dieser Change ist reine Doku/Copy, kein Verhaltenswechsel.
@@ -11686,6 +11874,55 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
 - **integration-odoo:** eigenes `undici` mit `ODOO_INSECURE_TLS=true` umgeht
   die Egress-Prüfung, als Residualrisiko dokumentiert,
   byte5ai/omadia-integration-odoo#10.
+
+## Routinen, Welle 5: Ausführung (W22) (2026-11-26)
+
+Entscheidungen: [ADR 0240](adr/0240-schedules-run-in-a-named-time-zone.md) (Zeitzone),
+[ADR 0241](adr/0241-field-level-interning-exemption-for-kernel-state-tools.md) (feldweise
+Intern-Ausnahme), [ADR 0242](adr/0242-unattended-turns-for-routines-and-triggers.md)
+(unbeaufsichtigte Turns), [ADR 0243](adr/0243-routine-cost-per-run-and-on-its-trigger.md)
+(Kosten). Routinen-Migrationen 0008–0012.
+
+- **Laufsteuerung** (`src/plugins/routines/routineRunControl.ts`): ein Lauf pro Routine
+  *pro Prozess* (`InFlightRuns`; über Maschinen hinweg nur Cron at-most-once durch den
+  Trigger-Lease), Pause/Löschen bricht ab (`cancelled`, der Pausengrund auf der Zeile bleibt
+  stehen), Timeout-Untergrenze 30 s auch für „Jetzt“. Das Signal reicht als
+  `turnContext.abortSignal` in beide In-Process-Tool-Loops (geprüft zwischen Iterationen, kein
+  harter Abbruch eines hängenden Tool-Calls). Auf dem Subscription-CLI-Pfad stoppt es den
+  CLI-Prozess nicht; nur die Zustellung entfällt.
+- **CLI-Pfad** (#1763): `ChatAgentBundle.externalToolLoop` → Routine läuft über
+  `bundle.agent.chat`; keine Run-Trace, Zähler `null`.
+- **Routen** `/api/v1/routines`: `POST /:id/trigger` antwortet `409 routines.run_in_progress`
+  und `409 routines.agent_unavailable`; DTO-Felder `running`, `agentSlug`, `agentProblem`;
+  Runs `costUsd`, Liste `totalCostUsd`; Vorschau `warnings`.
+- **Bindung an den Agenten per id** (`routineAgentBinding.ts`, Spalte `agent_id`): kein
+  Slug-Nachfolger, kein Default-Agent. Zeilen vor 0010 werden beim nächsten Lauf an den dann
+  aktuellen Slug-Inhaber gebunden (akzeptiertes Restrisiko, wenn der Slug vorher übernommen
+  wurde). End-of-Service pausiert die Routinen des Agenten (`routinesPaused`).
+- **`manage_routine`**: Zone pro Routine (`routines.timezone`, Ersteller-Zone aus
+  `ChatTurnInput.userTimeZone`, sonst `PROACTIVE_TIMEZONE`), `checkCronSchedule` vor dem
+  Speichern, `nextRun` mit Zone im Ergebnis, Ablehnungen als `ToolRefusalError`,
+  `targetEmail` nicht mehr beworben.
+- **`ChatTurnInput.unattended`** (channel-sdk 0.3.18): Routine- und Trigger-Turns; keine
+  interaktiven Tools (auch auf dem CLI-Pfad), kein Card-Router, `UNATTENDED_DIRECTIVE`, kein
+  „recent turns“-Block. Routine-Turns laufen außerhalb jedes Routines-Principals.
+- **Templates**: kein `html`, keine leeren `sections`, static-only ohne Turn, Status `silent`
+  bei `[[nothing]]`, Quellprobleme als Warnungen im Lauf.
+
+## Routinen, Welle 5: Oberfläche, Zustellung, Aufräumen (W23) (2026-11-26)
+
+Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.md).
+
+- **Zustellungen im Web-Chat**: `routineDeliveriesHint` (`routineDeliveryContext.ts`) hängt die
+  letzten drei Zustellungen eines Chats als gekennzeichneten Datenblock an jeden Turn
+  (`routes/chat.ts`, Option `timeZone`). Leere Läufe werden vor der Disclosure erkannt; der
+  Receipt einer Zustellung liegt als `ChatMessage.privacyReceipt` (nur serverseitig).
+- **Aufräumen**: Konto löschen → Routinen weg (`UserRoutinesPort`, `routine_count`); Chat löschen
+  → Routinen pausiert (`ChatRoutinesPort`, `GET /api/chat/sessions/:id/routines`) und
+  Transkripte weg (`purgeSessionTranscripts`); Routine löschen → Transkripte weg. Laufhistorie:
+  200 pro Routine, 90 Tage (`RoutineRunsStore.prune`).
+- **Routinen-Seite**: DTO `timeZone`, `nextRunAt`, `until`; Läufe `?before=`;
+  Fehlertexte über `routineErrors.ts` + `serverErrorCode`.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 

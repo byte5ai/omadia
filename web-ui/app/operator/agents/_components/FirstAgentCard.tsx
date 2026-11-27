@@ -12,6 +12,10 @@ import {
   getFirstRunOnboarding,
   type FirstRunOnboardingDto,
 } from '../../../_lib/agents';
+import { serverCode, useAgentApiErrorText } from './useAgentApiErrorText';
+
+/** Refusals the operator answers by picking another name (the slug comes from it). */
+const RENAME_CODES: ReadonlySet<string> = new Set(['slug_taken', 'slug_state_remains']);
 
 /**
  * #2054 — spec 2042 §7 "Onboarding": a fresh installation starts with no
@@ -24,6 +28,7 @@ export function FirstAgentCard(): React.ReactElement | null {
   const t = useTranslations('agentReach.firstRun');
   const router = useRouter();
   const broadReach = useBroadReachConfirm();
+  const errorText = useAgentApiErrorText();
   const [offer, setOffer] = useState<FirstRunOnboardingDto | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -91,7 +96,12 @@ export function FirstAgentCard(): React.ReactElement | null {
         router.refresh();
       }
     } catch (err) {
-      setError(t('failed', { detail: err instanceof Error ? err.message : String(err) }));
+      // The refusal in the reader's language (slug state, taken slug, bad
+      // field); the name stays in the field so another one can be tried.
+      const reason = errorText(err);
+      const code = serverCode(err);
+      const detail = code !== null && RENAME_CODES.has(code) ? `${reason} ${t('renameHint')}` : reason;
+      setError(t('failed', { detail }));
     } finally {
       setBusy(false);
     }

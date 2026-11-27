@@ -1681,6 +1681,9 @@ export interface ListMemorableKnowledgeOptions {
   limit?: number;
   /** Filter to a single kind. */
   kind?: MemorableKind;
+  /** Skip this many entries of the newest-first list, for paging past
+   *  `limit` (#1853). Default 0. */
+  offset?: number;
 }
 
 // ---------------------------------------------------------------------------

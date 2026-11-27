@@ -22,7 +22,10 @@
 
 import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
-import type { EmbeddingClient } from '@omadia/embeddings';
+import {
+  currentEmbeddingClient,
+  type EmbeddingClientSource,
+} from './liveEmbeddingClient.js';
 import type {
   GraphNode,
   InconsistencyDetectorService,
@@ -38,7 +41,7 @@ export interface InconsistencyDetectorDeps {
   graph: KnowledgeGraph;
   /** Optional. Without an embedder the detector can't find candidates
    *  at all — service still publishes but `detectFor` returns 0/0. */
-  embeddingClient?: EmbeddingClient;
+  embeddingClient?: EmbeddingClientSource;
   /** Optional. Without an Anthropic client the detector skips the
    *  judgement pass — `detectFor` returns the candidate count but
    *  creates 0 inconsistencies. */
@@ -142,7 +145,9 @@ export function createInconsistencyDetector(
   async function detectFor(
     memorableKnowledgeNodeId: string,
   ): Promise<{ candidatesScanned: number; inconsistenciesCreated: number }> {
-    if (!deps.embeddingClient || !deps.llm) {
+    // Resolved per call (#1815): the provider can change while we run.
+    const embeddingClient = currentEmbeddingClient(deps.embeddingClient);
+    if (!embeddingClient || !deps.llm) {
       return { candidatesScanned: 0, inconsistenciesCreated: 0 };
     }
     let source: GraphNode | null;
@@ -175,7 +180,7 @@ export function createInconsistencyDetector(
 
     let queryVector: number[];
     try {
-      queryVector = await deps.embeddingClient.embed(sourceText);
+      queryVector = await embeddingClient.embed(sourceText);
     } catch (err) {
       log(
         `[inconsistency] embed failed for ${memorableKnowledgeNodeId}: ${err instanceof Error ? err.message : String(err)} — skip`,

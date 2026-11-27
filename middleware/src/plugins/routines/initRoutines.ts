@@ -62,6 +62,9 @@ export interface InitRoutinesOptions {
    * The structural type keeps this layer free of a hard import on the
    * orchestrator package.
    */
+  /** #1743 / ADR 0240 — the instance zone (`PROACTIVE_TIMEZONE`) a routine
+   *  gets when its creator's zone is unknown. */
+  defaultTimeZone?: string;
   /** #1598 — see `RoutineRunnerOptions.getOrchestrator`. */
   getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   /**
@@ -84,6 +87,12 @@ export interface InitRoutinesOptions {
    *  initRoutines returns and before `runner.start()` — pass them here
    *  when the kernel knows them upfront. */
   proactiveSenders?: ProactiveSender[];
+  /** #1753 — see `RoutineRunnerOptions.purgeTranscripts`. */
+  purgeTranscripts?: RoutineRunnerOptions['purgeTranscripts'];
+  /** #1776 — see `RoutineRunnerOptions.bookManualRunCost`. */
+  bookManualRunCost?: RoutineRunnerOptions['bookManualRunCost'];
+  /** #1744 / #1745 — see `RoutineRunnerOptions.resolveAgent`. */
+  resolveAgent?: RoutineRunnerOptions['resolveAgent'];
   /** Spec 2042 §5.3 — see `RoutineRunnerOptions.deliveryRefusal`. */
   deliveryRefusal?: RoutineRunnerOptions['deliveryRefusal'];
   log?: (msg: string) => void;
@@ -131,6 +140,9 @@ export async function initRoutines(
     getOrchestrator: opts.getOrchestrator,
     senderRegistry,
     ...(opts.deliveryRefusal ? { deliveryRefusal: opts.deliveryRefusal } : {}),
+    ...(opts.resolveAgent ? { resolveAgent: opts.resolveAgent } : {}),
+    ...(opts.bookManualRunCost ? { bookManualRunCost: opts.bookManualRunCost } : {}),
+    ...(opts.purgeTranscripts ? { purgeTranscripts: opts.purgeTranscripts } : {}),
     log,
     maxActivePerUser: opts.maxActivePerUser,
   });
@@ -145,15 +157,19 @@ export async function initRoutines(
       if (!ctx) return undefined;
       // The CLI runtime has no orchestrator turn scope, only its dispatcher.
       const agentSlug = turnContext.currentAgentSlug() ?? currentDispatchCaller()?.agentSlug;
+      // #1743 — the creator's zone when the channel reported one.
+      const timeZone = turnContext.current()?.userTimeZone;
       // #1907 — the identity the turn's MCP calls act as (session or channel
       // identity, never a client header), so the routine can act as its owner.
       const mcpUserKey = turnContext.current()?.mcpUserKey;
       return {
         ...ctx,
         ...(agentSlug ? { agentSlug } : {}),
+        ...(timeZone ? { timeZone } : {}),
         ...(mcpUserKey ? { mcpUserKey } : {}),
       };
     },
+    ...(opts.defaultTimeZone ? { defaultTimeZone: opts.defaultTimeZone } : {}),
   });
 
   const disposeTool = opts.registerNativeTool(

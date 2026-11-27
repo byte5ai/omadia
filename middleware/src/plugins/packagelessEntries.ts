@@ -48,6 +48,28 @@ export function listPackagelessEntries(
 }
 
 /**
+ * Packages that left the core image and where they live now (#1942). An
+ * instance that used the canvas before v0.201.0 still has these ids in its
+ * registry; the warning says where to install them from.
+ */
+export const RELOCATED_PACKAGES: Readonly<Record<string, string>> = {
+  '@omadia/ui-orchestrator': 'byte5ai/omadia-ui-support',
+  '@omadia/ui-channel': 'byte5ai/omadia-ui-support',
+  '@omadia/canvas-core': 'byte5ai/omadia-ui-support',
+};
+
+function relocationHint(entries: readonly PackagelessEntry[]): string {
+  const bySource = new Map<string, string[]>();
+  for (const entry of entries) {
+    const source = RELOCATED_PACKAGES[entry.id];
+    if (source) bySource.set(source, [...(bySource.get(source) ?? []), entry.id]);
+  }
+  return [...bySource]
+    .map(([source, ids]) => ` ${ids.join(', ')} ${ids.length === 1 ? 'ships' : 'ship'} outside the core image now: install from ${source}.`)
+    .join('');
+}
+
+/**
  * One line per boot, naming every entry. Returns what it reported, so the
  * caller can keep it.
  */
@@ -60,7 +82,7 @@ export function warnPackagelessEntries(
   if (entries.length === 0) return entries;
   const named = entries.map((e) => `${e.id}@${e.installed_version} (${e.registry_status})`).join(', ');
   warn(
-    `[plugins] ${String(entries.length)} installed ${entries.length === 1 ? 'entry has' : 'entries have'} no package and ${entries.length === 1 ? 'is' : 'are'} not running, whatever the registry says: ${named}. Install the package again, or uninstall the entry. Nothing is removed automatically.`,
+    `[plugins] ${String(entries.length)} installed ${entries.length === 1 ? 'entry has' : 'entries have'} no package and ${entries.length === 1 ? 'is' : 'are'} not running, whatever the registry says: ${named}. Install the package again, or uninstall the entry. Nothing is removed automatically.${relocationHint(entries)}`,
   );
   return entries;
 }

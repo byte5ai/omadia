@@ -305,8 +305,8 @@ export async function activate(
   //
   // The gate governs THIS plugin's vector writes, not the whole system:
   // contextRetriever / inconsistencyDetector / mergeCandidateDetector /
-  // topicDetector resolve `embeddingClient` from the registry themselves and
-  // keep calling it. Their vector queries then fail inside the try/catch each
+  // topicDetector resolve `embeddingClient` from the registry themselves, on
+  // every call (#1815, ADR-0194), and keep calling it. Their vector queries then fail inside the try/catch each
   // of them already has, so recall is FTS-only in effect — at the cost of one
   // wasted embed call plus an error log per attempt.
   //

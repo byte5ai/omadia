@@ -373,6 +373,16 @@ function injectiveScopeKeysEnabled(): boolean {
   return process.env['OMADIA_INJECTIVE_SCOPE_KEYS'] === '1';
 }
 
+/**
+ * #1753 — the directory a conversation scope's markdown transcripts live in
+ * (`/memories/sessions/<sanitized scope>/<day>.md`), so a delete can remove
+ * them with the conversation. Undefined for a blank scope (never a shared dir).
+ */
+export function sessionTranscriptDir(scope: string): string | undefined {
+  if (!scope || scope.trim().length === 0) return undefined;
+  return `/memories/sessions/${sanitizeScope(scope)}`;
+}
+
 function sanitizeScope(scope: string): string {
   if (!scope || scope.trim().length === 0) return 'unscoped';
   return scope

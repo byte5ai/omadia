@@ -15,11 +15,17 @@ import {
   switchEmbeddingProvider,
   type EmbeddingCapabilityGap,
   type EmbeddingDedupThresholdResult,
-  type EmbeddingGateState,
   type EmbeddingProviderOption,
   type EmbeddingProviderState,
   type LocalEmbeddingModelState,
 } from '../../_lib/api';
+
+import { GatePanel, TONE_CLASS } from './GatePanel';
+import {
+  DedupThresholdMessage,
+  DedupThresholdProvenanceLine,
+  InstallableProviders,
+} from './EmbeddingProviderNotes';
 
 /**
  * Admin → Embeddings · Provider.
@@ -52,34 +58,6 @@ const POLL_INTERVAL_SECONDS = POLL_INTERVAL_MS / 1000;
 /** While weights are downloading, 10s of nothing reads as "stuck". */
 const DOWNLOAD_POLL_INTERVAL_MS = 2_000;
 
-/** Gate reasons that are progress reports, not failures. Both are published
- *  together with `vectorWritesAllowed: true`. */
-const IN_PROGRESS_REASONS = new Set([
-  'vector-columns-migrated',
-  'stale-vector-clear-complete',
-]);
-const CLEAR_PENDING_REASON = 'stale-vector-clear-pending';
-
-type Tone = 'ok' | 'info' | 'warn' | 'error';
-
-const TONE_CLASS: Readonly<Record<Tone, string>> = {
-  ok: 'border-[color:var(--border)] bg-[color:var(--card)]/40 text-[color:var(--fg-muted)]',
-  info: 'border-[color:var(--accent)]/50 bg-[color:var(--accent)]/8 text-[color:var(--accent)]',
-  warn: 'border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
-  error:
-    'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 text-[color:var(--danger)]',
-};
-
-/** A blocked gate is red; a draining clear is amber; a finished migration or
- *  clear is blue-for-information — never red, because nothing is broken. */
-function gateTone(gate: EmbeddingGateState): Tone {
-  if (gate.reason !== undefined && IN_PROGRESS_REASONS.has(gate.reason)) {
-    return 'info';
-  }
-  if (gate.reason === CLEAR_PENDING_REASON) return 'warn';
-  return gate.vectorWritesAllowed ? 'ok' : 'error';
-}
-
 /**
  * OM-99 — the message key for a missing capability.
  *
@@ -95,6 +73,8 @@ function capabilityGapKey(gap: EmbeddingCapabilityGap | null | undefined): strin
       return 'capabilityMissingCredentials';
     case 'no-active-provider':
       return 'capabilityMissingNoProvider';
+    case 'weights-ready-reactivate':
+      return 'capabilityMissingWeightsReady';
     case 'not-published':
       return 'capabilityMissingNotPublished';
     default:
@@ -139,6 +119,14 @@ function errorCodeOf(err: unknown): string | null {
   }
 }
 
+/** Decimal megabytes, matching the "MB" in the label and the size the
+ *  adapter's store text names (#1839; it divided by 1024 twice, i.e. MiB). */
+const BYTES_PER_MEGABYTE = 1_000_000;
+
+function toMegabytes(bytes: number): number {
+  return Math.round(bytes / BYTES_PER_MEGABYTE);
+}
+
 export default function EmbeddingProviderPage(): React.ReactElement {
   const t = useTranslations('adminEmbeddingProvider');
   const format = useFormatter();
@@ -152,6 +140,8 @@ export default function EmbeddingProviderPage(): React.ReactElement {
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [switchedTo, setSwitchedTo] = useState<string | null>(null);
+  const [switchDedup, setSwitchDedup] =
+    useState<EmbeddingDedupThresholdResult | null>(null);
 
   /**
    * OM-84 follow-up — the keyless adapter's weights. `null` means that adapter
@@ -273,10 +263,12 @@ export default function EmbeddingProviderPage(): React.ReactElement {
     setSwitching(true);
     setSwitchError(null);
     setSwitchedTo(null);
+    setSwitchDedup(null);
     try {
       const result = await switchEmbeddingProvider(target, true);
       setState(result);
       setSwitchedTo(result.switchedTo);
+      setSwitchDedup(result.dedupThreshold ?? null);
       setTarget(null);
       setConfirmed(false);
     } catch (err) {
@@ -377,6 +369,9 @@ export default function EmbeddingProviderPage(): React.ReactElement {
             <p className="mt-3 text-xs text-[color:var(--fg-muted)]">
               {t('autoMigrateHint')}
             </p>
+            <DedupThresholdProvenanceLine
+              provenance={state.dedupThresholdProvenance}
+            />
             <p className="mt-1 text-xs text-[color:var(--fg-muted)]">
               {t('pollingNote', { seconds: POLL_INTERVAL_SECONDS })}
             </p>
@@ -398,7 +393,7 @@ export default function EmbeddingProviderPage(): React.ReactElement {
               <p className="mt-1">
                 {t('localModelBody', {
                   size: format.number(
-                    Math.round(localModel.totalBytes / 1024 / 1024),
+                    toMegabytes(localModel.totalBytes),
                   ),
                 })}
               </p>
@@ -410,10 +405,10 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                 <p data-testid="local-model-progress" className="mt-3">
                   {t('localModelProgress', {
                     done: format.number(
-                      Math.round(localModel.job.downloadedBytes / 1024 / 1024),
+                      toMegabytes(localModel.job.downloadedBytes),
                     ),
                     total: format.number(
-                      Math.round(localModel.job.totalBytes / 1024 / 1024),
+                      toMegabytes(localModel.job.totalBytes),
                     ),
                     file: localModel.job.currentFile ?? '—',
                   })}
@@ -484,6 +479,16 @@ export default function EmbeddingProviderPage(): React.ReactElement {
               className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}
             >
               {t(capabilityGapKey(state.capabilityGap))}
+              {/* #1857 — reactivating is the whole fix here, so the box offers
+                  it. The "weights ready" card below already does when the
+                  download finished while the page was open. */}
+              {state.capabilityGap === 'weights-ready-reactivate' &&
+                localModel?.job.state !== 'done' && (
+                  <ReactivateControl
+                    onReactivate={onReactivate}
+                    busy={reactivating}
+                  />
+                )}
             </section>
           )}
 
@@ -545,19 +550,7 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                   ? t('reactivatePublished')
                   : t('reactivateNotPublished')}
               </p>
-              {dedupResult !== null && dedupResult.applied && (
-                <p className="mt-1" data-testid="reactivate-dedup">
-                  {t('dedupApplied', { value: dedupResult.value ?? 0 })}
-                </p>
-              )}
-              {dedupResult !== null && dedupResult.reason === 'operator-set' && (
-                <p className="mt-1" data-testid="reactivate-dedup">
-                  {t('dedupOperatorSet', {
-                    current: dedupResult.previous ?? '',
-                    recommended: dedupResult.value ?? 0,
-                  })}
-                </p>
-              )}
+              <DedupThresholdMessage result={dedupResult} testId="reactivate-dedup" />
             </section>
           )}
 
@@ -718,6 +711,10 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                 </div>
               </>
             )}
+            <InstallableProviders
+              providers={state.installableProviders}
+              activeProviderId={state.activeProviderId}
+            />
           </section>
 
           {switchError !== null && (
@@ -732,71 +729,11 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                 {t('switchedTitle', { provider: switchedTo })}
               </p>
               <p className="mt-1">{t('switchedHint')}</p>
+              <DedupThresholdMessage result={switchDedup} testId="switch-dedup" />
             </section>
           )}
         </>
       )}
     </main>
-  );
-}
-
-function GatePanel({
-  gate,
-  card,
-  heading,
-  dt,
-}: {
-  gate: EmbeddingGateState | null;
-  card: string;
-  heading: string;
-  dt: string;
-}): React.ReactElement {
-  const t = useTranslations('adminEmbeddingProvider');
-  if (gate === null) {
-    return (
-      <section className={card}>
-        <h2 className={heading}>{t('gateTitle')}</h2>
-        <p className="text-sm text-[color:var(--fg-muted)]">
-          {t('gateUnavailable')}
-        </p>
-      </section>
-    );
-  }
-  const tone = gateTone(gate);
-  return (
-    <section className={`mb-6 rounded-lg border p-4 ${TONE_CLASS[tone]}`}>
-      <h2 className={heading}>{t('gateTitle')}</h2>
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className={dt}>{t('gateWrites')}</dt>
-        <dd>
-          {gate.vectorWritesAllowed
-            ? t('gateWritesAllowed')
-            : t('gateWritesBlocked')}
-        </dd>
-        <dt className={dt}>{t('gateStatus')}</dt>
-        <dd className="font-mono">{gate.status}</dd>
-        {gate.reason !== undefined && (
-          <>
-            <dt className={dt}>{t('gateReason')}</dt>
-            <dd className="font-mono">{gate.reason}</dd>
-          </>
-        )}
-        {gate.detail !== undefined && (
-          <>
-            <dt className={dt}>{t('gateDetail')}</dt>
-            <dd>{gate.detail}</dd>
-          </>
-        )}
-      </dl>
-      {gate.reason === 'vector-columns-migrated' && (
-        <p className="mt-3 text-sm">{t('gateMigrating')}</p>
-      )}
-      {gate.reason === 'stale-vector-clear-complete' && (
-        <p className="mt-3 text-sm">{t('gateClearComplete')}</p>
-      )}
-      {gate.reason === CLEAR_PENDING_REASON && (
-        <p className="mt-3 text-sm">{t('gateClearPending')}</p>
-      )}
-    </section>
   );
 }

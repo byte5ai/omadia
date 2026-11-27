@@ -55,6 +55,17 @@ Additive.
 - `extractRecallSearchTerms` keeps two-letter acronyms written in capitals ("IT",
   "HR", "EU"); lowercase two-letter words stay out.
 
+## 1.104.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`ListMemorableKnowledgeOptions.offset`** (optional): skip that many
+  entries of the newest-first list, so `listMemorableKnowledgeFor` can page
+  past `limit` (#1853). Both bundled providers implement it and break ties on
+  equal `created_at` by id, so pages do not overlap.
+
 ## 1.102.0 — 2026-11-26
 
 Additive.

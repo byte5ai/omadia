@@ -8,7 +8,7 @@ import type {
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
 import { turnContext, today, webAccountOrigin } from '@omadia/orchestrator';
-import { runInExecutionContext } from '@omadia/usage-telemetry';
+import { meterUsageCost, runInExecutionContext } from '@omadia/usage-telemetry';
 import {
   SYSTEM_SPEAKER,
   type AgentSpeaker,
@@ -23,9 +23,21 @@ import {
   collectRequiredSlotIds,
   parseSlotResponse,
 } from './narrativeSlotContract.js';
-import type { RoutineOutputTemplate } from './routineOutputTemplate.js';
+import { isStaticOnlyTemplate, type RoutineOutputTemplate } from './routineOutputTemplate.js';
+import { NOTHING_TO_SAY } from '../../triggers/kernelExecutors.js';
 import { renderRoutineTemplate } from './routineTemplateRenderer.js';
 import { routineTurnContext } from './routineTurnContext.js';
+import type { RoutineAgentResolution } from './routineAgentBinding.js';
+import { formatInTimeZone, UTC_ZONE } from '../../scheduler/zonedCron.js';
+import {
+  InFlightRuns,
+  RoutineRunCancelledError,
+  RoutineRunInProgressError,
+  abortMessage,
+  abortedStatus,
+  effectiveTimeoutMs,
+  timeoutSignal,
+} from './routineRunControl.js';
 import { WEB_ROUTINE_CHANNEL } from './webChatProactiveSender.js';
 
 /**
@@ -39,6 +51,8 @@ export interface JobSchedulerLike {
     agentId: string,
     spec: JobSpec,
     handler: JobHandler,
+    /** #1743 — the zone the cron pattern is evaluated in (ADR 0240); absent = UTC. */
+    opts?: { readonly timeZone?: string },
   ): () => void;
   stopForPlugin(agentId: string): void;
 }
@@ -73,6 +87,15 @@ export interface OrchestratorLike {
   readonly emitter?: AnswerEmitter;
   /** #2045 — the agent the routine's answers are from. */
   readonly speaker?: AgentSpeaker;
+  /**
+   * #1763 — present when the agent's tool loop runs outside the kernel (the
+   * subscription CLI): the run goes through the agent's own chat agent, like
+   * a chat turn on it, instead of `runTurn` on its tool-less in-process
+   * orchestrator. Its answer is already published (identity guard, speaker),
+   * so the runner does not pass it through the emitter again. The run keeps
+   * no run trace on this path; tool calls and iterations stay unknown.
+   */
+  readonly chat?: (input: ChatTurnInput) => Promise<SemanticAnswer>;
 }
 
 /**
@@ -236,9 +259,13 @@ export class UnknownChannelError extends Error {
 }
 
 export class ChatAgentUnavailableError extends Error {
-  constructor() {
+  /** #1744 — `problem` names why no agent may run the routine (its binding);
+   *  absent = the agent exists but no chat agent is published (no key). */
+  constructor(problem?: string) {
     super(
-      'chat agent unavailable — configure the LLM API key in Settings to enable routine runs',
+      problem
+        ? `no agent can run this routine: ${problem}`
+        : 'chat agent unavailable — configure the LLM API key in Settings to enable routine runs',
     );
     this.name = 'ChatAgentUnavailableError';
   }
@@ -278,6 +305,22 @@ export interface RoutineRunnerOptions {
    * before the agent turn; a refusal pauses the routine like a gone target.
    */
   deliveryRefusal?: (routine: { agentSlug: string | null; channel: string; conversationRef: unknown }) => string | undefined;
+  /**
+   * #1744 / #1745 — which agent runs a routine (bound by id), or why none
+   * may (`routineAgentBinding.ts`). Absent = no binding check (registry-less
+   * boot, tests): the slug alone resolves the orchestrator.
+   */
+  resolveAgent?: (routine: Pick<Routine, 'agentSlug' | 'agentId'>) => RoutineAgentResolution;
+  /**
+   * #1776 — a manual run's cost goes onto the routine's trigger (the operator
+   * trigger view, ADR 0020); a cron run's cost is settled by its firing.
+   */
+  bookManualRunCost?: (routineId: string, costUsd: number) => Promise<void>;
+  /**
+   * #1753 — remove the markdown transcripts of a conversation scope
+   * (`routine:<id>`) when the routine is deleted. Absent = nothing to remove.
+   */
+  purgeTranscripts?: (sessionScope: string) => Promise<void>;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
   maxActivePerUser?: number;
@@ -327,11 +370,16 @@ export class RoutineRunner {
   private readonly scheduler: JobSchedulerLike;
   private readonly getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   private readonly deliveryRefusal: RoutineRunnerOptions['deliveryRefusal'];
+  private readonly resolveAgent: RoutineRunnerOptions['resolveAgent'];
+  private readonly bookManualRunCost: RoutineRunnerOptions['bookManualRunCost'];
+  private readonly purgeTranscripts: RoutineRunnerOptions['purgeTranscripts'];
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
   /** Map from routine id → dispose fn returned by scheduler.register. */
   private readonly disposers = new Map<string, () => void>();
+  /** #1748 — one run per routine in flight, cron and manual alike. */
+  private readonly inFlight = new InFlightRuns();
   private started = false;
 
   constructor(opts: RoutineRunnerOptions) {
@@ -341,6 +389,9 @@ export class RoutineRunner {
     this.getOrchestrator = opts.getOrchestrator;
     this.senders = opts.senderRegistry;
     this.deliveryRefusal = opts.deliveryRefusal;
+    this.resolveAgent = opts.resolveAgent;
+    this.bookManualRunCost = opts.bookManualRunCost;
+    this.purgeTranscripts = opts.purgeTranscripts;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
       opts.maxActivePerUser ?? DEFAULT_MAX_ACTIVE_PER_USER;
@@ -398,8 +449,14 @@ export class RoutineRunner {
     if (routine.status !== 'active') {
       throw new RoutineNotActiveError(id, routine.name, routine.status);
     }
-    const controller = new AbortController();
-    await this.runOnce(routine, controller.signal, 'manual');
+    if (this.inFlight.has(id)) throw new RoutineRunInProgressError(id);
+    // #1747 — a manual run gets the same timeout a scheduled one does.
+    const timeout = timeoutSignal(effectiveTimeoutMs(routine.timeoutMs));
+    try {
+      await this.runOnce(routine, timeout.signal, 'manual');
+    } finally {
+      timeout.clear();
+    }
     // Re-read so caller gets the updated last_run_* fields.
     const updated = await this.store.get(id);
     return updated ?? routine;
@@ -416,6 +473,11 @@ export class RoutineRunner {
     return row ?? null;
   }
 
+  /** #1748 — whether a run of the routine is in flight in this process. */
+  isRunning(id: string): boolean {
+    return this.inFlight.has(id);
+  }
+
   /**
    * Whether a chat agent currently resolves. The trigger endpoint checks
    * this to return a synchronous 503 instead of accepting a manual run
@@ -426,6 +488,68 @@ export class RoutineRunner {
   chatAgentAvailable(agentSlug: string | null = null): boolean {
     // #1598 — asked for the routine's OWN orchestrator, the one its run uses.
     return this.getOrchestrator(agentSlug) !== undefined;
+  }
+
+  /** #1744 — why no agent may run the routine, or undefined when its agent can. */
+  agentProblemOf(routine: Pick<Routine, 'agentSlug' | 'agentId'>): string | undefined {
+    const bound = this.resolveAgent?.(routine);
+    return bound && !bound.ok ? bound.problem : undefined;
+  }
+
+  /** #1757 — the active routines that deliver into a web chat (for the close confirmation). */
+  async routinesOfWebChat(sessionId: string): Promise<Routine[]> {
+    return this.store.listActiveForWebChat(sessionId);
+  }
+
+  /**
+   * #1757 — the web chat is deleted: its routines are paused with `message`
+   * now, instead of each failing its next delivery pre-check first.
+   */
+  async pauseRoutinesOfWebChat(sessionId: string, message: string): Promise<number> {
+    let paused = 0;
+    for (const r of await this.store.listActiveForWebChat(sessionId)) {
+      if (!(await this.store.markExpired(r.id, message))) continue;
+      this.unregisterFromScheduler(r.id);
+      this.inFlight.cancel(r.id, 'paused');
+      paused += 1;
+    }
+    return paused;
+  }
+
+  /** #1765 — how many routines a user owns (any status), for the delete confirmation. */
+  async countRoutinesOfUser(userId: string): Promise<number> {
+    return (await this.store.listIdsForUserId(userId)).length;
+  }
+
+  /**
+   * #1765 — the user's account is deleted: their routines go with it (the
+   * system acting, so unscoped), their triggers end and a run in flight is
+   * cancelled. Returns how many were deleted.
+   */
+  async deleteRoutinesOfUser(userId: string): Promise<number> {
+    let deleted = 0;
+    for (const id of await this.store.listIdsForUserId(userId)) {
+      if (!(await this.store.delete(id))) continue;
+      this.unregisterFromScheduler(id);
+      this.inFlight.cancel(id, 'deleted');
+      await this.removeTranscripts(id);
+      deleted += 1;
+    }
+    return deleted;
+  }
+
+  /**
+   * #1744 — the agent ended service (disabled or deleted): its active
+   * routines are paused with `message` (the owner reads it on the routine),
+   * unregistered, and a run in flight is cancelled. Returns how many.
+   */
+  async pauseRoutinesOfAgent(agent: { readonly id: string; readonly slug: string }, message: string): Promise<number> {
+    const ids = await this.store.pauseForAgent(agent.id, agent.slug, message);
+    for (const id of ids) {
+      this.unregisterFromScheduler(id);
+      this.inFlight.cancel(id, 'paused');
+    }
+    return ids.length;
   }
 
   /**
@@ -483,9 +607,13 @@ export class RoutineRunner {
       throw new RoutineQuotaExceededError(this.maxActivePerUser);
     }
 
+    // #1745 — bound to the agent that creates it, by id.
+    const creator = input.agentSlug ? this.resolveAgent?.({ agentSlug: input.agentSlug, agentId: null }) : undefined;
+    const bound = creator?.ok && creator.agent.id ? { ...input, agentId: creator.agent.id } : input;
+
     let row: Routine;
     try {
-      row = await this.store.create(input);
+      row = await this.store.create(bound);
     } catch (err) {
       // Issue #506: a retried `create` for the same (tenant, user, name) —
       // e.g. the model or user retrying after the turn's own confirmation
@@ -561,16 +689,24 @@ export class RoutineRunner {
     // confirm the id.
     if (!updated) throw new RoutineNotFoundError(id);
     this.unregisterFromScheduler(id);
+    // #1746 — a run in flight stops at its next step and delivers nothing.
+    this.inFlight.cancel(id, 'paused');
     return updated;
   }
 
   async resumeRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
+    // #1746 — resuming a routine that is already active and armed changes
+    // nothing: re-registering would settle and re-create its trigger under a
+    // run that is in flight.
+    const before = await this.store.get(id);
+    const alreadyRunning = before?.status === 'active' && this.disposers.has(id);
     let updated = await this.store.setStatus(
       id,
       'active',
       ownerFilter(scope),
     );
     if (!updated) throw new RoutineNotFoundError(id);
+    if (alreadyRunning && !(updated.until && updated.until.getTime() <= Date.now())) return updated;
     // #2082 — resuming a routine past its deadline is its owner's choice to
     // go on: a new period starts when it is scheduled.
     if (updated.until && updated.until.getTime() <= Date.now()) {
@@ -611,7 +747,13 @@ export class RoutineRunner {
    */
   async deleteRoutine(id: string, scope: RoutineActorScope): Promise<boolean> {
     const deleted = await this.store.delete(id, ownerFilter(scope));
-    if (deleted) this.unregisterFromScheduler(id);
+    if (deleted) {
+      this.unregisterFromScheduler(id);
+      // #1746 — the run in flight stops spending; its history row goes with
+      // the routine (`routine_runs` cascades), like the rest of its history.
+      this.inFlight.cancel(id, 'deleted');
+      await this.removeTranscripts(id);
+    }
     return deleted;
   }
 
@@ -636,6 +778,13 @@ export class RoutineRunner {
 
   // --- internals -----------------------------------------------------------
 
+  /** #1753 — a deleted routine's transcripts go with it; a failure is logged. */
+  private async removeTranscripts(id: string): Promise<void> {
+    await this.purgeTranscripts?.(`routine:${id}`).catch((err: unknown) => {
+      this.log(`[routines/runner] removing the transcripts of routine ${id} failed: ${errMsg(err)}`);
+    });
+  }
+
   private registerInScheduler(routine: Routine): void {
     if (this.disposers.has(routine.id)) {
       // Already registered (resume after a no-op pause). Drop the old one
@@ -645,7 +794,7 @@ export class RoutineRunner {
     const spec: JobSpec = {
       name: routine.id,
       schedule: { cron: routine.cron },
-      timeoutMs: routine.timeoutMs,
+      timeoutMs: effectiveTimeoutMs(routine.timeoutMs),
       // skip a tick if a previous run is still in flight — long-running
       // agent turns shouldn't queue up duplicates.
       overlap: 'skip',
@@ -654,6 +803,7 @@ export class RoutineRunner {
       ROUTINES_AGENT_ID,
       spec,
       (signal) => this.runOnce(routine, signal, 'cron'),
+      routine.timezone ? { timeZone: routine.timezone } : {},
     );
     this.disposers.set(routine.id, dispose);
   }
@@ -665,10 +815,33 @@ export class RoutineRunner {
     this.disposers.delete(id);
   }
 
+  /**
+   * #1748 — one run per routine at a time. A cron firing while a run is in
+   * flight is skipped (the trigger's at-most-once occurrence is spent, no
+   * second turn is paid for); a manual one is refused before it gets here.
+   */
   private async runOnce(
     routine: Routine,
     signal: AbortSignal,
     trigger: RoutineRunTrigger = 'cron',
+  ): Promise<void> {
+    const own = this.inFlight.acquire(routine.id);
+    if (!own) {
+      if (trigger === 'manual') throw new RoutineRunInProgressError(routine.id);
+      this.log(`[routines/runner] routine ${routine.id} ('${routine.name}') still running; ${trigger} firing skipped`);
+      return;
+    }
+    try {
+      await this.runLocked(routine, AbortSignal.any([signal, own.signal]), trigger);
+    } finally {
+      this.inFlight.release(routine.id, own);
+    }
+  }
+
+  private async runLocked(
+    routine: Routine,
+    signal: AbortSignal,
+    trigger: RoutineRunTrigger,
   ): Promise<void> {
     const startedAt = new Date();
     let status: RoutineRunStatus = 'ok';
@@ -682,6 +855,11 @@ export class RoutineRunner {
     // run: nothing is recorded. Recording it as `ok` overwrote the
     // `last_run_error` that explains an auto-pause (deleted web chat).
     let skipped = false;
+    // #1763 — a run through the agent's chat agent reports no tool calls or
+    // iterations; they are recorded as unknown, not as zero.
+    let countsKnown = true;
+    // #1776 — what this run cost (the turn and the emitter's guard).
+    let costUsd: number | null = null;
 
     try {
       // Re-read the row before invoking. A pause/delete that landed
@@ -702,6 +880,15 @@ export class RoutineRunner {
       // chatAgent@^1) are dark too, so a sender-first check would record
       // the misleading 'no proactive sender' error when the actual fix
       // is configuring the key.
+      // #1744 / #1745 — the agent the routine is bound to, by id; never one
+      // that took over its slug, never the instance default.
+      const bound = this.resolveAgent?.(fresh);
+      if (bound && !bound.ok) throw new ChatAgentUnavailableError(bound.problem);
+      if (bound?.ok && !fresh.agentId && bound.agent.id) {
+        await this.store.bindAgentId(fresh.id, bound.agent.id).catch((err: unknown) => {
+          this.log(`[routines/runner] binding routine ${fresh.id} to agent ${bound.agent.id} failed: ${errMsg(err)}`);
+        });
+      }
       const orchestrator = this.getOrchestrator(fresh.agentSlug ?? null);
       if (!orchestrator) {
         throw new ChatAgentUnavailableError();
@@ -723,23 +910,11 @@ export class RoutineRunner {
       if (refused) throw new OwnBotDeliveryRefusedError(refused);
 
       if (signal.aborted) {
-        status = 'timeout';
-        errorMessage = signal.reason instanceof Error
-          ? signal.reason.message
-          : 'aborted before invocation';
+        status = abortedStatus(signal);
+        errorMessage = abortMessage(signal, 'aborted before invocation');
         return;
       }
 
-      // Use `runTurn` (not the higher-level `chat`) so we keep the per-
-      // turn `runTrace` for the call-stack viewer. `toSemanticAnswer`
-      // converts the kernel-shaped result into the channel-agnostic
-      // outgoing-message contract the proactive sender expects.
-      //
-      // Phase C.2 — for routines with an output_template, install a raw
-      // tool-result capture so the template renderer (C.4/C.5) can pull
-      // data sections directly from the tool handler's output instead
-      // of letting the LLM author markdown rows. Non-templated routines
-      // skip the wrap entirely — byte-identical to pre-C.2 behaviour.
       // Spec 2042 §5.10 — the run (its security screener before the turn
       // scope, the turn, the emitter's guard) is the turn of the agent that
       // actually runs it, scheduled or "run now", whatever context the
@@ -747,21 +922,63 @@ export class RoutineRunner {
       const slug = orchestrator.speaker?.slug;
       const asAgentTurn = <T>(work: () => Promise<T>): Promise<T> =>
         slug ? runInExecutionContext({ kind: 'agent_turn', ownerId: slug, agentSlug: slug }, work) : work();
-      const turn = await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator));
+      // A turn that throws still spent what it spent: measured around the catch.
+      const metered = await meterUsageCost(async () => {
+        try {
+          return { turn: await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator, signal)) };
+        } catch (err) {
+          return { failed: err };
+        }
+      });
+      costUsd = metered.costUsd;
+      if ('failed' in metered.value) throw metered.value.failed;
+      const turn = metered.value.turn;
       result = turn.result;
       cardBody = turn.cardBody;
+      countsKnown = turn.viaChatAgent !== true && turn.published === undefined;
+      // #1761 — delivered, but the template could not show everything.
+      if (turn.warnings && turn.warnings.length > 0) {
+        errorMessage = `template: ${turn.warnings.join('; ')}`;
+      }
 
       if (signal.aborted) {
-        // Agent finished after the timer fired but before send. Skip
-        // delivery — the user shouldn't get late noise — but record the
-        // timeout so they can extend `timeoutMs` if needed.
-        status = 'timeout';
-        errorMessage = 'agent finished after timeout, delivery skipped';
+        // Agent finished after the timer fired (or the routine was paused or
+        // deleted) but before send. Skip delivery — the user shouldn't get
+        // late noise — and record why.
+        status = abortedStatus(signal);
+        errorMessage = status === 'timeout'
+          ? 'agent finished after timeout, delivery skipped'
+          : abortMessage(signal, 'run cancelled, delivery skipped');
+        return;
+      }
+      // #1760 — nothing worth telling: a successful run without a delivery.
+      if (turn.silent) {
+        status = 'silent';
+        return;
+      }
+      // #1746 — the routine may have been paused or deleted on another
+      // instance (or by the harness) while the turn ran: read it once more.
+      const current = await this.store.get(routine.id);
+      if (!current || current.status !== 'active') {
+        status = 'cancelled';
+        errorMessage = new RoutineRunCancelledError(current ? 'paused' : 'deleted').message;
         return;
       }
 
+      // #1766 — an empty answer is checked on the model's own text, before
+      // the AI disclosure is folded in: a disclosure line alone is not an answer.
+      if (!turn.published && result.answer.trim() === '' && !cardBody) {
+        throw new Error('routine produced an empty answer; nothing was delivered');
+      }
       const finished = result;
-      const answer = await asAgentTurn(() => publishRoutineAnswer(orchestrator, finished));
+      const published = turn.published
+        ? { value: turn.published, costUsd: 0 }
+        : await meterUsageCost(() => asAgentTurn(() => publishRoutineAnswer(orchestrator, finished)));
+      costUsd += published.costUsd;
+      const answer = published.value;
+      // A withheld answer is a notice: the template's card must not go out
+      // beside it (it carries the very data the notice withholds).
+      if (isWithheld(answer)) cardBody = undefined;
       await sender.send({
         conversationRef: fresh.conversationRef,
         message: answer,
@@ -773,8 +990,8 @@ export class RoutineRunner {
         ...(cardBody ? { cardBody } : {}),
       });
     } catch (err) {
-      status = signal.aborted ? 'timeout' : 'error';
-      errorMessage = errMsg(err);
+      status = signal.aborted ? abortedStatus(signal) : 'error';
+      errorMessage = signal.aborted ? abortMessage(signal, errMsg(err)) : errMsg(err);
       if (err instanceof ProactiveTargetGoneError) {
         errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage);
       } else if (err instanceof OwnBotDeliveryRefusedError) {
@@ -784,7 +1001,13 @@ export class RoutineRunner {
         `[routines/runner] routine ${routine.id} ('${routine.name}') ${status}: ${errorMessage}`,
       );
     } finally {
-      if (!skipped) {
+      // #1746 — a routine deleted mid-run took its history with it; there is
+      // no row left to attach this run to.
+      const deleted = signal.reason instanceof RoutineRunCancelledError && signal.reason.cancelCause === 'deleted';
+      if (deleted) {
+        this.log(`[routines/runner] routine ${routine.id} ('${routine.name}') was deleted during the run; no run row written`);
+      }
+      if (!skipped && !deleted) {
         const finishedAt = new Date();
 
         // Append-only per-run history with full agentic trace. Failures
@@ -800,19 +1023,29 @@ export class RoutineRunner {
           errorMessage,
           prompt,
           answer: result?.answer ?? null,
-          iterations: result?.iterations ?? null,
-          toolCalls: result?.toolCalls ?? null,
+          iterations: countsKnown ? (result?.iterations ?? null) : null,
+          toolCalls: countsKnown ? (result?.toolCalls ?? null) : null,
           runTrace: result?.runTrace ?? null,
+          costUsd,
         });
+        if (trigger === 'manual' && costUsd !== null && costUsd > 0) {
+          await this.bookManualRunCost?.(routine.id, costUsd).catch((err: unknown) => {
+            this.log(`[routines/runner] booking the manual run cost of ${routine.id} failed: ${errMsg(err)}`);
+          });
+        }
 
         // Backwards-compat: keep updating last_run_* on the routines row
         // so the existing operator-UI tabular row keeps working without
-        // having to join into routine_runs.
-        await this.store.recordRun({
-          id: routine.id,
-          status,
-          error: errorMessage,
-        });
+        // having to join into routine_runs. Not for a cancelled run: whoever
+        // paused the routine wrote why on the row (an agent that ended
+        // service, the owner), and the run's own note must not replace it.
+        if (status !== 'cancelled') {
+          await this.store.recordRun({
+            id: routine.id,
+            status,
+            error: errorMessage,
+          });
+        }
       }
     }
   }
@@ -884,10 +1117,29 @@ export class RoutineRunner {
     // re-resolved) so one run never straddles two orchestrator instances
     // across a mid-run key rotation.
     orchestrator: OrchestratorLike,
-  ): Promise<{
-    readonly result: ChatTurnResult;
-    readonly cardBody?: readonly unknown[];
-  }> {
+    // #1747 — reaches the turn through `turnContext.abortSignal`, so a
+    // timeout, pause or delete stops the tool loop at its next iteration.
+    signal: AbortSignal,
+  ): Promise<RoutineTurn> {
+    const input = (userMessage: string): ChatTurnInput => ({
+      userMessage,
+      userId: routine.userId,
+      sessionScope: `routine:${routine.id}`,
+      // #1774 / ADR 0182 — a web routine runs in its owner's one-person room.
+      ...routineOrigin(routine),
+      // #1770 / #1771 / ADR 0242 — nobody is present: no interactive tools,
+      // no earlier runs as trusted context; the run knows its time and zone.
+      unattended: true,
+      extraSystemHint: routineRunHint(routine, new Date()),
+    });
+    if (routine.outputTemplate !== null && isStaticOnlyTemplate(routine.outputTemplate)) {
+      // #1760 — nothing for a model to do: deliver the text, skip the paid turn.
+      return this.composeTemplatedAnswer(routine, routine.outputTemplate, new Map(), {
+        answer: '',
+        toolCalls: 0,
+        iterations: 0,
+      });
+    }
     if (routine.outputTemplate === null) {
       // The scope is deliberate, and it must match the templated branch below.
       // `orchestrator.runTurn` reads `turnContext.current()` as its parent and
@@ -897,17 +1149,13 @@ export class RoutineRunner {
       // templated branch, which does open one, would behave differently for the
       // same routine. Same routine, same owner, two identities, decided by
       // whether an output template happens to be configured.
-      const result = await turnContext.run(
-        routineTurnScope(routine),
-        () =>
-          orchestrator.runTurn({
-            userMessage: routine.prompt,
-            userId: routine.userId,
-            sessionScope: `routine:${routine.id}`,
-            ...routineOrigin(routine),
-          }),
+      const plain = await routineTurnContext.outside(() =>
+        turnContext.run(
+          { ...routineTurnScope(routine), abortSignal: signal },
+          () => runAgentTurn(orchestrator, input(routine.prompt)),
+        ),
       );
-      return { result };
+      return isNothingToSay(plain.result.answer) ? { ...plain, silent: true } : plain;
     }
 
     const template = routine.outputTemplate;
@@ -923,7 +1171,7 @@ export class RoutineRunner {
       rawToolResults.set(toolName, rawResult);
     };
 
-    const llmResult = await routineTurnContext.withRawToolResults(
+    const llmTurn = await routineTurnContext.outside(() => routineTurnContext.withRawToolResults(
       rawToolResults,
       () =>
         turnContext.run(
@@ -934,23 +1182,28 @@ export class RoutineRunner {
             // analogous to `chatParticipants` + `privacyHandle`).
             ...routineTurnScope(routine),
             captureRawToolResult,
+            abortSignal: signal,
           },
-          () =>
-            orchestrator.runTurn({
-              userMessage: augmentedPrompt,
-              userId: routine.userId,
-              sessionScope: `routine:${routine.id}`,
-              ...routineOrigin(routine),
-            }),
+          () => runAgentTurn(orchestrator, input(augmentedPrompt)),
         ),
-    );
+    ));
 
-    return this.composeTemplatedAnswer(
+    if (isNothingToSay(llmTurn.result.answer)) return { ...llmTurn, silent: true };
+    const composed = this.composeTemplatedAnswer(
       routine,
       template,
       rawToolResults,
-      llmResult,
+      llmTurn.result,
     );
+    if (!llmTurn.published) return composed;
+    // The chat-agent path (#1763) published the model's slot JSON. Withheld
+    // there (identity guard, discretion): the notice goes out as it is, never
+    // the rendered template or its card. Otherwise the rendered template is
+    // what goes out, and it passes the emitter like on the in-process path.
+    if (isWithheld(llmTurn.published)) {
+      return { result: llmTurn.result, published: llmTurn.published, viaChatAgent: true };
+    }
+    return { ...composed, viaChatAgent: true };
   }
 
   /**
@@ -980,19 +1233,21 @@ export class RoutineRunner {
     template: RoutineOutputTemplate,
     rawToolResults: ReadonlyMap<string, unknown>,
     llmResult: ChatTurnResult,
-  ): {
-    readonly result: ChatTurnResult;
-    readonly cardBody?: readonly unknown[];
-  } {
-    const parsed = parseSlotResponse(llmResult.answer, template);
+  ): RoutineTurn {
+    const warnings: string[] = [];
+    const required = collectRequiredSlotIds(template);
+    const parsed = required.length > 0 ? parseSlotResponse(llmResult.answer, template) : undefined;
     let slots: Readonly<Record<string, string>>;
-    if (parsed.ok) {
-      slots = parsed.value.slots;
+    if (!parsed || parsed.ok) {
+      slots = parsed?.ok ? parsed.value.slots : emptySlotsFor(template);
     } else {
       this.log(
-        `[routines/runner] routine ${routine.id} ('${routine.name}') slot-parse failed: ${parsed.reason} — falling back to empty slots`,
+        `[routines/runner] routine ${routine.id} ('${routine.name}') slot-parse failed: ${parsed.reason} — keeping the slots it did write`,
       );
-      slots = emptySlotsFor(template);
+      // #1760 — like the preview: a slot the model did not write renders
+      // empty, the ones it wrote stay.
+      slots = { ...emptySlotsFor(template), ...salvageSlots(llmResult.answer) };
+      warnings.push(`the model's slot response was incomplete (${parsed.reason}); missing slots are empty`);
     }
     const rendered = renderRoutineTemplate({
       template,
@@ -1003,10 +1258,12 @@ export class RoutineRunner {
       this.log(
         `[routines/runner] routine ${routine.id} ('${routine.name}') template render failed: ${rendered.reason} — sending LLM answer verbatim`,
       );
-      return { result: llmResult };
+      return { result: llmResult, warnings: [`the template could not be rendered (${rendered.reason}); the model's answer was sent instead`] };
     }
+    warnings.push(...rendered.warnings);
+    const withWarnings = warnings.length > 0 ? { warnings } : {};
     if (rendered.format === 'markdown') {
-      return { result: { ...llmResult, answer: rendered.text } };
+      return { result: { ...llmResult, answer: rendered.text }, ...withWarnings };
     }
     // adaptive-card: produce a markdown fallback so non-card channels
     // still receive a readable `text` body, and side-channel the items
@@ -1023,8 +1280,81 @@ export class RoutineRunner {
     return {
       result: { ...llmResult, answer: fallbackText },
       cardBody: rendered.items,
+      ...withWarnings,
     };
   }
+}
+
+/**
+ * #1743 / #1770 — what a routine run is told about itself: that it is a
+ * scheduled run and the current time in the routine's zone (the turn context
+ * carries only the date). Kernel-written, no user text.
+ */
+export function routineRunHint(routine: Pick<Routine, 'timezone'>, now: Date): string {
+  const zone = routine.timezone ?? UTC_ZONE;
+  return (
+    `This is a scheduled run of a routine. Current time: ${formatInTimeZone(now, zone)}. ` +
+    `If the routine asks to report only under a condition and it is not met, answer exactly ${NOTHING_TO_SAY} and nothing is sent.`
+  );
+}
+
+/** What one routine turn produced. */
+interface RoutineTurn {
+  readonly result: ChatTurnResult;
+  readonly cardBody?: readonly unknown[];
+  /**
+   * #1763 — the answer as the agent's chat agent already published it; set
+   * only on that path, where the runner must not publish it again.
+   */
+  readonly published?: SemanticAnswer;
+  /** #1763 — the turn ran through the agent's chat agent (no run trace or counts). */
+  readonly viaChatAgent?: boolean;
+  /** #1760 — the agent answered that nothing is worth telling: no delivery. */
+  readonly silent?: boolean;
+  /** #1761 — template problems recorded on the run (delivered anyway). */
+  readonly warnings?: readonly string[];
+}
+
+/** #1760 — the agent's "nothing worth telling" answer (ADR 0020 triggers). */
+function isNothingToSay(answer: string): boolean {
+  return answer.trim().startsWith(NOTHING_TO_SAY);
+}
+
+/** #1760 — the string slots a model wrote, from a response that failed the strict parse. */
+function salvageSlots(answer: string): Record<string, string> {
+  const start = answer.indexOf('{');
+  const end = answer.lastIndexOf('}');
+  if (start < 0 || end <= start) return {};
+  try {
+    const parsed = JSON.parse(answer.slice(start, end + 1)) as { slots?: unknown };
+    if (typeof parsed.slots !== 'object' || parsed.slots === null) return {};
+    return Object.fromEntries(
+      Object.entries(parsed.slots as Record<string, unknown>).filter(
+        (e): e is [string, string] => typeof e[1] === 'string',
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+/** The emitter replaced the agent's answer with a `system` notice. */
+function isWithheld(answer: SemanticAnswer): boolean {
+  return answer.systemNotice !== undefined || answer.speaker?.kind === 'system';
+}
+
+/**
+ * #1763 — the agent's full turn: its chat agent where the tool loop runs
+ * outside the kernel (subscription CLI), else `runTurn` on its orchestrator,
+ * which keeps the run trace.
+ */
+async function runAgentTurn(orchestrator: OrchestratorLike, input: ChatTurnInput): Promise<RoutineTurn> {
+  if (!orchestrator.chat) return { result: await orchestrator.runTurn(input) };
+  const published = await orchestrator.chat(input);
+  return {
+    result: { answer: published.text, toolCalls: 0, iterations: 0 },
+    published,
+  };
 }
 
 /**

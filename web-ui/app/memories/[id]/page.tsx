@@ -22,6 +22,7 @@ import {
   type MemorableKnowledgeNode,
   type PalaiaExcerptNode,
 } from '../../_lib/api';
+import { MEMORY_AUDIT_ACTION_KEYS } from '../../_lib/memoryAuditLabels';
 
 const KINDS: readonly MemorableKind[] = [
   'decision',
@@ -48,16 +49,7 @@ const ACTION_BADGE: Record<MemorableAclAction, string> = {
   delete: 'bg-[color:var(--danger)]/20 text-[color:var(--danger)]',
   edit: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
   edit_excerpt: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
-};
-
-/** Stable translation-key suffixes per audit action (`memories.detail.actions.*`). */
-const ACTION_KEYS: Record<MemorableAclAction, string> = {
-  create: 'create',
-  expand: 'expand',
-  shrink: 'shrink',
-  delete: 'delete',
-  edit: 'edit',
-  edit_excerpt: 'editExcerpt',
+  delete_excerpt: 'bg-[color:var(--danger)]/20 text-[color:var(--danger)]',
 };
 
 const SOURCE_BADGE: Record<ExcerptSource, string> = {
@@ -88,6 +80,7 @@ type LoadError = { notFound: true } | { notFound: false; message: string };
  */
 export default function MemoryDetailPage(): React.ReactElement {
   const t = useTranslations('memories');
+  const tAudit = useTranslations('memoryAudit');
   const format = useFormatter();
   const params = useParams<{ id: string }>();
   const rawId = params?.id ?? '';
@@ -708,7 +701,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                             ACTION_BADGE[e.action],
                           ].join(' ')}
                         >
-                          {t(`detail.actions.${ACTION_KEYS[e.action]}`)}
+                          {t(`detail.actions.${MEMORY_AUDIT_ACTION_KEYS[e.action]}`)}
                         </span>
                         <time
                           dateTime={e.createdAt}
@@ -724,26 +717,27 @@ export default function MemoryDetailPage(): React.ReactElement {
                                 : 'font-mono text-[color:var(--warning)]'
                             }
                           >
-                            owners {ownersDelta > 0 ? '+' : ''}
-                            {ownersDelta}
+                            {tAudit('ownersDelta', {
+                              delta: `${ownersDelta > 0 ? '+' : ''}${String(ownersDelta)}`,
+                            })}
                           </span>
                         )}
                       </div>
                       <div className="mt-1 font-mono text-[10px] text-[color:var(--fg-muted)]">
-                        actor: {e.actorOmadiaUserId}
+                        {tAudit('actor', { actor: e.actorOmadiaUserId })}
                       </div>
                       {(e.action === 'expand' ||
                         e.action === 'shrink' ||
                         e.action === 'delete') && (
                         <div className="mt-1 grid grid-cols-[max-content_1fr] gap-x-2 font-mono text-[10px] text-[color:var(--fg-muted)]">
-                          <span>before:</span>
+                          <span>{tAudit('before')}</span>
                           <span className="text-[color:var(--fg)]">
                             [{e.beforeOwners.join(', ') || '—'}]
                           </span>
-                          <span>after:</span>
+                          <span>{tAudit('after')}</span>
                           <span className="text-[color:var(--fg)]">
                             {e.afterOwners === null
-                              ? '(deleted)'
+                              ? tAudit('deleted')
                               : `[${e.afterOwners.join(', ') || '—'}]`}
                           </span>
                         </div>

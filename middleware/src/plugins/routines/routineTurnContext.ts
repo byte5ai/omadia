@@ -92,6 +92,16 @@ export const routineTurnContext = {
   },
 
   /**
+   * #1772 / ADR 0242 — run `fn` outside any routines principal: a routine's
+   * own turn (cron, "run now", a smart-card click inside a chat turn) must
+   * never see the clicking turn's principal, or it would be offered
+   * `manage_routine` and could create, pause and delete routines.
+   */
+  outside<T>(fn: () => Promise<T>): Promise<T> {
+    return storage.exit(fn);
+  },
+
+  /**
    * Phase C.2 — Run `fn` with `map` as the active raw-tool-result stash.
    * The map is owned by the caller (the routine runner) so it can read
    * the captures after `fn` resolves; the ALS scope only controls
