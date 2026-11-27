@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { describe, it } from 'node:test';
 
 import type {
@@ -1656,6 +1657,75 @@ describe('#1746 / #1747 / #1748 — run control: cancel, timeout signal, one run
     assert.equal(gated.runTurnCalls(), 1, 'exactly one turn ran');
     assert.equal(h.runsStore.inserts.length, 1);
     assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+
+  it('#2339 — run_now answers at once, refuses a second start, and runs outside the asking turn', async () => {
+    const gated = gatedOrchestrator();
+    const h = makeHarness({ orchestrator: gated.orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+    const asking = new AsyncLocalStorage<string>();
+    let seenAsking: string | undefined = 'unset';
+    const runTurn = gated.orchestrator.runTurn.bind(gated.orchestrator);
+    gated.orchestrator.runTurn = (...args) => {
+      seenAsking = asking.getStore();
+      return runTurn(...args);
+    };
+
+    const started = await asking.run('asking-turn', () => h.runner.startManualRun(routine.id, OWNER_SCOPE));
+    assert.equal(started.id, routine.id, 'answers before the run finishes');
+    await gated.started;
+    assert.equal(seenAsking, undefined, 'the run does not inherit the asking turn\'s context');
+    await assert.rejects(
+      h.runner.startManualRun(routine.id, OWNER_SCOPE),
+      (err: Error) => err.name === 'RoutineRunInProgressError',
+    );
+    gated.release();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(gated.runTurnCalls(), 1);
+    assert.equal(h.runsStore.inserts[0]!.trigger, 'manual');
+  });
+
+  it('#2339 — run_now refuses a routine of another owner and a paused one', async () => {
+    const h = makeHarness();
+    const routine = await h.runner.createRoutine(baseInput);
+    await assert.rejects(
+      h.runner.startManualRun(routine.id, { kind: 'channel-user', tenant: 'other', userId: 'someone' }),
+      (err: Error) => err.name === 'RoutineNotFoundError',
+    );
+    await h.runner.pauseRoutine(routine.id, OWNER_SCOPE);
+    await assert.rejects(
+      h.runner.startManualRun(routine.id, OWNER_SCOPE),
+      (err: Error) => err.name === 'RoutineNotActiveError',
+    );
+  });
+
+  it('#2339 — two run_now calls at once: the second is refused, only one turn runs', async () => {
+    const gated = gatedOrchestrator();
+    const h = makeHarness({ orchestrator: gated.orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+    const results = await Promise.allSettled([
+      h.runner.startManualRun(routine.id, OWNER_SCOPE),
+      h.runner.startManualRun(routine.id, OWNER_SCOPE),
+    ]);
+    assert.deepEqual(results.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
+    const refused = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    assert.equal((refused.reason as Error).name, 'RoutineRunInProgressError');
+    await gated.started;
+    gated.release();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(gated.runTurnCalls(), 1);
+  });
+
+  it('#2339 — run_now says when no agent can run the routine', async () => {
+    const gone = makeHarness({ resolveAgent: () => ({ ok: false, problem: 'the agent of this routine was deleted' }) });
+    const r1 = await gone.runner.createRoutine(baseInput);
+    await assert.rejects(gone.runner.startManualRun(r1.id, OWNER_SCOPE), (err: Error) =>
+      err.name === 'ToolRefusalError' && /was deleted/.test(err.message));
+    const noChat = makeHarness({ getOrchestrator: () => undefined });
+    const r2 = await noChat.runner.createRoutine(baseInput);
+    await assert.rejects(noChat.runner.startManualRun(r2.id, OWNER_SCOPE), (err: Error) =>
+      err.name === 'ToolRefusalError' && /no chat agent/.test(err.message));
+    assert.equal(noChat.runner.isRunning(r2.id), false, 'a refused run takes no slot');
   });
 
   it('a manual run hands the turn an abort signal (its timeout), like a scheduled one', async () => {

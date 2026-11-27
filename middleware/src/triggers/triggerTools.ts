@@ -108,7 +108,7 @@ export const triggerToolSpecs: Record<TriggerToolName, NativeToolSpec> = {
   wake_at: {
     name: 'wake_at',
     description:
-      'One-shot wakeup at a time, e.g. "three working days before month end, look at the open expense reports". Fires once, then it is gone. The result names `atLocal`, the firing time in the person\'s zone: tell them that time.',
+      'One-shot wakeup at a time, e.g. "three working days before month end, look at the open expense reports". Fires once, then it is gone. The result names `atLocal`, the firing time in the person\'s zone: tell them that time. To run one of the person\'s routines now, use manage_routine `run_now` instead.',
     input_schema: {
       type: 'object',
       properties: {
