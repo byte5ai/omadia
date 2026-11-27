@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   agentInvocationNodeId,
   agentScopePrefix,
+  matchesConversationScope,
   channelIdentityNodeId,
   parseChannelIdentityNodeId,
   type UserChannelIdentity,
@@ -1884,9 +1885,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const sources = (to: string, type: string): string[] =>
       edges.filter((e) => e.to === to && e.type === type).map((e) => e.from);
 
+    const conversations = filter.conversationScopes;
     const scopeMatches = (node: GraphNode): boolean => {
-      if (prefix === undefined) return true;
       const scope = node.props['scope'];
+      if (conversations !== undefined) {
+        if (typeof scope !== 'string' || !matchesConversationScope(scope, conversations)) return false;
+      }
+      if (prefix === undefined) return true;
       return typeof scope === 'string' && matchesAgentScopePrefix(scope, prefix);
     };
     const userNode = filter.userId !== undefined ? userNodeId(filter.userId) : undefined;

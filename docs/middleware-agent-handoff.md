@@ -7088,8 +7088,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
   pro Prozess); Zustellungs-Kontext für Kanal-Routinen von vor #2316 (ohne `origin_scope`);
-  Graph-Knoten
-  gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
   `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
 
@@ -12086,6 +12084,12 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   für einen gespeicherten Chat eine Zeile `chat.delete` (Ziel `chat:<id>`, `after` = `kind`,
   `transcriptsPurged`, pausierte Routinen als `routine:<id>`), best-effort nach dem Löschen.
   `ChatRoutinesPort.pauseForChat` liefert dafür die Ids statt einer Zahl.
+- **Graph-Verlauf gelöschter Chats/Routinen (#1753, ADR-0323, Welle 7):** Chat-Löschen und
+  Routine-Löschen rufen `purgeConversationRecords` (`src/plugins/routines/sessionTranscripts.ts`):
+  erst die Markdown-Transkripte, dann `KnowledgeGraph.purgeConversationHistory({ tenantId,
+  conversationScopes: graphScopeKeysFor(scope) })` — Turns, Runs, Tool-Calls, Pläne, nur daraus
+  abgeleitete Facts und die Session, unter jedem Agenten (`<slug>::<key>` und unqualifiziert).
+  `MemorableKnowledge` bleibt. Ein Graph ohne Purge wird geloggt, kein Fehler.
 - **OAuth-Tokens und /setup-Seed nur im Kernel-Scope (#2313, ADR-0275):** Device-Flow
   (`storeProviderOAuthTokens`), Token-Store-`persist`/`load` und `/setup`-Seed schreiben/lesen nur
   `KERNEL_PROVIDER_CREDENTIAL_SCOPE`; `consolidateProviderCredentials` übernimmt beim Boot eine

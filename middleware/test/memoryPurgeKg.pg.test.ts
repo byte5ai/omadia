@@ -195,6 +195,32 @@ describe('purgeMemorableKnowledge (KG primitive)', () => {
       assert.equal((await graph.countConversationHistory(filter)).count, 0);
     });
 
+    // #1753 (ADR-0323) — a deleted chat or routine: one conversation, every agent.
+    it('conversationScopes: one conversation under any agent, nothing else', async (t) => {
+      if (!reachable || !pool) {
+        t.skip('pgvector Postgres not configured (set WS3_PG_URL or MEMORY_PG_TEST_URL)');
+        return;
+      }
+      const graph = await freshGraph(pool);
+      // The same chat answered by a second agent, and a chat whose key only
+      // ends like it: the first goes, the second stays.
+      await seedConversationTurn(graph, { scope: 'a::chat-1', time: '2026-10-01T12:30:00Z', tag: 'c1' });
+      await seedConversationTurn(graph, { scope: 'z::chat-1', time: '2026-10-01T13:00:00Z', tag: 'z1' });
+      await seedConversationTurn(graph, { scope: 'a::xchat-1', time: '2026-10-01T14:00:00Z', tag: 'x1' });
+      const filter = { tenantId: TENANT, conversationScopes: ['chat-1'] };
+      const { count } = await graph.countConversationHistory(filter);
+      assert.equal(count, 18, 'two agents × (8 nodes + session)');
+      assert.equal((await graph.purgeConversationHistory(filter)).deletedNodes, count);
+      const left = await typeCounts(pool);
+      assert.equal(left['Turn'], 5, 'group (2), a_b, legacy and xchat turns stay');
+      assert.equal(left['OdooEntity'], 1);
+      assert.equal(
+        (await graph.countConversationHistory({ tenantId: TENANT, conversationScopes: [] })).count,
+        0,
+        'an empty list selects nothing',
+      );
+    });
+
     it('default agent includes the legacy unqualified scopes', async (t) => {
       if (!reachable || !pool) {
         t.skip('pgvector Postgres not configured (set WS3_PG_URL or MEMORY_PG_TEST_URL)');

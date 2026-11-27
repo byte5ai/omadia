@@ -17,6 +17,9 @@ Additive. (Wave 7, W43; the lander renumbers if another PR takes 1.113.0.)
 - **`MemoryStore.appendFile?`** and **`appendToMemoryFile(store, path, content)`** (#1753,
   ADR-0322): append without reading the file back; the helper falls back to read + write for a
   store or decorator without `appendFile`.
+- **`ConversationHistoryPurgeFilter.conversationScopes`** and **`matchesConversationScope`**
+  (#1753, ADR-0323): restrict the conversation-history purge to unqualified conversation keys,
+  under every agent.
 
 ## 1.112.0 — 2026-11-27
 

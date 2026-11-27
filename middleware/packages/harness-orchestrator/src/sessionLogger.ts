@@ -381,6 +381,17 @@ function injectiveScopeKeysEnabled(): boolean {
  * (`/memories/sessions/<sanitized scope>/<day>.md`), so a delete can remove
  * them with the conversation. Undefined for a blank scope (never a shared dir).
  */
+/**
+ * #1753 (ADR-0323) — every unqualified graph key a conversation's nodes may
+ * carry: the sanitized key and the injective one (`graphScopeFor` picks one
+ * per process by flag, and the flag may have changed since the turns were
+ * written). For `KnowledgeGraph.purgeConversationHistory({ conversationScopes })`.
+ */
+export function graphScopeKeysFor(rawScope: string): string[] {
+  if (!rawScope || rawScope.trim().length === 0) return [];
+  return [...new Set([sanitizeScope(rawScope), scopeGraphKey(rawScope)])];
+}
+
 export function sessionTranscriptDir(scope: string): string | undefined {
   if (!scope || scope.trim().length === 0) return undefined;
   return `/memories/sessions/${sanitizeScope(scope)}`;

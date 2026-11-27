@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — deleting a chat or routine purges its graph history (#1753) (2026-11-27)
+
+- Deleting a web chat or a routine now removes its conversation history from the knowledge graph
+  (Turns, Runs, tool calls, plans, derived Facts, the Session) under every agent, after its
+  transcripts. New filter `ConversationHistoryPurgeFilter.conversationScopes` and helper
+  `matchesConversationScope` (plugin-api 1.113.0, additive); `graphScopeKeysFor` in
+  `@omadia/orchestrator` (ADR-0323).
+
 ### Changed — routine deliveries and transcripts are appended, plugin-api 1.113.0 (#1753) (2026-11-27)
 
 - `MemoryStore.appendFile?` (optional) and the helper `appendToMemoryFile` (plugin-api **1.113.0**,

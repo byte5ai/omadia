@@ -697,7 +697,7 @@ import { createAttachmentByteReader, loopbackOriginFor } from './channels/attach
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { agentEndedText, resolveRoutineAgent } from './plugins/routines/routineAgentBinding.js';
 import { WEB_CHAT_DELETED_PAUSE } from './plugins/routines/webChatProactiveSender.js';
-import { purgeSessionTranscripts } from './plugins/routines/sessionTranscripts.js';
+import { purgeConversationRecords } from './plugins/routines/sessionTranscripts.js';
 import { routineOwnerIdsForAccount } from './plugins/routines/accountRoutineOwner.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
@@ -3920,8 +3920,16 @@ async function main(): Promise<void> {
         ),
       // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
       defaultTimeZone: config.PROACTIVE_TIMEZONE,
-      // #1753 — a deleted routine's transcripts go with it.
-      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1753 — a deleted routine's transcripts and graph history go with it.
+      purgeTranscripts: (scope) => purgeConversationRecords(
+          {
+            store: memoryStore,
+            // Per call: orchestrator-extras may replace the graph service (ADR-0323).
+            graph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph') ?? knowledgeGraph,
+            tenantId: graphTenantId,
+          },
+          scope,
+        ),
       // #1776 — a manual run's cost is booked on the routine's trigger.
       bookManualRunCost: async (routineId, costUsd) => {
         await triggersRef.current?.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId });
@@ -4487,8 +4495,16 @@ async function main(): Promise<void> {
       legacyOwner: legacyChatOwner,
       releaseGenerated: (scope, ownerOmadiaUserId) =>
         generatedObjects.release({ scope, ...(ownerOmadiaUserId ? { ownerOmadiaUserId } : {}) }),
-      // #1753 — and removes its markdown transcripts.
-      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1753 — and removes its markdown transcripts and graph history.
+      purgeTranscripts: (scope) => purgeConversationRecords(
+          {
+            store: memoryStore,
+            // Per call: orchestrator-extras may replace the graph service (ADR-0323).
+            graph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph') ?? knowledgeGraph,
+            tenantId: graphTenantId,
+          },
+          scope,
+        ),
       // #1757 — deleting a chat pauses the routines that deliver into it.
       routines: () => {
         const runner = routinesHandle?.runner;
