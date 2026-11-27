@@ -15,6 +15,7 @@ import {
 import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { LLM_SETUP_HINT } from '../llmSetupHint.js';
 import { chatViewer, type LegacyChatOwner } from './chatSessionAccess.js';
+import { openChatDeliveryStream, type ChatDeliveryStreamDeps } from './chatDeliveryEvents.js';
 
 /**
  * CRUD for persisted chat-tab sessions. Mounted at `/api/chat`, so the full
@@ -29,6 +30,8 @@ import { chatViewer, type LegacyChatOwner } from './chatSessionAccess.js';
  *                                        answers `{ ok, session }` with the
  *                                        stored document. An empty `messages`
  *                                        array is NOT a clear.
+ *   GET    /api/chat/sessions/:id/events  SSE: a signal per routine delivery
+ *                                        into this chat (#2354, ADR-0321)
  *   DELETE /api/chat/sessions/:id        drop the file
  *   POST   /api/chat/sessions/:id/reset  the explicit clear: drops turns AND
  *                                        routine deliveries, stamps `resetAt`
@@ -236,6 +239,11 @@ interface ChatSessionDeps {
    * logged, the delete stands). Absent = no row.
    */
   audit?: () => Pick<AdminAuditLog, 'record'> | undefined;
+  /**
+   * #2354 (ADR-0321) — live delivery signals for an open chat. Absent = the
+   * events route answers 404 and the web UI keeps its poll.
+   */
+  deliveries?: ChatDeliveryStreamDeps;
 }
 
 /** #1757 — what the chat routes need of the routines feature. */
@@ -334,6 +342,31 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     } catch (err) {
       failure(res, err, '[chat-sessions] get');
     }
+  });
+
+  router.get('/sessions/:id/events', async (req: Request, res: Response) => {
+    const id = req.params['id'];
+    if (typeof id !== 'string' || !isValidSessionId(id)) {
+      res.status(400).json({ error: 'invalid_id' });
+      return;
+    }
+    if (!deps.deliveries) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const store = resolveStore(res);
+    if (!store) return;
+    try {
+      // Only the chat's owner learns when something lands in it.
+      if (!(await ownSession(store, req, id))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+    } catch (err) {
+      failure(res, err, '[chat-sessions] events');
+      return;
+    }
+    openChatDeliveryStream(req, res, id, deps.deliveries);
   });
 
   router.put('/sessions/:id', async (req: Request, res: Response) => {

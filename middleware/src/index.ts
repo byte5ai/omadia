@@ -210,6 +210,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { ChatDeliveryBus } from './routes/chatDeliveryEvents.js';
 import { createChannelDeliveryContext } from './plugins/routines/routineDeliveryContext.js';
 import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
@@ -1337,6 +1338,8 @@ async function main(): Promise<void> {
   // the account source is attached right after the UserStore is built (still
   // before app.listen, so no request is ever evaluated without it).
   const sessionRevocation = new SessionRevocationGuard();
+  // #2354 — routine deliveries into a web chat, signalled to its open streams.
+  const chatDeliveryBus = new ChatDeliveryBus();
   // #778 W1 — HMAC key `promoteSkillOwnerScope` (#577 P3) re-signs a skill's
   // manifest with. Resolved here alongside the session key: same vault,
   // same "generate once, persist, reuse every boot" pattern — see
@@ -3964,6 +3967,9 @@ async function main(): Promise<void> {
         createWebChatProactiveSender({
           getStore: getChatSessionStore,
           warn: (msg) => console.warn(msg),
+          // #2354 — signal the chat's open streams; the browser re-reads it.
+          onDelivered: (sessionId, deliveredAt) =>
+            chatDeliveryBus.publish({ type: 'delivery', sessionId, deliveredAt }),
         }),
       ],
       log: (msg) => console.log(msg),
@@ -4495,6 +4501,20 @@ async function main(): Promise<void> {
       },
       // #2318 — and is recorded in the admin audit (created later in boot).
       audit: () => adminAudit,
+      // #2354 — live delivery signals, bound to the session like the
+      // builder's event stream (same verdict path as requireAuth).
+      deliveries: {
+        bus: chatDeliveryBus,
+        sessions: {
+          evaluate: (token) =>
+            evaluateSessionToken(token, {
+              signingKey: sessionSigningKey,
+              whitelist: emailWhitelist,
+              sessions: sessionRevocation,
+            }),
+          revocations: sessionRevocation,
+        },
+      },
     }),
   );
 

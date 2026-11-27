@@ -1,4 +1,6 @@
-import type { SessionEvaluation } from '../auth/requireAuth.js';
+import type { Request } from 'express';
+
+import { SESSION_COOKIE, type SessionEvaluation } from '../auth/requireAuth.js';
 import {
   SESSION_CHECK_UNAVAILABLE_CODE,
   type SessionRevocation,
@@ -188,4 +190,20 @@ async function evaluateOrOutage(
 
 function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The session the stream is bound to: the cookie `requireAuth` verified and
+ * the claims it set, `exp` included. Null when any of it is missing, so a
+ * stream is never opened without an end.
+ */
+export function readStreamSession(req: Request): StreamSession | null {
+  const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
+  const token = cookies?.[SESSION_COOKIE];
+  const claims = req.session as { provider?: unknown; sub?: unknown; exp?: unknown } | undefined;
+  if (typeof token !== 'string' || token.length === 0 || !claims) return null;
+  const { provider, sub, exp } = claims;
+  if (typeof provider !== 'string' || typeof sub !== 'string') return null;
+  if (typeof exp !== 'number' || !Number.isFinite(exp)) return null;
+  return { token, provider, sub, expiresAt: exp };
 }

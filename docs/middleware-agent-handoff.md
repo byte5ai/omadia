@@ -10116,9 +10116,15 @@ durch den Web-Sender unten.
   (`/memories/chat-sessions/<id>.json`), derselbe Store, aus dem die Web-UI hydratisiert.
   Ein Lauf hängt eine Assistant-Nachricht mit Marker `proactive: { deliveredAt,
   routineId?, routineName? }` an den Chat an, in dem die Routine angelegt wurde
-  (`ChatSessionStore.appendProactiveMessage`). Kein Live-Push: der Web-Chat hat keinen
-  Realtime-Kanal (`WebSocketRegistry` gehört den Channel-Plugins, SSE nur dem Builder).
-  Stattdessen liest die Web-UI die aktive Session **additiv** neu
+  (`ChatSessionStore.appendProactiveMessage`). **Live-Signal (#2354, ADR-0321):** nach dem
+  Anhängen ruft der Sender `onDelivered`, der Kernel veröffentlicht auf dem prozesslokalen
+  `ChatDeliveryBus` (`src/routes/chatDeliveryEvents.ts`), und
+  `GET /api/chat/sessions/:id/events` (SSE, nur für den Besitzer des Chats, sonst 404; an die
+  Sitzung gebunden wie der Builder-Stream, `watchStreamSession`; Heartbeat 25 s) schickt
+  `event: delivery` mit `{ type, sessionId, deliveredAt }` — nie den Text. Die Web-UI hält
+  pro aktivem Chat eine `EventSource` offen und liest bei jedem Signal neu (s. u.); der
+  60-s-Poll bleibt als Rückfall (Stream weg, Zustellung aus einem anderen Prozess).
+  Außerdem liest die Web-UI die aktive Session **additiv** neu
   (`refreshProactive` → `mergeProactiveFromRemote`, nie ein PUT, übersprungen solange ein
   Turn streamt): wenn `/chat` mountet — der `ChatSessionsProvider` sitzt im Root-Layout
   und hydratisiert nur einmal pro Full-Load, ein In-App-Wechsel von `/routines` nach

@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine deliveries appear live in the open web chat (#2354) (2026-11-27)
+
+- New `GET /api/chat/sessions/:id/events` (SSE, owner only, bound to the session like the builder
+  stream): after a routine delivery is stored the web sender signals the chat's open streams
+  (`ChatDeliveryBus`), and the web UI re-reads the chat at once. The event carries no text; the
+  60-second poll stays as fallback (ADR-0321).
+
 ### Fixed — AI disclosure line follows the answer language (#2353) (2026-11-27)
 
 - The AI-disclosure line is composed in the language of the answer it is appended to (German or
