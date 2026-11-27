@@ -48,25 +48,10 @@ interface KnownLeak {
   readonly matches: (sweep: TurnSweep, s: Sighting) => boolean;
 }
 
-export const KNOWN_LEAKS: readonly KnownLeak[] = [
-  {
-    issue: '#2333',
-    title: "under a shield a plugin's listPlansForScope skips plans of unprotected or unknown turns",
-    modes: ['off', 'enforce'],
-    recall: 'any',
-    // Seen only in the raw tool result: the shield's digest hides it from the model's view.
-    matches: (_sweep, s) => s.entry === 'tool-raw' && s.item.store === 'plan',
-  },
-  {
-    issue: '#2334',
-    title: "under a shield a plugin's processMemory get/history/edit skip unprotected processes",
-    modes: ['off', 'enforce'],
-    recall: 'any',
-    // Process memory exists only on Neon. Seen only in the raw tool result, as #2333.
-    backend: 'neon',
-    matches: (_sweep, s) => s.entry === 'tool-raw' && s.item.store === 'process',
-  },
-];
+// #2333 and #2334 (a plugin's plan and process reads under a shield) are
+// fixed; the general leak check now holds them. Add a confirmed leak here,
+// with its issue, until its fix lands.
+export const KNOWN_LEAKS: readonly KnownLeak[] = [];
 
 function leaksOf(
   sweeps: readonly TurnSweep[],
@@ -183,6 +168,22 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
           (sweep) => !sweep.sightings.some((s) => s.entry === 'context' && s.verdict.allowed),
         );
         assert.deepEqual(silent.map((s) => viewerId(s.viewer)), [], 'every turn recalls something it may see');
+      });
+
+      // #2340 — the User and Fact items are only a test if they are reached:
+      // wherever the oracle allows one to a viewer of this mode, some turn gets it.
+      it(`${mode}: CONTROL — User and Fact canaries reach a viewer they are allowed to`, (t) => {
+        if (!seeded) return t.skip('no test database');
+        for (const store of ['user', 'fact'] as const) {
+          const allowedSomewhere = inMode().some((sweep) =>
+            seeded!.world.byStore[store].some((item) => expected(sweep.viewer, mode, item, settings).allowed),
+          );
+          if (!allowedSomewhere) continue;
+          const reached = inMode().some((sweep) =>
+            sweep.sightings.some((s) => s.item.store === store && verdictOf(sweep, s).allowed),
+          );
+          assert.ok(reached, `no allowed ${store} canary reached any turn`);
+        }
       });
 
       if (backend === 'neon') {

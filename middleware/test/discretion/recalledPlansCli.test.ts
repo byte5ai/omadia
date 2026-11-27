@@ -309,6 +309,21 @@ const CLI_LINES = [
   line({ type: 'result', subtype: 'success', is_error: false, result: ANSWER, num_turns: 1 }),
 ];
 
+const SIGNED_LINK = 'https://files.example.test/hr.xlsx?sig=w42-cli-signed';
+/** #2342 — a turn that called one omadia tool before answering. */
+const CLI_TOOL_LINES = [
+  line({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'tu-1', name: 'mcp__omadia__report_tool', input: {} }] },
+  }),
+  line({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: `Bericht: ${SIGNED_LINK}` }] },
+  }),
+  ...CLI_LINES,
+];
+let cliLines: readonly string[] = CLI_LINES;
+
 function cliAgentFor(
   orchestrator: Orchestrator,
   wired: boolean,
@@ -328,6 +343,7 @@ function cliAgentFor(
       ? {
           discretionTurnFields: (input: ChatTurnInput) => orchestrator.cliDiscretionTurnFields(input),
           guardAnswer: (answer: string, input: ChatTurnInput) => orchestrator.guardCliAnswer(answer, input),
+          egressRefusesNow: () => orchestrator.egressRefusesNow(),
         }
       : {}),
     spawnFn: (() => {
@@ -344,7 +360,7 @@ function cliAgentFor(
       });
       stdin.resume();
       stdin.on('finish', () => {
-        stdout.end(CLI_LINES.join(''));
+        stdout.end(cliLines.join(''));
         stderr.end('');
         child.exitCode = 0;
         child.emit('close', 0, null);
@@ -375,6 +391,24 @@ describe('a CLI turn runs with the in-process discretion state (#2194)', () => {
     const done = events.find((e) => e.type === 'done');
     assert.ok(done && done.type === 'done');
     assert.equal(done.answer.includes('Aufhebungsvertrag'), false, 'the answer is withheld');
+  });
+
+  it('#2342 · a withheld CLI answer never sends its tool outputs; an allowed one streams them once', async () => {
+    cliLines = CLI_TOOL_LINES;
+    try {
+      const withheld = await streamCli(planFromHr, ['hr-mgr', 's1']);
+      const hidden = withheld.events.filter((e) => e.type === 'tool_result');
+      assert.equal(hidden.length, 1, 'the row still shows the call finished');
+      assert.equal(JSON.stringify(withheld.events).includes('w42-cli-signed'), false, 'no output reaches the client');
+
+      const allowed = await streamCli(planFromHr, ['hr-mgr', 'p']);
+      const results = allowed.events.filter((e) => e.type === 'tool_result');
+      assert.equal(results.length, 1, 'one result per call');
+      const full = results[0]!;
+      assert.ok(full.type === 'tool_result' && full.output.includes('w42-cli-signed'));
+    } finally {
+      cliLines = CLI_LINES;
+    }
   });
 
   it('chat() of a CLI turn returns the withheld line too', async () => {

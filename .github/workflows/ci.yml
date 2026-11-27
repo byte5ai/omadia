@@ -393,7 +393,12 @@ jobs:
           # canarySweepOff.pg and canarySweepEnforce.pg. Re-pinned to the
           # measured total at landing: main ran=868 (train #2350 on a206d5c2)
           # plus these 4 todos.
-          PG_TEST_FLOOR: '872'
+          # 872 → 874 with W42 (#2333/#2334 fixed: the 4 todos go; #2340 adds
+          # a User/Fact control per pg sweep mode and the re-ingest case of
+          # recallDerivedUnprotected1536.pg; #2358 one re-key case). Measured
+          # on a fresh database: tests 874, pass 874, todo 0. Re-pinned after
+          # merging main (train 7, ran=876): 876 + 2 = 878.
+          PG_TEST_FLOOR: '878'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

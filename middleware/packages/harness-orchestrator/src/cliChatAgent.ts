@@ -3,6 +3,7 @@ import { modelCallHaltFor } from '@omadia/usage-telemetry';
 import { replayUserLine } from './recordingTranscript.js';
 
 import { assertCliProfileClean } from './cliProfile.js';
+import { ToolOutputHold } from './toolOutputHold.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -1140,6 +1141,13 @@ export interface CliChatAgentDeps {
   // Must not reject: a check that fails withholds (the orchestrator's guard
   // decides that itself, it knows the withheld line's language).
   /**
+   * #2342 / ADR-0316 — whether `guardAnswer` would refuse this turn's answer
+   * with the labels collected so far; while it would, tool outputs are held
+   * (`ToolOutputHold`). Run in the turn's captured context; must not reject.
+   * Wired to `orchestrator.egressRefusesNow()`; unset, outputs stream live.
+   */
+  readonly egressRefusesNow?: () => Promise<boolean>;
+  /**
    * #1535 — the environment the org policy `OMADIA_PRIVACY_FORCE_GUARDED` is
    * read from. Defaults to `process.env`; a seam for tests.
    */
@@ -1580,6 +1588,12 @@ export class CliChatAgent implements ChatAgent {
         });
       }
     }
+  }
+
+  /** #2342 — whether {@link guardTurnAnswer} would refuse this turn's answer now. */
+  private async egressRefusesNow(turnContext: CapturedTurnContext): Promise<boolean> {
+    const check = this.deps.egressRefusesNow;
+    return check !== undefined && (await turnContext.runInTurnContext(check));
   }
 
   /** #2194 — {@link CliChatAgentDeps.guardAnswer} in the turn's context. */
@@ -2509,6 +2523,8 @@ export class CliChatAgent implements ChatAgent {
       const replayMasked = history.answersMasked === true || wireRecalled !== recalled.text;
       child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled, replayMasked));
 
+      // #2342 / ADR-0316 — tool outputs wait for the answer's egress check.
+      const toolOutputs = new ToolOutputHold(() => this.egressRefusesNow(turnContext));
       while (true) {
         while (lineQueue.length > 0) {
           const line = lineQueue.shift();
@@ -2537,7 +2553,7 @@ export class CliChatAgent implements ChatAgent {
               if (event.type === 'text_delta') continue;
             }
             if (event.type === 'text_delta') streamedChars += event.text.length;
-            yield event;
+            yield* await toolOutputs.pass(event);
           }
           // #1581 — the CLI reports what it actually loaded before the first
           // model request. Without omadia's tools the model writes tool calls
@@ -2703,6 +2719,7 @@ export class CliChatAgent implements ChatAgent {
           privacyFinalized = true;
           receipt = await turnContext.runInTurnContext(() => privacy.finalize(input.userMessage));
         }
+        yield* toolOutputs.settle(guarded.withheld);
         if (!guarded.withheld) {
           for (const event of record.events ?? []) {
             yield event;

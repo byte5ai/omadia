@@ -36,6 +36,71 @@ changelog.
 
 ## [Unreleased]
 
+### Tests — memory-ACL world gets User and Fact items; re-ingest after promotion (#2340) (2026-11-27)
+
+- The memory-ACL test world (`test/memoryAccess/world.ts`) seeds one `User` node per person (canary
+  in the profile's display name) and one `Fact` extracted from two turns of different visibility.
+  The oracle allows a User node only to that person, and a fact only to viewers who may read every
+  source turn. A control per sweep mode proves allowed ones are actually reached. Mutations GV09
+  and GV10 (`graphNodeAccess.ts`) are now killed.
+- `recallDerivedUnprotected1536Contract.ts` (in-memory + Neon) promotes a memory from a protected
+  turn, re-ingests the turn as `unprotected`, and checks that a shielded search no longer returns
+  the memory or its excerpts. Mutations IM14 and NE09 (the `DERIVED_FROM` check) are now killed.
+  `docs/testing/memory-acl-mutation-record.md`: no surviving mutant.
+- The known-leak todos for #2333/#2334 are gone (fixed above); `PG_TEST_FLOOR` 872 → 874.
+
+### Fixed — the boot-time process re-key no longer fails on a re-written slug id (#2358) (2026-11-27)
+
+- `NeonProcessMemoryStore.rekeyLegacyIds` (ADR-0295) gives `legacy_id` only to a row whose old id no
+  other process holds yet (`NOT EXISTS`). Before, an older build that wrote the same
+  `process:<scope>:<slug>` again after an earlier re-key made the unique `idx_processes_legacy_id`
+  fail the whole statement on every boot, and no late row was re-keyed. That row now gets an opaque
+  id without a `legacy_id`, and the old id keeps naming the first process.
+- ADR-0118's status now says it is superseded in part by ADR-0295. It still described the
+  deterministic `process:<scope>:<slug(title)>` id.
+
+### Fixed — a stubborn stdio MCP server no longer survives close() under MCP_STDIO_RUN_AS (#2329, ADR-0317) (2026-11-27)
+
+- The `/bin/sh` shim between sudo and the server (`MCP_STDIO_CHILD_SHIM`) now supervises the
+  server instead of `exec`ing it. It starts the server in its own process group (`setsid`), and on
+  SIGTERM, or when its parent sudo is gone, it sends TERM to that group and KILL after
+  `MCP_STDIO_STOP_GRACE_S` (3 s). Before, a server that ignored stdin EOF and SIGTERM lived on as an
+  orphan of `omadia-mcp` once the SDK SIGKILLed sudo. No change to the image or the sudoers rule.
+
+### Fixed — file-announcement detector edge cases (#2351) (2026-11-27)
+
+- `announcesFileBuild` (`fileAnnouncement.ts`) no longer forces a file retry for `Ich erstelle dir
+  gerne Excel- oder Word-Dateien` (an addressee with a plural or a list of file kinds reads as a
+  capability) or for `a word of caution` (English `word` counts only as `Word-…` / `Word
+  document`). It now catches `Ich helfe dir gern und erstelle jetzt die Excel-Datei` (a "now" word
+  outranks an ability marker, but not a condition) and `If you want I'll create the file` (a polite
+  offer is no condition). A claim without a built file (`Hier ist die Excel-Datei`, `Anbei die
+  Datei`, `Here is the Excel file`) also counts, so the user does not read about a file that does
+  not exist.
+
+### Fixed — a withheld streamed answer sends no tool outputs (#2342, ADR-0316) (2026-11-27)
+
+- At each streamed `tool_result` / `sub_tool_result` the people-egress check is asked with the
+  labels collected so far (`Orchestrator.egressRefusesNow`, `ToolOutputHold`). If it would let the
+  answer through, the event streams live as before. If it would refuse, the event is held. For the
+  then-withheld answer it goes out once with `output: ''`. A sub-agent's inner results wait for
+  their parent's result, because the parent labels the turn only when it returns. They go out with
+  it, or are dropped for a withheld answer. Signed
+  download links and raw read results never reach the client's trace. Every call keeps exactly one
+  `tool_result`. This covers the in-process stream and the subscription CLI
+  (`CliChatAgentDeps.egressRefusesNow`). Kernel consumers still get the real output.
+
+### Fixed — a plugin's plan and process reads honour the Privacy Shield (#2333, #2334, ADR-0315) (2026-11-27)
+
+- Under a privacy handle, a plugin's bounded `listPlansForScope` / `getPlan` / `getPlanSteps` /
+  `getPlanStepsForPlans` / `deletePlan` / `setPlanStepStatus` skip plans of the own conversation
+  whose turn is `unprotected` or unknown. The current turn's own plan stays readable
+  (`isPlanReadableUnderShield`, `src/platform/shieldedNeighbors.ts`). This is the recall plan
+  leg's rule. The session tail's continuity residual does not cover plans (ADR-0315).
+- Under a privacy handle, the bounded `processMemory@1` `get` / `history` / `edit` answer a process
+  stored `unprotected` like a missing one, as `query` and the model's own process tools already do
+  (#2334).
+
 ### Added — file uploads in the web chat (#2336, #1985) (2026-11-27)
 
 - New kernel route `POST /api/chat/uploads`: recordings, PDFs, DOCX, text, CSV/XLSX and
