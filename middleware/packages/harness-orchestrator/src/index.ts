@@ -1124,3 +1124,15 @@ export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';
 export * from './discretion/toolFlow.js';
 export * from './discretion/labelledProcessMemory.js';
+
+// #1983 / #1987 — stored form of transcript entries (marker + chunking).
+export {
+  RECORDING_TRANSCRIPT_MARKER,
+  TRANSCRIPT_CHUNK_CHARS,
+  chunkTranscriptText,
+  markRecordingText,
+  replayUserLine,
+} from './recordingTranscript.js';
+
+// #1976 — is this turn one that can carry an upload (channel turn)?
+export { turnMayCarryUploads } from './attachmentToolAvailability.js';

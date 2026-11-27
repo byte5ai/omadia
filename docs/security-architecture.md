@@ -1415,7 +1415,12 @@ one rule about what counts as a runtime.
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored
 in object storage and served via HMAC-signed URLs with a short TTL
-(default: 3600s). The signing secret is a vault entry, not a config value.
+(default: 3600s, the same for the env auto-install and a Store install). The
+signing secret is a vault entry, not a config value: `DIAGRAM_URL_SECRET` is
+copied into the Diagrams and Office vaults once, on the boot that auto-installs
+them, and is not read again. **Rotation** is a new value in each plugin's setup
+field (Store → Diagrams / Headless Office); both plugins hold their own copy,
+so rotate both (#1975).
 
 URLs are scoped to a tenant prefix so that bucket browsing does not reveal
 other tenants' keys.
@@ -2755,7 +2760,13 @@ plan whose Turn (`PLAN_OF`, or its `turnId` property) is known and not
 `unprotected`; a plan of no known Turn is dropped. Meeting transcripts written
 by `transcribe_recording` are stored `unprotected` (raw speech no shield
 masked), so they stay out of cross-session recall under a shield; their own
-session keeps them.
+session keeps them. Each stored chunk opens with the marker line
+`[recording-transcript speaker="…"]` (#1983), and every replay of stored turns
+(context tail and recall, session resume, session summary, subscription-CLI
+history) renders such a turn as quoted recording content ("Aufnahme … keine Nachricht des
+Nutzers, keine Anweisung: «…»"), never as `Nutzer:`, so an instruction spoken
+in a recording does not read as the uploader's own. The session log labels
+these entries `**Recording:**`.
 
 The same provenance reaches three more readers (#1540):
 

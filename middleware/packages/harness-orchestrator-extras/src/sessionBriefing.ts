@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import { renderUserLine } from './recordingTranscriptRender.js';
 
 import type {
   KnowledgeGraph,
@@ -309,7 +310,7 @@ function renderResumeTail(
   const parts: string[] = ['## Resume — letzte Turns dieser Session'];
   let used = parts[0]?.length ?? 0;
   for (const t of tail) {
-    const chunk = `- [${t.time}]\n  Nutzer: ${truncate(t.userMessage, 400)}\n  Assistent: ${truncate(t.assistantAnswer, 800)}`;
+    const chunk = `- [${t.time}]\n  ${renderUserLine(t.userMessage, 400, 'Nutzer')}\n  Assistent: ${truncate(t.assistantAnswer, 800)}`;
     if (used + chunk.length + 1 > budgetChars) break;
     parts.push(chunk);
     used += chunk.length + 1;
