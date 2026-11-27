@@ -1230,17 +1230,17 @@ interface ResolvedCliHistory {
   readonly available: boolean;
 }
 
-/**
- * Issue #1102 — the per-turn interactive cards a subscription-CLI turn can
- * produce, mirrored onto the `done` event. All optional: a turn that scheduled
- * nothing drains an empty object.
- */
 /** #2303 — the outputs a CLI turn's tools produced, for the `done` event. */
 export interface CliTurnAttachments {
   readonly attachments?: DiagramAttachment[];
   readonly fileAttachments?: OutgoingFileAttachment[];
 }
 
+/**
+ * Issue #1102 — the per-turn interactive cards a subscription-CLI turn can
+ * produce, mirrored onto the `done` event. All optional: a turn that scheduled
+ * nothing drains an empty object.
+ */
 export interface CliTurnCards {
   readonly pendingUserChoice?: PendingUserChoice;
   readonly followUpOptions?: FollowUpOption[];

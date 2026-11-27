@@ -48,7 +48,7 @@ Chosen option: **A**, because one path then covers all three gaps: the output ha
 standing, the shield interns it like any result of that tool (no duplicate call under a shield
 either), and the run trace lists the call, so the verifier counts it.
 
-- **Carrier.** `ChatTurnInput.fastLaneCall` (`@omadia/channel-sdk` 0.3.19): `{ tool, input,
+- **Carrier.** `ChatTurnInput.fastLaneCall` (`@omadia/channel-sdk` 0.3.21): `{ tool, input,
   output, reason, rows?, truncated? }`, set only by the trusted fast-path wrapper
   (`fastLaneCallOf`, output cut at 12 000 characters). No raw output goes into
   `extraSystemHint` any more.

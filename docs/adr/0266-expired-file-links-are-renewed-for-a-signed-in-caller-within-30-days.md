@@ -59,7 +59,7 @@ Chosen option: **A**.
      (`FILE_LINK_RENEW_MAX_AGE_SEC`; `410 file_link.too_old`).
   A malformed body is `400 file_link.bad_request`; a link under a prefix no active plugin
   renews is `404 file_link.unknown_route`.
-- **Registry.** Kernel service `fileLinkRenewal@1` (plugin-api 1.107.0):
+- **Registry.** Kernel service `fileLinkRenewal@1` (plugin-api 1.109.0):
   `registerRenewer(routePrefix, { verifyIgnoringExpiry, sign })`, one renewer per prefix.
   Office (`/documents/dl`, 0.1.8) and Diagrams (`/diagrams/dl`, 0.2.5) declare it in
   `optional_requires` and register on activation; without the service an expired link

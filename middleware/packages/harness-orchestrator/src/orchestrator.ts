@@ -1598,12 +1598,6 @@ function turnIncompleteMarker(
 }
 
 /**
- * Mask a wire-bound prompt text through the turn's privacy handle. Returns
- * the text unchanged when no handle is present, the operator flag is off,
- * or the text is empty — byte-identical legacy behavior. Throws
- * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
- */
-/**
  * #2300 — a tool input built from the user's words (the fast lane's resolved
  * input), masked leaf by leaf through the turn's prompt map, so the replayed
  * `tool_use` carries the same surrogates the model saw in the prompt.
@@ -1629,6 +1623,12 @@ async function maskToolInputForWire(
   return value;
 }
 
+/**
+ * Mask a wire-bound prompt text through the turn's privacy handle. Returns
+ * the text unchanged when no handle is present, the operator flag is off,
+ * or the text is empty — byte-identical legacy behavior. Throws
+ * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
+ */
 async function maskPromptForWire(
   privacy: PrivacyTurnHandle | undefined,
   text: string,
@@ -4386,6 +4386,19 @@ export class Orchestrator {
   }
 
   /**
+   * #2303 (ADR-0177) — the files and diagrams a subscription-CLI turn's
+   * loopback tool calls produced. Called by `CliChatAgent` once, inside the
+   * CLI turn's context, so each sink returns only that turn's outputs.
+   */
+  public drainCliTurnAttachments(): CliTurnAttachments {
+    const { diagrams, files } = this.drainAttachments();
+    return {
+      ...(diagrams.length > 0 ? { attachments: diagrams } : {}),
+      ...(files.length > 0 ? { fileAttachments: files } : {}),
+    };
+  }
+
+  /**
    * Issue #1102 — drain the interactive-card state a subscription-CLI turn left
    * on the kernel-native tool instances, so the CliChatAgent can attach it to
    * its `done` event and the card / chips / slot-picker actually render.
@@ -4402,19 +4415,6 @@ export class Orchestrator {
    * is the same input the CLI model itself produced. Surfacing masked values is
    * a follow-up that belongs with the CLI path's privacy-shield integration.
    */
-  /**
-   * #2303 (ADR-0177) — the files and diagrams a subscription-CLI turn's
-   * loopback tool calls produced. Called by `CliChatAgent` once, inside the
-   * CLI turn's context, so each sink returns only that turn's outputs.
-   */
-  public drainCliTurnAttachments(): CliTurnAttachments {
-    const { diagrams, files } = this.drainAttachments();
-    return {
-      ...(diagrams.length > 0 ? { attachments: diagrams } : {}),
-      ...(files.length > 0 ? { fileAttachments: files } : {}),
-    };
-  }
-
   public drainCliTurnCards(): CliTurnCards {
     const pendingUserChoice = this.drainPendingChoice();
     const followUpOptions = this.drainFollowUps();
@@ -11056,8 +11056,6 @@ export class Orchestrator {
     return { maxTokens: this.maxTokens, maxIterations: this.maxIterations };
   }
 
-  /** Opens a run-trace invocation for a domain tool; an internal helper's run
-   *  is flagged so it is never listed as a consulted agent (#2050). */
   /**
    * #2300 / ADR-0265 — the call the fast lane already ran before its miss,
    * replayed as this turn's first tool round: the call as an assistant
@@ -11105,6 +11103,8 @@ export class Orchestrator {
     ];
   }
 
+  /** Opens a run-trace invocation for a domain tool; an internal helper's run
+   *  is flagged so it is never listed as a consulted agent (#2050). */
   private beginDomainInvocation(
     collector: RunTraceCollector,
     toolName: string,

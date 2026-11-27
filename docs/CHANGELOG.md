@@ -54,7 +54,7 @@ changelog.
 
 ### Fixed — Teams uploads held back by the topic-change card reach the click's turn (#2304) (2026-11-27)
 
-- `PendingTopicDecision.storedAttachments` (`@omadia/channel-sdk` **0.3.20**): a channel keeps the
+- `PendingTopicDecision.storedAttachments` (`@omadia/channel-sdk` **0.3.21**): a channel keeps the
   uploads it stored with a message that triggered the topic card on the server-side pending entry
   and passes them as `ChatTurnInput.storedAttachments` on the turn the click starts, so the kernel
   binds them to the conversation and ingests them then (ADR-0178, binding at the turn that carries
@@ -64,7 +64,7 @@ changelog.
 
 - Owner decision 2026-11-27, supersedes ADR-0221: the call the fast lane already ran reaches the
   agent as its first tool round (`tool_use` + `tool_result`) instead of a per-turn system hint.
-  The carrier is `ChatTurnInput.fastLaneCall` (`@omadia/channel-sdk` **0.3.19**); the orchestrator
+  The carrier is `ChatTurnInput.fastLaneCall` (`@omadia/channel-sdk` **0.3.21**); the orchestrator
   produces the result through `dispatchTool` with the handler skipped, so the Privacy Shield
   interns it (no duplicate query under a shield any more), the replay ledger records it and the
   run trace lists it — the answer verifier counts it as evidence. A data-free kernel note follows
@@ -75,7 +75,7 @@ changelog.
 - `query_dataset` `query_rows` no longer refuses `gt`/`gte`/`lt`/`lte` on `date` columns (a v1
   limit from before #1845 stored dates as ISO). Cells and bounds compare as wall-clock
   timestamps (date-only = midnight) in both backends (Neon: guarded `::timestamp` cast,
-  in-memory: `datasetDateTime`, plugin-api **1.107.0**). The tool reads a string bound with the
+  in-memory: `datasetDateTime`, plugin-api **1.109.0**). The tool reads a string bound with the
   import's parser (`normaliseDateFilterValue`: ISO, `d.m.yyyy`, `d/m/yyyy`, optional time); an
   unreadable bound is `invalid_date_value` naming the accepted formats. Columns with encrypted
   cells stay refused for every filter (`encrypted_column`, a range would be a bisection oracle);
@@ -88,7 +88,7 @@ changelog.
   (plugin's normal TTL), without re-generating the file. Rule: signed-in session, signature
   valid with the expiry ignored, original expiry at most 30 days back; refusals `400`/`401`/
   `403`/`404`/`410` with `file_link.*` codes, logged with a hashed key id only.
-- New kernel service `fileLinkRenewal@1` (plugin-api **1.107.0**); `@omadia/plugin-office`
+- New kernel service `fileLinkRenewal@1` (plugin-api **1.109.0**); `@omadia/plugin-office`
   0.1.8 and `@omadia/diagrams` 0.2.5 register a link renewer (`optional_requires:
   fileLinkRenewal@1`).
 - Web chat: diagram images and file chips of older messages renew their link on render, on a
