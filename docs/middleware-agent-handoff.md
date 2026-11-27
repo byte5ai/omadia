@@ -7003,7 +7003,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
-- **Kanal-Konto-Links (W35, ADR-0280) — Reste:** Deaktivieren eines Kontos entknüpft seine
+- **Kanal-Konto-Links (W35, ADR-0280) — Reste (#2324):** Origin-Kanaltyp pro Plugin prüfen statt Adapter-Attestierung; Deaktivieren eines Kontos entknüpft seine
   Kanal-Identitäten nicht (Turns laufen bis zum Unlink weiter als Konto-Cluster); Slack, Discord
   und WhatsApp sollten `CoreApi.channelIdentityLinks` statt reiner Allow-Listen nutzen;
   Cross-Channel-Memory (`docs/cross-channel-memory.md`) entscheidet, ob ein verknüpftes Konto die

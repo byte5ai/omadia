@@ -173,6 +173,32 @@ describe('ADR-0225 · kernel channel identity links', () => {
     assert.equal(await disabled.linkOf({ channelType: 'telegram', channelUserId: SENDER }), null);
   });
 
+  it('links an Entra account that never signed in into its AAD cluster', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const teams = await kg.resolveOrCreateChannelIdentity({ channelKind: 'teams', channelUserId: 'aad-9', aadObjectId: 'aad-9' });
+    const entra = { ...user(ANNA, 'Anna'), provider: 'entra', providerUserId: 'aad-9' };
+    const links = createChannelIdentityLinks({
+      operatorOf: async () => OPERATOR,
+      users: () => ({ findById: async () => entra, list: async () => [entra] }),
+      knowledgeGraph: () => kg,
+      audit: () => ({ record: async () => undefined }),
+      log: () => undefined,
+    });
+    const offer = await links.offerLink(COOKIE, { channelType: 'telegram', userId: ANNA });
+    assert.ok(offer.ok);
+    await links.redeemLink({ channelType: 'telegram', channelUserId: SENDER, offerId: offer.offerId });
+    assert.equal(await kg.findOmadiaUserIdByChannelIdentity('telegram', SENDER), teams.omadiaUserId);
+  });
+
+  it('refuses a missing channel user id instead of throwing', async () => {
+    const { links } = setup();
+    const offer = await links.offerLink(COOKIE, { channelType: 'telegram', userId: ANNA });
+    assert.ok(offer.ok);
+    const bad = { channelType: 'telegram', offerId: offer.offerId } as unknown as Parameters<typeof links.redeemLink>[0];
+    assert.deepEqual(await links.redeemLink(bad), { ok: false, reason: 'unknown_offer' });
+    assert.equal(await links.linkOf({ channelType: 'telegram' } as never), null);
+  });
+
   it('a plugin links accounts of its own channel type only', async () => {
     const { links } = setup();
     const claims = new ChannelTypeClaims();

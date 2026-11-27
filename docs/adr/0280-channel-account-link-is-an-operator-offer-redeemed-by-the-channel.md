@@ -53,7 +53,7 @@ Chosen option: **A**.
 - **The fact lives on the identity node.** `KnowledgeGraph.linkChannelIdentity`
   (plugin-api 1.107.0, kernel-only, both backends) moves the `ChannelIdentity` to the
   account's User-Cluster (the cluster of `web:<users.id>`, created like a login would,
-  without an IdP subject) and stores `linkedUserId`, `linkedBy`, `linkedAt` on it.
+  without an IdP subject, with the AAD object id for an Entra account) and stores `linkedUserId`, `linkedBy`, `linkedAt` on it.
   `resolveOrCreateChannelIdentity` returns `linkedUserId`. Unlink gives the identity a fresh
   1:1 cluster and removes the props. Nothing the identity wrote is moved either way.
 - **Audit first.** Redeem writes `channel_identity.link` (actor: the offering operator),
@@ -68,9 +68,10 @@ Chosen option: **A**.
 
 ### Consequences
 
-- 🟢 **Good:** A plugin cannot link, unlink or choose an actor without an operator session, and cannot touch another channel's accounts.
+- 🟢 **Good:** A plugin cannot link, unlink or choose an actor without an operator session, and cannot offer, redeem or unlink links of another channel's accounts.
 - 🟢 **Good:** No migration; the in-memory backend links like Neon. The user purge (ADR-0186) removes linked identities with the cluster.
 - 🔴 **Bad:** Offers do not survive a restart; the operator issues a new pairing (the Telegram pairing token does not survive one either).
+- 🔴 **Bad (accepted):** The turn path trusts the channel plugin's attestation, as it already does for a Teams `userRef`. The kernel does not check that the calling plugin holds `origin.channelType`, so an installed channel plugin that forges `origin.channelType` and `userId` of a linked account runs as that account, with its `per_user` MCP key. Channel plugins are operator-installed code; closing this needs the kernel to stamp the origin channel type per plugin (#2324).
 - 🔴 **Bad (accepted):** Disabling an account does not unlink it. `linkOf` then reports no link, but turns of the channel account still run as the account's cluster until an operator unlinks it. Deleting the account with the user purge removes the link.
 - ⚪ **Neutral:** Telegram is the first adopter (omadia-channel-telegram 0.9.0). Slack, Discord and WhatsApp can use the same capability.
 

@@ -26,6 +26,7 @@ import {
 import type { ChannelKind, KnowledgeGraph, OperatorPrincipal } from '@omadia/plugin-api';
 
 import type { AuditEntryInput } from '../auth/adminAuditLog.js';
+import { ENTRA_PROVIDER_ID } from '../auth/providers/EntraProvider.js';
 import type { UserRecord } from '../auth/userStore.js';
 
 /** Channel types whose accounts can be linked. `web` and `api` are accounts or keys themselves. */
@@ -37,6 +38,11 @@ const LINKABLE_CHANNEL_KINDS: Readonly<Record<string, ChannelKind>> = {
   whatsapp: 'whatsapp',
   imessage: 'imessage',
 };
+
+/** A usable channel user id: a non-blank string (plugins may be plain JS). */
+function isChannelUserId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '';
+}
 
 /** Picker size cap; `users.list` caps at 500 per page anyway. */
 const MAX_LINKABLE_ACCOUNTS = 500;
@@ -113,6 +119,9 @@ export function createChannelIdentityLinks(deps: ChannelIdentityLinkDeps): Chann
       displayName: account.displayName,
       ...(account.email ? { email: account.email } : {}),
       emailVerified: true,
+      // As the Entra login does: its provider subject IS the AAD object id, so
+      // an account linked before its first sign-in still joins its Teams cluster.
+      ...(account.provider === ENTRA_PROVIDER_ID ? { aadObjectId: account.providerUserId } : {}),
     });
     await kg.linkChannelIdentity({
       channelKind,
@@ -162,7 +171,7 @@ export function createChannelIdentityLinks(deps: ChannelIdentityLinkDeps): Chann
       const offer = offers.get(request.offerId);
       // Single-use, whatever the outcome below.
       offers.delete(request.offerId);
-      if (!offer || offer.channelKind !== channelKind || !request.channelUserId.trim()) {
+      if (!offer || offer.channelKind !== channelKind || !isChannelUserId(request.channelUserId)) {
         return refused('unknown_offer');
       }
       const users = deps.users();
@@ -216,7 +225,7 @@ export function createChannelIdentityLinks(deps: ChannelIdentityLinkDeps): Chann
       const channelKind = linkableChannelKind(request.channelType);
       const kg = deps.knowledgeGraph();
       const users = deps.users();
-      if (!channelKind || !kg || !users || !request.channelUserId.trim()) return null;
+      if (!channelKind || !kg || !users || !isChannelUserId(request.channelUserId)) return null;
       try {
         const resolved = await kg.resolveOrCreateChannelIdentity({
           channelKind,
@@ -241,6 +250,7 @@ export function createChannelIdentityLinks(deps: ChannelIdentityLinkDeps): Chann
     async unlink(cookieHeader, request) {
       const channelKind = linkableChannelKind(request.channelType);
       if (!channelKind) return refused('unsupported_channel');
+      if (!isChannelUserId(request.channelUserId)) return refused('not_linked');
       const operator = await deps.operatorOf(cookieHeader);
       if (!operator) return refused('no_session');
       const kg = deps.knowledgeGraph();
