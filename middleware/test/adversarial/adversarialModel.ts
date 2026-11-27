@@ -31,6 +31,7 @@ import {
 import { sanitizeIssueBody } from '../../src/plugins/builder/issueBodySanitizer.js';
 import { createLlmVerifier } from '../../src/services/skillVerdictLlmVerifier.js';
 
+import { probeMemoryAcl } from './memoryExfiltration.js';
 import {
   runEscalation,
   delphiConsensus,
@@ -532,6 +533,8 @@ const PROBES: Record<
   issue_sanitizer: probeIssueSanitizer,
   skill_scan_frame: probeSkillScanFrame,
   provenance_frame: probeProvenanceFrame,
+  // Memory-ACL plan step 6: a real turn over the memory-access world.
+  memory_acl: (s) => probeMemoryAcl(s),
 };
 
 /** Run one deterministic scenario against its real defense. Throws on an
