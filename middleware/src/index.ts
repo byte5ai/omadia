@@ -180,6 +180,7 @@ import {
   HUMAN_NAMES_SERVICE,
   RUN_TRACE_STATS_SERVICE,
   setDatasetVaultKeyFallback,
+  TURN_IDENTITY_DIRECTORY_SERVICE,
 } from '@omadia/orchestrator';
 import type { HumanNamesProvider } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
@@ -389,6 +390,10 @@ import {
 } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
 import { createChannelIdentityLinks } from './channels/channelIdentityLinks.js';
+import { DirectoryService } from './directory/directoryService.js';
+import { DirectoryStore } from './directory/directoryStore.js';
+import { unlinkPersonIdentities } from './directory/directoryLinks.js';
+import { channelResolverFor, chatAgentBundleFor, createOriginTypeCheck } from './channels/turnOriginGuard.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
@@ -445,6 +450,7 @@ import {
   requestIsSecure,
 } from './http/requestTrust.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
+import { createAdminDirectoryRouter } from './routes/adminDirectory.js';
 import { createAdminAuditRouter } from './routes/adminAudit.js';
 import { createAdminChatsRouter } from './routes/adminChats.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
@@ -728,7 +734,7 @@ import type {
   DefaultChannelKeyProvider,
   MeetingSourceProvider,
 } from '@omadia/channel-sdk';
-import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey, RoleSourceRegistry, type GrantStore } from '@omadia/channel-sdk';
+import { CHANNEL_RESOLVER_SERVICE, CHAT_AGENT_SERVICE, InMemoryDisclosureSeenStore, normalizeAgentIdentityKey, RoleSourceRegistry, type GrantStore } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -1792,6 +1798,32 @@ async function main(): Promise<void> {
   // stored turn, whoever provides `bulkPromotion`.
   serviceRegistry.decorateOnProvide<BulkPromotionService>('bulkPromotion', (inner) =>
     withBulkPromotionGate(inner, discretionStore),
+  );
+  // #2324 / ADR-0302 — a plugin may state a turn origin only for a channel
+  // type it holds. `chatAgent@1` and the `chatAgent` of every
+  // `channelResolver@1` answer are handed out per calling plugin and drop a
+  // foreign origin before the turn runs; the kernel's own reads stay
+  // unwrapped. `channelTypesOfPlugin` is bound further down and only read at
+  // turn time.
+  // Before `channelTypesOfPlugin` exists (a turn between plugin activation and
+  // its declaration), no plugin has claimed anything yet: the manifest-derived
+  // type is the same answer it would give.
+  const channelTypesOfPluginRef: { current?: (pluginId: string) => readonly string[] } = {};
+  const channelTypesFor = (pluginId: string): readonly string[] =>
+    channelTypesOfPluginRef.current
+      ? channelTypesOfPluginRef.current(pluginId)
+      : [deriveChannelType(pluginId, { manifest: pluginCatalog.get(pluginId)?.plugin.channel })];
+  const mayStateTurnOrigin = createOriginTypeCheck(channelTypesFor);
+  const logOriginGuard = (m: string): void => console.warn(m);
+  serviceRegistry.decorateOnProvide<{ readonly agent: ChatAgent }>(CHAT_AGENT_SERVICE, (bundle) =>
+    perCallerService((caller) => chatAgentBundleFor(bundle, caller, mayStateTurnOrigin, logOriginGuard)) as unknown as {
+      readonly agent: ChatAgent;
+    },
+  );
+  serviceRegistry.decorateOnProvide<{ resolve(...args: never[]): unknown }>(CHANNEL_RESOLVER_SERVICE, (resolver) =>
+    perCallerService((caller) => channelResolverFor(resolver, caller, mayStateTurnOrigin, logOriginGuard)) as unknown as {
+      resolve(...args: never[]): unknown;
+    },
   );
   serviceRegistry.provide('consultation', consultationBroker);
   // The offering snapshot is read once the pool exists (after plugin
@@ -3168,6 +3200,56 @@ async function main(): Promise<void> {
           log: (m) => console.log(`[middleware] ${m}`),
         })
       : undefined;
+  // ADR-0300 / #2335 — the Entra-fed directory of people (not accounts). The
+  // Teams plugin contributes a tenant's source (`CoreApi.registerDirectorySource`);
+  // the kernel stores people, syncs every 6 h and deprovisions leavers: their
+  // per-person MCP tokens (keyed on the AAD object id) and their channel links
+  // go. Postgres-only; without a pool there is no directory.
+  const directoryStore = graphPool ? new DirectoryStore(graphPool) : undefined;
+  const directoryService = new DirectoryService({
+    store: () => directoryStore,
+    audit: () => pluginAdminAudit.current,
+    revokePersonConnections: async (personKey) => {
+      if (!graphPool || !mcpOAuthService) return { revoked: 0, failed: 0 };
+      const mcpStore = new AgentGraphStore(graphPool);
+      let revoked = 0;
+      let failed = 0;
+      // Each server on its own: one provider that fails must not keep the others' tokens.
+      for (const server of await mcpStore.listMcpServers()) {
+        try {
+          if (!(await mcpStore.getMcpOAuthToken(server.id, personKey))) continue;
+          await mcpOAuthService.disconnect(server, personKey, { revoke: true });
+          revoked += 1;
+        } catch (err) {
+          failed += 1;
+          console.warn(
+            `[directory] revoking ${server.id} for a deprovisioned person failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      return { revoked, failed };
+    },
+    unlinkPersonIdentities: (person) =>
+      unlinkPersonIdentities(knowledgeGraph, pluginAdminAudit.current, person, (m) => console.warn(m)),
+    accountStatus: async (userId) => (await linkableUsers.current?.findById(userId))?.status,
+    // ADR-0300 — an Entra directory comes only from the plugin that serves Teams:
+    // a source can deprovision a whole tenant.
+    mayRegister: (channelId, source) => source === 'entra' && channelTypesFor(channelId).includes('teams'),
+    log: (m) => console.log(m),
+  });
+  // #2324 — account status and directory people for the turn owner, read per
+  // turn by the orchestrator (`optional_requires`).
+  // Handed only to the orchestrator: other plugins learn nothing about who is
+  // an active account or a directory person.
+  const turnIdentityDirectory = directoryService.turnIdentityDirectory();
+  serviceRegistry.provide(
+    TURN_IDENTITY_DIRECTORY_SERVICE,
+    perCallerService((caller) =>
+      caller.pluginId === ORCHESTRATOR_PLUGIN_ID || caller.pluginId === KERNEL_SERVICE_CALLER.pluginId
+        ? turnIdentityDirectory
+        : undefined,
+    ),
+  );
   // Schema-driven MCP config with Vault-backed secrets (epic #459).
   const mcpConfigService = graphPool
     ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
@@ -4960,6 +5042,7 @@ async function main(): Promise<void> {
       ? claimed
       : [deriveChannelType(pluginId, { manifest: pluginCatalog.get(pluginId)?.plugin.channel })];
   };
+  channelTypesOfPluginRef.current = channelTypesOfPlugin;
   // Named here, not inline, for the wiring-pin tests' lazy
   // `createOperatorAgentsRouter\(\{…\}\)` match.
   const releaseAgentChannelBots = agentChannelIdentities
@@ -6662,6 +6745,38 @@ async function main(): Promise<void> {
     );
     console.log('[middleware] admin auth endpoints ready at /api/v1/auth');
 
+    // ADR-0300 — the directory view (people, sync, links, connections).
+    if (directoryStore) {
+      const mcpStore = new AgentGraphStore(graphPool);
+      app.use(
+        '/api/v1/admin/directory',
+        requireAuth,
+        createAdminDirectoryRouter({
+          store: directoryStore,
+          service: directoryService,
+          audit: adminAudit,
+          users: () => userStore,
+          knowledgeGraph: () => knowledgeGraph,
+          connectionsOf: async (personKey) => {
+            const connections: { serverId: string; serverName: string }[] = [];
+            for (const server of await mcpStore.listMcpServers()) {
+              if (await mcpStore.getMcpOAuthToken(server.id, personKey)) {
+                connections.push({ serverId: server.id, serverName: server.name });
+              }
+            }
+            return connections;
+          },
+          revokeConnection: async (serverId, personKey) => {
+            const server = (await mcpStore.listMcpServers()).find((s) => s.id === serverId);
+            if (!server || !mcpOAuthService) return false;
+            await mcpOAuthService.disconnect(server, personKey, { revoke: true });
+            return true;
+          },
+        }),
+      );
+      console.log('[middleware] directory admin endpoints ready at /api/v1/admin/directory (auth: required)');
+    }
+
     const findWebIdentity = knowledgeGraph.findOmadiaUserIdByChannelIdentity?.bind(knowledgeGraph);
     app.use(
       '/api/v1/admin/users',
@@ -8360,6 +8475,7 @@ async function main(): Promise<void> {
     webSockets: webSocketRegistry,
     rosterRegistry: conversationRosterRegistry,
     peopleDirectories: peopleDirectoryRegistry,
+    directories: directoryService,
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
@@ -8411,6 +8527,8 @@ async function main(): Promise<void> {
       users: () => linkableUsers.current,
       knowledgeGraph: () => knowledgeGraph,
       audit: () => pluginAdminAudit.current,
+      // ADR-0300 — colleagues of the Entra directory can be linked too.
+      directory: () => directoryStore,
     }),
   });
 
@@ -8461,6 +8579,7 @@ async function main(): Promise<void> {
     webSockets: webSocketRegistry,
     rosterRegistry: conversationRosterRegistry,
     peopleDirectories: peopleDirectoryRegistry,
+    directories: directoryService,
     targetedSends: targetedSendRegistry,
     conversationSends: conversationSendRegistry,
     readinessProviders: readinessProviderRegistry,

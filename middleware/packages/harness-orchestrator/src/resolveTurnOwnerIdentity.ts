@@ -120,6 +120,16 @@ export interface TurnOwnerIdentity {
    */
   linkedUserId?: string;
   /**
+   * ADR-0300 — the person key (AAD object id) of the active directory person
+   * this turn's sender is: a Teams sender whose object id the directory
+   * lists, or a channel identity an operator linked to a directory person.
+   * `per_user` MCP tokens of a person without a web login are stored under it
+   * ({@link channelTurnMcpUserKey}).
+   */
+  directoryPersonKey?: string;
+  /** ADR-0300 — the directory person an operator linked this channel identity to. */
+  linkedDirectoryPersonId?: string;
+  /**
    * The cluster of the identity a plugin channel turn states through `origin`,
    * linked or not — resolved here once so the run-trace owner
    * ({@link resolveRunTraceOwner}) does not resolve it a second time.
@@ -139,13 +149,57 @@ function withPrincipal(identity: TurnOwnerIdentity): TurnOwnerIdentity {
   return principal ? { ...identity, principal } : identity;
 }
 
+/**
+ * ADR-0300 / #2324 — what the kernel knows about people and accounts that the
+ * knowledge graph does not: whether an account is still active, and which
+ * directory people are. The orchestrator has no database; the kernel
+ * publishes this as `turnIdentityDirectory@1`. Absent: no directory key is
+ * produced and links apply as recorded.
+ */
+export interface TurnIdentityDirectory {
+  /** `false` when the account (`users.id`) is disabled or gone. */
+  isAccountActive(userId: string): Promise<boolean>;
+  /** The person key of the ACTIVE directory person with this AAD object id. */
+  activePersonKeyByObjectId(aadObjectId: string): Promise<string | undefined>;
+  /** The person key of the ACTIVE directory person with this directory id. */
+  activePersonKeyById(personId: string): Promise<string | undefined>;
+}
+
+/** A lookup that fails reads as "not a person": no key is produced. */
+async function personKeyOrNone(
+  lookup: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+  try {
+    return (await lookup()) || undefined;
+  } catch (err) {
+    console.warn(
+      `[harness-orchestrator] resolveTurnOwnerIdentity: directory lookup failed — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return undefined;
+  }
+}
+
+/** The directory key of a Teams sender: their AAD object id, when the directory lists them as active. */
+async function teamsDirectoryKey(
+  directory: TurnIdentityDirectory | undefined,
+  channelKind: ChannelKind,
+  aadObjectId: string | undefined,
+): Promise<{ directoryPersonKey?: string }> {
+  if (!directory || channelKind !== 'teams' || !aadObjectId || aadObjectId.startsWith('29:')) return {};
+  const key = await personKeyOrNone(() => directory.activePersonKeyByObjectId(aadObjectId));
+  return key ? { directoryPersonKey: key } : {};
+}
+
 export async function resolveTurnOwnerIdentity(
   knowledgeGraph: KnowledgeGraph | undefined,
   input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'> & Partial<Pick<ChatTurnInput, 'origin'>>,
+  directory?: TurnIdentityDirectory,
 ): Promise<TurnOwnerIdentity> {
   if (!input.channelIdentity) {
     const implicit = originChannelIdentity(input);
-    if (implicit && knowledgeGraph) return resolveOriginTurnOwner(knowledgeGraph, input, implicit);
+    if (implicit && knowledgeGraph) return resolveOriginTurnOwner(knowledgeGraph, input, implicit, directory);
     // Non-channel turns carry no cluster to read a subject from; the HTTP
     // path produces its own `mcpUserKey` from the live session instead.
     return input.userId ? withPrincipal({ omadiaUserId: input.userId }) : {};
@@ -156,16 +210,36 @@ export async function resolveTurnOwnerIdentity(
   // "no identity available" rather than silently using the wrong id.
   if (!knowledgeGraph) return {};
   try {
-    const { omadiaUserId, clusterAuthSubject } =
+    const { omadiaUserId, clusterAuthSubject, linkedUserId, linkedDirectoryPersonId } =
       await knowledgeGraph.resolveOrCreateChannelIdentity({
         channelKind: input.channelIdentity.channelKind,
         channelUserId: input.channelIdentity.channelUserId,
       });
+    // #2324 / ADR-0300 — a minted channel identity (the dispatcher's
+    // `userRef` path) already sits in the cluster an operator linked it to.
+    // A link to a disabled account or a deprovisioned person names nobody:
+    // the turn gets no identity at all (fail closed), not the cluster.
+    if (linkedUserId && directory && !(await accountActiveOrFalse(directory, linkedUserId))) {
+      console.warn(
+        `[security-audit] resolveTurnOwnerIdentity: ${input.channelIdentity.channelKind} identity is linked to inactive account ${linkedUserId} — no turn identity`,
+      );
+      return {};
+    }
+    if (linkedDirectoryPersonId && omadiaUserId) {
+      const key = directory ? await personKeyOrNone(() => directory.activePersonKeyById(linkedDirectoryPersonId)) : undefined;
+      if (!key) return {};
+      return withPrincipal({ omadiaUserId, directoryPersonKey: key, linkedDirectoryPersonId });
+    }
     return withPrincipal({
       ...(omadiaUserId ? { omadiaUserId } : {}),
       ...(clusterAuthSubject
         ? { authSubjectKey: clusterAuthSubject.providerUserId }
         : {}),
+      ...(await teamsDirectoryKey(
+        directory,
+        input.channelIdentity.channelKind,
+        input.channelIdentity.channelUserId,
+      )),
     });
   } catch (err) {
     console.warn(
@@ -175,6 +249,43 @@ export async function resolveTurnOwnerIdentity(
     );
     return {};
   }
+}
+
+/** A failed account lookup counts as inactive: the link is not applied. */
+async function accountActiveOrFalse(directory: TurnIdentityDirectory, userId: string): Promise<boolean> {
+  try {
+    return await directory.isAccountActive(userId);
+  } catch (err) {
+    console.warn(
+      `[harness-orchestrator] resolveTurnOwnerIdentity: account lookup failed — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return false;
+  }
+}
+
+/**
+ * ADR-0300 — a channel identity an operator linked to a directory person runs
+ * as the person's cluster and keys `per_user` tokens on the person, while the
+ * person is active. Deprovisioned, unknown, or no directory: the raw id, as an
+ * unlinked identity.
+ */
+async function withLinkedPerson(
+  clusterUserId: string,
+  personId: string,
+  directory: TurnIdentityDirectory | undefined,
+  legacy: TurnOwnerIdentity,
+  originCluster: { originClusterUserId?: string },
+): Promise<TurnOwnerIdentity> {
+  const key = directory ? await personKeyOrNone(() => directory.activePersonKeyById(personId)) : undefined;
+  if (!key) return { ...legacy, ...originCluster };
+  return withPrincipal({
+    omadiaUserId: clusterUserId,
+    directoryPersonKey: key,
+    linkedDirectoryPersonId: personId,
+    ...originCluster,
+  });
 }
 
 /**
@@ -189,12 +300,30 @@ async function resolveOriginTurnOwner(
   knowledgeGraph: KnowledgeGraph,
   input: Pick<ChatTurnInput, 'userId'>,
   implicit: ChannelIdentityIngest,
+  directory: TurnIdentityDirectory | undefined,
 ): Promise<TurnOwnerIdentity> {
   const legacy: TurnOwnerIdentity = input.userId ? withPrincipal({ omadiaUserId: input.userId }) : {};
   try {
     const resolved = await knowledgeGraph.resolveOrCreateChannelIdentity(implicit);
     const originCluster = resolved.omadiaUserId ? { originClusterUserId: resolved.omadiaUserId } : {};
-    if (!resolved.linkedUserId || !resolved.omadiaUserId) return { ...legacy, ...originCluster };
+    if (resolved.linkedDirectoryPersonId && resolved.omadiaUserId) {
+      return withLinkedPerson(resolved.omadiaUserId, resolved.linkedDirectoryPersonId, directory, legacy, originCluster);
+    }
+    if (!resolved.linkedUserId || !resolved.omadiaUserId) {
+      return {
+        ...legacy,
+        ...originCluster,
+        ...(await teamsDirectoryKey(directory, implicit.channelKind, implicit.aadObjectId)),
+      };
+    }
+    // #2324 — a link to a disabled (or deleted) account names nobody: the
+    // turn runs as the raw channel id again until the account is enabled.
+    if (directory && !(await accountActiveOrFalse(directory, resolved.linkedUserId))) {
+      console.warn(
+        `[security-audit] resolveTurnOwnerIdentity: ${implicit.channelKind} identity is linked to inactive account ${resolved.linkedUserId} — link not applied`,
+      );
+      return { ...legacy, ...originCluster };
+    }
     return withPrincipal({
       omadiaUserId: resolved.omadiaUserId,
       ...(resolved.clusterAuthSubject
@@ -225,8 +354,8 @@ export function channelTurnMcpUserKey(
   input: Pick<ChatTurnInput, 'channelIdentity'>,
   owner: TurnOwnerIdentity,
 ): string | undefined {
-  if (!input.channelIdentity && !owner.linkedUserId) return undefined;
-  return owner.authSubjectKey || owner.omadiaUserId || undefined;
+  if (!input.channelIdentity && !owner.linkedUserId) return owner.directoryPersonKey || undefined;
+  return owner.authSubjectKey || owner.directoryPersonKey || owner.omadiaUserId || undefined;
 }
 
 /**

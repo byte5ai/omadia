@@ -1529,6 +1529,11 @@ export interface ResolveOrCreateChannelIdentityResult {
    * The kernel reads it to run a plugin channel turn as that account.
    */
   linkedUserId?: string;
+  /**
+   * ADR-0300 — the directory person (`directory_people.id`) an operator linked
+   * this identity to, instead of an account. Exclusive with `linkedUserId`.
+   */
+  linkedDirectoryPersonId?: string;
 }
 
 /** Payload for {@link KnowledgeGraph.linkChannelIdentity}. */
@@ -1539,8 +1544,13 @@ export interface ChannelIdentityLinkInput {
   target: {
     /** Cluster root of the account (`user:<omadiaUserId>` must exist). */
     omadiaUserId: string;
-    /** The account's `users.id`, stored as `linkedUserId`. */
-    userId: string;
+    /**
+     * The account's `users.id`, stored as `linkedUserId`. Exactly one of
+     * `userId` / `directoryPersonId` names the target.
+     */
+    userId?: string;
+    /** ADR-0300 — a directory person's id, stored as `linkedDirectoryPersonId`. */
+    directoryPersonId?: string;
     /** `users.id` of the operator who issued the link. */
     linkedBy?: string;
   } | null;
@@ -1557,7 +1567,7 @@ export interface ChannelIdentityLinkResult {
 }
 
 /** The ChannelIdentity props that carry an operator link (ADR-0225). */
-export const CHANNEL_IDENTITY_LINK_PROPS = ['linkedUserId', 'linkedBy', 'linkedAt'] as const;
+export const CHANNEL_IDENTITY_LINK_PROPS = ['linkedUserId', 'linkedDirectoryPersonId', 'linkedBy', 'linkedAt'] as const;
 
 /**
  * The ChannelIdentity node properties that carry {@link

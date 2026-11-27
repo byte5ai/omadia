@@ -299,6 +299,10 @@
           "title": "Users",
           "description": "Create, disable, reset passwords for, or delete local accounts."
         },
+        "directory": {
+          "title": "Directory",
+          "description": "Colleagues of the Entra tenant without a web login: sync, linked channel accounts, personal MCP connections."
+        },
         "apiKeys": {
           "title": "Public API Keys",
           "description": "Create, list, and revoke bearer credentials for the public chat API."
@@ -6316,6 +6320,53 @@
       "badge": "price unknown",
       "badgePartial": "{count, plural, one {# call} other {# calls}} without price",
       "noCost": "—"
+    }
+  },
+  "adminDirectory": {
+    "title": "Directory",
+    "intro": "Colleagues of your Microsoft Entra tenant, read through the Teams plugin. They are not accounts: they cannot sign in here. Their channel accounts and personal MCP connections attach to them, and leave with them when they leave the tenant.",
+    "loading": "Loading…",
+    "empty": "Nobody matches.",
+    "total": "{count, plural, one {# person} other {# people}}",
+    "status": {
+      "active": "Active",
+      "deprovisioned": "Left"
+    },
+    "filters": {
+      "search": "Search",
+      "searchPlaceholder": "Name, UPN or e-mail",
+      "status": "Status",
+      "all": "All"
+    },
+    "sources": {
+      "heading": "Tenants",
+      "none": "No directory yet. An active Teams plugin with the User.Read.All permission provides it.",
+      "tenant": "Entra tenant {tenantId}",
+      "running": "Syncing…",
+      "lastSync": "Last sync {at}",
+      "neverSynced": "Not synced yet",
+      "lastError": "Last sync failed: {error}",
+      "notRegistered": "No active plugin reads this tenant.",
+      "syncNow": "Sync now"
+    },
+    "detail": {
+      "synced": "Synced {at}",
+      "deprovisioned": "left {at}",
+      "webLogin": "Has a web login: {email}",
+      "noWebLogin": "No web login",
+      "linkedHeading": "Linked channel accounts",
+      "noLinks": "None",
+      "identity": "{channel}: {id}",
+      "unlink": "Unlink",
+      "connectionsHeading": "Connected MCP servers",
+      "noConnections": "None",
+      "revoke": "Revoke",
+      "purgeHint": "Their memories and chats stay until you erase the person with the user purge (Danger zone)."
+    },
+    "errors": {
+      "load": "The directory could not be loaded.",
+      "detail": "This person could not be loaded or changed.",
+      "sync": "The sync could not be started."
     }
   },
   "adminUsers": {

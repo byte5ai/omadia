@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.114.0 — 2026-11-27
+
+Additive (ADR-0300, #2335; 1.113.0 is W43 #2360, the lander renumbers if needed).
+
+- `ResolveOrCreateChannelIdentityResult.linkedDirectoryPersonId?` — an operator link to a
+  directory person (a colleague of the Entra tenant without a web login), exclusive with
+  `linkedUserId`.
+- `ChannelIdentityLinkInput.target` takes `userId?` **or** `directoryPersonId?` (exactly one;
+  a backend refuses neither/both with `invalid_link_target`). Only the kernel's graph backends
+  implement `linkChannelIdentity` (kernel-only in the bounded services). A third-party `KnowledgeGraph`
+  implementation that reads `target.userId` as a required string must handle the person
+  variant; no plugin implements it today.
+- `CHANNEL_IDENTITY_LINK_PROPS` includes `linkedDirectoryPersonId`.
+
 ## 1.113.0 — 2026-11-27
 
 Additive. (Wave 7, W43; the lander renumbers if another PR takes 1.113.0.)

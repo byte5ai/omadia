@@ -204,7 +204,8 @@ describe('CoreApi scoped to one channel plugin', () => {
     const s = await setup();
     const core = createCoreApi({ dispatcher: {} as never, routes: {} as never });
     const scoped = scopeCoreApiToChannel(core, 'c', new ChannelTypeClaims());
-    assert.equal(scoped.handleTurnStream, core.handleTurnStream);
+    // #2324 / ADR-0302 — handleTurnStream is bound to the channel (turnOriginGuard.test.ts).
+    assert.notEqual(scoped.handleTurnStream, core.handleTurnStream);
     assert.equal(scoped.registerRoute, core.registerRoute);
     assert.equal(scoped.emitConversationMessage, undefined, 'still feature-detectable');
     assert.ok(s.teams.emitConversationMessage);

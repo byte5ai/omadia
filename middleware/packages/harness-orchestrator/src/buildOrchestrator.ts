@@ -14,6 +14,7 @@
  * than once in one process.
  */
 
+import type { TurnIdentityDirectory } from './resolveTurnOwnerIdentity.js';
 import type { DataPlanGuard } from '@omadia/plugin-api';
 import { turnContext } from './turnContext.js';
 import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
@@ -339,6 +340,8 @@ export interface OrchestratorDeps {
    *  and no policy hop is possible, the pre-W3 behaviour. */
   readonly providerPool?: Pick<LlmProviderPool, 'get' | 'health'>;
   readonly knowledgeGraph: KnowledgeGraph;
+  /** ADR-0300 / #2324 — kernel `turnIdentityDirectory@1`, resolved per turn. */
+  readonly identityDirectory?: () => TurnIdentityDirectory | undefined;
   readonly memoryStore: MemoryStore;
   readonly entityRefBus: EntityRefBus;
   readonly nativeToolRegistry: NativeToolRegistry;
@@ -1025,6 +1028,7 @@ export function buildOrchestratorForAgent(
     // Who a channel user is, even for an archetype built without memory: the
     // audience floor and the turn owner need it in every group conversation.
     identityGraph: deps.knowledgeGraph,
+    ...(deps.identityDirectory ? { identityDirectory: deps.identityDirectory } : {}),
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),

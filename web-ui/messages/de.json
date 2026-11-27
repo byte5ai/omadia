@@ -299,6 +299,10 @@
           "title": "Benutzer",
           "description": "Lokale Konten anlegen, deaktivieren, Passwort zurücksetzen oder löschen."
         },
+        "directory": {
+          "title": "Verzeichnis",
+          "description": "Kolleginnen und Kollegen des Entra-Mandanten ohne Web-Login: Synchronisierung, verknüpfte Kanal-Konten, persönliche MCP-Verbindungen."
+        },
         "apiKeys": {
           "title": "Öffentliche API-Schlüssel",
           "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen."
@@ -6316,6 +6320,53 @@
       "badge": "Preis unbekannt",
       "badgePartial": "{count, plural, one {# Call} other {# Calls}} ohne Preis",
       "noCost": "—"
+    }
+  },
+  "adminDirectory": {
+    "title": "Verzeichnis",
+    "intro": "Kolleginnen und Kollegen Ihres Microsoft-Entra-Mandanten, gelesen über das Teams-Plugin. Sie sind keine Konten und können sich hier nicht anmelden. Ihre Kanal-Konten und persönlichen MCP-Verbindungen hängen an ihnen und gehen mit ihnen, wenn sie den Mandanten verlassen.",
+    "loading": "Wird geladen…",
+    "empty": "Niemand gefunden.",
+    "total": "{count, plural, one {# Person} other {# Personen}}",
+    "status": {
+      "active": "Aktiv",
+      "deprovisioned": "Ausgeschieden"
+    },
+    "filters": {
+      "search": "Suche",
+      "searchPlaceholder": "Name, UPN oder E-Mail",
+      "status": "Status",
+      "all": "Alle"
+    },
+    "sources": {
+      "heading": "Mandanten",
+      "none": "Noch kein Verzeichnis. Ein aktives Teams-Plugin mit der Berechtigung User.Read.All stellt es bereit.",
+      "tenant": "Entra-Mandant {tenantId}",
+      "running": "Synchronisiert…",
+      "lastSync": "Zuletzt synchronisiert {at}",
+      "neverSynced": "Noch nicht synchronisiert",
+      "lastError": "Letzte Synchronisierung fehlgeschlagen: {error}",
+      "notRegistered": "Kein aktives Plugin liest diesen Mandanten.",
+      "syncNow": "Jetzt synchronisieren"
+    },
+    "detail": {
+      "synced": "Synchronisiert {at}",
+      "deprovisioned": "ausgeschieden {at}",
+      "webLogin": "Hat ein Web-Login: {email}",
+      "noWebLogin": "Kein Web-Login",
+      "linkedHeading": "Verknüpfte Kanal-Konten",
+      "noLinks": "Keine",
+      "identity": "{channel}: {id}",
+      "unlink": "Verknüpfung lösen",
+      "connectionsHeading": "Verbundene MCP-Server",
+      "noConnections": "Keine",
+      "revoke": "Widerrufen",
+      "purgeHint": "Erinnerungen und Chats bleiben, bis Sie die Person mit dem Personen-Löschen (Gefahrenzone) entfernen."
+    },
+    "errors": {
+      "load": "Das Verzeichnis konnte nicht geladen werden.",
+      "detail": "Diese Person konnte nicht geladen oder geändert werden.",
+      "sync": "Die Synchronisierung konnte nicht gestartet werden."
     }
   },
   "adminUsers": {
