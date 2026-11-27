@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the boot-time process re-key no longer fails on a re-written slug id (#2358) (2026-11-27)
+
+- `NeonProcessMemoryStore.rekeyLegacyIds` (ADR-0295) gives `legacy_id` only to a row whose old id no
+  other process holds yet (`NOT EXISTS`). Before, an older build that wrote the same
+  `process:<scope>:<slug>` again after an earlier re-key made the unique `idx_processes_legacy_id`
+  fail the whole statement on every boot, and no late row was re-keyed. That row now gets an opaque
+  id without a `legacy_id`, and the old id keeps naming the first process.
+- ADR-0118's status now says it is superseded in part by ADR-0295. It still described the
+  deterministic `process:<scope>:<slug(title)>` id.
+
 ### Fixed — a stubborn stdio MCP server no longer survives close() under MCP_STDIO_RUN_AS (#2329, ADR-0317) (2026-11-27)
 
 - The `/bin/sh` shim between sudo and the server (`MCP_STDIO_CHILD_SHIM`) now supervises the

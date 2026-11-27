@@ -652,13 +652,23 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
    * (`process:<scope>:<slug>`): the same rewrite as Neon migration 0040, for
    * rows an older build wrote after the migration ran (a rolling deploy).
    * Idempotent; returns how many rows it re-keyed.
+   *
+   * #2358 — an old id another process already holds as its `legacy_id` (an
+   * older build wrote the same slug again after an earlier re-key) is not
+   * claimed twice: that row gets an opaque id without a `legacy_id`, and the
+   * old id keeps resolving to the process that held it first. Without the
+   * guard the unique `idx_processes_legacy_id` failed the whole statement on
+   * every boot, and no late row was re-keyed.
    */
   async rekeyLegacyIds(): Promise<number> {
     const result = await this.pool.query<{ id: string }>(
       `WITH remap AS MATERIALIZED (
-         SELECT tenant_id, id AS old_id, 'process:' || gen_random_uuid()::text AS new_id
-           FROM processes
-          WHERE tenant_id = $1
+         SELECT p.tenant_id, p.id AS old_id, 'process:' || gen_random_uuid()::text AS new_id,
+                NOT EXISTS (
+                  SELECT 1 FROM processes q WHERE q.tenant_id = p.tenant_id AND q.legacy_id = p.id
+                ) AS claims_legacy
+           FROM processes p
+          WHERE p.tenant_id = $1
             AND legacy_id IS NULL
             AND id !~ '^process:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
        ),
@@ -668,7 +678,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
           WHERE h.tenant_id = r.tenant_id AND h.id = r.old_id
        )
        UPDATE processes p
-          SET id = r.new_id, legacy_id = r.old_id
+          SET id = r.new_id, legacy_id = CASE WHEN r.claims_legacy THEN r.old_id END
          FROM remap r
         WHERE p.tenant_id = r.tenant_id AND p.id = r.old_id
        RETURNING p.id`,

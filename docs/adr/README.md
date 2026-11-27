@@ -184,7 +184,7 @@ that date.
 | 0115 | [Binary objects live in one optional S3-compatible store; metadata stays in Postgres](0115-binary-objects-in-an-optional-s3-compatible-store.md) | Accepted | 2026-11-25 |
 | 0116 | [Context memory: one memory stack per chat context, four per-agent modes, fail-closed](0116-context-memory-modes-and-tiers.md) | Accepted; Superseded in part by [0261](0261-agents-on-memory-off-move-to-members-off-is-a-shared-agent.md) — refined by [0182](0182-web-and-api-turns-carry-an-account-or-key-origin.md) | 2026-11-25 |
 | 0117 | [Turn memory ages: decay score, HOT/WARM/COLD tiers and per-scope quotas](0117-graph-memory-lifecycle-tiers-decay-and-quotas.md) | Accepted | 2026-11-25 |
-| 0118 | [One generic node and edge table for the graph; bulk and structured data go to sidecar tables](0118-graph-nodes-stay-small-bulk-data-in-sidecar-tables.md) | Accepted | 2026-11-25 |
+| 0118 | [One generic node and edge table for the graph; bulk and structured data go to sidecar tables](0118-graph-nodes-stay-small-bulk-data-in-sidecar-tables.md) | Accepted; Superseded in part by 0295 | 2026-11-25 |
 | 0119 | [Schema changes are forward-only SQL files in independent series, applied at boot](0119-independent-migration-series-per-subsystem.md) | Accepted | 2026-11-25 |
 | 0120 | [The memory purge deletes what its preview showed, and writes its audit row first](0120-memory-purge-is-complete-previewed-and-audited.md) | Accepted | 2026-11-25 |
 | 0121 | [One embedding model per vector space: a gate at activation, destructive steps only on operator action](0121-one-embedding-model-per-vector-space.md) | Accepted | 2026-11-25 |
