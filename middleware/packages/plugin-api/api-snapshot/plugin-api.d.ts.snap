@@ -1178,6 +1178,26 @@ outcome: 'sent';
 } | FollowupRefusal>;
 }
 
+// ===== fileLinkRenewal.d.ts =====
+export declare const FILE_LINK_RENEWAL_SERVICE_NAME = "fileLinkRenewal";
+export declare const FILE_LINK_RENEWAL_CAPABILITY = "fileLinkRenewal@1";
+export interface SignedFileLink {
+readonly key: string;
+readonly exp: number;
+readonly sig: string;
+}
+export interface RenewedFileLink {
+readonly url: string;
+readonly expiresAt: number;
+}
+export interface FileLinkRenewer {
+verifyIgnoringExpiry(link: SignedFileLink): boolean;
+sign(key: string): RenewedFileLink;
+}
+export interface FileLinkRenewalService {
+registerRenewer(routePrefix: string, renewer: FileLinkRenewer): () => void;
+}
+
 // ===== generatedObjects.d.ts =====
 export declare const GENERATED_OBJECTS_SERVICE_NAME = "generatedObjects";
 export declare const GENERATED_OBJECTS_CAPABILITY = "generatedObjects@1";
@@ -1248,6 +1268,7 @@ export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
 export * from './datasetId.js';
 export * from './generatedObjects.js';
+export * from './fileLinkRenewal.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
 export * from './boundaryPresets.js';

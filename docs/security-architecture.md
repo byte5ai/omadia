@@ -1493,6 +1493,14 @@ only its own key layout (`documents/<tenant>/<sha256>/<file>` vs
 `<tenant>/<sha256>.png`). Revoking one route's public-path grant therefore ends
 session-less access to that plugin's objects; the other route does not serve them.
 
+**Renewing an expired link (#1964, ADR-0266).** `POST /api/v1/files/renew` re-signs an
+expired link for the same key, never a different one, and only for a signed-in session,
+only when the producing plugin accepts its own signature (expiry ignored, own key layout)
+and only within 30 days of the original expiry (`410 file_link.too_old` after). Accepted
+risk: any signed-in account that holds an old link can renew it within that window — it
+could fetch the file while the link was valid. Refusals are logged with a hashed key id,
+never the URL or signature. Channel users without a session cannot renew.
+
 ## 5-1. Stored attachments: stated by the adapter, bound at upload (#1960, #1962, ADR-0178)
 
 A storage key is a string; anyone who saw a download link knows one. So the kernel reads a key

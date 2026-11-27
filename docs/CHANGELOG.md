@@ -65,6 +65,20 @@ changelog.
   cells stay refused for every filter (`encrypted_column`, a range would be a bisection oracle);
   non-ISO cells of datasets imported before #1845 never match a range.
 
+### Added — expired file and diagram links are renewed in the web chat (#1964, ADR-0266) (2026-11-27)
+
+- New kernel route `POST /api/v1/files/renew` (session-gated): body `{ url }` with an expired
+  `/documents/dl/…` or `/diagrams/dl/…` link returns a freshly signed link for the same key
+  (plugin's normal TTL), without re-generating the file. Rule: signed-in session, signature
+  valid with the expiry ignored, original expiry at most 30 days back; refusals `400`/`401`/
+  `403`/`404`/`410` with `file_link.*` codes, logged with a hashed key id only.
+- New kernel service `fileLinkRenewal@1` (plugin-api **1.107.0**); `@omadia/plugin-office`
+  0.1.8 and `@omadia/diagrams` 0.2.5 register a link renewer (`optional_requires:
+  fileLinkRenewal@1`).
+- Web chat: diagram images and file chips of older messages renew their link on render, on a
+  failed image load or on a click after expiry; a refusal shows a localized notice (en + de).
+  Teams cards and other channels keep expiring links.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

@@ -5235,6 +5235,18 @@ Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test
   nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`.
 - **Signierte Links routengebunden (#1979, ADR-0176).** HMAC über `<route prefix><key>.<exp>`,
   Router prüfen ihr Key-Layout.
+- **Abgelaufene Datei-Links erneuern (#1964, ADR-0266).** `POST /api/v1/files/renew`
+  (`routes/fileLinkRenew.ts`, hinter `requireAuth`; Web-Chat über `/bot-api/v1/files/renew`),
+  Body `{ url }` → `200 { url, expiresAt }`: neuer Link für denselben Key mit der normalen TTL
+  des Plugins, ohne neu zu rendern. Regel: Session + Signatur gültig bei ignoriertem `exp` +
+  ursprüngliches `exp` höchstens 30 Tage alt. Fehler `400 file_link.bad_request`,
+  `401 file_link.session_required`, `403 file_link.invalid_signature`,
+  `404 file_link.unknown_route`, `410 file_link.too_old`; Ablehnungen werden mit gehashter
+  Key-ID geloggt (`[file-links] renew refused`), nie mit URL/Signatur. Kernel-Service
+  `fileLinkRenewal@1` (`services/fileLinkRenewal.ts`, plugin-api 1.107.0): Office (`/documents/dl`)
+  und Diagrams (`/diagrams/dl`) registrieren je einen Renewer (`linkRenewer.ts`). Web-Chat:
+  `app/_components/chat/FileAttachments.tsx` + `app/_lib/fileLinkRenewal.ts` erneuern beim
+  Rendern, bei `onError` des Bildes oder beim Klick nach Ablauf.
 - **Attachments (#1960/#1962, ADR-0178).** `ChatTurnInput.storedAttachments`
   (`StoredTurnAttachment`, channel-sdk 0.3.16) ist die einzige Quelle für Storage-Keys; der
   `[attachments-info]`-Parser ist entfernt. Ingest bindet jeden Key an den Raum des Turns

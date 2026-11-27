@@ -17,6 +17,11 @@ Additive.
 - **`DATASET_DATE_VALUE_PATTERN`** / **`datasetDateTime(value)`** (#2302, ADR-0267): the
   stored ISO form of a `date` dataset cell and its comparable wall-clock milliseconds
   (date-only = midnight, a trailing `Z` read as wall clock, impossible dates `undefined`).
+- **`fileLinkRenewal@1`** (`FILE_LINK_RENEWAL_SERVICE_NAME`, `FileLinkRenewalService`,
+  `FileLinkRenewer`, `SignedFileLink`, `RenewedFileLink`; ADR-0266, #1964): kernel-provided. A
+  plugin that hands out signed download links registers a renewer for its route prefix; the
+  kernel route `POST /api/v1/files/renew` uses it to re-sign an expired link for a signed-in
+  caller without re-generating the file.
 
 ### Changed
 

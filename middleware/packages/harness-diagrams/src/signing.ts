@@ -55,6 +55,20 @@ export interface VerifySigParams {
 export function verifySig(params: VerifySigParams): boolean {
   const now = params.nowSec ?? Math.floor(Date.now() / 1000);
   if (!Number.isFinite(params.exp) || params.exp < now) return false;
+  return signatureMatches(params);
+}
+
+/**
+ * #1964 (ADR-0266): the signature check alone, expiry ignored. Only the
+ * kernel's renew route uses it (through the link renewer), and that route
+ * applies its own maximum age.
+ */
+export function verifySigIgnoringExpiry(params: Omit<VerifySigParams, 'nowSec'>): boolean {
+  if (!Number.isFinite(params.exp)) return false;
+  return signatureMatches(params);
+}
+
+function signatureMatches(params: Omit<VerifySigParams, 'nowSec'>): boolean {
   if (!/^[0-9a-f]+$/i.test(params.sig)) return false;
   const expected = createHmac('sha256', params.secret)
     .update(signedPayload(params.key, params.exp))

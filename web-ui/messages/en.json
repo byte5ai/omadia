@@ -1848,6 +1848,12 @@
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
     "attachmentCachedSuffix": " · cached",
+    "fileLink": {
+      "renewing": "This link has expired. Renewing it…",
+      "tooOld": "This file link is too old to renew. Ask for the file again.",
+      "unavailable": "This file can no longer be renewed here (the plugin that made it is not active). Ask for the file again.",
+      "failed": "The file link could not be renewed. Reload the chat or ask for the file again."
+    },
     "clarifyKicker": "🤔 Clarification",
     "followUpsLabel": "Next variants",
     "verbosityLabel": "Answer size",
