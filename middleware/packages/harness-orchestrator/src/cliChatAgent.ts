@@ -58,6 +58,11 @@ import { CLI_CHAT_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usag
 import { TOOLS_OFF_DIRECTIVE, UNATTENDED_DIRECTIVE, UNATTENDED_DROPPED_TOOLS, isToolsOffTurn, isUnattendedTurn } from './toolsOffTurn.js';
 import { fastLaneCliHint } from './fastLaneHandoff.js';
 import {
+  CALLER_PRIVACY_SUB_AGENT_DIRECTIVE,
+  callerPrivacyTools,
+  withCallerPrivacyDispatch,
+} from './cliCallerPrivacy.js';
+import {
   OMADIA_MCP_SERVER_NAME,
   OMADIA_MCP_TOOL_PREFIX,
   buildCliToolGateArgv,
@@ -2204,6 +2209,7 @@ export class CliChatAgent implements ChatAgent {
       // outright otherwise.
       // A tool-less turn binds no `memory` either: nothing could call it.
       const memory = toolsOff ? undefined : await this.bindMemory(input, turnContext);
+      let callerTools: readonly DispatchableToolSpec[] = [];
       if (!toolsOff) {
         if (memory !== undefined) {
           tools = withCliMemoryTool(tools);
@@ -2213,9 +2219,21 @@ export class CliChatAgent implements ChatAgent {
         if (privacy !== undefined && privacy.tools.length > 0) {
           tools = [...tools, ...privacy.tools];
         }
+        // #2301 / ADR-0268 — a sub-agent asked inside a guarded turn works
+        // under that turn's handle: v4 verb tools, restored inputs, re-masked
+        // results (the render stays with the calling turn).
+        callerTools =
+          privacy === undefined && turnContext.callerPrivacy !== undefined
+            ? callerPrivacyTools(turnContext.callerPrivacy)
+            : [];
+        if (callerTools.length > 0) tools = [...tools, ...callerTools];
         const memoryDispatch = turnMemoryDispatch(this.deps.dispatch, memory?.handler);
         const dispatch: LoopbackDispatch =
-          privacy !== undefined ? privacy.wrapDispatch(memoryDispatch) : memoryDispatch;
+          privacy !== undefined
+            ? privacy.wrapDispatch(memoryDispatch)
+            : turnContext.callerPrivacy !== undefined
+              ? withCallerPrivacyDispatch(turnContext.callerPrivacy, memoryDispatch)
+              : memoryDispatch;
 
         server = createLoopbackServer({
           dispatch,
@@ -2303,7 +2321,9 @@ export class CliChatAgent implements ChatAgent {
           // ADR-0195 — the data-plane contract, as the in-process prompt has it.
           privacy !== undefined && !toolsOff && privacy.tools.length > 0
             ? `${this.deps.systemPrompt ?? ''}\n${privacy.directive}`
-            : this.deps.systemPrompt,
+            : !toolsOff && callerTools.length > 0
+              ? `${this.deps.systemPrompt ?? ''}\n${CALLER_PRIVACY_SUB_AGENT_DIRECTIVE}`
+              : this.deps.systemPrompt,
           // #1102 — derive the honesty sentence from what THIS turn actually
           // advertised, so it names only genuinely-absent capabilities.
           absentKernelCapabilities(tools.map((tool) => tool.name)),

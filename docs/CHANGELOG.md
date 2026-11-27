@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — CLI sub-agents in a guarded turn get the v4 verb tools (#2301, ADR-0268) (2026-11-27)
+
+- A CLI sub-agent asked inside a turn under the Privacy Shield works under the calling turn's
+  handle like the main CLI turn: the loopback server offers the v4 verb tools (served by that
+  handle; `v4_render_answer` stays with the calling turn and is refused), tool inputs get the
+  turn's prompt surrogates restored and results are re-masked (`cliCallerPrivacy.ts`). Operator
+  jobs (Builder, preview chat) are unchanged (ADR-0196).
+
 ### Fixed — Teams uploads held back by the topic-change card reach the click's turn (#2304) (2026-11-27)
 
 - `PendingTopicDecision.storedAttachments` (`@omadia/channel-sdk` **0.3.20**): a channel keeps the

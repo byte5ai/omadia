@@ -252,6 +252,27 @@ describe('CliChatAgent under a privacy guard (ADR-0195)', () => {
     assert.equal(answer.text, `Antwort ${SURROGATE}`);
   });
 
+  it('a sub-agent under a caller handle with the v4 data plane gets the sub-agent directive (#2301)', async () => {
+    const spawned: Spawned[] = [];
+    const caller = {
+      maskUserPrompt: async (text: string) => ({
+        outcome: 'masked' as const,
+        maskedText: mask(text),
+        spans: [],
+        degraded: false,
+      }),
+      v4ToolSpecs: () => [{ name: 'v4_count', description: 'count', input_schema: { type: 'object' } }],
+    } as unknown as PrivacyTurnHandle;
+    const agent = agentWith({}, spawned, ['ok'], 'ok');
+    await turnContext.run(
+      { turnId: 'parent', turnDate: '2026-11-26', privacyHandle: caller },
+      // The fake CLI reports no MCP server; only the spawn arguments matter.
+      () => agent.chat({ userMessage: 'Wie viele?' }).catch(() => undefined),
+    );
+    const prompt = spawned[0]!.argv[spawned[0]!.argv.indexOf('--system-prompt') + 1] ?? '';
+    assert.match(prompt, /DATENSCHUTZ \(Privacy Shield\)/);
+  });
+
   it('a sub-agent whose prompt the caller handle cannot mask is not spawned', async () => {
     const spawned: Spawned[] = [];
     const caller = {
