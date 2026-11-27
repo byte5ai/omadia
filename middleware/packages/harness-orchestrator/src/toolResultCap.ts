@@ -9,8 +9,9 @@
  * 400 KB text went to the provider in full. This applies the same number on
  * those paths and tells the model that the result was cut.
  *
- * Not covered (follow-up): results of intern-exempt kernel tools under a
- * guard, and the standalone `ToolDispatchService` path.
+ * #2309 — also applied to intern-exempt and field-exempt kernel tools under a
+ * guard (their result is not interned either) and on the standalone
+ * `ToolDispatchService` path (sub-agent CLI, public MCP, loopback MCP).
  */
 
 /** The model-facing ceiling, equal to the shield's intern cap. */

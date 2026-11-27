@@ -18,6 +18,7 @@ import express from 'express';
 import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
 import { registeredChannelTypes } from '../src/routes/registeredChannelTypes.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
+import { FakeConfigRevisions } from './_helpers/fakeConfigRevisions.js';
 
 interface Binding {
   agentId: string;
@@ -28,6 +29,10 @@ interface Binding {
 const AGENT = { id: 'a-1', slug: 'dritter', name: 'Dritter', archetype: 'standard', status: 'enabled' };
 
 class FakeStore {
+  /** #2315 — per-resource config revisions. */
+  private readonly revisionTwin = new FakeConfigRevisions();
+  configRevisions = this.revisionTwin.configRevisions;
+  claimConfigRevision = this.revisionTwin.claimConfigRevision;
   bindings: Binding[] = [];
   getAgentBySlug(slug: string) {
     return Promise.resolve(slug === AGENT.slug ? AGENT : undefined);

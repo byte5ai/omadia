@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** Owner (byte5), wave 5 cluster W05-06 (#1866, #1967); decided per the

@@ -1166,6 +1166,9 @@ export interface McpAuthStatus {
   discoveryError?: string;
   /** #1933 — `service` delegation: one authorization shared by every caller. */
   sharedAuthorization?: boolean;
+  /** #2308 — under `service`: who stored the shared authorization, and when
+   *  (ISO). Absent for tokens stored before the attribution existed. */
+  sharedAuthorizationStoredBy?: { email: string | null; at: string };
 }
 
 /** Switch a server's delegation mode (W0-1). #1933 — switching to `service`
@@ -1393,6 +1396,10 @@ export interface McpServersListResponse {
   servers: McpServerNode[];
   /** #1957 — `MCP_STDIO_ENABLED` of this deployment; absent on older middleware. */
   stdioEnabled?: boolean;
+  /** #2306 — stdio children run as their own OS user (`MCP_STDIO_RUN_AS`); absent on older middleware. */
+  stdioIsolated?: boolean;
+  /** #2306 — set when `MCP_STDIO_RUN_AS` is configured but the user switch fails (probe reason). */
+  stdioIsolationError?: string;
 }
 
 export async function listMcpServers(): Promise<McpServersListResponse> {

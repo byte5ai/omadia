@@ -58,6 +58,7 @@ export function useMcpAddErrorText(): (err: unknown) => string {
       const code = mcpGuardCode(err);
       if (code === 'blocked_host') return t('guard.blockedHost', { detail });
       if (code === 'stdio_disabled') return t('guard.stdioDisabled', { detail });
+      if (code === 'stdio_isolation_unavailable') return t('guard.stdioIsolationUnavailable', { detail });
       const routeKey = mcpRouteErrorKey(err);
       if (routeKey) return t(`routeErrors.${routeKey}`, { detail });
       return detail;

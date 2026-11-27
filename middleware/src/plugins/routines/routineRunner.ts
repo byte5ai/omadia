@@ -503,15 +503,16 @@ export class RoutineRunner {
 
   /**
    * #1757 — the web chat is deleted: its routines are paused with `message`
-   * now, instead of each failing its next delivery pre-check first.
+   * now, instead of each failing its next delivery pre-check first. Returns
+   * the ids of the routines it paused (#2318: they go into the audit row).
    */
-  async pauseRoutinesOfWebChat(sessionId: string, message: string): Promise<number> {
-    let paused = 0;
+  async pauseRoutinesOfWebChat(sessionId: string, message: string): Promise<string[]> {
+    const paused: string[] = [];
     for (const r of await this.store.listActiveForWebChat(sessionId)) {
       if (!(await this.store.markExpired(r.id, message))) continue;
       this.unregisterFromScheduler(r.id);
       this.inFlight.cancel(r.id, 'paused');
-      paused += 1;
+      paused.push(r.id);
     }
     return paused;
   }

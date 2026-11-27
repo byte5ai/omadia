@@ -258,13 +258,16 @@ export type {
   ResolvedModelPolicy,
 } from './registry/modelPolicy.js';
 export {
+  AGENT_CONFIG_RESOURCES,
   AGENT_SLUG_RE,
+  AgentConfigRevisionConflictError,
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
   validateModelRoutingShape,
 } from './registry/configStore.js';
 export type {
+  AgentConfigResource,
   AgentInput,
   AgentPatch,
   AgentPluginInput,
@@ -353,6 +356,18 @@ export {
   auditCaller,
 } from './mcp/mcpClient.js';
 export { captureMcpStructured } from './mcp/mcpStructuredCapture.js';
+// #2306 / ADR-0270 — stdio MCP children: scrubbed env, optional own OS user.
+export {
+  MCP_STDIO_CHILD_SHIM,
+  MCP_STDIO_LOCALE_ENV_KEYS,
+  MCP_STDIO_RUN_AS_PATTERN,
+  MCP_STDIO_SUDO_COMMAND,
+  stdioCacheKey,
+  stdioChildEnv,
+  stdioLaunch,
+  stdioRunAsPrefix,
+} from './mcp/stdioIsolation.js';
+export type { McpStdioIsolation, McpStdioLaunch } from './mcp/stdioIsolation.js';
 export type {
   DeprecatedMcpTransport,
   McpAuthProvider,
@@ -832,6 +847,7 @@ export {
   isServerMirroredSession,
   isWebChatSessionId,
   isValidSessionId,
+  scrubMcpInputEnvelopes,
 } from './chatSessionStore.js';
 export type {
   ChatSubAgentEvent,
@@ -1162,3 +1178,5 @@ export {
 
 // #1976 — is this turn one that can carry an upload (channel turn)?
 export { turnMayCarryUploads } from './attachmentToolAvailability.js';
+export { wrapChatAgentWithConversationContext } from './conversationContextAgent.js';
+export type { ConversationContextLookup } from './conversationContextAgent.js';

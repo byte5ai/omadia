@@ -98,7 +98,29 @@ export interface PublicMcpPrivacyGate {
    * `publicMcpMaskingAssertion.test.ts` for what it catches.
    */
   masked(): boolean;
+  /**
+   * #2305 / ADR-0271 — the per-result check for a tool in
+   * {@link PUBLIC_RESULT_CHECKED_TOOLS}: its result is not interned (ADR-0197),
+   * so the shield's free-text detectors read it instead. Clean (no span, no
+   * degraded detector) sets {@link resultChecked}; anything else leaves it
+   * false and the endpoint refuses the result. Never throws.
+   */
+  checkResult(toolName: string, text: string): Promise<void>;
+  /** True when {@link checkResult} found this dispatch's own result clean. */
+  resultChecked(): boolean;
 }
+
+/**
+ * #2305 / ADR-0271 — intern-exempt tools the public endpoint may serve anyway,
+ * because their result is the produced file's metadata and link (ADR-0197),
+ * never a value from the agent's data. Each result passes
+ * `PublicMcpPrivacyGate.checkResult` before it is served.
+ */
+export const PUBLIC_RESULT_CHECKED_TOOLS: ReadonlySet<string> = new Set([
+  'render_diagram',
+  'create_xlsx',
+  'create_docx',
+]);
 
 /**
  * Wraps a real handle so a masking failure refuses the call, and an operator
@@ -211,10 +233,37 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
     forNestedCalls: () => nested,
   };
 
+  let checked = false;
+  const checkResult = async (toolName: string, text: string): Promise<void> => {
+    try {
+      const verdict = await base.redactToolErrorText({ toolName, text });
+      // Clean = the detectors ran in full and found nothing. A redaction, a
+      // withheld verdict, a degraded detector or an old provider without the
+      // contract (`undefined`) all refuse: fail closed.
+      checked =
+        verdict?.outcome === 'redacted' && verdict.spans.length === 0 && !verdict.degraded;
+      if (!checked) {
+        console.warn(
+          `[public-mcp] result check for tool \`${toolName}\` was not clean ` +
+            `(${verdict === undefined ? 'no detector contract' : verdict.outcome === 'withheld' ? 'withheld' : verdict.degraded ? 'degraded detector' : `${String(verdict.spans.length)} span(s)`}) — refusing the call`,
+        );
+      }
+    } catch (err) {
+      checked = false;
+      const { name, code } = describeThrownError(err);
+      console.warn(
+        `[public-mcp] result check FAILED for tool \`${toolName}\` with ${name}` +
+          `${code === undefined ? '' : ` (code ${code})`} — refusing the call (fail-closed)`,
+      );
+    }
+  };
+
   return {
     handle,
     maskingFailed: () => failed,
     masked: () => didMask,
+    checkResult,
+    resultChecked: () => checked,
   };
 }
 
@@ -233,13 +282,14 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
  * warning AND the tool stays unreachable.
  *
  * Every intern-exempt tool is covered, plus every tool with exempt OPERATIONS
- * (ADR-0197 — `query_dataset` lists the user's datasets in clear). That
- * includes the exempt file/image producers (`render_diagram`, `create_xlsx`,
- * `create_docx`, #1967): their result is not interned, so the public gate
- * would see no masking and `assertMaskingCrossed` would discard every call —
- * listing them would only advertise tools that always fail.
+ * (ADR-0197 — `query_dataset` lists the user's datasets in clear). The one
+ * exception are the exempt file/image producers (`render_diagram`,
+ * `create_xlsx`, `create_docx`, {@link PUBLIC_RESULT_CHECKED_TOOLS}): their
+ * result is metadata and a link, and each one passes the gate's per-result
+ * check instead of masking (#2305, ADR-0271).
  */
 export function isPubliclyServableTool(name: string): boolean {
+  if (PUBLIC_RESULT_CHECKED_TOOLS.has(name)) return true;
   // #1768 / ADR 0241 — a field-exempt tool hands its operational state over in
   // clear too: the same reasoning, the same closed door (ADR 0142).
   return !isInternExemptTool(name) && !INTERN_EXEMPT_OPERATIONS.has(name) && !hasInternFieldExemption(name);

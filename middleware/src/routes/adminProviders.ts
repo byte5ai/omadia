@@ -79,6 +79,7 @@ import {
 } from '../platform/modelCatalogSync.js';
 import { applyProviderAssignment } from '../platform/providerAssignment.js';
 import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
+import { KERNEL_PROVIDER_CREDENTIAL_SCOPE } from '../platform/kernelProviderCredentials.js';
 import { rebuildOrder } from '../platform/providerDependents.js';
 
 export interface AdminProvidersDeps {
@@ -134,26 +135,22 @@ function classDefaultsFor(providerId: ProviderId): Partial<Record<ModelClass, st
   return out;
 }
 
-/** Fan a provider's OAuth tokens out to EVERY LLM-plugin scope with one shared
- *  `updatedAt` stamp (newest-wins hydration relies on the stamp), then reactivate
- *  the installed ones so they re-read. Refresh-token rotation makes divergent
- *  per-scope copies dangerous — this keeps them identical. */
-async function fanOutProviderOAuthTokens(
+/** Store a provider's OAuth tokens in the kernel scope only (#2313, ADR-0215:
+ *  provider credentials live in one scope; the system modules read the kernel
+ *  pool), then reactivate the installed LLM plugins so they re-read. */
+async function storeProviderOAuthTokens(
   deps: AdminProvidersDeps,
   provider: ProviderId,
   tokens: OAuthTokens,
 ): Promise<void> {
   const vault = deps.vault;
   if (!vault) return;
-  const updatedAt = Date.now();
-  for (const desc of LLM_PLUGINS) {
-    await writeProviderOAuthTokens(
-      (k, v) => vault.setMany(desc.id, { [k]: v }),
-      provider,
-      tokens,
-      updatedAt,
-    );
-  }
+  await writeProviderOAuthTokens(
+    (k, v) => vault.setMany(KERNEL_PROVIDER_CREDENTIAL_SCOPE, { [k]: v }),
+    provider,
+    tokens,
+    Date.now(),
+  );
   if (deps.reactivate) {
     // Capture order (#1394): the orchestrator captures the verifier's and
     // extras' services in its own activate(), so it is rebuilt last.
@@ -645,14 +642,14 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         res.json({ status: 'pending' });
         return;
       }
-      // Approved → exchange for tokens, fan out to every scope, prime the store.
+      // Approved → exchange for tokens, store them in the kernel scope, prime the store.
       const tokens = await exchangeAuthorizationCode(
         wrapped,
         oauthConfig,
         { authorizationCode: poll.authorizationCode, codeVerifier: poll.codeVerifier },
         Date.now,
       );
-      await fanOutProviderOAuthTokens(deps, flow.providerId, tokens);
+      await storeProviderOAuthTokens(deps, flow.providerId, tokens);
       primeProviderOAuthTokens(flow.providerId, tokens);
       pendingFlows.delete(flowId as string);
       res.json({ status: 'complete' });

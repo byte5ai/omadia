@@ -28,6 +28,7 @@
 
 import type {
   AgentIdentityProvider,
+  ChannelIdentityLinks,
   ChannelReadinessProvider,
   ConversationMembershipEvent,
   ConversationMessageEvent,
@@ -151,6 +152,11 @@ export function scopeCoreApiToChannel(
     scoped.isAllMessagesSubscribed = (type, conversationId, channelKey): boolean =>
       typeof type === 'string' && claims.claim(channelId, type) && ask(type, conversationId, channelKey);
   }
+  if (core.channelIdentityLinks) {
+    scoped.channelIdentityLinks = scopeIdentityLinks(core.channelIdentityLinks, (type) =>
+      !foreign('link a channel account', type),
+    );
+  }
   // Provider registrations: stamped with the plugin's own id, and each one is
   // a claim on its channel type. The older registries keep their own
   // first-registrant rule; claiming here keeps the two views in step.
@@ -183,4 +189,24 @@ export function scopeCoreApiToChannel(
     if (fn) (scoped as unknown as Record<string, unknown>)[name] = fn;
   }
   return scoped;
+}
+
+/**
+ * ADR-0225 — a plugin links accounts of its own channel type only. Listing
+ * accounts names no channel type and passes through.
+ */
+function scopeIdentityLinks(
+  links: ChannelIdentityLinks,
+  owns: (channelType: unknown) => boolean,
+): ChannelIdentityLinks {
+  const unsupported = { ok: false, reason: 'unsupported_channel' } as const;
+  return {
+    listLinkableAccounts: (cookie) => links.listLinkableAccounts(cookie),
+    offerLink: async (cookie, request) =>
+      request && owns(request.channelType) ? links.offerLink(cookie, request) : unsupported,
+    redeemLink: async (request) => (request && owns(request.channelType) ? links.redeemLink(request) : unsupported),
+    linkOf: async (request) => (request && owns(request.channelType) ? links.linkOf(request) : null),
+    unlink: async (cookie, request) =>
+      request && owns(request.channelType) ? links.unlink(cookie, request) : unsupported,
+  };
 }

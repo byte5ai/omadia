@@ -21,6 +21,19 @@ Additive. (Numbered after 1.108.0 of the sibling W31 PR #2331; the lander renumb
   (#2295): list turns retired from promotion (ids and reasons, no text) and let an operator
   allow one again; a turn no person owns stays retired (`no_person_owner`).
 
+## 1.107.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`KnowledgeGraph.linkChannelIdentity?`** (`ChannelIdentityLinkInput`, `ChannelIdentityLinkResult`,
+  `CHANNEL_IDENTITY_LINK_PROPS`; ADR-0225, ADR-0280, #1995): kernel-only. Points a channel identity at
+  an account's User-Cluster on an operator's link, or back to a fresh cluster of its own. Both graph
+  backends implement it.
+- **`ResolveOrCreateChannelIdentityResult.linkedUserId?`**: the `users.id` an operator linked the
+  identity to; the kernel runs a plugin channel turn of a linked identity as that account.
+
 ## 1.106.0 — 2026-11-26
 
 Additive.

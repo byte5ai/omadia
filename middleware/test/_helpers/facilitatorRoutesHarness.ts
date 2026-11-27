@@ -25,6 +25,7 @@ import { createOperatorDefaultAgentsRouter } from '../../src/routes/managementLa
 import { createOperatorAgentsRouter } from '../../src/routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from '../../src/routes/operatorChannels.js';
 import { listenLoopback } from './listenLoopback.js';
+import { FakeConfigRevisions } from './fakeConfigRevisions.js';
 
 export const ENGINE = '@omadia/agent-facilitator';
 export const ODOO = '@omadia/integration-odoo';
@@ -103,6 +104,7 @@ export function routesHarness(): RoutesHarness {
 
   /** Read methods answer; every mutating method is recorded. An unexpected
    *  call fails loudly so a refusal test cannot pass by accident. */
+  const revisions = new FakeConfigRevisions();
   function store(): ConfigStore {
     const reads: Record<string, unknown> = {
       getAgentBySlug: (slug: string) => Promise.resolve(h.agents.find((a) => a.slug === slug)),
@@ -125,6 +127,9 @@ export function routesHarness(): RoutesHarness {
       listChannelIdentities: () => Promise.resolve([]),
       resolveBinding: () => Promise.resolve(undefined),
       getAgentChannelPolicy: () => Promise.resolve(undefined),
+      // #2315 — config revisions are bookkeeping, not a write under test.
+      configRevisions: revisions.configRevisions,
+      claimConfigRevision: revisions.claimConfigRevision,
       createAgent: (input: { slug: string; name: string; archetype?: string }) => {
         const created = agent(input.slug, (input.archetype ?? 'standard') as FakeAgent['archetype']);
         h.agents.push(created);

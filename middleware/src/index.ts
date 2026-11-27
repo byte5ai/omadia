@@ -22,7 +22,6 @@ import {
   registerProviderOAuthStoreBinding,
   resolveLlmProvider,
   writeProviderOAuthTokens,
-  type OAuthTokens,
 } from '@omadia/llm-provider';
 import express from 'express';
 import type { RequestHandler } from 'express';
@@ -152,6 +151,7 @@ import {
 } from './services/mcpGrantPolicy.js';
 import { rescanAllMcpServers } from './services/mcpRescan.js';
 import { createMcpConnectGuard } from './services/mcpOutboundHostGuard.js';
+import { createStdioIsolationProbe } from './services/mcpStdioIsolationProbe.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { HttpSkillSpectorScanner } from './services/pluginScanner.js';
 import {
@@ -159,7 +159,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, withBulkPromotionGate, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, isWebChatSessionId, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, withBulkPromotionGate, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -208,6 +208,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { createChannelDeliveryContext } from './plugins/routines/routineDeliveryContext.js';
 import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
   DEV_GRAPH_PATH,
@@ -368,6 +369,10 @@ import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp
 // and nothing else.
 import { createPublicMcpKeyBindingAdminStore } from './mcp/publicMcpKeyBindingsAdmin.js';
 import {
+  PUBLIC_MCP_KEY_BINDINGS_SERVICE,
+  createPublicMcpKeyBindingCascade,
+} from './mcp/publicMcpKeyBindingCascade.js';
+import {
   PRIVACY_REDACT_SERVICE_NAME,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
@@ -378,6 +383,7 @@ import {
   evaluateSessionToken,
 } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
+import { createChannelIdentityLinks } from './channels/channelIdentityLinks.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
@@ -1373,6 +1379,9 @@ async function main(): Promise<void> {
   // lifecycle). Late-bound: the AdminAuditLog needs the Postgres pool, which
   // exists only further down; attached right where it is constructed.
   const pluginAdminAudit = new LateBoundAdminAudit();
+  // ADR-0225 — the users table for the channel-account links, late-bound for
+  // the same reason (attached where the UserStore is constructed).
+  const linkableUsers: { current?: UserStore } = {};
   const operatorAuth = createOperatorAuthAccessor({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
@@ -1706,6 +1715,20 @@ async function main(): Promise<void> {
     },
   });
   serviceRegistry.provide(GENERATED_OBJECTS_SERVICE_NAME, generatedObjects);
+  // #2310 / ADR-0273 — `@omadia/channel-api` asks the kernel to drop the
+  // public MCP binding of a key it deleted. The pool is resolved per call (it
+  // arrives with the graph plugin); the vault check keeps live keys bound.
+  serviceRegistry.provide(
+    PUBLIC_MCP_KEY_BINDINGS_SERVICE,
+    createPublicMcpKeyBindingCascade({
+      bindings: () => {
+        const pool = serviceRegistry.get<Pool>('graphPool');
+        return pool ? createPublicMcpKeyBindingAdminStore(pool) : undefined;
+      },
+      keyIds: async () =>
+        new Set((await createVerifyOnlyApiKeyStore(secretVault).list()).map((k) => k.id)),
+    }),
+  );
   if (config.AUDIENCE_FLOOR_ENABLED) {
     const storedGrants = config.DATABASE_URL
       ? createLateBoundGrantStore(() => audienceGrantStoreRef)
@@ -3082,6 +3105,18 @@ async function main(): Promise<void> {
     );
   }
 
+  // #2306 / ADR-0270 — the stdio user switch, shared by the runtime manager
+  // and the operator router's manager (one probe, one cached result).
+  const mcpStdioIsolation = config.MCP_STDIO_RUN_AS
+    ? {
+        runAsUser: config.MCP_STDIO_RUN_AS,
+        probe: createStdioIsolationProbe(config.MCP_STDIO_RUN_AS),
+      }
+    : undefined;
+  if (mcpStdioIsolation) {
+    console.log(`[mcp] stdio servers run as OS user "${mcpStdioIsolation.runAsUser}" (MCP_STDIO_RUN_AS)`);
+  }
+
   // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
   // McpManager (auth provider) and the operator router (begin/callback routes)
   // reference the same instance.
@@ -3415,8 +3450,13 @@ async function main(): Promise<void> {
       structuredSink: mcpStructuredSink,
       // Issues #1341 / #1342 — runtime tool calls and the periodic rescan
       // pass the operator outbound host rule and the stdio switch before
-      // any transport is built.
-      connectGuard: createMcpConnectGuard({ stdioEnabled: config.MCP_STDIO_ENABLED }),
+      // any transport is built. #2306 — and, with MCP_STDIO_RUN_AS, the
+      // stdio user switch (fail closed).
+      connectGuard: createMcpConnectGuard({
+        stdioEnabled: config.MCP_STDIO_ENABLED,
+        ...(mcpStdioIsolation ? { stdioIsolationProbe: mcpStdioIsolation.probe } : {}),
+      }),
+      ...(mcpStdioIsolation ? { stdioIsolation: { runAsUser: mcpStdioIsolation.runAsUser } } : {}),
       // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
       // The process-shared instance, so the Orchestrator's turn drain reads
       // exactly what this manager wrote.
@@ -3920,6 +3960,17 @@ async function main(): Promise<void> {
       ],
       log: (msg) => console.log(msg),
     });
+    // #2316 (ADR-0279) — a channel chat's recent routine deliveries as
+    // conversation context of its turns (`conversationContext@1`, read by the
+    // orchestrator plugin per turn). The web chat reads its own document.
+    serviceRegistry.provide(
+      'conversationContext',
+      createChannelDeliveryContext({
+        store: () => routinesHandle?.store,
+        isWebChatScope: isWebChatSessionId,
+        timeZone: config.PROACTIVE_TIMEZONE,
+      }),
+    );
     // Phase 5B: publish the channel-facing surface so dynamic-imported
     // channel plugins can late-resolve all routines callbacks (capture-
     // turn, proactive-send registration, action handler, smart-card
@@ -4376,6 +4427,8 @@ async function main(): Promise<void> {
       },
       getChatSessionStore,
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
+      // #2314 — a pin of a deleted agent whose slug was reused is refused.
+      agentIdForSlug: (slug) => getRegistry()?.get(slug)?.agent.id,
     }),
   );
 
@@ -4429,6 +4482,8 @@ async function main(): Promise<void> {
             }
           : undefined;
       },
+      // #2318 — and is recorded in the admin audit (created later in boot).
+      audit: () => adminAudit,
     }),
   );
 
@@ -5361,6 +5416,7 @@ async function main(): Promise<void> {
       // Closure: adminAudit is constructed
       // further down, and stays undefined without Postgres (log line only).
       mcpStdioEnabled: config.MCP_STDIO_ENABLED,
+      ...(mcpStdioIsolation ? { mcpStdioIsolation } : {}),
       auditMcpStdioServerSaved: async (entry) => {
         // #775 lesson — the SUB is an email and must NEVER land in the uuid
         // actor_id column; the uuid rides separately when the session has one.
@@ -6310,6 +6366,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    linkableUsers.current = userStore;
     resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
     // this users table; every user write reloads the snapshot.
@@ -7107,45 +7164,29 @@ async function main(): Promise<void> {
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
 
   // #294 — bind the process-wide OAuth token store for the ChatGPT provider to
-  // the vault: `load` reads every LLM-plugin scope newest-wins (rotation makes
-  // divergent copies dangerous), `persist` fans a refreshed/rotated token back
-  // out to all scopes with one shared stamp. Only wired when the experimental
-  // provider is on; harmless otherwise (no provider resolves the bearer).
+  // the vault. #2313 (ADR-0215): the tokens live in the kernel scope only;
+  // `consolidateProviderCredentials` folded any older per-module copy in at
+  // boot (newest-wins), so `load` reads one copy and `persist` writes one.
+  // Only wired when the experimental provider is on; harmless otherwise (no
+  // provider resolves the bearer).
   if (config.CHATGPT_SUBSCRIPTION_EXPERIMENTAL) {
     const oauthVault = secretVault;
     const OAUTH_PROVIDER = 'openai-chatgpt';
-    const LLM_SCOPES = [
-      '@omadia/orchestrator',
-      '@omadia/verifier',
-      '@omadia/orchestrator-extras',
-    ] as const;
+    const readKernel = (k: string): Promise<string | undefined> =>
+      oauthVault.get(KERNEL_PROVIDER_CREDENTIAL_SCOPE, k);
     registerProviderOAuthStoreBinding(OAUTH_PROVIDER, {
       load: async () => {
-        const copies: Array<{ tokens: OAuthTokens; updatedAt: number }> = [];
-        for (const scope of LLM_SCOPES) {
-          const tokens = await readProviderOAuthTokens(
-            (k) => oauthVault.get(scope, k),
-            OAUTH_PROVIDER,
-          );
-          if (tokens !== undefined) {
-            const updatedAt = await readProviderOAuthUpdatedAt(
-              (k) => oauthVault.get(scope, k),
-              OAUTH_PROVIDER,
-            );
-            copies.push({ tokens, updatedAt });
-          }
-        }
-        return copies;
+        const tokens = await readProviderOAuthTokens(readKernel, OAUTH_PROVIDER);
+        if (tokens === undefined) return [];
+        return [{ tokens, updatedAt: await readProviderOAuthUpdatedAt(readKernel, OAUTH_PROVIDER) }];
       },
       persist: async (tokens, updatedAtMs) => {
-        for (const scope of LLM_SCOPES) {
-          await writeProviderOAuthTokens(
-            (k, v) => oauthVault.setMany(scope, { [k]: v }),
-            OAUTH_PROVIDER,
-            tokens,
-            updatedAtMs,
-          );
-        }
+        await writeProviderOAuthTokens(
+          (k, v) => oauthVault.setMany(KERNEL_PROVIDER_CREDENTIAL_SCOPE, { [k]: v }),
+          OAUTH_PROVIDER,
+          tokens,
+          updatedAtMs,
+        );
       },
     });
     console.log('[middleware] ChatGPT-subscription OAuth token store bound (experimental)');
@@ -8249,6 +8290,13 @@ async function main(): Promise<void> {
     readAttachment: createAttachmentByteReader({
       resolveGrantedPath: (path) => publicPathGrants.resolve(path),
       loopbackOrigin: loopbackOriginFor(config.HOST, config.PORT),
+    }),
+    // ADR-0225 — operator-issued links from a channel account to an account.
+    channelIdentityLinks: createChannelIdentityLinks({
+      operatorOf: (cookie) => operatorAuth.sessionPrincipal?.(cookie) ?? Promise.resolve(null),
+      users: () => linkableUsers.current,
+      knowledgeGraph: () => knowledgeGraph,
+      audit: () => pluginAdminAudit.current,
     }),
   });
 

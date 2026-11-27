@@ -654,7 +654,9 @@ export default function ChatPage(): React.ReactElement {
             onRecovered={() => {
               streamStore.patch(activeId, { agentUnavailableSlug: undefined });
               // Drop the pinned snapshot in the local session so the
-              // header picker becomes available again for the next turn.
+              // header picker becomes available again for the next turn, and
+              // forget a pick that belonged to the dead pin (#2314).
+              setSelectedAgentSlug(undefined);
               mutateById(activeId, (s) => {
                 const { snapshot: _drop, ...rest } = s;
                 return rest;

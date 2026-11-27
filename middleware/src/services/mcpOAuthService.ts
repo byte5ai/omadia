@@ -108,6 +108,8 @@ export interface McpAuthDescription {
 export interface McpTokenState {
   readonly connected: boolean;
   readonly invalid: 'expired' | McpOAuthTokenInvalidReason | null;
+  /** #2308 — who stored the token on Connect; null when unknown or absent. */
+  readonly storedBy?: { readonly email: string | null; readonly at: Date } | null;
 }
 
 /** What a disconnect achieved at the authorization server (#1925). omadia's
@@ -432,12 +434,17 @@ export class McpOAuthService {
   async tokenState(serverId: string, userKey: string): Promise<McpTokenState> {
     const row = await this.deps.graph.getMcpOAuthToken(serverId, userKey);
     if (!row) return { connected: false, invalid: null };
-    if (row.invalidReason) return { connected: false, invalid: row.invalidReason };
+    // #2308 — present only when the row names who stored it.
+    const storedBy =
+      row.storedBy !== null && row.storedBy !== undefined
+        ? { storedBy: { email: row.storedBy.email, at: row.storedBy.at } }
+        : {};
+    if (row.invalidReason) return { connected: false, invalid: row.invalidReason, ...storedBy };
     // An expired access token with a refresh token is one refresh away from
     // working, so it still counts. Without one, nothing can renew it.
     const expired = row.expiresAt !== null && row.expiresAt.getTime() <= Date.now();
-    if (expired && !row.refreshTokenRef) return { connected: false, invalid: 'expired' };
-    return { connected: true, invalid: null };
+    if (expired && !row.refreshTokenRef) return { connected: false, invalid: 'expired', ...storedBy };
+    return { connected: true, invalid: null, ...storedBy };
   }
 
   /** Remove omadia's copy of one user's token: the vault values, then the row.
@@ -672,7 +679,12 @@ export class McpOAuthService {
       redirectUri: flow.redirectUri,
       resource: flow.resource,
     });
-    await this.persistToken(flow.serverId, flow.userKey, tok, flow.issuer);
+    // #2308 — the token row names who stored it (the flow's audit actor),
+    // so a shared `service` authorization is attributable in the status.
+    await this.persistToken(flow.serverId, flow.userKey, tok, flow.issuer, {
+      id: flow.auditActorId ?? null,
+      email: flow.auditActorEmail ?? null,
+    });
     const actor = {
       ...(flow.auditActorId ? { id: flow.auditActorId } : {}),
       ...(flow.auditActorEmail ? { email: flow.auditActorEmail } : {}),
@@ -1007,6 +1019,9 @@ export class McpOAuthService {
     /** Issuer that minted this token (W0-1) — recorded so a later issuer
      *  rotation invalidates it instead of replaying it at a different AS. */
     issuer?: string | null,
+    /** #2308 — who stored it, on a completed Connect only. A refresh passes
+     *  nothing and keeps the stored attribution. */
+    storedBy?: { readonly id: string | null; readonly email: string | null },
   ): Promise<void> {
     const accessRef = this.tokenRef(serverId, userKey, 'access');
     await this.deps.vault.set(VAULT_NS, accessRef, tok.accessToken);
@@ -1023,6 +1038,7 @@ export class McpOAuthService {
       expiresAt: tok.expiresInSec ? new Date(Date.now() + tok.expiresInSec * 1000) : null,
       scopes: tok.scope,
       issuer: issuer ?? null,
+      ...(storedBy !== undefined ? { storedBy } : {}),
     });
   }
 

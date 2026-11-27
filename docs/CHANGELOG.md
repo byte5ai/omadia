@@ -81,6 +81,182 @@ changelog.
   audited (`target: bulk-promotion`) and retired with reason `discretion`, so they do not block
   later runs; a failed lookup refuses. plugin-api **1.109.0**:
   `BulkPromoteRunOptions.mayPromote`, `BulkPromoteCandidate`.
+### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
+
+- The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of
+  wave 6 and was cancelled by its 25-minute limit inside `test:pg` (main at 5ddf9cbf and train
+  #2337). `timeout-minutes` 25 → 40; a cancel there reads as a hang, not a test failure.
+
+### Fixed — stored chats lose old MCP input-card values without a new save (#2311) (2026-11-27)
+
+- The chat store's one-time sweep on the first `list()` (the one that purges server-mirrored
+  transcripts) now also rewrites every stored web chat whose user messages still hold an MCP
+  input-reply envelope from before #1953, replacing it with the field-names-only label, under the
+  session lock. `scrubMcpInputEnvelopes` moved into `@omadia/orchestrator` and is shared with the
+  PUT route.
+
+### Fixed — deleting an API key drops its public MCP binding (#2310, ADR-0273) (2026-11-27)
+
+- New kernel service `publicMcpKeyBindings` (`forgetDeletedKey(keyId)`) removes a binding only
+  when the vault no longer holds that key. `@omadia/channel-api` **0.1.1** declares it as
+  `optional_requires: publicMcpKeyBindings@1` and calls it after `DELETE /admin/keys/:id`.
+  Bindings of keys deleted earlier keep their `key_id_unknown` warning.
+
+### Fixed — the MCP OAuth callback page follows the browser's language (#1959) (2026-11-27)
+
+- `GET /api/v1/operator/mcp-oauth/callback` renders its page in German or English from
+  `Accept-Language` (English otherwise), German in the "du" form like the rest of the MCP pages
+  (`src/routes/mcpOAuthCallbackPage.ts`). A provider error or service detail follows the
+  localized message, escaped. Closes the last open point of #1959 (the rest landed in #2259).
+
+### Fixed — MCP delegation UI tells the truth; the shared service token names who stored it (#1906, #2308, ADR-0206, ADR-0208) (2026-11-27)
+
+- #1906 (rest): the agent page's "Change in MCP server settings" link opens `/admin/mcp?server=<id>`
+  with that server's row expanded. The per-user texts follow ADR-0206: only an OAuth-protected
+  server refuses a call without identity; a server without OAuth is called with its shared
+  configuration (new keys `delegationPerUserWhyShared`, `delegationIdentityMissingShared`, en+de).
+- #2308: **Migration** core **0120_mcp_oauth_token_stored_by** — `mcp_oauth_tokens.stored_by_id`,
+  `stored_by_email`, `stored_at`, written on a completed Connect from the flow's audit actor (0115)
+  and kept across refreshes. `GET /mcp-servers/:id/auth-status` returns
+  `sharedAuthorizationStoredBy { email, at }` under `service` delegation; the MCP page shows
+  "Stored by … on …" next to the shared authorization.
+
+### Changed — public MCP serves render_diagram, create_xlsx and create_docx again (#2305, ADR-0271) (2026-11-27)
+
+- Owner decision 2026-11-27. The three intern-exempt file producers are publicly servable again;
+  each result passes the shield's free-text detectors (`redactToolErrorText`) inside
+  `validateResult` before it is served or cached, and only a clean verdict (no span, detector not
+  degraded) goes out. Anything else is refused like an unmasked result.
+- `ToolDispatchOptions.validateResult` may return a promise.
+- The public endpoint finalizes each request's privacy turn when the work settles, so interned
+  datasets and C1 caches of public requests no longer stay in memory.
+
+### Added — MCP images reach the model on bypassed or unguarded servers (#1920, ADR-0272) (2026-11-27)
+
+- A successful MCP call's images (PNG/JPEG/GIF/WebP, ≤ 3.75 MB decoded, ≤ 4 per call) are
+  recorded into a per-dispatch capture (`mcpBinaryContent.ts`) and attached to the `tool_result`
+  as provider image blocks when the server's result went to the model unmasked (operator bypass
+  in force, or no privacy guard) and the provider declares the new optional capability
+  `toolResultImages` (`@omadia/llm-provider-api`; set by the Anthropic adapter). Under a guard
+  that masks the server, and on OpenAI-family providers, the image stays the ADR-0207 placeholder.
+  The placeholder of an attached image reads `— attached as an image]`.
+- Review follow-ups for #1920 / #2307 (2026-11-27): images are attached only when the provider
+  this turn runs on carries them (routed primary or fallback, not the agent's base provider),
+  within one budget per request (≤ 4 images, ≤ 8 MB decoded). Images of earlier iterations go back
+  to text before the next request. An image whose placeholder the cap cut is not attached. A stdio
+  child is retired only on the SDK's own `RequestTimeout`, not on a server error that mentions
+  "timeout". A call waiting for the connection counts as in flight, and idle eviction skips
+  entries with a running call.
+
+### Fixed — the 200 000-character tool-result cap holds on every path (#2309, ADR-0207) (2026-11-27)
+
+- `capToolResultText` now also bounds intern-exempt and field-exempt kernel tool results under a
+  guard (orchestrator dispatch) and every non-interned result on the standalone
+  `ToolDispatchService` path (sub-agent CLI, loopback and public MCP): no guard installed,
+  intern-exempt, field-exempt and operator bypass. A kernel or plugin tool's `_pending*` directive
+  stays whole; an MCP server's text never does. Closes the "not covered yet" rest of ADR-0207.
+
+### Fixed — a stdio MCP server that timed out is replaced, not reused (#2307, ADR-0205) (2026-11-27)
+
+- `McpManager.callTool`: a `tools/call` on a stdio server that ends in the SDK's request timeout
+  takes the child out of the pool at once, so the next call spawns a fresh process instead of
+  queueing behind the hang. Requests already running on the old child are not cut off (ADR-0205
+  "a failed request ends only itself"); it is closed when the last of them settles, after 30 s at
+  the latest, or on `closeAll()`. HTTP/SSE pooling is unchanged.
+### Docs — wave 5 ADRs accepted, roadmap design ADRs 0285–0290 (W36) (2026-11-27)
+
+- ADRs 0175–0257 whose code is on main move from Proposed to Accepted (status line and index
+  only). ADR-0225 stays Proposed: its kernel link seam is not built.
+- New design records, nothing built. Owner decision 2026-11-27: 0285, 0286, 0288, 0289 and 0290
+  **Accepted** (implementation not planned yet); 0287 stays **Proposed** until the approved spikes
+  S1', S4', A-S1 and S3' are done and the licence question is decided:
+  ADR-0285 proof inclusion as the `omadia-proof` plugin on the receipt chain (#442),
+  ADR-0286 deployment directory with check/plan gates, agent apply later (#582),
+  ADR-0287 audio meeting source in the Teams plugin as the agent's tenant user (#584),
+  ADR-0288 Satellites as outbound-only capability bridges, no remote agents (#746),
+  ADR-0289 Linear channel as a third plugin with one Linear app per agent (#1031),
+  ADR-0290 credential broker as a per-agent granted capability (#778).
+
+### Security — stdio MCP servers run as their own OS user (#2306, ADR-0270) (2026-11-27)
+
+- Every stdio MCP child now gets a scrubbed environment: the SDK's safe base, `LANG`/`LC_ALL`/
+  `LC_CTYPE`/`TZ` and the row's config env, never the middleware's process env
+  (`stdioLaunch`, `packages/harness-orchestrator/src/mcp/stdioIsolation.ts`).
+- New ENV **`MCP_STDIO_RUN_AS`**: starts each child through `sudo -n -E -H -u <user> --`. The
+  image creates the system user `omadia-mcp`, installs `sudo` with a rule that lets `node` start
+  commands as that user only (`NOPASSWD:SETENV`, `!use_pty`, `runcwd=~`) and sets
+  `MCP_STDIO_RUN_AS=omadia-mcp`. The entrypoint sets `/data` to `0700` on every start. A child can
+  no longer read `/proc/<pid>/environ` of the middleware (VAULT_KEY, DATABASE_URL, …) or `/data`.
+- Fail closed: with `MCP_STDIO_RUN_AS` set, the connect guard probes the switch
+  (`sudo … -- true`); a failure refuses the connect with the new guard code
+  `stdio_isolation_unavailable` (Discover → 502), no child is started.
+- `GET /api/v1/operator/mcp-servers` reports `stdioIsolated`; the stdio hints in `/admin/mcp`
+  (form + catalog card) follow it (en + de).
+- A `/bin/sh` shim gives each stdio server its own npm cache (`$HOME/.npm-cache/<hash>`,
+  `umask 077`). All stdio servers share the one user and can read each other's config values
+  (accepted, ADR-0270). `/home/node` is `0700`; on Fly the entrypoint restricts `/.fly/api` to root
+  when present. The list route adds `stdioIsolationError` when the probe fails.
+- Compose keeps `MCP_STDIO_ENABLED=false` (ADR-0211); ADR-0211's trust model is superseded in part
+  by ADR-0270.
+
+### Added — Telegram pairing links the chat to a real omadia account (#1995, ADR-0225, ADR-0280) (2026-11-27)
+
+- **`CoreApi.channelIdentityLinks`** (channel-sdk **0.3.19**): a channel plugin lists active
+  accounts for a picker, offers a link on behalf of the operator whose session cookie it passes
+  (the kernel resolves the operator), and redeems the single-use offer (≤ 15 min) with the sender
+  the platform attested. `linkOf` and `unlink` complete it. Bound per plugin to its own channel
+  types; `web`/`api` cannot be linked. Audit actions `channel_identity.link` / `.unlink`.
+- **`KnowledgeGraph.linkChannelIdentity?`** (plugin-api **1.107.0**, kernel-only) in both graph
+  backends: the `ChannelIdentity` joins the account's User-Cluster (`web:<users.id>`) with
+  `linkedUserId`/`linkedBy`/`linkedAt`; unlink gives it a fresh cluster. Nothing written before
+  is moved. `resolveOrCreateChannelIdentity` returns `linkedUserId`.
+- **Turn identity:** a plugin channel turn (Telegram, Teams, …) whose sender is linked runs as the
+  account's cluster (`resolvedOmadiaUserId`, principal, `per_user` MCP key via
+  `channelTurnMcpUserKey`). Unlinked senders keep their raw id, unchanged. The sender's cluster is
+  resolved once per turn and reused as the run-trace owner. Memory tiers stay per channel.
+- No migration. Plugin side: omadia-channel-telegram 0.9.0 (user picker, kernel-validated pairing).
+
+### Added — routine deliveries are context in Teams, Telegram, Slack, Discord and WhatsApp chats (#2316, ADR-0279) (2026-11-27)
+
+A routine created in a channel chat now remembers that chat's session scope (routines
+migration **0013**, `routines.origin_scope`). The next turns in that chat get the routine's
+recent deliveries (24 hours, at most three) as conversation context, like the web chat
+(ADR-0244). The kernel serves them through the boundary-only `conversationContext@1`; no
+channel plugin changes. Routines created before this change get no context.
+
+### Fixed — a routine delivery no longer disables the fast path or blocks a chat's turns (#2317, ADR-0278) (2026-11-27)
+
+The chat's recent routine deliveries now travel as `ChatTurnInput.conversationContextHint`
+(channel-sdk 0.3.20) instead of `extraSystemHint`. The fast path no longer passes such turns
+through for 24 hours, and a delivery whose text cannot be masked is left out of the turn
+instead of failing every turn of the chat until it leaves the window.
+
+### Fixed — stale agent config saves return 409 instead of overwriting (#2315, ADR-0277) (2026-11-27)
+
+`PUT /api/v1/operator/agents/:slug/{plugins,bindings,model-policy,context-memory,fast-lane,agent-to-agent,availability}`
+accept an optional `expected_revision`; a save based on an older revision is refused with
+`409 config_revision_conflict` and nothing is written. Migration **0121**
+(`0121_agent_config_revisions.sql`) adds `agents.config_revisions` (one counter per resource).
+The web UI's model policy, context memory, fast lane and agent-to-agent panels send it.
+
+### Fixed — a web chat of a deleted agent no longer reaches the new agent with its slug (#2314, ADR-0276) (2026-11-27)
+
+The chat's agent pin now records the agent id. When the pinned agent was deleted and a new
+agent took its slug, the chat's next turn is refused with `503 agent_unavailable`
+(`reason: agent_deleted`) and the web chat shows its recovery banner, which re-binds or
+deletes the chat and resets the picked agent.
+
+### Changed — provider OAuth tokens and the /setup key seed write only the kernel scope (#2313, ADR-0275) (2026-11-27)
+
+The OAuth device flow and the token refresh no longer copy tokens into the verifier's and
+orchestrator-extras' vault scopes, and `/setup` seeds its Anthropic key once into the kernel
+scope. On boot, existing module copies are folded in newest-wins and deleted.
+
+### Fixed — deleting a chat is recorded in the admin audit (#2318) (2026-11-27)
+
+Deleting a saved chat now writes a `chat.delete` row to the admin audit (ADR-0100): target
+`chat:<id>`, with whether its transcripts were removed and which routines the delete paused.
+Written after the delete; a failed audit write is logged and the delete stands.
 
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
