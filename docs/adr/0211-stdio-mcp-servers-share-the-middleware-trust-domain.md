@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted — superseded in part by [ADR-0270](0270-stdio-mcp-servers-run-as-their-own-os-user.md) (trust model: stdio children run as their own OS user)
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers; Welle 5 cluster W11-12, issue #1914 (owner decision taken

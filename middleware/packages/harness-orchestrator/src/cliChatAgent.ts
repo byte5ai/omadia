@@ -1526,12 +1526,16 @@ export class CliChatAgent implements ChatAgent {
         privacy !== undefined ? privacy.maskUserMessage(text) : maskCallerText(caller!, text),
       );
     const extra = input.extraSystemHint;
+    const { conversationContextHint: context, ...rest } = input;
     return {
-      ...input,
+      ...rest,
       userMessage: await mask(input.userMessage),
       ...(typeof extra === 'string' && extra.trim().length > 0
         ? { extraSystemHint: await mask(extra) }
         : {}),
+      // #2317 (ADR-0278) — the conversation's data block is dropped, not the
+      // turn, when it cannot be masked.
+      ...(await maskContextOrDrop(context, mask)),
     };
   }
 
@@ -1832,6 +1836,11 @@ export class CliChatAgent implements ChatAgent {
     // data-free note only, the fast lane's raw output stays out of the prompt.
     if (input.fastLaneCall !== undefined) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(fastLaneCliHint(input.fastLaneCall))}`);
+    }
+
+    // #2317 (ADR-0278) — the conversation's data block (routine deliveries).
+    if (typeof input.conversationContextHint === 'string' && input.conversationContextHint.trim().length > 0) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(input.conversationContextHint)}`);
     }
 
     for (const turn of priorTurns) {
@@ -2799,5 +2808,24 @@ export class CliChatAgent implements ChatAgent {
     // `buildEnv` too, so a test cannot prove a laxer environment than
     // production runs with.
     return buildGatedCliEnv(this.deps.buildEnv?.() ?? process.env);
+  }
+}
+
+/**
+ * #2317 (ADR-0278) — mask the conversation's data block, or leave it out of
+ * the turn when masking fails (logged without the text). Never fails the turn.
+ */
+async function maskContextOrDrop(
+  context: string | undefined,
+  mask: (text: string) => Promise<string>,
+): Promise<{ conversationContextHint?: string }> {
+  if (typeof context !== 'string' || context.trim().length === 0) return {};
+  try {
+    return { conversationContextHint: await mask(context) };
+  } catch (err) {
+    console.warn(
+      `[cli-chat] conversation context left out of this turn: it could not be masked (${err instanceof Error ? err.name : 'error'})`,
+    );
+    return {};
   }
 }

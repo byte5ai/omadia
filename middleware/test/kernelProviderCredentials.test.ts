@@ -95,7 +95,7 @@ describe('consolidateProviderCredentials (#2240)', () => {
     await consolidateProviderCredentials(vault, quiet);
     const before = { kernel: await snapshot(vault, KERNEL), verifier: await snapshot(vault, VERIFIER) };
     const second = await consolidateProviderCredentials(vault, quiet);
-    assert.deepEqual(second, { deduplicated: [], superseded: [] });
+    assert.deepEqual(second, { deduplicated: [], superseded: [], oauthCopiesRemoved: [], oauthAdopted: [] });
     assert.deepEqual({ kernel: await snapshot(vault, KERNEL), verifier: await snapshot(vault, VERIFIER) }, before);
   });
 
@@ -134,5 +134,38 @@ describe('superseded copies leave with a revoke or a provider purge (#2240)', ()
     assert.deepEqual(await snapshot(vault, VERIFIER), {
       [`${SUPERSEDED_KEY_PREFIX}provider:acme-cloud/api_key`]: 'b',
     });
+  });
+});
+
+describe('OAuth copies leave the module scopes (#2313)', () => {
+  const ACCESS = 'provider:openai-chatgpt/oauth_access_token';
+  const REFRESH = 'provider:openai-chatgpt/oauth_refresh_token';
+  const STAMP = 'provider:openai-chatgpt/oauth_updated_at';
+
+  it('drops an older module copy and keeps the kernel tokens', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.setMany(KERNEL, { [ACCESS]: 'at-new', [REFRESH]: 'rt-new', [STAMP]: '200' });
+    await vault.setMany(VERIFIER, { [ACCESS]: 'at-old', [REFRESH]: 'rt-old', [STAMP]: '100', other: 'x' });
+    const report = await consolidateProviderCredentials(vault, quiet);
+    assert.deepEqual(report.oauthCopiesRemoved, [`${VERIFIER}/openai-chatgpt`]);
+    assert.deepEqual(report.oauthAdopted, []);
+    assert.equal(await vault.get(KERNEL, REFRESH), 'rt-new');
+    assert.deepEqual(await snapshot(vault, VERIFIER), { other: 'x' });
+  });
+
+  it('adopts a newer module copy (a rotated refresh token) before deleting it, and a second run changes nothing', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.setMany(KERNEL, { [ACCESS]: 'at-old', [REFRESH]: 'rt-old', [STAMP]: '100' });
+    await vault.setMany(EXTRAS, { [ACCESS]: 'at-rotated', [REFRESH]: 'rt-rotated', [STAMP]: '300' });
+    const logs: string[] = [];
+    const report = await consolidateProviderCredentials(vault, (m) => logs.push(m));
+    assert.deepEqual(report.oauthAdopted, [`${EXTRAS}/openai-chatgpt`]);
+    assert.equal(await vault.get(KERNEL, ACCESS), 'at-rotated');
+    assert.equal(await vault.get(KERNEL, REFRESH), 'rt-rotated');
+    assert.equal(await vault.get(KERNEL, STAMP), '300');
+    assert.deepEqual(await snapshot(vault, EXTRAS), {});
+    assert.ok(!logs.join('\n').includes('rt-rotated'), 'no token in the log');
+    const second = await consolidateProviderCredentials(vault, quiet);
+    assert.deepEqual(second.oauthCopiesRemoved, []);
   });
 });

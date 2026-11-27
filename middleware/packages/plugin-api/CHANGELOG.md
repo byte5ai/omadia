@@ -30,6 +30,19 @@ Additive.
   `invalid_date_value`. Ranges on `string`/`boolean` columns stay `op_type_mismatch`;
   encrypted columns stay `encrypted_column`.
 
+## 1.107.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`KnowledgeGraph.linkChannelIdentity?`** (`ChannelIdentityLinkInput`, `ChannelIdentityLinkResult`,
+  `CHANNEL_IDENTITY_LINK_PROPS`; ADR-0225, ADR-0280, #1995): kernel-only. Points a channel identity at
+  an account's User-Cluster on an operator's link, or back to a fresh cluster of its own. Both graph
+  backends implement it.
+- **`ResolveOrCreateChannelIdentityResult.linkedUserId?`**: the `users.id` an operator linked the
+  identity to; the kernel runs a plugin channel turn of a linked identity as that account.
+
 ## 1.106.0 — 2026-11-26
 
 Additive.

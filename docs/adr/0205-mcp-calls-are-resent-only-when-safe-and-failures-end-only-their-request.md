@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (Welle 5, W09-10; decided after the recheck recommendation, reversible)

@@ -1365,6 +1365,7 @@ deleteOwnerlessMemory?(memorableKnowledgeNodeId: string, actor: AclMutationOptio
 countMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<MemorableKnowledgeCount>;
 purgeMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<MemorableKnowledgePurgeResult>;
 findOmadiaUserIdByChannelIdentity?(channelKind: ChannelKind, channelUserId: string): Promise<string | null>;
+linkChannelIdentity?(input: ChannelIdentityLinkInput): Promise<ChannelIdentityLinkResult>;
 countUserIdentity?(omadiaUserId: string): Promise<{
 count: number;
 }>;
@@ -1679,7 +1680,24 @@ clusterAuthSubject?: {
 provider: string;
 providerUserId: string;
 };
+linkedUserId?: string;
 }
+export interface ChannelIdentityLinkInput {
+channelKind: ChannelKind;
+channelUserId: string;
+target: {
+omadiaUserId: string;
+userId: string;
+linkedBy?: string;
+} | null;
+displayName?: string;
+}
+export interface ChannelIdentityLinkResult {
+channelIdentityNodeId: string;
+omadiaUserId: string;
+previousOmadiaUserId?: string;
+}
+export declare const CHANNEL_IDENTITY_LINK_PROPS: readonly ["linkedUserId", "linkedBy", "linkedAt"];
 export declare function authSubjectProps(ingest: Pick<ChannelIdentityIngest, 'authSubject'>): Record<string, string>;
 export type MemorableKind = 'decision' | 'insight' | 'preference' | 'reference';
 export interface MemorableKnowledgeIngest {

@@ -306,6 +306,36 @@ export interface ChannelBindingInput {
 }
 
 /**
+ * #2315 (ADR-0277) — the replace-style agent config writes that carry an
+ * `expected_revision`, each with its own counter (`agents.config_revisions`,
+ * migration 0121). `identity` keeps its own revision (ADR-0216).
+ */
+export const AGENT_CONFIG_RESOURCES = [
+  'plugins',
+  'bindings',
+  'model_policy',
+  'context_memory',
+  'fast_lane',
+  'agent_to_agent',
+  'availability',
+] as const;
+export type AgentConfigResource = (typeof AGENT_CONFIG_RESOURCES)[number];
+
+/** #2315 — a write named a revision the resource has moved past. */
+export class AgentConfigRevisionConflictError extends Error {
+  constructor(
+    readonly resource: AgentConfigResource,
+    readonly expectedRevision: number,
+    readonly currentRevision: number,
+  ) {
+    super(
+      `the agent's ${resource} is at revision ${String(currentRevision)}, not the expected ${String(expectedRevision)}`,
+    );
+    this.name = 'AgentConfigRevisionConflictError';
+  }
+}
+
+/**
  * Surfaced when a write violates a domain rule (validation rules in T016).
  * Distinct class so callers (CLI, REST handlers) can map to a 4xx instead of
  * leaking the raw `pg` error.
@@ -741,6 +771,52 @@ export class ConfigStore {
       throw new ConfigValidationError(`agent ${id} not found`);
     }
     return mapAgent(row);
+  }
+
+  // ── #2315 (ADR-0277) — config revisions per resource ─────────────────
+
+  /** The agent's revision of every config resource (0 = never written). */
+  async configRevisions(agentId: string): Promise<Record<AgentConfigResource, number>> {
+    const { rows } = await this.pool.query<{ revisions: Record<string, unknown> | null }>(
+      `SELECT to_jsonb(a) -> 'config_revisions' AS revisions FROM agents a WHERE a.id = $1`,
+      [agentId],
+    );
+    const stored = rows[0]?.revisions ?? {};
+    const out = {} as Record<AgentConfigResource, number>;
+    for (const resource of AGENT_CONFIG_RESOURCES) {
+      const n = Number(stored[resource] ?? 0);
+      out[resource] = Number.isInteger(n) && n >= 0 ? n : 0;
+    }
+    return out;
+  }
+
+  /**
+   * Move `resource` to its next revision, but only from `expected` when one is
+   * given — one statement, so of two writes based on the same revision only
+   * the first passes. Called right before the write it guards. Throws
+   * {@link AgentConfigRevisionConflictError} on a mismatch; returns the new
+   * revision. `expected` absent = unchecked (ADR-0216: older API clients).
+   */
+  async claimConfigRevision(
+    agentId: string,
+    resource: AgentConfigResource,
+    expected?: number,
+  ): Promise<number> {
+    const { rows } = await this.pool.query<{ revision: number }>(
+      `UPDATE agents
+          SET config_revisions = jsonb_set(
+                config_revisions, ARRAY[$2::text],
+                to_jsonb(COALESCE((config_revisions ->> $2)::int, 0) + 1))
+        WHERE id = $1
+          AND ($3::int IS NULL OR COALESCE((config_revisions ->> $2)::int, 0) = $3::int)
+        RETURNING (config_revisions ->> $2)::int AS revision`,
+      [agentId, resource, expected ?? null],
+    );
+    const row = rows[0];
+    if (row) return row.revision;
+    const current = (await this.configRevisions(agentId))[resource];
+    if (expected === undefined) throw new ConfigValidationError(`agent ${agentId} not found`);
+    throw new AgentConfigRevisionConflictError(resource, expected, current);
   }
 
   // ── #1018 — per-(channel, agent) peer policies (migration 0058) ──────

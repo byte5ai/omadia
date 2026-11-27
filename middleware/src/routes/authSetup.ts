@@ -21,6 +21,8 @@ import {
   providerVerifiedAtVaultKey,
   verifyProviderCredential,
 } from '../platform/providerCredentialVerifier.js';
+import { KERNEL_PROVIDER_CREDENTIAL_SCOPE } from '../platform/kernelProviderCredentials.js';
+import { rebuildOrder } from '../platform/providerDependents.js';
 import type { SecretVault } from '../secrets/vault.js';
 
 /**
@@ -81,9 +83,11 @@ export interface SetupRouteDeps extends SetupStateDeps {
   /** Operator setup token; undefined = this boot has no token gate (desktop
    *  kernel on loopback, or no wizard at all). */
   setupToken?: string;
-  /** OB-61 back-compat: seed an `anthropic_api_key` the caller supplied. */
+  /** OB-61 back-compat: seed an `anthropic_api_key` the caller supplied,
+   *  into the kernel scope only (#2313). */
   vault?: SecretVault;
   reactivate?: (agentId: string) => Promise<void>;
+  /** The LLM plugins reactivated after the seed; their scopes are not written. */
   anthropicKeyConsumers?: readonly string[];
   /** Mints the session cookie for the admin just created (the auth router
    *  owns session minting), and its device cookie under `epoch`: the
@@ -185,8 +189,10 @@ async function checkAnthropicKey(
 }
 
 /**
- * OB-61: seed the validated key into every consumer plugin's vault and
- * reactivate each. A failure is logged but never rolls back the admin — the
+ * OB-61: seed the validated key and reactivate the consumers. #2313
+ * (ADR-0215): the key is written once, into the kernel scope the provider
+ * pool reads; the consumers are rebuilt in capture order (the orchestrator
+ * last, #1394). A failure is logged but never rolls back the admin — the
  * operator must be able to sign in and re-seed on the LLM access page.
  */
 async function seedAnthropicKey(
@@ -195,23 +201,33 @@ async function seedAnthropicKey(
   verifiedAt: string | undefined,
 ): Promise<void> {
   if (!deps.vault) return;
-  for (const agentId of deps.anthropicKeyConsumers ?? []) {
+  try {
+    await deps.vault.setMany(KERNEL_PROVIDER_CREDENTIAL_SCOPE, {
+      [providerApiKeyVaultKey('anthropic')]: apiKey,
+      ...(verifiedAt !== undefined
+        ? {
+            [providerVerifiedAtVaultKey('anthropic')]: encodeVerifiedRecord(
+              verifiedAt,
+              keyFingerprint(apiKey),
+            ),
+          }
+        : {}),
+    });
+  } catch (err) {
+    console.error(
+      '[auth] /setup: failed to seed anthropic_api_key into the kernel scope:',
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+  if (!deps.reactivate) return;
+  const consumers = deps.anthropicKeyConsumers ?? [];
+  for (const agentId of rebuildOrder(consumers, (id) => consumers.includes(id))) {
     try {
-      await deps.vault.setMany(agentId, {
-        [providerApiKeyVaultKey('anthropic')]: apiKey,
-        ...(verifiedAt !== undefined
-          ? {
-              [providerVerifiedAtVaultKey('anthropic')]: encodeVerifiedRecord(
-                verifiedAt,
-                keyFingerprint(apiKey),
-              ),
-            }
-          : {}),
-      });
-      if (deps.reactivate) await deps.reactivate(agentId);
+      await deps.reactivate(agentId);
     } catch (err) {
       console.error(
-        `[auth] /setup: failed to seed anthropic_api_key for ${agentId}:`,
+        `[auth] /setup: failed to reactivate ${agentId} after the key seed:`,
         err instanceof Error ? err.message : err,
       );
     }

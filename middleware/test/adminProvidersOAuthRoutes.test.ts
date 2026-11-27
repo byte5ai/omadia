@@ -1,6 +1,6 @@
 /**
  * /api/v1/admin/providers OAuth connect routes (#294) — device-flow start/poll,
- * token fan-out to every LLM scope, reactivation, and the `oauthConnect`/status
+ * token write to the kernel scope (#2313), reactivation, and the `oauthConnect`/status
  * surfacing on the listing. Injected fetch + config: no live endpoints.
  */
 import { describe, it, afterEach } from 'node:test';
@@ -148,7 +148,7 @@ describe('POST /oauth/poll', () => {
     return ((await res.json()) as { flowId: string }).flowId;
   }
 
-  it('surfaces pending, then on approval writes tokens to ALL scopes + reactivates', async () => {
+  it('surfaces pending, then on approval writes tokens to the kernel scope only + reactivates (#2313)', async () => {
     harness = await makeHarness([
       // start → usercode
       { body: { device_auth_id: 'dev-1', user_code: 'U', interval: 5 } },
@@ -175,12 +175,13 @@ describe('POST /oauth/poll', () => {
     });
     assert.deepEqual(await done.json(), { status: 'complete' });
 
-    // Every LLM scope holds the access token (identical-copies invariant).
+    // #2313 (ADR-0215) — the kernel scope holds the tokens, the module scopes none.
     const keys = providerOAuthVaultKeys(PROVIDER);
-    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
-      assert.equal(await harness.vault.get(scope, keys.access), 'at');
-      assert.equal(await harness.vault.get(scope, keys.refresh), 'rt');
-      assert.ok(await harness.vault.get(scope, keys.updatedAt));
+    assert.equal(await harness.vault.get(ORCH, keys.access), 'at');
+    assert.equal(await harness.vault.get(ORCH, keys.refresh), 'rt');
+    assert.ok(await harness.vault.get(ORCH, keys.updatedAt));
+    for (const scope of [VERIFIER, EXTRAS]) {
+      assert.equal(await harness.vault.get(scope, keys.access), undefined);
     }
     // All three installed plugins reactivated.
     assert.deepEqual([...harness.reactivated].sort(), [EXTRAS, ORCH, VERIFIER].sort());

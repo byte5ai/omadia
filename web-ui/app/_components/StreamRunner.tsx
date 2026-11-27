@@ -197,14 +197,17 @@ export async function runOneTurn(
             error?: string;
             message?: string;
             slug?: string;
+            reason?: string;
           };
           msg = parsed.message ?? parsed.error ?? `HTTP ${String(res.status)}`;
           // Phase A / TA08 + OM-76/77 — flag the recovery banner and give the
           // bubble a translated sentence, never a raw "HTTP 503".
           if (res.status === 503 && parsed.error === 'agent_unavailable' && parsed.slug) {
+            // #2314 — `agent_deleted`: the pinned agent was deleted and its
+            // slug was reused; the banner says so and resets the pin.
             store.patch(sessionId, {
               agentUnavailableSlug: parsed.slug,
-              agentUnavailableReason: 'agent_unavailable',
+              agentUnavailableReason: parsed.reason === 'agent_deleted' ? 'agent_deleted' : 'agent_unavailable',
             });
             msg = t('errorAgentUnavailable');
           } else if (res.status === 503 && parsed.error === 'no_agents_active') {

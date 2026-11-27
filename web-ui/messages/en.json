@@ -2184,6 +2184,7 @@
     "emptyCta": "No agents configured — open Operator → Agents",
     "unavailableTitle": "This session's agent is no longer available",
     "unavailableBody": "The agent \"{slug}\" was deleted or disabled. Pick how to recover this session.",
+    "unavailableReplacedBody": "The agent this chat was opened with was deleted. \"{slug}\" is now a different agent, so this chat no longer reaches it. Rebind the chat or delete it.",
     "actionReSnapshot": "Re-bind to the default agent",
     "actionDelete": "Delete session",
     "noAgentsTitle": "No agent is running",
@@ -2356,7 +2357,8 @@
       "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
       "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation.",
-      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again."
+      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again.",
+      "config_revision_conflict": "Someone changed this setting elsewhere since you opened it, so your save was not stored. Reload to see the current value, then make your change again."
     },
     "statusEnabled": "enabled",
     "statusDisabled": "disabled",
@@ -2472,7 +2474,7 @@
         "modeService": "Service",
         "modePerUser": "Per user",
         "scopeHint": "Server-wide setting — it applies to every agent using this server, not just this one.",
-        "perUserFailClosed": "Per-user calls act under each user's own identity and fail closed when none can be resolved.",
+        "perUserFailClosed": "On an OAuth-protected server every call runs under the calling user's own authorization; without a mapped identity nothing is sent. A server without OAuth has no per-user credentials and is called with its shared configuration.",
         "serverSettingsLink": "Change in MCP server settings"
       },
       "errors": {
@@ -5613,6 +5615,7 @@
       "transportDeprecated": "Deprecated",
       "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
       "stdioHint": "A stdio server runs as a process inside the middleware container under the middleware's user. Its own environment is minimal, but it can read the middleware's environment and data directory, including VAULT_KEY and DATABASE_URL, and so every stored secret. Only add commands you trust. Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
+      "stdioHintIsolated": "A stdio server runs as a process inside the middleware container, under its own OS user. It gets no environment of the middleware and cannot read its data directory or secrets. All stdio servers share that one user, so a stdio server can read the config values and files of the other stdio servers. It also shares the container's network and CPU. Only add commands you trust. Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
       "showDeprecatedTransports": "Show deprecated transports",
       "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
@@ -5741,6 +5744,8 @@
       "delegationSwitchToPerUser": "Require per-user identity",
       "delegationSwitchToService": "Use a shared service identity",
       "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server.",
+      "delegationPerUserWhyShared": "This server does not use OAuth, so it has no per-user credentials. Every call goes out with the server's shared configuration (open or with the stored key), also without a mapped user identity.",
+      "delegationIdentityMissingShared": "This session has no mapped user identity. Because the server does not use OAuth, the call is still sent with its shared configuration.",
       "modeCimd": "Metadata document",
       "modeDcr": "Auto-registered",
       "modeManual": "Registered app",
@@ -5753,6 +5758,8 @@
       "manualStillSupported": "Nothing is broken: register a one-time OAuth app for this issuer below and connect as usual.",
       "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form.",
       "connectedShared": "🔓 Authorized (shared service authorization)",
+      "sharedStoredBy": "Stored by {who} on {when}",
+      "sharedStoredByUnknown": "an unattributed account",
       "discoveryUnavailable": "The provider's OAuth metadata can't be read right now. Try again later.",
       "discoveryError": "The OAuth provider configuration can't be used: {reason}",
       "cancel": "Cancel",
@@ -5775,6 +5782,7 @@
       "browseOnlyHint": "This registry entry has no connectable endpoint — it only points at the source (a self-hosted server). Host it yourself, then add it manually via \"Add server\".",
       "authHintRemote": "🔒 may require authorization",
       "authHintLocal": "local (stdio): runs inside the middleware and can read its secrets",
+      "authHintLocalIsolated": "local (stdio): runs under its own user, shared with other stdio servers",
       "addRegistry": "Add a registry",
       "addRegistryConfirm": "Add registry",
       "removeRegistry": "Remove registry",
@@ -5876,7 +5884,8 @@
     },
     "guard": {
       "blockedHost": "This address is blocked for security reasons. An MCP server or registry must not point at a link-local or cloud-metadata address such as 169.254.169.254 or metadata.google.internal; private and intranet addresses are allowed. Change the URL. Details: {detail}",
-      "stdioDisabled": "stdio MCP servers are disabled on this installation (MCP_STDIO_ENABLED=false). Use a remote (http) server instead, or set MCP_STDIO_ENABLED=true for the middleware and restart it. Details: {detail}"
+      "stdioDisabled": "stdio MCP servers are disabled on this installation (MCP_STDIO_ENABLED=false). Use a remote (http) server instead, or set MCP_STDIO_ENABLED=true for the middleware and restart it. Details: {detail}",
+      "stdioIsolationUnavailable": "stdio MCP servers must run as their own OS user on this installation (MCP_STDIO_RUN_AS), but the user switch does not work, so no process was started. Fix the switch: the image needs sudo, the user and its sudoers rule, and the container must allow setuid (no `no-new-privileges`). Only as a deliberate last resort, set MCP_STDIO_RUN_AS empty: stdio servers then run as the middleware's user and can read every stored secret. Details: {detail}"
     },
     "addModal": {
       "title": "Connect an MCP server",

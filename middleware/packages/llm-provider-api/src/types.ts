@@ -353,6 +353,12 @@ export interface ProviderCapabilities {
    *  pass. Optional; treated as `true` (interleaves) when unset, preserving
    *  pre-existing behaviour for every provider that doesn't set it. */
   readonly interleavedToolUse?: boolean;
+  /**
+   * #1920 — `true` = a `tool_result` may carry image parts (Anthropic). Unset
+   * or `false` = text only: the OpenAI Chat Completions and Responses wire
+   * mappings refuse an image part there, so the orchestrator attaches none.
+   */
+  readonly toolResultImages?: boolean;
 }
 
 /** Provider id — matches the `LlmProvider.id` of the adapter that serves it.

@@ -58,6 +58,10 @@ import { MemoryToolHandler } from '@omadia/memory';
 
 import { withAgentTurnExecution } from './agentTurnExecution.js';
 import { ChatSessionStore, chatSessionTailTurns } from './chatSessionStore.js';
+import {
+  wrapChatAgentWithConversationContext,
+  type ConversationContextLookup,
+} from './conversationContextAgent.js';
 import { wrapChatAgentWithFastPath, type FastPathTriagePort } from './fastPathAgent.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
@@ -397,6 +401,13 @@ export interface OrchestratorDeps {
    * facilitator's own chat turn is suppressed; see `facilitatorAgent.ts`.
    */
   readonly isEngineDrivenConversation?: EngineDrivenConversationLookup;
+  /**
+   * #2316 (ADR-0279) — the conversation's data block by session scope (a
+   * channel chat's recent routine deliveries). Fills
+   * `ChatTurnInput.conversationContextHint` outside the fast path when the
+   * caller set none. Absent = no lookup. Not for facilitators.
+   */
+  readonly conversationContext?: ConversationContextLookup;
   /** #2043 — is the facilitation engine usable for this agent right now?
    *  Absent = no (then a facilitator says that facilitation is not set up). */
   readonly isFacilitationEngineUsable?: (agentSlug: string) => boolean;
@@ -808,6 +819,12 @@ export function buildOrchestratorForAgent(
       }
     },
   });
+  // #2316 (ADR-0279) — outside the fast path, so its triage keeps the turn
+  // and a turn it hands on carries the block.
+  const withConversationContext = (agent: ChatAgent): ChatAgent =>
+    isFacilitator || deps.conversationContext === undefined
+      ? agent
+      : wrapChatAgentWithConversationContext(agent, config.agentId, deps.conversationContext);
   // Spec 2042 §5.10 — the outermost layer: everything this agent's chat
   // agent runs (fast lane, loop, verifier, identity guard) is this agent's
   // turn for the model gateway.
@@ -819,7 +836,10 @@ export function buildOrchestratorForAgent(
         // Criterion 29 — outside the guard: only what the user received is
         // recalled when they ask "how do you know?".
         withAnswerDetailsRecall(
-          withIdentityGuard(withFastPath(withAnswerDetailsNote(agent, answerDetails)), emitter),
+          withIdentityGuard(
+            withConversationContext(withFastPath(withAnswerDetailsNote(agent, answerDetails))),
+            emitter,
+          ),
           answerDetails,
         ),
         agentSpeaker,

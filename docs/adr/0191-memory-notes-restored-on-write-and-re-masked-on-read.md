@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** maintainers (owner decision taken on the sweep's recommendation, reversible; #1841)
