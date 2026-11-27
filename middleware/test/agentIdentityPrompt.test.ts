@@ -17,9 +17,11 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import {
+  agentPersonaFamilies,
   composeAgentIdentityPrompt,
   inferFamilyFromModel,
 } from '../src/services/agentIdentityPrompt.js';
+import { personaBaseline } from '../src/plugins/personaDelta.js';
 
 const EMPTY = {
   instructions: null,
@@ -153,11 +155,60 @@ describe('agent identity → system prompt (#914)', () => {
     assert.notEqual(sonnet.text, haiku.text);
   });
 
-  it('maps model ids onto the three families, defaulting to sonnet', () => {
+  it('maps model ids onto their own family, never a guessed sonnet (#1893)', () => {
     assert.equal(inferFamilyFromModel('claude-haiku-4-5'), 'haiku');
     assert.equal(inferFamilyFromModel('anthropic:claude-opus-5'), 'opus');
     assert.equal(inferFamilyFromModel('claude-sonnet-5'), 'sonnet');
-    assert.equal(inferFamilyFromModel(''), 'sonnet');
-    assert.equal(inferFamilyFromModel('gpt-5.4'), 'sonnet');
+    assert.equal(inferFamilyFromModel('claude-fable-5-1'), 'fable');
+    assert.equal(inferFamilyFromModel('opus-cli'), 'opus');
+    assert.equal(inferFamilyFromModel('claude-3-instant'), 'anthropic-claude');
+    assert.equal(inferFamilyFromModel('gpt-5.4'), 'openai-gpt');
+    assert.equal(inferFamilyFromModel('openai:o3'), 'openai-gpt');
+    assert.equal(inferFamilyFromModel('gemini-2.5-pro'), 'google-gemini');
+    assert.equal(inferFamilyFromModel('gemma-3-27b'), 'google-gemma');
+    assert.equal(inferFamilyFromModel('mistral-large-latest'), 'mistral');
+    assert.equal(inferFamilyFromModel('deepseek-chat'), 'deepseek');
+    assert.equal(inferFamilyFromModel('phi-4'), 'microsoft-phi');
+    // Not a model: resolve first — unresolved, the neutral profile.
+    assert.equal(inferFamilyFromModel(''), 'unknown');
+    assert.equal(inferFamilyFromModel('auto'), 'unknown');
+    assert.equal(inferFamilyFromModel('class:balanced'), 'unknown');
+    assert.equal(inferFamilyFromModel('some-house-model'), 'unknown');
+  });
+
+  it('measures an auto agent against the model the registry resolves (#1893)', () => {
+    const auto = { modelPolicy: { primary: 'auto' as const, fallback: 'none' as const } };
+    assert.deepEqual(agentPersonaFamilies(auto, 'claude-fable-5-1'), ['fable']);
+    assert.deepEqual(agentPersonaFamilies(auto, 'gpt-5'), ['openai-gpt']);
+    // A class id in model_routing.main is not a model; unresolved → unknown.
+    assert.deepEqual(
+      agentPersonaFamilies({ modelRouting: { main: 'class:balanced' } }),
+      ['unknown'],
+    );
+    assert.deepEqual(agentPersonaFamilies({}), ['unknown']);
+    // An explicit primary outranks the resolved auto model.
+    assert.deepEqual(
+      agentPersonaFamilies(
+        { modelPolicy: { primary: { provider: 'anthropic', model: 'claude-haiku-4-5' }, fallback: 'none' } },
+        'claude-opus-5',
+      ),
+      ['haiku'],
+    );
+  });
+
+  it('a slider on its model baseline emits nothing, for every family (#1893)', () => {
+    for (const family of ['sonnet', 'opus', 'haiku', 'fable', 'openai-gpt', 'unknown'] as const) {
+      const composed = composeAgentIdentityPrompt({
+        ...EMPTY,
+        persona: { axes: { ...personaBaseline(family) } },
+        family,
+      });
+      assert.equal(composed.text, null, `${family}: the baseline itself is neutral`);
+    }
+  });
+
+  it('Fable has its own baseline, derived from Opus (#1893)', () => {
+    assert.deepEqual(personaBaseline('fable'), personaBaseline('opus'));
+    assert.notDeepEqual(personaBaseline('fable'), personaBaseline('sonnet'));
   });
 });

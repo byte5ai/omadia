@@ -102,7 +102,7 @@ export default async function OperatorAgentDetailPage({
             <p className="mt-2 text-xs text-[color:var(--fg-muted)]">
               {t('agentMeta', {
                 id: agent.id,
-                privacy: agent.privacy_profile,
+                privacy: t(`privacyProfiles.${agent.privacy_profile}`),
                 status:
                   agent.status === 'enabled'
                     ? t('statusEnabled')

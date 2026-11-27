@@ -1,10 +1,13 @@
 import {
   JobValidationError,
   buildEmailColdStartTarget,
+  modelReadableToolErrorMessage,
   toolErrorFromException,
 } from '@omadia/plugin-api';
 import { z } from 'zod';
 
+import { formatInTimeZone, nextCronRun, resolveTimeZone, UTC_ZONE } from '../../scheduler/zonedCron.js';
+import { DEFAULT_ROUTINE_TIMEOUT_MS, MIN_ROUTINE_TIMEOUT_MS } from './routineRunControl.js';
 import {
   RoutineNameConflictError,
   type Routine,
@@ -53,8 +56,8 @@ const ManageRoutineInputSchema = z.object({
   /** Required for `pause`, `resume`, `delete`. UUID returned by `create` /
    *  `list`. */
   id: z.string().uuid().optional(),
-  /** Optional for `create`. Defaults to 60_000ms. */
-  timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+  /** Optional for `create`. Defaults to 600_000 ms; #1747 — at least 30 s. */
+  timeoutMs: z.number().int().min(MIN_ROUTINE_TIMEOUT_MS).max(DEFAULT_ROUTINE_TIMEOUT_MS).optional(),
   /**
    * Optional for `create`. Email of ANOTHER person this routine should
    * proactively message (cold-start 1:1 outreach — e.g. an HR review
@@ -93,6 +96,11 @@ export interface ManageRoutineContext {
    */
   canTargetOthers?: boolean;
   /**
+   * #1743 — the creator's IANA zone when the channel reported one
+   * (`ChatTurnInput.userTimeZone`). A routine is evaluated in it.
+   */
+  timeZone?: string;
+  /**
    * #1598 — slug of the orchestrator handling the creating turn. Stored on the
    * routine so it runs with that orchestrator's plugin grants.
    */
@@ -113,16 +121,17 @@ export const manageRoutineToolSpec = {
   description:
     'Lege wiederkehrende Routinen / Cronjobs für den User an, liste sie auf, pausiere, reaktiviere oder lösche sie. Der Agent ruft dieses Tool, wenn der User Wünsche wie "erinnere mich jeden Montag um 9 Uhr an X" oder "zeig mir meine Routinen" äußert.\n\n' +
     '**Aktionen:**\n' +
-    '- `create` — neue Routine. Pflicht: `name` (eindeutig pro User), `cron` (5-Feld: Min Std DOM Mon DOW), `prompt` (was der Agent zur Trigger-Zeit ausführen soll). Optional: `timeoutMs` (Default 10 min = 600000), `targetEmail` (proaktiv eine ANDERE Person im 1:1 anschreiben statt den aktuellen User — nur erlaubt, wenn der User dafür berechtigt ist; sonst Fehler).\n' +
+    '- `create` — neue Routine. Pflicht: `name` (eindeutig pro User), `cron` (5-Feld: Min Std DOM Mon DOW), `prompt` (was der Agent zur Trigger-Zeit ausführen soll). Optional: `timeoutMs` (Default 10 min = 600000). Eine Routine schreibt immer in die aktuelle Unterhaltung des Users.\n' +
     '- `list` — alle Routinen des aktuellen Users (aktiv + pausiert).\n' +
     '- `pause` / `resume` / `renew` / `delete` — Pflicht: `id` aus einer vorigen `list`-Antwort. `renew` verlängert eine Routine um einen weiteren Zeitraum (wenn der User das auf die Nachfrage vor dem Ablauf wünscht).\n\n' +
     '**Laufzeit:** Jede Routine läuft bis zu ihrer Frist (`until`, Standard 30 Tage). Vor dem Ablauf fragt der Kernel den User, ob sie weiterlaufen soll; danach ist sie pausiert, bis sie fortgesetzt oder verlängert wird.\n\n' +
     '**Cron-Regeln:**\n' +
-    '- Standard 5-Feld-Format. Beispiele: `0 9 * * 1` (Montag 9:00), `*/30 * * * *` (alle 30min), `0 8 1 * *` (Monatlich am 1.).\n' +
+    '- Standard 5-Feld-Format nur mit Zahlen, `*`, `,`, `-`, `/`. Beispiele: `0 9 * * 1` (Montag 9:00), `*/30 * * * *` (alle 30min), `0 8 1 * *` (Monatlich am 1.). Nicht erlaubt: `@daily` u.ä., `?`, `L`/`W`/`#`, Wochentags-/Monatsnamen, Muster, die nie oder nur einmal feuern.\n' +
+    '- Die Uhrzeit gilt in der Zeitzone der Routine (`timeZone` im Ergebnis, die des Users bzw. der Instanz). Das Ergebnis nennt `nextRun` mit Zone — bestätige dem User diesen nächsten Lauf.\n' +
     '- Höchstens alle 15 Minuten (der Kernel lehnt engere Muster ab).\n' +
     '- Bei mehrdeutigen Zeitangaben des Users (z.B. "morgens"): nachfragen via `ask_user_choice`, nicht raten.\n\n' +
     '**Quota:** max 50 aktive Routinen pro User.\n\n' +
-    '**Fehlerverhalten:** Tool-Antwort beginnt bei Fehler mit `Error: …` (Cron malformed, Quota erreicht, Name kollidiert, id nicht gefunden). Das Modell erklärt dem User in eigenen Worten, was schief lief.',
+    '**Fehlerverhalten:** Tool-Antwort beginnt bei Fehler mit `Error: …` (Cron ungültig oder zu häufig, Quota erreicht, Name kollidiert, id nicht gefunden, keine Unterhaltung zum Zustellen). Das Modell erklärt dem User in eigenen Worten, was schief lief.',
   input_schema: {
     type: 'object' as const,
     properties: {
@@ -154,13 +163,10 @@ export const manageRoutineToolSpec = {
       timeoutMs: {
         type: 'integer',
         description:
-          'Pro-Run-Timeout in ms. Optional bei `create`. 1000–600000 (1s–10min). Default 600000 (10min) — passt für Tool-heavy Routinen mit KG-Lookups oder Sub-Agent-Delegation.',
+          'Pro-Run-Timeout in ms. Optional bei `create`. 30000–600000 (30s–10min). Default 600000 (10min) — passt für Tool-heavy Routinen mit KG-Lookups oder Sub-Agent-Delegation.',
       },
-      targetEmail: {
-        type: 'string',
-        description:
-          'Optional bei `create`. E-Mail einer ANDEREN Person, die diese Routine proaktiv im 1:1 anschreiben soll (z.B. HR-Review-Erinnerung). Ohne Angabe geht die Routine an den aktuellen User. Erfordert Berechtigung — sonst gibt das Tool `Error: not authorized …` zurück.',
-      },
+      // #1751 — `targetEmail` is not advertised: no channel can grant
+      // outreach to other people until recipient grants (ADR 0020) exist.
       filter: {
         type: 'string',
         enum: ['all', 'active', 'paused'],
@@ -181,6 +187,10 @@ export interface ManageRoutineToolOptions {
    * unknown is then refused instead of silently running on another one.
    */
   requiresAgentSlug?: () => boolean;
+  /** #1743 — the instance zone (`PROACTIVE_TIMEZONE`), used when the creator's is unknown. */
+  defaultTimeZone?: string;
+  /** Clock seam for `nextRun` in results. */
+  now?: () => Date;
 }
 
 /**
@@ -193,17 +203,25 @@ export class ManageRoutineTool {
   private readonly runner: RoutineRunner;
   private readonly resolveContext: ManageRoutineContextResolver;
   private readonly requiresAgentSlug: () => boolean;
+  private readonly defaultTimeZone: string | undefined;
+  private readonly now: () => Date;
 
   constructor(opts: ManageRoutineToolOptions) {
     this.runner = opts.runner;
     this.resolveContext = opts.resolveContext;
     this.requiresAgentSlug = opts.requiresAgentSlug ?? (() => false);
+    this.defaultTimeZone = opts.defaultTimeZone;
+    this.now = opts.now ?? (() => new Date());
+  }
+
+  private summarise(r: Routine): SummarisedRoutine {
+    return summariseRoutine(r, this.now());
   }
 
   async handle(input: unknown): Promise<string> {
     const parsed = ManageRoutineInputSchema.safeParse(input);
     if (!parsed.success) {
-      return `Error: invalid manage_routine input — ${parsed.error.message}`;
+      return `Error: invalid manage_routine input — ${describeInputIssues(parsed.error)}`;
     }
     const args = parsed.data;
 
@@ -247,7 +265,9 @@ export class ManageRoutineTool {
     let conversationRef: unknown = ctx.conversationRef;
     if (args.targetEmail !== undefined && args.targetEmail.trim().length > 0) {
       if (!ctx.canTargetOthers) {
-        return 'Error: not authorized to create routines that proactively message other people (targetEmail). Ask an operator to grant cold-start outreach for your account.';
+        // #1751 — no grant can be asked for here: recipient grants (ADR 0020)
+        // do not exist for routines yet, so the honest answer is "not here".
+        return 'Error: this deployment cannot send routine messages to other people; a routine can only write to you in this conversation. Create it without `targetEmail`.';
       }
       const target = buildEmailColdStartTarget({
         channel: ctx.channel,
@@ -270,11 +290,13 @@ export class ManageRoutineTool {
       conversationRef,
       timeoutMs: args.timeoutMs,
       ...(ctx.agentSlug ? { agentSlug: ctx.agentSlug } : {}),
+      // #1743 / ADR 0240 — the creator's zone, else the instance's.
+      timezone: resolveTimeZone(ctx.timeZone, this.defaultTimeZone),
       ...(ctx.mcpUserKey ? { mcpUserKey: ctx.mcpUserKey } : {}),
     });
     return JSON.stringify({
       action: 'created',
-      routine: summariseRoutine(routine),
+      routine: this.summarise(routine),
     });
   }
 
@@ -295,14 +317,15 @@ export class ManageRoutineTool {
     // The `_pendingRoutineList` marker piggybacks on the JSON return so the
     // orchestrator (parseToolEmittedRoutineList) can lift it into a
     // sidecar smart-card without us needing a kernel-internal tool ref.
-    // The model still sees the same `routines[]` payload + counts and
-    // narrates around the card.
+    // #1768 / ADR 0241 — the model gets this result in clear minus the
+    // user-entered free text (`prompt`, `lastRunError`) and the sidecar
+    // (`INTERN_FIELD_EXEMPT_TOOLS`): names, schedules and status it can act on.
     return JSON.stringify({
       action: 'list',
       count: filtered.length,
       filter,
       totals,
-      routines: filtered.map(summariseRoutine),
+      routines: filtered.map((r) => this.summarise(r)),
       _pendingRoutineList: {
         filter,
         totals,
@@ -326,7 +349,7 @@ export class ManageRoutineTool {
     const updated = await this.runner.pauseRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: 'paused',
-      routine: summariseRoutine(updated),
+      routine: this.summarise(updated),
     });
   }
 
@@ -337,7 +360,7 @@ export class ManageRoutineTool {
     const updated = await this.runner.resumeRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: 'resumed',
-      routine: summariseRoutine(updated),
+      routine: this.summarise(updated),
     });
   }
 
@@ -348,7 +371,7 @@ export class ManageRoutineTool {
     const updated = await this.runner.renewRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: 'renewed',
-      routine: summariseRoutine(updated),
+      routine: this.summarise(updated),
     });
   }
 
@@ -390,9 +413,14 @@ interface SummarisedRoutine {
   lastRunError: string | null;
   /** #2082 — the routine's deadline; null until it is first scheduled. */
   until: string | null;
+  /** #1743 / #1750 — the zone the cron pattern is evaluated in. */
+  timeZone: string;
+  /** #1750 — the next run in that zone (`2026-11-27 09:00 (Europe/Berlin)`), null when paused or past its deadline. */
+  nextRun: string | null;
 }
 
-function summariseRoutine(r: Routine): SummarisedRoutine {
+function summariseRoutine(r: Routine, now: Date): SummarisedRoutine {
+  const timeZone = r.timezone ?? UTC_ZONE;
   return {
     id: r.id,
     name: r.name,
@@ -406,7 +434,32 @@ function summariseRoutine(r: Routine): SummarisedRoutine {
     lastRunStatus: r.lastRunStatus,
     lastRunError: r.lastRunError,
     until: r.until ? r.until.toISOString() : null,
+    timeZone,
+    nextRun: nextRunText(r, timeZone, now),
   };
+}
+
+function nextRunText(r: Routine, timeZone: string, now: Date): string | null {
+  if (r.status !== 'active') return null;
+  try {
+    const next = nextCronRun(r.cron, timeZone, now);
+    if (!next || (r.until && next > r.until)) return null;
+    return formatInTimeZone(next, timeZone);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #1767 — the input problems as a short list the model can act on, instead of
+ * zod's JSON dump (which echoes the input back). Field paths and zod's own
+ * messages only; never the rejected values.
+ */
+function describeInputIssues(error: z.ZodError): string {
+  return error.issues
+    .slice(0, 5)
+    .map((i) => `${i.path.length > 0 ? i.path.join('.') : 'input'}: ${i.message}`)
+    .join('; ');
 }
 
 function formatError(err: unknown): string {
@@ -427,6 +480,10 @@ function formatError(err: unknown): string {
     // model's input — the hint it needs to correct the call.
     return `Error: ${err.message}`;
   }
+  // #1767 — a refusal written for the model (a schedule the trigger engine
+  // refuses, a web routine outside a saved chat, ADR 0078) reaches it.
+  const refusal = modelReadableToolErrorMessage(err);
+  if (refusal !== undefined) return `Error: ${refusal}`;
   // Anything else (a store or database failure, a bug) is exception text
   // nobody sanitized: withheld from the model, logged in full under a ref.
   return toolErrorFromException(MANAGE_ROUTINE_TOOL_NAME, err, { site: 'routines' });

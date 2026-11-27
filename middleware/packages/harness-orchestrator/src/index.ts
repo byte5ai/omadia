@@ -258,6 +258,7 @@ export type {
   ResolvedModelPolicy,
 } from './registry/modelPolicy.js';
 export {
+  AGENT_SLUG_RE,
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
@@ -465,6 +466,17 @@ export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 // callers (CLI, tests) can build Orchestrators without going through the
 // plugin's activate path.
 export { buildOrchestratorForAgent, rosterAgentNames } from './buildOrchestrator.js';
+export {
+  CLAUDE_PERSONA_TIERS,
+  VENDOR_PERSONA_FAMILIES,
+  UNKNOWN_PERSONA_FAMILY,
+  inferPersonaFamily,
+} from './personaFamily.js';
+export type {
+  ClaudePersonaTier,
+  PersonaModelFamily,
+  VendorPersonaFamily,
+} from './personaFamily.js';
 export type {
   AgentRuntimeConfig,
   BuiltOrchestrator,
@@ -629,7 +641,10 @@ export type { PrivacyEgressContinuation } from './privacyEgress.js';
 export {
   INTERN_EXEMPT_OPERATIONS,
   INTERN_EXEMPT_TOOLS,
+  INTERN_FIELD_EXEMPT_TOOLS,
   PROMPT_MASKED_UPLOAD_TOOLS,
+  fieldExemptModelCopy,
+  hasInternFieldExemption,
   isInternExemptCall,
   isInternExemptTool,
   isPromptMaskedUploadCall,
@@ -791,7 +806,7 @@ export {
 } from './answerLanguage.js';
 
 // Session logger + chat-session store
-export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';
+export { SessionLogger, graphScopeFor, isChatSessionScope, sessionTranscriptDir } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
 
 // #684 — run-trace outcome tallies. Exported so an operator surface can read
@@ -815,6 +830,7 @@ export {
   chatSessionOwner,
   ServerMirroredSessionError,
   isServerMirroredSession,
+  isWebChatSessionId,
   isValidSessionId,
 } from './chatSessionStore.js';
 export type {
@@ -1131,6 +1147,8 @@ export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';
 export * from './discretion/toolFlow.js';
 export * from './discretion/labelledProcessMemory.js';
+// #1881 — a deleted agent's memory moves with its discretion labels.
+export { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
 
 // #1983 / #1987 — stored form of transcript entries (marker + chunking).
 export {

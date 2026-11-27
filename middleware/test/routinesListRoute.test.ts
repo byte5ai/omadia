@@ -72,7 +72,7 @@ async function makeHarness(): Promise<Harness> {
     createRoutinesRouter({
       store: store as unknown as RoutineStore,
       runsStore: {} as RoutineRunsStore,
-      runner: {} as RoutineRunner,
+      runner: { isRunning: () => false, agentProblemOf: () => undefined } as unknown as RoutineRunner,
       log: () => {},
     }),
   );
@@ -138,6 +138,24 @@ describe('GET /v1/routines — list contract the web-ui validates against', () =
       body.routines.map((r) => r.id),
       ['r1', 'r2'],
     );
+  });
+
+  it('names the zone, the next run and the deadline of each routine (#1749)', async () => {
+    h.store.rows = [
+      { ...makeRoutine('r1'), cron: '0 9 * * *', timezone: 'Europe/Berlin', until: new Date(Date.now() + 86_400_000 * 10) },
+      { ...makeRoutine('r2'), status: 'paused' },
+    ];
+    const body = (await (await fetch(`${h.baseUrl}/v1/routines`)).json()) as {
+      routines: Array<{ timeZone: string; nextRunAt: string | null; until: string | null }>;
+    };
+    const [active, paused] = body.routines;
+    assert.equal(active!.timeZone, 'Europe/Berlin');
+    assert.ok(active!.nextRunAt);
+    const local = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' }).format(new Date(active!.nextRunAt));
+    assert.equal(local, '09:00');
+    assert.ok(active!.until);
+    assert.equal(paused!.timeZone, 'UTC');
+    assert.equal(paused!.nextRunAt, null);
   });
 
   it('surfaces a store failure as 500 routines.list_failed — never a 200 with a bad shape', async () => {

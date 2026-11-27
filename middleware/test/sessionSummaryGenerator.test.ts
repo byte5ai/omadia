@@ -114,9 +114,12 @@ describe('createHaikuSessionSummaryGenerator', () => {
     assert.ok(/Migration 0008/.test(call.userContent));
     assert.ok(/Doku/.test(call.userContent));
     // System prompt covers the key sections
-    assert.ok(/Entscheidungen/.test(call.system));
+    assert.ok(/Decisions/.test(call.system));
     assert.ok(/Outputs/.test(call.system));
-    assert.ok(/Offene Tasks/.test(call.system));
+    assert.ok(/Open tasks/.test(call.system));
+    // #1219 — the summary follows the conversation's language, no numeric caps.
+    assert.ok(/language the conversation was held in/.test(call.system));
+    assert.doesNotMatch(call.system, /German|max \d|\d+ chars/i);
   });
 
   it('returns empty string + does not throw when Haiku errors', async () => {

@@ -1,4 +1,5 @@
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import { ToolRefusalError } from '@omadia/plugin-api';
 import { isValidSessionId, type ChatSessionStore } from '@omadia/orchestrator';
 
 import { ProactiveTargetGoneError, type ProactiveSender } from './proactiveSender.js';
@@ -65,19 +66,24 @@ export function webChatConversationRef(
 
 const NO_STORE_ERROR = 'web chat is not configured (no chat session store)';
 
+/** #1757 — why a routine was paused when its chat was deleted. */
+export const WEB_CHAT_DELETED_PAUSE =
+  'paused: the web chat it delivers into was deleted; delete the routine or create it again from an existing chat';
+
 export const WEB_CHAT_NO_CONVERSATION_ERROR =
   'this routine was requested outside a saved web chat, so there is no conversation ' +
   'to deliver it into; start it from a chat tab';
 
-/** The target chat id of a web routine, or a thrown explanation why there is none. */
+/** The target chat id of a web routine, or a thrown explanation why there is none.
+ *  #1767 — a refusal written for the model, so `manage_routine` passes it on. */
 function targetSessionId(ref: unknown): string {
   if (typeof ref !== 'object' || ref === null) {
-    throw new Error(WEB_CHAT_NO_CONVERSATION_ERROR);
+    throw new ToolRefusalError(WEB_CHAT_NO_CONVERSATION_ERROR);
   }
   const r = ref as Record<string, unknown>;
   const sessionId = r['sessionId'];
   if (r['kind'] !== 'http-chat' || typeof sessionId !== 'string' || !isValidSessionId(sessionId)) {
-    throw new Error(WEB_CHAT_NO_CONVERSATION_ERROR);
+    throw new ToolRefusalError(WEB_CHAT_NO_CONVERSATION_ERROR);
   }
   return sessionId;
 }
@@ -166,6 +172,9 @@ export function createWebChatProactiveSender(
         ...(routine ? { routineId: routine.id, routineName: routine.name } : {}),
         ...(attachmentCount > 0 ? { droppedAttachments: attachmentCount } : {}),
         ...(message.interactive ? { droppedInteractive: message.interactive.kind } : {}),
+        // #1775 — the run's receipt, shown like a chat turn's (ADR 0093: only
+        // present when the shield acted).
+        ...(message.privacyReceipt ? { privacyReceipt: message.privacyReceipt } : {}),
       });
       // Deleted while the turn ran: gone for good, like the pre-flight case.
       if (outcome === 'not_found') throw goneError(sessionId);

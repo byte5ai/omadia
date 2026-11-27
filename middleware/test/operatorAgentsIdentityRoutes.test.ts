@@ -39,6 +39,7 @@ import type {
   AgentIdentityRecord,
   AgentIdentitySaveInput,
 } from '../src/platform/agentIdentityStore.js';
+import { AgentIdentityRevisionConflictError } from '../src/platform/agentIdentityStore.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,13 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       JSON.stringify(existing.quality ?? null) ===
         JSON.stringify(next.quality ?? null);
     if (unchanged) return Promise.resolve(existing);
+    // Mirrors the real store's ADR-0216 check: no row reads as revision 0.
+    const currentRevision = existing?.revision ?? 0;
+    if (input.expectedRevision !== undefined && currentRevision !== input.expectedRevision) {
+      return Promise.reject(
+        new AgentIdentityRevisionConflictError(input.expectedRevision, currentRevision),
+      );
+    }
     const bumped = { ...next, revision: (existing?.revision ?? 0) + 1 };
     this.rows.set(agentId, bumped);
     return Promise.resolve(bumped);
@@ -289,11 +297,20 @@ describe('operator agent identity routes (#914)', () => {
   let provisionerInstalled = true;
 
   let reloads = 0;
+  /** #1890 — the identity head each built agent reports, by slug. */
+  let builtPrompts = new Map<string, string>();
   const registry = {
     reload: () => {
       reloads += 1;
       return Promise.resolve();
     },
+    // #1893 — no live resolution in this harness: the agent's
+    // `model_routing.main` names the family, else it is `unknown`.
+    runModelFor: () => undefined,
+    get: (slug: string) =>
+      builtPrompts.has(slug)
+        ? { built: { identityPrompt: builtPrompts.get(slug), effectiveModel: 'claude-opus-5' } }
+        : undefined,
   } as unknown as OrchestratorRegistry;
 
   before(async () => {
@@ -331,6 +348,7 @@ describe('operator agent identity routes (#914)', () => {
     identityWired = true;
     provisionerInstalled = true;
     reloads = 0;
+    builtPrompts = new Map();
   });
 
   interface IdentityBody {
@@ -347,6 +365,8 @@ describe('operator agent identity routes (#914)', () => {
     };
     composed_prompt: string | null;
     composed_family: string | null;
+    identity_prompt: string | null;
+    persona_baseline: { family: string; axes: Record<string, number> } | null;
     republish?: string;
     outline_derived?: boolean;
     dropped_boundary_presets?: string[];
@@ -359,11 +379,36 @@ describe('operator agent identity routes (#914)', () => {
     // Nothing authored…
     assert.equal(body.identity.display_name, null);
     assert.equal(body.identity.avatar, null);
-    assert.equal(body.identity.revision, 1);
+    // ADR-0216 — no row yet projects revision 0 (the first save stores 1).
+    assert.equal(body.identity.revision, 0);
     // …but the agent still HAS a name and a description.
     assert.equal(body.resolved.display_name, 'Sales Agent');
     assert.equal(body.resolved.short_description, 'Sells');
     assert.equal(body.resolved.has_avatar, false);
+  });
+
+  it('#1890 — GET serves the identity head of the running agent', async () => {
+    builtPrompts.set('sales', 'Du bist Omi.\n\nSprache: Antworte immer auf Deutsch.');
+    const res = await fetch(`${baseUrl}/sales/identity`);
+    const body = (await res.json()) as IdentityBody;
+    assert.equal(body.identity_prompt, 'Du bist Omi.\n\nSprache: Antworte immer auf Deutsch.');
+  });
+
+  it('#1893 — GET reports the persona baseline of the model the agent runs on', async () => {
+    const opus = (await (await fetch(`${baseUrl}/sales/identity`)).json()) as IdentityBody;
+    assert.equal(opus.persona_baseline?.family, 'opus');
+    assert.equal(opus.persona_baseline?.axes['sarcasm'], 15);
+    assert.equal(opus.persona_baseline?.axes['autonomy'], 60);
+    // No model named and none resolvable: the neutral `unknown` profile, not Sonnet.
+    const plain = (await (await fetch(`${baseUrl}/plain/identity`)).json()) as IdentityBody;
+    assert.equal(plain.persona_baseline?.family, 'unknown');
+    assert.equal(plain.persona_baseline?.axes['sarcasm'], 0);
+  });
+
+  it('#1890 — an agent that is not built reports no identity head', async () => {
+    const res = await fetch(`${baseUrl}/plain/identity`);
+    const body = (await res.json()) as IdentityBody;
+    assert.equal(body.identity_prompt, null);
   });
 
   it('PUT stores the authored fields and reports the resolved ones', async () => {
@@ -747,6 +792,82 @@ describe('operator agent identity routes (#914)', () => {
     // The level is spliced into the system prompt by the build, so a saved
     // change that never reaches the registry is the same silent no-op the
     // name and the compiled prompt guard against.
+    assert.equal(reloads, 1);
+  });
+
+  describe('optimistic concurrency (#1889, ADR-0216)', () => {
+    const put = (body: Record<string, unknown>): Promise<Response> =>
+      fetch(`${baseUrl}/sales/identity`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    it('refuses a write based on a stale revision with 409 and keeps the other write', async () => {
+      const first = await put({ short_description: 'From tab A', expected_revision: 0 });
+      assert.equal(first.status, 200);
+      const firstBody = (await first.json()) as { identity: { revision: number } };
+      assert.equal(firstBody.identity.revision, 1);
+      const second = await put({ short_description: 'Tab A again', expected_revision: 1 });
+      assert.equal(second.status, 200);
+      reloads = 0;
+      const stale = await put({ accent_color: '#123456', expected_revision: 1 });
+      assert.equal(stale.status, 409);
+      assert.equal(stale.headers.get('content-type')?.includes('application/json'), true);
+      const body = (await stale.json()) as Record<string, unknown>;
+      assert.equal(body['error'], 'identity_revision_conflict');
+      assert.equal(body['code'], 'operator_agents.identity_revision_conflict');
+      assert.equal(body['expected_revision'], 1);
+      assert.equal(body['current_revision'], 2);
+      assert.equal(typeof body['message'], 'string');
+      assert.equal(identityStore.rows.get('agent-1')?.shortDescription, 'Tab A again');
+      assert.equal(reloads, 0, 'a refused write rebuilds nothing');
+    });
+
+    it('refuses a second first save: expected_revision 0 means "no identity yet"', async () => {
+      const tabA = await put({ short_description: 'Tab A', expected_revision: 0 });
+      assert.equal(tabA.status, 200);
+      const tabB = await put({ accent_color: '#123456', expected_revision: 0 });
+      assert.equal(tabB.status, 409);
+      const body = (await tabB.json()) as Record<string, unknown>;
+      assert.equal(body['current_revision'], 1);
+      assert.equal(identityStore.rows.get('agent-1')?.shortDescription, 'Tab A');
+    });
+
+    it('refuses a revision above 0 for an agent without an identity row', async () => {
+      const res = await put({ short_description: 'x', expected_revision: 3 });
+      assert.equal(res.status, 409);
+    });
+
+    it('accepts a write at the current revision', async () => {
+      await put({ short_description: 'One' });
+      const res = await put({ short_description: 'Two', expected_revision: 1 });
+      assert.equal(res.status, 200);
+      assert.equal(identityStore.rows.get('agent-1')?.revision, 2);
+    });
+
+    it('accepts a write without expected_revision (older API clients)', async () => {
+      await put({ short_description: 'One' });
+      await put({ short_description: 'Two' });
+      const res = await put({ short_description: 'Three' });
+      assert.equal(res.status, 200);
+    });
+
+    it('rejects a malformed expected_revision', async () => {
+      const res = await put({ short_description: 'x', expected_revision: 'abc' });
+      assert.equal(res.status, 400);
+    });
+  });
+
+  it('reloads the registry when only the anti-flattery level moved from unset to off (#1894)', async () => {
+    reloads = 0;
+    // "Not set" and "off" compile to the same prompt, but "off" switches the
+    // Quality Guard's default off — the built agent reads that once.
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ quality: { sycophancy: 'off' } }),
+    });
     assert.equal(reloads, 1);
   });
 

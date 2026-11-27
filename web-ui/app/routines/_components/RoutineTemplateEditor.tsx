@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { serverErrorMessage } from '../../_lib/apiErrorMessage';
 import {
   previewRoutineTemplate,
   setRoutineTemplate,
@@ -88,9 +89,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
       try {
         template = JSON.parse(trimmed) as RoutineOutputTemplateDto;
       } catch (err) {
-        setSaveError(
-          err instanceof Error ? err.message : 'Invalid JSON syntax.',
-        );
+        setSaveError(err instanceof Error ? err.message : t('saveFailedReason'));
         return;
       }
     }
@@ -100,7 +99,9 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
       setSaveOk(true);
       router.refresh();
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
+      // #1758 — the server's reason (e.g. "format 'html' is not supported"),
+      // never the transport line "… failed: 400".
+      setSaveError(serverErrorMessage(err) ?? t('saveFailedReason'));
     } finally {
       setSaving(false);
     }
@@ -190,7 +191,9 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
       });
       setPreviewResult(result);
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : String(err));
+      // #1758 — as for save: the server's reason under a localized headline.
+      const reason = serverErrorMessage(err);
+      setPreviewError(reason ? `${t('previewFailed')} ${reason}` : t('previewFailed'));
     } finally {
       setPreviewLoading(false);
     }
@@ -363,7 +366,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
               busyLabel={t('renderingBusy')}
               className="text-[11px] font-semibold uppercase tracking-[0.16em]"
             >
-              Preview
+              {t('previewRun')}
             </Button>
           </div>
           {previewError ? (
@@ -376,6 +379,22 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
           ) : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** #1761 — data sections whose source could not give rows (server text). */
+function PreviewWarnings({ warnings }: { warnings: readonly string[] | undefined }): React.ReactElement | null {
+  const t = useTranslations('routines.templateEditor');
+  if (!warnings || warnings.length === 0) return null;
+  return (
+    <div className="mt-2 rounded-md border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/5 p-2 text-[11px] text-[color:var(--warn)]">
+      <div className="font-semibold">{t('previewWarningsLabel')}</div>
+      <ul className="mt-1 list-disc pl-4 font-mono text-[10px]">
+        {warnings.map((w) => (
+          <li key={w}>{w}</li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -403,6 +422,7 @@ function PreviewOutput({
         <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-3 font-mono text-[11px] leading-relaxed text-[color:var(--fg-strong)]">
           {result.text}
         </pre>
+        <PreviewWarnings warnings={result.warnings} />
       </div>
     );
   }
@@ -414,6 +434,7 @@ function PreviewOutput({
       <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-3 font-mono text-[11px] leading-relaxed text-[color:var(--fg-strong)]">
         {JSON.stringify(result.items, null, 2)}
       </pre>
+      <PreviewWarnings warnings={result.warnings} />
     </div>
   );
 }

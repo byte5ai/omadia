@@ -156,6 +156,9 @@ describe('/api/v1/admin/users router', () => {
   let clearedAccounts: string[];
   /** Account keys whose device-cookie epoch the router asked to re-read (§10m revocation). */
   let forgottenAccounts: string[];
+  /** #1765 — routines owned per user id; deleted with the account. */
+  const routinesByUser = new Map<string, number>();
+  const routinesFailFor = new Set<string>();
 
   before(async () => {
     store = new InMemoryUserStore();
@@ -203,6 +206,16 @@ describe('/api/v1/admin/users router', () => {
             forgottenAccounts.push(accountKey);
           },
         },
+        routines: () => ({
+          countForUser: (id) =>
+            routinesFailFor.has(id) ? Promise.reject(new Error('graph down')) : Promise.resolve(routinesByUser.get(id) ?? 0),
+          deleteForUser: (id) => {
+            if (routinesFailFor.has(id)) return Promise.reject(new Error('graph down'));
+            const n = routinesByUser.get(id) ?? 0;
+            routinesByUser.delete(id);
+            return Promise.resolve(n);
+          },
+        }),
       }),
     );
     server = await listenLoopback(app);
@@ -544,6 +557,10 @@ describe('/api/v1/admin/users router', () => {
   it('DELETE /:id removes another user + audits', async () => {
     setSession(adminSession());
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    // #1765 — the delete confirmation names the routines that go with the account.
+    routinesByUser.set(other.id, 2);
+    const preview = (await (await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`)).json()) as { routine_count: number };
+    assert.equal(preview.routine_count, 2);
     const announcedBefore = announced.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
       method: 'DELETE',
@@ -551,12 +568,35 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 204);
     assert.equal(store.rows.find((r) => r.id === other.id), undefined);
     assert.equal(audit.entries.at(-1)?.action, 'user.delete');
+    assert.deepEqual(audit.entries.at(-1)?.after, { routines_deleted: 2 }, '#1765 — its routines went with it');
+    assert.equal(routinesByUser.has(other.id), false);
     // No bump possible (the row is gone) — its absence revokes; still announced.
     assert.deepEqual(announced.slice(announcedBefore), [
       { provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' },
     ]);
     assert.equal(forgottenAccounts.at(-1), 'local:new@example.com', 'its device cookies with it');
   });
+  it('DELETE /:id reports a failed routine cleanup instead of zero (#1765)', async () => {
+    setSession(adminSession());
+    const doomed = await store.create({
+      email: 'doomed@example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: 'doomed@example.com',
+      passwordHash: await hashPassword('seed-pass-4'),
+      displayName: 'Doomed',
+      role: 'admin',
+    });
+    routinesFailFor.add(doomed.id);
+    const preview = (await (await fetch(`${baseUrl}/api/v1/admin/users/${doomed.id}`)).json()) as {
+      routine_count: number | null;
+    };
+    assert.equal(preview.routine_count, null, 'an unknown count is not reported as zero');
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${doomed.id}`, { method: 'DELETE' });
+    assert.equal(res.status, 204);
+    assert.deepEqual(audit.entries.at(-1)?.after, { routines_deleted: 0, routines_delete_failed: true });
+    routinesFailFor.delete(doomed.id);
+  });
+
   // ── #1314 — PATCH refuses what it cannot apply ────────────────────────────
   it('PATCH /:id refuses an unsupported role with 400 and leaves the user unchanged (#1314)', async () => {
     setSession(adminSession());

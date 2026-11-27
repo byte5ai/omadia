@@ -7,6 +7,7 @@ import {
 import type { RoutinesHandle } from './initRoutines.js';
 import { createProactiveSender } from './genericProactiveSender.js';
 import type { ManageRoutineContext } from './manageRoutineTool.js';
+import { RoutineRunInProgressError } from './routineRunControl.js';
 import { cardActorScope } from './routineCardActor.js';
 import { RoutineNotActiveError } from './routineRunner.js';
 import {
@@ -141,6 +142,9 @@ export function createRoutinesIntegration(
         } catch (err) {
           if (err instanceof RoutineNotActiveError) {
             return `Routine "${err.routineName}" ist pausiert — erst fortsetzen, dann auslösen.`;
+          }
+          if (err instanceof RoutineRunInProgressError) {
+            return 'Die Routine läuft gerade — warte, bis dieser Lauf fertig ist.';
           }
           throw err;
         }
