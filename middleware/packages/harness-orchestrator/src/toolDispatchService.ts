@@ -26,7 +26,7 @@ import {
 } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
 import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
-import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
+import { McpAuthPromptMint, notePendingMcpConnect, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
   errorClassForLog,
   guardControlFlowResult,
@@ -548,6 +548,9 @@ export class ToolDispatchService {
       ledger?.record('dispatch', name, input, { kind: 'result', value: raw });
       if (isUnknownOutcomeToolErrorNotice(text)) ledger?.noteUnknownOutcome(name, input);
     }
+    // #2374 — a connect prompt this loopback call minted is named on the
+    // CLI turn's result (`mcpConnectRequired`), as on the in-process path.
+    notePendingMcpConnect(authPromptMint, text);
     try {
       return await this.afterDispatch(name, input, text, authPromptMint, options, replay !== undefined);
     } catch (error) {

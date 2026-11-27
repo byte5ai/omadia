@@ -17,6 +17,7 @@ import {
 import {
   DEFAULT_ANSWER_LANGUAGE,
   detectAnswerLocale,
+  disclosureLocaleOf,
   type AnswerLanguage,
 } from './answerLanguage.js';
 import {
@@ -123,7 +124,7 @@ import {
 } from './mcp/pendingMcpInput.js';
 import {
   McpAuthPromptMint,
-  parseMcpConnectRequest,
+  notePendingMcpConnect,
   runWithMcpAuthPromptMint,
   type McpConnectRequest,
 } from './mcp/mcpAuthPromptMint.js';
@@ -5336,7 +5337,8 @@ export class Orchestrator {
     input: ChatTurnInput,
     answer?: string,
   ): AiDisclosure | undefined {
-    return this.disclosureForChannel(turnChannelKind(input), answer);
+    // #2367 — the user's message decides an undecided answer's language.
+    return this.disclosureForChannel(turnChannelKind(input), answer, input.userMessage);
   }
 
   /**
@@ -5349,13 +5351,15 @@ export class Orchestrator {
   disclosureForChannel(
     channelKind: string | undefined,
     answer?: string,
+    userMessage?: string,
   ): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
     // #2353 / ADR-0320 — the line is written in the language of the answer it
-    // is appended to (the answer follows the user, ADR-0220). The operator's
-    // `ai_disclosure_locale` decides only when the answer shows no clear
-    // German or English.
-    const locale = detectAnswerLocale(answer) ?? setup?.locale;
+    // is appended to (the answer follows the user, ADR-0220). #2367 /
+    // ADR-0331 — an undecided answer takes the language of the user's message
+    // (a routine's prompt). The operator's `ai_disclosure_locale` decides only
+    // when neither shows a clear German or English.
+    const locale = disclosureLocaleOf(answer, userMessage) ?? setup?.locale;
     // #648 — the precedence lives in ONE place now. `/health`, the boot log and
     // the operator dashboard project the same function over every channel; a
     // second copy of these rules here would let the reported posture disagree
@@ -5558,10 +5562,12 @@ export class Orchestrator {
    * replacing that table with "your question is still unanswered" would drop
    * a real answer. The event stays flagged `degraded` for audit/health/verifier.
    */
-  /** The language a delivered notice is written in: the turn's disclosure
-   *  locale, else the operator's configured one (composers default to `de`). */
+  /** The language a delivered notice (refusal, withheld answer, degraded
+   *  turn, privacy and verifier notices) is written in. #2372 / ADR-0332 —
+   *  the language of the user's message, as the answer would be (ADR-0220);
+   *  else the operator's configured one (composers default to `de`). */
   private turnLocale(input: ChatTurnInput): string | undefined {
-    return this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+    return detectAnswerLocale(input.userMessage) ?? this.aiDisclosure?.locale;
   }
 
   /** {@link turnLocale} for a runtime outside this loop: the subscription
@@ -10416,7 +10422,7 @@ export class Orchestrator {
     // #2312 / ADR-0301 — a connect prompt this dispatch minted names a server
     // the user must connect; channels without tool output (Teams) render it
     // from `ChatTurnResult.mcpConnectRequired`.
-    if (mcpAuthPromptMint.minted(result)) notePendingMcpConnect(result);
+    notePendingMcpConnect(mcpAuthPromptMint, result);
     // Recorded only now, after the late-result firewall: a re-entry must get
     // exactly what this pass used, never a result the first run discarded.
     if (tracked && replay === undefined) {
@@ -12594,11 +12600,6 @@ async function tapCanvasSentinel(toolName: string, raw: string): Promise<void> {
   }
 }
 
-/** #2312 / ADR-0301 — remember the server of a kernel-minted connect prompt on the current turn. */
-function notePendingMcpConnect(prompt: string): void {
-  const request = parseMcpConnectRequest(prompt);
-  if (request) turnContext.current()?.mcpConnectRequests?.set(request.serverId, request);
-}
 
 /** #2312 — the servers the current turn's connect prompts named, cleared after reading. */
 function drainMcpConnects(): McpConnectRequest[] | undefined {

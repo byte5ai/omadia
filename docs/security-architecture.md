@@ -8127,11 +8127,16 @@ New surface: `POST /api/chat/uploads` and `DELETE /api/chat/uploads` (behind `re
 `/api/chat/stream`.
 
 - **Who:** a session with an omadia account (`omadia_user_id`, else 401), in a chat the caller
-  may use (`mayUseChatSession`, ADR-0180, else 404). The delete route also needs a ledger row
-  of this account and chat for the key, else 404 like a missing one.
+  may use (`chatSessionUse`, ADR-0180, else 404; a new chat whose id is not lower case answers
+  400 `non_canonical_id`, ADR-0330). The delete route also needs a ledger row of this account
+  and chat for the key, else 404 like a missing one.
 - **What is stored:** extension allow-list (recordings, pdf, docx, txt, md, csv, xlsx, png,
   jpg, gif, webp); the content type is the kernel's for the extension, never the browser's.
-  25 MiB per file (multer memory storage, `files: 1`), 100 uploads per account and chat.
+  The leading bytes must match the extension's signature (`uploadContentMatches`, ADR-0333;
+  text types: no NUL byte unless UTF-16), else 415 `chat_upload.content_mismatch`.
+  25 MiB per file (multer memory storage, `files: 1`), 100 uploads per account and chat, and at
+  most `WEB_CHAT_UPLOADS_PER_ACCOUNT` (default 200) per account across its chats (429
+  `chat_upload.account_limit`, ADR-0333).
   The file name is NFC-normalised and reduced to letters, marks, digits and `._ -`, so it
   cannot carry a path or break the model's `[attachments-info]` line.
 - **Binding:** the key `web-chat/<chat>/<uuid>/<name>` is bound to the chat at upload
@@ -8143,12 +8148,12 @@ New surface: `POST /api/chat/uploads` and `DELETE /api/chat/uploads` (behind `re
 
 ### Residual risks
 
-- No content sniffing: a file with an allowed extension but other bytes is stored; the
-  extractors (pdf-parse, mammoth, xlsx, vision guard) then fail or refuse it. Follow-up:
-  magic-byte check per type.
-- No per-account rate limit: up to 25 MiB per request is held in memory until written, and the
-  100-per-chat count is read before the write (two parallel uploads can pass it by one each).
-  Follow-up if abuse shows: per-account quota and limiter.
+- The content check is a signature, not a format check (ADR-0333): a valid header with other
+  bytes behind it, or any ZIP named `.docx`, passes; the extractors (pdf-parse, mammoth, xlsx,
+  vision guard) then fail or refuse it.
+- No per-account rate limit: up to 25 MiB per request is held in memory until written. The
+  per-chat and per-account counts are read before the write, so parallel uploads can pass each
+  cap by the number in flight. The account cap counts files, not bytes (ADR-0333).
 - Without Postgres, bindings and ledger rows live in memory; after a restart old uploads are
   unreadable and not deleted with their chat (bucket lifecycle rule remains the backstop).
 

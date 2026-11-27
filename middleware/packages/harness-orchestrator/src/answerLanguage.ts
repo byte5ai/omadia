@@ -68,18 +68,43 @@ export function detectAnswerLocale(text: string | undefined): 'de' | 'en' | unde
   const words = prose.match(/[a-zäöüß]+/g) ?? [];
   let de = 0;
   let en = 0;
+  // Function words of two letters or more: a lone "a" or "I" is as often a
+  // label ("Raum A", "Klasse I") as an English word.
+  let enWords = 0;
   for (const word of words) {
     if (GERMAN_FUNCTION_WORDS.has(word)) de += 1;
-    else if (ENGLISH_FUNCTION_WORDS.has(word)) en += 1;
+    else if (ENGLISH_FUNCTION_WORDS.has(word)) {
+      en += 1;
+      if (word.length > 1) enWords += 1;
+    }
   }
+  // #2367 — a short text in only one language ("It's 4:42 PM on Friday.")
+  // is decided with fewer words, as long as the other language shows none.
+  if (de === 0 && enWords >= MIN_SOLE_LANGUAGE_WORDS) return 'en';
+  if (en === 0 && de >= MIN_SOLE_LANGUAGE_WORDS) return 'de';
   if (de + en < MIN_FUNCTION_WORDS) return undefined;
   if (en >= de * DOMINANCE_RATIO) return 'en';
   if (de >= en * DOMINANCE_RATIO) return 'de';
   return undefined;
 }
 
+/**
+ * #2367 (ADR-0331) — the language of the kernel's disclosure line: the
+ * answer's, else the language of the user's message the answer replies to
+ * (for a routine, its prompt), else `undefined` (the operator's
+ * `ai_disclosure_locale` decides).
+ */
+export function disclosureLocaleOf(
+  answer: string | undefined,
+  userMessage: string | undefined,
+): 'de' | 'en' | undefined {
+  return detectAnswerLocale(answer) ?? detectAnswerLocale(userMessage);
+}
+
 /** Fewer function words than this is a name, a number or a table, not prose. */
 const MIN_FUNCTION_WORDS = 3;
+/** #2367 — enough when the text shows no word of the other language. */
+const MIN_SOLE_LANGUAGE_WORDS = 2;
 /** One language must clearly lead; a mixed text keeps the configured locale. */
 const DOMINANCE_RATIO = 2;
 

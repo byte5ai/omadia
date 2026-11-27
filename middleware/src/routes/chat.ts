@@ -23,7 +23,13 @@ import type {
 } from '@omadia/orchestrator';
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
-import { chatViewer, mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
+import {
+  chatSessionRefusal,
+  chatSessionUse,
+  chatViewer,
+  type ChatSessionUse,
+  type LegacyChatOwner,
+} from './chatSessionAccess.js';
 import { resolveTurnUploads, WEB_CHAT_UPLOADS_PER_TURN } from './chatUploads.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
@@ -123,7 +129,7 @@ function resolveScope(
   // the signed-in account like a chat is: another account sending the same
   // label lands in its own bucket, so it neither steers this account's turn
   // nor shares its transcript or attachment bindings. A `sessionId` is a
-  // stored chat, checked by `mayUseChatSession` instead. Without an account
+  // stored chat, checked by `chatSessionUse` instead. Without an account
   // (an API caller without a session) the labels stay as they were. The
   // account comes FIRST: `sanitizeScope` cuts transcript and graph keys at 80
   // characters, and a long label must not cut the account off.
@@ -541,8 +547,7 @@ async function resolveAgentForRequest(
 ): Promise<ResolvedTurn | undefined> {
   // #1762 — a turn in another account's chat would read its tail, pin its
   // agent and append to it. It answers like a missing chat.
-  if (sessionId && !(await mayUseOwnChat(req, sessionId, options))) {
-    res.status(404).json({ error: 'not_found', message: `chat session ${sessionId} not found` });
+  if (sessionId && refuseChatUse(res, await ownChatUse(req, sessionId, options), sessionId)) {
     return undefined;
   }
   const commandNotice = await handleWebAgentCommand(req, message, sessionId, options);
@@ -600,9 +605,17 @@ async function resolveAgentForRequest(
   return { kind: 'agent', chatAgent: routed.chatAgent, effectiveSlug: routed.slug, speaker: routed.speaker };
 }
 
-function mayUseOwnChat(req: Request, sessionId: string, options: CreateChatRouterOptions): Promise<boolean> {
+function ownChatUse(req: Request, sessionId: string, options: CreateChatRouterOptions): Promise<ChatSessionUse> {
   const store = options.getChatSessionStore?.() ?? options.chatSessionStore;
-  return mayUseChatSession(req, store, sessionId, options.legacyChatOwner);
+  return chatSessionUse(req, store, sessionId, options.legacyChatOwner);
+}
+
+/** Answers the refusal for `use` and returns true, or returns false when the chat may be used. */
+function refuseChatUse(res: Response, use: ChatSessionUse, sessionId: string): boolean {
+  if (use === 'ok') return false;
+  const { status, error, message } = chatSessionRefusal(use, sessionId);
+  res.status(status).json({ error, message });
+  return true;
 }
 
 export function createChatRouter(
@@ -1032,8 +1045,11 @@ export function createChatRouter(
       return;
     }
     // #1762 — no steering of a turn in another account's chat.
-    if (!parsed.data.scope && parsed.data.sessionId && !(await mayUseOwnChat(req, parsed.data.sessionId, options))) {
-      res.status(404).json({ error: 'not_found', message: `chat session ${parsed.data.sessionId} not found` });
+    if (
+      !parsed.data.scope &&
+      parsed.data.sessionId &&
+      refuseChatUse(res, await ownChatUse(req, parsed.data.sessionId, options), parsed.data.sessionId)
+    ) {
       return;
     }
     const sessionScope = resolveScope(parsed.data, req);

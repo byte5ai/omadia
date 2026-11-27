@@ -5,6 +5,7 @@ import type { ChatSession, ChatSessionStore } from '@omadia/orchestrator';
 import {
   ChatSessionNotOwnedError,
   InvalidSessionIdError,
+  NonCanonicalSessionIdError,
   ServerMirroredSessionError,
   chatSessionOwnedBy,
   isValidSessionId,
@@ -417,6 +418,10 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     } catch (err) {
       if (err instanceof InvalidSessionIdError) {
         res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      if (err instanceof NonCanonicalSessionIdError) {
+        res.status(400).json({ error: 'non_canonical_id', message: 'a new chat session id must be lower case' });
         return;
       }
       if (err instanceof ChatSessionNotOwnedError) {

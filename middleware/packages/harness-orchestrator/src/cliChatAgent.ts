@@ -1358,6 +1358,21 @@ export const CLI_PRIVACY_GUARD_ACTIVE_LOG =
   'masked. Check the privacy guard plugin, or assign this agent a provider with an ' +
   'API key under LLM access.';
 
+/**
+ * #2374 — the connect requests this CLI turn's loopback calls recorded
+ * (`notePendingMcpConnect`), drained so a later read sees none. `undefined`
+ * when there are none.
+ */
+function drainTurnMcpConnects(
+  turnContext: CapturedTurnContext,
+): { readonly serverId: string; readonly serverName: string }[] | undefined {
+  const requests = turnContext.runInTurnContext(() => turnContextStore.current()?.mcpConnectRequests);
+  if (!requests || requests.size === 0) return undefined;
+  const out = [...requests.values()];
+  requests.clear();
+  return out;
+}
+
 /** The stream of a refused turn: one `done`, after clearing any card state a
  *  previous turn left behind (as `streamTurn` does). */
 async function* refusedTurnStream(
@@ -1495,6 +1510,9 @@ export class CliChatAgent implements ChatAgent {
       // boundary had nowhere to go and every graph read of the turn failed
       // closed.
       graphReadScope: {},
+      // #2374 — the connect prompts this turn's loopback calls mint, drained
+      // onto `done` (`mcpConnectRequired`). Fresh per turn, as in-process.
+      mcpConnectRequests: new Map(),
       ...fields,
     };
   }
@@ -1631,6 +1649,7 @@ export class CliChatAgent implements ChatAgent {
     // #2194 — the answer the lifecycle released (the withheld line when the
     // egress check refused it), not the CLI's raw result.
     let releasedAnswer: string | undefined;
+    let releasedWithheld = false;
     let outputs: CliTurnAttachments = {};
 
     while (true) {
@@ -1651,14 +1670,21 @@ export class CliChatAgent implements ChatAgent {
         const disclosed = this.disclose(releasedAnswer ?? parser.finalAnswer(), input);
         // #2303 — the turn's files and diagrams, in the channel-agnostic shape.
         const attachments = toSemanticAnswer({ answer: '', toolCalls: 0, iterations: 0, ...outputs }).attachments;
+        // #2374 — the servers this turn asked the user to connect, for channels
+        // that show no tool output (Teams), as the in-process `chat()` does.
+        // Drained either way; a withheld answer carries none of its cards.
+        const drainedConnects = drainTurnMcpConnects(turnContext);
+        const mcpConnectRequired = releasedWithheld ? undefined : drainedConnects;
         return {
           text: disclosed.answer,
           ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
           ...(attachments ? { attachments } : {}),
+          ...(mcpConnectRequired ? { mcpConnectRequired } : {}),
         };
       }
       if (step.value.type === 'done') {
         releasedAnswer = step.value.answer;
+        releasedWithheld = this.withheldDones.has(step.value);
         outputs = {
           ...(step.value.attachments ? { attachments: step.value.attachments } : {}),
           ...(step.value.fileAttachments ? { fileAttachments: step.value.fileAttachments } : {}),
@@ -1787,7 +1813,9 @@ export class CliChatAgent implements ChatAgent {
           const disclosed = this.disclose(step.value.answer, input);
           // Drained either way (the tool state must not leak into the next
           // turn); a withheld answer carries none of its cards.
-          const cards = this.deps.drainTurnCards?.() ?? {};
+          // In the turn's context: the connect prompts live on it (#2374).
+          const drainCards = this.deps.drainTurnCards;
+          const cards = drainCards ? turnContext.runInTurnContext(() => drainCards()) : {};
           yield {
             ...step.value,
             ...(this.withheldDones.has(step.value) ? {} : cards),

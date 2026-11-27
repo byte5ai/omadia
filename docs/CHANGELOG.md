@@ -36,6 +36,68 @@ changelog.
 
 ## [Unreleased]
 
+### Docs — ADR cross-references 0295→0118 and 0298→0316 (2026-11-27)
+
+ADR-0118 already named ADR-0295 as superseding it in part, but 0295 did not name 0118; ADR-0298
+accepted the streamed-trace residual that ADR-0316 closes and did not point to it. Status and
+"Supersedes" lines only, no content change.
+
+### Tests — deflake the #2329 stubborn-server shim test (#2370) (2026-11-27)
+
+`mcpStdioIsolation.test.ts` checked `kill(pid, 0)` once right after the shim closed; under CI load
+the server could still be in its TERM→KILL window or wait unreaped as a zombie. The test now polls
+until `MCP_STDIO_STOP_GRACE_S + 5` s and counts a Linux zombie (`/proc/<pid>/stat` state `Z`) as
+gone. The assertion that the shim ends within its grace stays.
+
+### Fix — CLI turns report `mcpConnectRequired` (#2374) (2026-11-27)
+
+A subscription-CLI turn never named the per-user MCP servers its tool calls asked the user to
+connect, so Teams showed no Connect card on CLI-backed agents. The loopback dispatcher
+(`ToolDispatchService`) minted the prompt but did not record it, the CLI turn context had no
+`mcpConnectRequests` map, and `chat()` never drained it. Now one `notePendingMcpConnect(mint,
+result)` (`mcp/mcpAuthPromptMint.ts`) serves both dispatch paths, `CliChatAgent.beginDiscretion`
+starts each turn with a fresh map, and the map is drained onto `done` and onto the `chat()`
+result inside the turn's context. ADR-0301 (parity), no new ADR.
+
+### Security — web chat uploads are checked by content and capped per account (#2373, ADR-0333) (2026-11-27)
+
+`POST /api/chat/uploads` accepted a file by its extension only, so an executable renamed to
+`.pdf` was stored and stated as `application/pdf`; and an account could fill the store by opening
+chats (100 uploads per chat, no account limit). The route now checks the leading signature of
+every accepted type (`uploadContentMatches`, `routes/chatUploadContent.ts`; text types: no NUL
+byte unless UTF-16) and answers `415 chat_upload.content_mismatch`, and caps uploads per account
+across its chats (`WEB_CHAT_UPLOADS_PER_ACCOUNT`, default 200, from the ledger) with `429
+chat_upload.account_limit`. New ENV in `.env.example` and handoff §10; web UI messages en + de.
+
+### Fix — kernel notices in a turn follow the user message's language (#2372, ADR-0332) (2026-11-27)
+
+Refusal, withheld-answer, degraded-turn and CLI force-guarded notices took their language from
+`Orchestrator.turnLocale`, which only resolved the operator's `ai_disclosure_locale` (default
+German): an English user got an English answer and a German notice. `turnLocale` (and
+`noticeLocale`) now use `detectAnswerLocale(input.userMessage)` first. ADR-0332 supersedes
+ADR-0220's neutral consequence on notices; it also records that the code never read the channel
+locale there (drift).
+
+### Fix — an undecided answer's disclosure line follows the user message (#2367, ADR-0331) (2026-11-27)
+
+The short English routine answer "It's 4:42 PM … on Friday, …" got the German AI-disclosure
+line: it has two English function words, below ADR-0320's minimum, and the operator default is
+German. The line's language is now the answer's, else the language of the turn's user message
+(a routine's prompt), else `ai_disclosure_locale` (`disclosureLocaleOf`,
+`disclosureForChannel(channelKind, answer, userMessage)`). `detectAnswerLocale` also decides a
+text with two function words of one language and none of the other.
+
+### Fix — a new web chat id must be lower case (#2361, ADR-0330) (2026-11-27)
+
+A client-chosen web chat id `ABC` folded to the transcript directory and graph key of a chat
+`abc`, another account's included, because the ownership check allowed every id with no stored
+chat. `PUT /api/chat/sessions/:id` now answers 400 `non_canonical_id` for a new chat whose id is
+not lower case (`ChatSessionStore.saveFromClient` → `NonCanonicalSessionIdError`), and turns,
+steering and uploads go through `chatSessionUse` (`ok` / `not_found` 404 / `non_canonical_id`
+400) instead of `mayUseChatSession`. Stored chats with upper-case ids keep working. The web UI
+already mints lower-case ids. Residuals (a new lower-case id next to a stored upper-case one,
+cross-surface sanitize collisions) are recorded in ADR-0330.
+
 ### Tests — memory-ACL world gets User and Fact items; re-ingest after promotion (#2340) (2026-11-27)
 
 - The memory-ACL test world (`test/memoryAccess/world.ts`) seeds one `User` node per person (canary

@@ -32,6 +32,8 @@ export type ChatUploadError =
   | 'empty'
   | 'storeUnavailable'
   | 'chatLimit'
+  | 'accountLimit'
+  | 'contentMismatch'
   | 'noAccount'
   | 'failed';
 
@@ -80,6 +82,10 @@ export function uploadErrorFromResponse(status: number, code: string | undefined
       return 'noAccount';
     case 'chat_upload.chat_limit':
       return 'chatLimit';
+    case 'chat_upload.account_limit':
+      return 'accountLimit';
+    case 'chat_upload.content_mismatch':
+      return 'contentMismatch';
     default:
       return status === 413 ? 'tooLarge' : 'failed';
   }

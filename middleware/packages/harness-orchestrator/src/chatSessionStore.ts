@@ -269,6 +269,24 @@ export function isServerMirroredSession(
   );
 }
 
+/**
+ * #2361 (ADR-0330) — a NEW chat's id must already be in canonical form (lower
+ * case). The transcript directory and the graph key fold the id to
+ * `[a-z0-9_-]`, so `ABC` and `abc` would share one partition. Existing chats
+ * with upper-case ids stay readable and writable; only creating one is refused.
+ */
+export function isCanonicalChatSessionId(id: string): boolean {
+  return ID_RE.test(id) && id === id.toLowerCase();
+}
+
+/** #2361 — a client tried to create a chat whose id is not in canonical (lower-case) form. */
+export class NonCanonicalSessionIdError extends Error {
+  constructor(id: string) {
+    super(`chat session ids must be lower case for a new chat: ${id}`);
+    this.name = 'NonCanonicalSessionIdError';
+  }
+}
+
 export class InvalidSessionIdError extends Error {
   constructor(id: string) {
     super(`invalid chat session id: ${id}`);
@@ -648,10 +666,12 @@ export class ChatSessionStore {
       // rethrown: overwriting then would drop deliveries the client has not
       // seen and strip their `proactive` markers for good.
       let existing: ChatSession | null = null;
+      let unreadable = false;
       try {
         existing = await this.get(session.id);
       } catch (err) {
         if (!(err instanceof SyntaxError)) throw err;
+        unreadable = true;
         // #1762 — an unreadable chat has no readable owner: it counts as a
         // legacy chat, so only its resolved owner may overwrite it.
         if (owner && owner.legacyOwner !== owner.viewer) {
@@ -666,6 +686,9 @@ export class ChatSessionStore {
       // mirrored transcript before the purge would re-create it here.
       if (!existing && isServerMirroredSession(session)) {
         throw new ServerMirroredSessionError(session.id);
+      }
+      if (!existing && !unreadable && !isCanonicalChatSessionId(session.id)) {
+        throw new NonCanonicalSessionIdError(session.id);
       }
       // #1762 — an existing chat of another account is not overwritten; a
       // new one, or a legacy one its resolved owner writes, is stamped.

@@ -1,7 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,6 +42,28 @@ function cfg(over: Partial<McpServerConfig>): McpServerConfig {
     enabled: true,
     ...over,
   } as McpServerConfig;
+}
+
+/**
+ * True while `pid` names a live process. A zombie (Linux `/proc/<pid>/stat`
+ * state `Z`) counts as gone: it has exited and only waits to be reaped, and
+ * `kill(pid, 0)` still succeeds on it (#2370).
+ */
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw err;
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // The state follows the parenthesised command name, which may itself contain ')'.
+    const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+    return state !== 'Z';
+  } catch {
+    return true; // no /proc (macOS): kill(pid, 0) is the answer
+  }
 }
 
 describe('stdioLaunch / stdioChildEnv', () => {
@@ -105,7 +127,13 @@ describe('stdioLaunch / stdioChildEnv', () => {
     const started = Date.now();
     await closed;
     assert.ok(Date.now() - started < (MCP_STDIO_STOP_GRACE_S + 3) * 1000, 'the shim ends within its grace');
-    assert.throws(() => process.kill(serverPid, 0), /ESRCH/, 'the server is gone');
+    // #2370 — the killed server may still be in its TERM→KILL window or
+    // waiting to be reaped; poll up to a deadline instead of checking once.
+    const deadline = Date.now() + (MCP_STDIO_STOP_GRACE_S + 5) * 1000;
+    while (processExists(serverPid) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.equal(processExists(serverPid), false, 'the server is gone');
   });
 
   it('refuses a user name that is not a plain POSIX name', () => {

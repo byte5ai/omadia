@@ -1808,6 +1808,8 @@
         "empty": "empty file",
         "storeUnavailable": "no file storage configured on this instance",
         "chatLimit": "this chat already holds the maximum number of files",
+        "accountLimit": "your account already holds the maximum number of uploaded files; delete chats with files to free space",
+        "contentMismatch": "the file content does not match its type",
         "noAccount": "sign in with an account to upload",
         "failed": "upload failed",
         "unknownAttachment": "An attached file no longer belongs to this chat. Remove it and attach it again."

@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed
+Proposed — the accepted streamed-trace residual (see Consequences) is closed by
+[ADR-0316](0316-streamed-tool-outputs-wait-for-the-answer-egress-check.md)
 
 - **Date:** 2026-11-27
 - **Deciders:** wave 6 cluster W32 (#2338), after the W37 live tests.

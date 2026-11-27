@@ -29,6 +29,7 @@ import {
   sanitizeUploadFileName,
   WEB_CHAT_UPLOAD_MAX_BYTES,
   WEB_CHAT_UPLOAD_PRODUCER,
+  WEB_CHAT_UPLOADS_PER_ACCOUNT,
   WEB_CHAT_UPLOADS_PER_CHAT,
   webChatUploadKey,
 } from '../src/routes/chatUploads.js';
@@ -43,6 +44,14 @@ const ANNA = { sub: 'anna@example.test', omadia_user_id: 'u-anna' };
 const BEN = { sub: 'ben@example.test', omadia_user_id: 'u-ben' };
 const CHAT = 'chat2336anna';
 const UPLOAD_ID = '00000000-0000-4000-8000-000000002336';
+
+/** ADR-0333 — a minimal body whose first bytes match the extension (`%PDF-` is 5 bytes). */
+function sampleFor(fileName: string): Buffer {
+  const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
+  if (ext === 'pdf') return Buffer.from('%PDF-');
+  if (ext === 'm4a' || ext === 'mp4') return Buffer.from('\0\0\0\x18ftypM4A ', 'latin1');
+  return Buffer.from('hello');
+}
 
 class MemoryObjects {
   readonly objects = new Map<string, { body: Buffer; contentType: string | undefined }>();
@@ -95,6 +104,7 @@ describe('#2336 — web-chat uploads', () => {
         recordUpload: (key, owner) => registry.recordFor(WEB_CHAT_UPLOAD_PRODUCER, key, owner),
         uploadsOf: async (owner) =>
           (await registry.rows({ scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId })).map((r) => r.storageKey),
+        accountUploadCount: async (ownerOmadiaUserId) => (await registry.rows({ ownerOmadiaUserId })).length,
         releaseUpload: async (key, owner) => {
           await registry.release(
             { scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId },
@@ -139,7 +149,7 @@ describe('#2336 — web-chat uploads', () => {
   async function upload(
     account: string | undefined,
     fileName: string,
-    body: string | Buffer = 'hello',
+    body: string | Buffer = sampleFor(fileName),
     sessionId = CHAT,
   ): Promise<Response> {
     const form = new FormData();
@@ -275,6 +285,27 @@ describe('#2336 — web-chat uploads', () => {
     const res = await upload('anna', 'one-more.pdf');
     assert.equal(res.status, 429);
     assert.equal(((await res.json()) as { code: string }).code, 'chat_upload.chat_limit');
+  });
+
+  it('ADR-0333 · refuses content that does not match the extension', async () => {
+    const res = await upload('anna', 'invoice.pdf', Buffer.from('MZ\x90\0', 'latin1'));
+    assert.equal(res.status, 415);
+    assert.equal(((await res.json()) as { code: string }).code, 'chat_upload.content_mismatch');
+    assert.equal((await upload('anna', 'notes.txt', Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1]))).status, 415);
+    assert.equal(objects.objects.size, 0);
+  });
+
+  it('ADR-0333 · an account holds at most WEB_CHAT_UPLOADS_PER_ACCOUNT uploads across its chats', async () => {
+    for (let i = 0; i < WEB_CHAT_UPLOADS_PER_ACCOUNT; i += 1) {
+      await registry.recordFor(WEB_CHAT_UPLOAD_PRODUCER, `web-chat/other${String(i)}/x/a.pdf`, {
+        ownerOmadiaUserId: 'u-anna',
+        scope: `other${String(i)}`,
+      });
+    }
+    const res = await upload('anna', 'one-more.pdf');
+    assert.equal(res.status, 429);
+    assert.equal(((await res.json()) as { code: string }).code, 'chat_upload.account_limit');
+    assert.equal(objects.objects.size, 0);
   });
 
   it('without a bound ledger the upload is refused and not kept', async () => {

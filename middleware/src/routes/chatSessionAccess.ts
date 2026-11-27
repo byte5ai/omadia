@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import type { ChatSessionStore } from '@omadia/orchestrator';
-import { chatSessionOwnedBy } from '@omadia/orchestrator';
+import { chatSessionOwnedBy, isCanonicalChatSessionId } from '@omadia/orchestrator';
 
 // Session claims (`req.session`) come from requireAuth's augmentation.
 import '../auth/requireAuth.js';
@@ -56,20 +56,34 @@ export function soleAccountLegacyOwner(
   };
 }
 
+/** What {@link chatSessionUse} decides for a chat id. */
+export type ChatSessionUse = 'ok' | 'not_found' | 'non_canonical_id';
+
 /**
- * May `req` use the chat `sessionId` (a turn, a steer, an agent command)?
- * True when no such chat is stored yet (the web client PUTs it right after),
- * or when the caller owns it. A chat of another account answers like a
- * missing one at the caller.
+ * May `req` use the chat `sessionId` (a turn, a steer, an agent command, an
+ * upload)? `ok` when the caller owns the stored chat, or when no such chat is
+ * stored yet (the web client PUTs it right after) and the id is canonical. A
+ * chat of another account answers `not_found`, like a missing one. A new chat
+ * whose id is not lower case answers `non_canonical_id` (#2361, ADR-0330): its
+ * transcripts and graph key would fold into the lower-case chat's.
  */
-export async function mayUseChatSession(
+export async function chatSessionUse(
   req: Request,
   store: ChatSessionStore | undefined,
   sessionId: string,
   legacyOwner: LegacyChatOwner | undefined,
-): Promise<boolean> {
-  if (!store) return true;
-  const session = await store.get(sessionId);
-  if (!session) return true;
-  return chatSessionOwnedBy(session, chatViewer(req), await legacyOwner?.());
+): Promise<ChatSessionUse> {
+  const session = store ? await store.get(sessionId) : null;
+  if (!session) return isCanonicalChatSessionId(sessionId) ? 'ok' : 'non_canonical_id';
+  return chatSessionOwnedBy(session, chatViewer(req), await legacyOwner?.()) ? 'ok' : 'not_found';
+}
+
+/** The HTTP refusal for a {@link ChatSessionUse} other than `ok`. */
+export function chatSessionRefusal(
+  use: Exclude<ChatSessionUse, 'ok'>,
+  sessionId: string,
+): { readonly status: 400 | 404; readonly error: string; readonly message: string } {
+  return use === 'not_found'
+    ? { status: 404, error: 'not_found', message: `chat session ${sessionId} not found` }
+    : { status: 400, error: 'non_canonical_id', message: 'a new chat session id must be lower case' };
 }

@@ -6,7 +6,8 @@ Proposed
 
 - **Date:** 2026-11-27
 - **Deciders:** Wave lead (technical decision 2026-11-27, issue #2296), W31 cluster lead
-- **Supersedes:** — (replaces invariant 4 of the `processMemory@1` contract: "id is deterministic")
+- **Supersedes:** [ADR-0118](0118-graph-nodes-stay-small-bulk-data-in-sidecar-tables.md) in part (its process id
+  `process:<scope>:<slug(title)>`); replaces invariant 4 of the `processMemory@1` contract: "id is deterministic"
 
 ## Context and Problem Statement
 

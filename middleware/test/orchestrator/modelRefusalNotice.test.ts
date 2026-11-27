@@ -128,6 +128,16 @@ describe('stop_reason "refusal" is made explicit to the user', () => {
     assert.ok(chatted.text.startsWith(NOTICE_EN), chatted.text);
   });
 
+  it('#2372 · follows the language of the user message before the operator locale (ADR-0332)', async () => {
+    const english = await orchestratorFor(response('', 'refusal')).chat({ userMessage: 'Can you help me with this?' });
+    assert.ok(english.text.startsWith(NOTICE_EN), english.text);
+    const german = await orchestratorFor(response('', 'refusal'), 'en').chat({ userMessage: 'Kannst du mir bitte helfen?' });
+    assert.ok(german.text.startsWith(NOTICE_DE), german.text);
+    // No language in the message ("go"): the operator locale decides, as before.
+    const undecided = await orchestratorFor(response('', 'refusal'), 'en').chat({ userMessage: 'go' });
+    assert.ok(undecided.text.startsWith(NOTICE_EN), undecided.text);
+  });
+
   it('localizeRefusalNotice: en* → English, anything else → German, no notice → unchanged', () => {
     assert.equal(localizeRefusalNotice(`x\n\n${MODEL_REFUSAL_NOTICE}`, 'en-GB'), `x\n\n${NOTICE_EN}`);
     assert.equal(localizeRefusalNotice(MODEL_REFUSAL_NOTICE, 'de'), NOTICE_DE);
