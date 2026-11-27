@@ -177,6 +177,27 @@ export type RoutineActorScope =
   | { kind: 'operator' };
 
 /** The store-level owner filter for a scope, or undefined for an operator. */
+/**
+ * #1907 / ADR-0206 — the outer turn scope of a routine run. Fresh on purpose
+ * (see `runTurnWithOptionalCapture`): it carries the routine owner's MCP
+ * identity recorded at creation, never the identity of whatever turn happens
+ * to be open, and marks the run unattended, so an MCP call starts no OAuth
+ * flow and parks no input request nobody can answer.
+ */
+function routineTurnScope(routine: Routine): {
+  turnId: string;
+  turnDate: string;
+  mcpUnattended: true;
+  mcpUserKey?: string;
+} {
+  return {
+    turnId: '',
+    turnDate: today(),
+    mcpUnattended: true,
+    ...(routine.mcpUserKey ? { mcpUserKey: routine.mcpUserKey } : {}),
+  };
+}
+
 function ownerFilter(scope: RoutineActorScope): RoutineOwner | undefined {
   return scope.kind === 'channel-user'
     ? { tenant: scope.tenant, userId: scope.userId }
@@ -1065,7 +1086,7 @@ export class RoutineRunner {
       // whether an output template happens to be configured.
       const plain = await routineTurnContext.outside(() =>
         turnContext.run(
-          { turnId: '', turnDate: today(), abortSignal: signal },
+          { ...routineTurnScope(routine), abortSignal: signal },
           () => runAgentTurn(orchestrator, input(routine.prompt)),
         ),
       );
@@ -1094,8 +1115,7 @@ export class RoutineRunner {
             // builds its own child scope; it inherits our
             // `captureRawToolResult` callback (parent ALS forwarding,
             // analogous to `chatParticipants` + `privacyHandle`).
-            turnId: '',
-            turnDate: today(),
+            ...routineTurnScope(routine),
             captureRawToolResult,
             abortSignal: signal,
           },

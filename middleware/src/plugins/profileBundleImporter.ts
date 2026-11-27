@@ -67,6 +67,10 @@ export interface PersistedBundlePayload {
     vendored: boolean;
     /** True if the plugin was newly installed during this import. */
     installed: boolean;
+    /** #1787 — the version the install replaced (bundle pins win). */
+    replacedVersion?: string;
+    /** #1811 — same id + version already installed; kept as is. */
+    keptInstalled?: boolean;
   }>;
 }
 
@@ -383,17 +387,30 @@ export class ProfileBundleImporter {
           `vendored plugin ${pin.id} present but no PackageUploadService injected`,
         );
       }
-      // Skip re-install if exact same version already in store with matching hash
+      // #1811 — the same id + version is already installed: keep it. A
+      // bundle exported from a draft rebuilds the ZIP, so its sha256 never
+      // matches the installed package of the same version; requiring the hash
+      // made every re-import on the source instance fail on the ingest's
+      // duplicate-version guard, with no draft created. The ingest never
+      // replaces an uploaded version (`package.duplicate_version`), so the
+      // installed copy is the one that stays; the draft carries the source
+      // either way, and the response says the installed copy was kept.
       const existing = this.deps.uploadedPackageStore.get(pin.id);
-      if (existing && existing.version === pin.version && existing.sha256 === pin.sha256) {
+      if (existing && existing.version === pin.version) {
+        if (existing.sha256 !== pin.sha256) {
+          this.log(
+            `[bundle] vendored ${pin.id}@${pin.version}: same version already installed with other bytes — kept the installed package`,
+          );
+        }
         return {
           ok: true,
           persisted: {
             id: pin.id,
             version: pin.version,
-            sha256: pin.sha256,
+            sha256: existing.sha256,
             vendored: true,
             installed: false,
+            ...(existing.sha256 !== pin.sha256 ? { keptInstalled: true } : {}),
           },
         };
       }
@@ -429,6 +446,7 @@ export class ProfileBundleImporter {
           sha256: pin.sha256,
           vendored: true,
           installed: true,
+          ...(existing ? { replacedVersion: existing.version } : {}),
         },
       };
     }

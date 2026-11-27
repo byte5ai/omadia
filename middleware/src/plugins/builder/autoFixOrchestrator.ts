@@ -31,6 +31,7 @@
  * have everything they need without re-fetching session state.
  */
 
+import { isToolSmokePass } from './runtimeSmoke.js';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { composeFixPrompt } from './composeFixPrompt.js';
@@ -119,7 +120,7 @@ export function computeFingerprint(
     projection = `build:${codes.join(',') || ev.reason || 'unknown'}`;
   } else {
     const tools = (ev.results ?? [])
-      .filter((r) => r.status !== 'ok')
+      .filter((r) => !isToolSmokePass(r.status))
       .map((r) => `${r.toolId}:${r.status}`)
       .sort();
     const adminRoutes = (ev.adminRouteResults ?? [])

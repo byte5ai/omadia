@@ -156,10 +156,14 @@ export async function initRoutines(
       const agentSlug = turnContext.currentAgentSlug() ?? currentDispatchCaller()?.agentSlug;
       // #1743 — the creator's zone when the channel reported one.
       const timeZone = turnContext.current()?.userTimeZone;
+      // #1907 — the identity the turn's MCP calls act as (session or channel
+      // identity, never a client header), so the routine can act as its owner.
+      const mcpUserKey = turnContext.current()?.mcpUserKey;
       return {
         ...ctx,
         ...(agentSlug ? { agentSlug } : {}),
         ...(timeZone ? { timeZone } : {}),
+        ...(mcpUserKey ? { mcpUserKey } : {}),
       };
     },
     ...(opts.defaultTimeZone ? { defaultTimeZone: opts.defaultTimeZone } : {}),

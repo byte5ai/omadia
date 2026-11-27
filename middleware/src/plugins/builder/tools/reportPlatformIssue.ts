@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
-import { sanitizeIssueBody } from '../issueBodySanitizer.js';
+import { sanitizeIssueBody, sanitizeIssueTitle } from '../issueBodySanitizer.js';
 import type { BuilderTool } from './types.js';
 
 /**
@@ -191,6 +191,22 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
     const fingerprintMarker = `<!-- omadia-fingerprint: ${input.fingerprint} -->`;
     const enrichedBody = `${input.body.trim()}\n\n${fingerprintMarker}\n`;
     const sanitized = sanitizeIssueBody(enrichedBody);
+    // #1783 — the title reaches the public repo too.
+    const sanitizedTitle = sanitizeIssueTitle(input.title);
+    const redactions = [...sanitizedTitle.redactions, ...sanitized.redactions];
+
+    // #1783 — count this report against the operator's daily cap. Nothing
+    // wrote `builder_triage_log` before, so the cap never applied. Counted
+    // when the report is prepared (fail closed): a declined confirm still
+    // used one of the three.
+    ctx.triageLog.record({
+      draftId: ctx.draftId,
+      userEmail: ctx.userEmail,
+      fingerprint: input.fingerprint,
+      classification: 'platform',
+      confidence: 1,
+      reason: sanitizedTitle.title,
+    });
 
     const pendingId = randomUUID();
 
@@ -205,7 +221,7 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
         type: 'issue_report_pending',
         pendingId,
         mode: 'created-pending',
-        title: input.title,
+        title: sanitizedTitle.title,
         summary: input.summary,
         fingerprint: input.fingerprint,
         fingerprintMarker,
@@ -216,14 +232,14 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
         mode: 'created-pending',
         directSubmit: { pendingId, fingerprintMarker },
         sanitizedBody: sanitized.body,
-        redactions: sanitized.redactions,
+        redactions,
       };
     }
 
     // 4b. Fallback: browser-submit URL the operator opens + submits under
     //     their own GitHub account.
     const params = new URLSearchParams({
-      title: input.title,
+      title: sanitizedTitle.title,
       body: sanitized.body,
       labels: labels.join(','),
     });
@@ -233,7 +249,7 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
       type: 'issue_report_pending',
       pendingId,
       mode: 'browser-submit',
-      title: input.title,
+      title: sanitizedTitle.title,
       summary: input.summary,
       fingerprint: input.fingerprint,
       fingerprintMarker,
@@ -250,7 +266,7 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
         fingerprintMarker,
       },
       sanitizedBody: sanitized.body,
-      redactions: sanitized.redactions,
+      redactions,
     };
   },
 };

@@ -791,12 +791,24 @@ This keeps the supply chain explicit:
   (`toolIdempotency.ts`, `ToolDispatchService`). A restart, a second instance
   or an expired or evicted record executes the write again, so the key is a
   retry-safety mitigation and does not make a write run at most once
-  (`src/mcp/README.md`, Idempotency). Without a key, the MCP client may retry
-  the call once after a transport failure. On the chat path a verifier
-  re-entry replays every external call the first run recorded and executes
-  none of them again (a sub-agent whose data the shield interned runs again,
-  with its own calls replayed, §7c); a turn without that replay ledger keeps
-  the same single retry, so an MCP write whose reply was lost can run twice.
+  (`src/mcp/README.md`, Idempotency). Without a key, the MCP client re-sends
+  a call whose answer was lost (timeout, dropped connection, HTTP 5xx) only
+  when its server declares the tool `readOnlyHint` or `idempotentHint`, or
+  when the server provably never ran it (failed connect, session 404); any
+  other such call returns "outcome unknown" (ADR-0205). On the chat path a
+  verifier re-entry replays every external call the first run recorded and
+  executes none of them again (a sub-agent whose data the shield interned runs
+  again, with its own calls replayed, §7c). A server that wrongly declares a
+  write tool idempotent can still get it twice.
+- MCP delegation (ADR-0206). A `per_user` OAuth-protected server receives no
+  request at all from a caller without a user identity (`blockedReason`); a
+  server without OAuth has no per-user credential and is called as before.
+  Routines record the creating turn's MCP identity (session OAuth key or
+  attested channel identity, never a client header) in `routines.mcp_user_key`
+  and act as their owner, also when an operator fires one by hand. Unattended
+  callers (workflows, routines, triggers) never start an OAuth flow and never
+  park an input request; they get a typed `auth_required` / `input_required`
+  failure.
   Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).
@@ -2083,6 +2095,9 @@ came in:
 | Chat turn (`Orchestrator`, privacy provider installed) | The turn's handle, inherited through `turnContext` | Withheld or redacted at every seam, receipted |
 | Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a refusal for a returned `Error:` text |
 | Loopback MCP for the subscription CLI | The CLI turn's own handle (ADR-0195); a CLI sub-agent in a guarded turn inherits the caller's through `turnContext` | Withheld or redacted at every seam, receipted |
+
+| Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a generic `isError` result without the tool's text for a returned `Error:` text (ADR-0212) |
+| Loopback MCP for the subscription CLI | None (§3a, #1087) | Raw — see Residuals |
 | Any path without a privacy provider | None | Raw (parity) |
 
 On the public endpoint the gate's nested handle interns a sub-agent's inner
@@ -7378,10 +7393,29 @@ Endpoints that come from a registry catalog are not operator configuration and
 keep the stricter untrusted rule (`assertUntrustedEndpointSafe`,
 `mcpRegistryClient.ts`): `https` only, and no private or loopback host either.
 
-**stdio trust model.** For transport `stdio` the endpoint is a command line.
-The middleware splits it and starts it as its own child process, so it runs as
-the middleware's OS user with the same filesystem and network access. That is
-the same power the admin who saves it already has. Catalog imports only write
+**Static headers and API keys (ADR-0210, #1912).** An admin can give an
+http/sse server static request headers. A header marked secret is stored on
+the row only as its `{header_<name>}` placeholder; the value lives in the Vault
+(`@omadia/mcp-config`) and is filled in per call, like every secret config
+field, which now works in the endpoint as well. No route returns a secret
+value: the header list reports `secretSet` only. Removing a header or a
+placeholder deletes its Vault secret. A secret placed in the endpoint URL can
+still be quoted by an upstream or transport error message; a header avoids
+that. Deleting a server deletes its config secrets.
+
+**stdio trust model (ADR-0211, #1914).** For transport `stdio` the endpoint is
+a command line. The middleware splits it and starts it as its own child
+process, so it runs as the middleware's OS user with the same filesystem and
+network access. Its own environment is minimal (the SDK defaults plus the
+server's config values), but that is not a boundary: the middleware is PID 1
+under the same user, so the child can read `/proc/1/environ` (`VAULT_KEY`,
+`CREDENTIAL_KEYCHAIN_KEY`, `DATABASE_URL`, provider keys) and the data
+directory (`/data/.dev-vault.key` when no `VAULT_KEY` is set). With those it
+can decrypt every stored secret. A stdio server is therefore inside the
+middleware's trust domain; for a command the admin typed that is the admin's
+own power, for a catalog entry it is third-party npm code with the same
+access. The add-server form and the catalog card of a stdio entry say so.
+Catalog imports only write
 `npx -y -- <package>` and check the package name against a strict npm-name
 grammar (`NPM_NAME_RE`); a manual entry accepts any command. Saving a stdio
 server writes a log line with its id, name and source (manual or catalog), not
@@ -7393,8 +7427,10 @@ catalog import, with
 `400 {"error":"mcp_stdio_disabled","code":"stdio_disabled"}`, and an existing
 stdio row is refused at connect time (Discover → `502` with
 `code: stdio_disabled`, re-scans, runtime calls) without starting a process.
-The default is `true`, so existing installations keep working unchanged.
-Whether the Compose stack should ship with stdio off is an open decision.
+The built-in default is `true`, so from-source runs, the desktop app and
+existing deployments keep working unchanged. The docker-compose stack ships
+with `MCP_STDIO_ENABLED=false` in `middleware/compose.defaults.env`; an operator
+who wants stdio servers sets `true` in `middleware/.env` (ADR-0211).
 
 **Residual risks.**
 
@@ -7415,6 +7451,10 @@ Whether the Compose stack should ship with stdio off is an open decision.
 - With stdio on, an admin can run any command in the middleware container.
   Restricting manual stdio entries to the catalog grammar unless the operator
   opts in to free command lines is deferred.
+- With stdio on, every stdio server (and every catalog package it pulls) can
+  read the middleware's keys and so every stored secret (accepted, ADR-0211).
+  Isolating stdio children (separate UID, hidden `/proc`, no `/data`) is the
+  open follow-up.
 ## 10q. The admin audit trail: one actor rule, one read route (#1315, #1347)
 
 `admin_audit` is append-only; nothing in the code updates or deletes a row.

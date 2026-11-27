@@ -14,12 +14,18 @@ Enable in the middleware via `SKILLSPECTOR_URL` (see
 ## Fail-closed response contract
 
 The shim positively verifies SkillSpector's report schema (observed on the
-pinned commit, CLI v2.3.11): exit code `0` **and** parseable JSON **and** a
-top-level object with an `issues` list plus a `risk_assessment` object.
-"Ran clean" is exit 0 with `issues: []`. Everything else — non-zero exit,
-non-JSON stdout, or an unrecognized schema — answers `ok: false`, which the
-middleware records as a `scan_failed` verdict. An unrecognized schema must
-never read as a clean scan (`no_signals`).
+pinned commit, CLI v2.3.11): exit code `0` or `1` **and** parseable JSON
+**and** a top-level object with an `issues` list plus a `risk_assessment`
+object. Exit `1` means the scan completed with a risk score above
+SkillSpector's threshold; it answers `ok: true` with its findings (the
+middleware rates them `high_risk`) and must carry at least one issue (#1813).
+"Ran clean" is exit 0 with `issues: []`. Everything else — exit `2` or any
+other code, non-JSON stdout, or an unrecognized schema — answers `ok: false`,
+which the middleware records as a `scan_failed` verdict. An unrecognized schema
+must never read as a clean scan (`no_signals`).
+
+Tests: `python3 -m unittest middleware/sidecars/skillspector/test_server.py`
+(run from the repo root with `PYTHONPATH=middleware/sidecars/skillspector`).
 
 ## Dependency pin & bump procedure
 

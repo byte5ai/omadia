@@ -1444,9 +1444,11 @@ export class CliChatAgent implements ChatAgent {
         turnDate: today(),
         ...(agentSlug !== undefined ? { agentSlug } : {}),
       }),
-      // A channel's outer scope carries a placeholder id (`''`); the audit
-      // rows of this turn name the CLI turn instead.
-      turnId: parent?.turnId || cliTurnId,
+      // A channel's outer scope carries a placeholder id (`''`, or the web
+      // chat's marked `http-chat-<scope>`, #1921); the audit rows of this turn
+      // name the CLI turn instead.
+      turnId: parent?.turnId && parent.turnIdIsPlaceholder !== true ? parent.turnId : cliTurnId,
+      turnIdIsPlaceholder: false,
       // #1960 (ADR-0178) — the turn's room, as the in-process turn states it
       // (`input.sessionScope ?? turnId`). Attachment bindings are keyed on it:
       // without it a loopback `read_attachment` has no room and is refused.

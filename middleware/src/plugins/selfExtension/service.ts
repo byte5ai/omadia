@@ -19,6 +19,7 @@
  * install_failed) and into the audit trail.
  */
 
+import { bumpSpecPatchVersion } from '../builder/cloneFromInstalled.js';
 import {
   installDraft,
   type InstallDraftDeps,
@@ -122,8 +123,16 @@ export async function materializeApprovedProposal(
   }
 
   const { draftStore, buildPipeline, packageUploadService } = deps;
-  const spec = record.approvedSpec;
+  // #1786 — the ingest refuses a version that is already installed. Unless the
+  // proposal itself moved the version, the extension ships as the next patch.
+  const versionUnchanged =
+    record.currentSpec === undefined || record.currentSpec.version === record.approvedSpec.version;
+  const spec = versionUnchanged
+    ? bumpSpecPatchVersion(record.approvedSpec)
+    : record.approvedSpec;
   const draft = await draftStore.create(input.userEmail, input.draftName ?? spec.name);
+  // `spec.slots` carries the source draft's slot code: the proposal route
+  // merges `draft.slots` into the live spec before the patches apply.
   await draftStore.update(input.userEmail, draft.id, {
     spec,
     slots: spec.slots,
@@ -146,6 +155,15 @@ export async function materializeApprovedProposal(
     return { ok: true, kind: 'spec', install: result };
   }
 
+  // #1786 — the draft only existed to carry this install; a failed attempt
+  // must not leave one orphaned draft per try in the operator's list.
+  await draftStore.hardDelete(input.userEmail, draft.id).catch((err: unknown) => {
+    log(
+      `[self-extension] could not remove draft ${draft.id} after failed install: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  });
   deps.gate.markFailed(record.id, `${result.code}: ${result.message}`);
   log(`[self-extension] install FAILED for ${record.id}: ${result.code} ${result.message}`);
   return {

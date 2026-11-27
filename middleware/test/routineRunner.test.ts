@@ -136,6 +136,7 @@ class InMemoryRoutineStore implements RoutineStore {
       agentSlug: input.agentSlug ?? null,
       agentId: input.agentId ?? null,
       timezone: input.timezone ?? null,
+      mcpUserKey: input.mcpUserKey ?? null,
     };
     this.rows.set(id, routine);
     return routine;
@@ -1960,3 +1961,51 @@ describe('review fixes — withheld answers and the pause reason', () => {
     assert.match(h.store.rows.get(routine.id)!.lastRunError ?? '', /its agent 'SEO' was disabled/);
   });
 });
+describe('RoutineRunner — MCP identity of a run (#1907, ADR-0206)', () => {
+  function observingOrchestrator(seen: Array<{ key?: string; unattended?: boolean }>): OrchestratorLike {
+    return {
+      async runTurn(): Promise<ChatTurnResult> {
+        const ctx = turnContext.current();
+        seen.push({
+          ...(ctx?.mcpUserKey !== undefined ? { key: ctx.mcpUserKey } : {}),
+          ...(ctx?.mcpUnattended !== undefined ? { unattended: ctx.mcpUnattended } : {}),
+        });
+        return { answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    };
+  }
+
+  it("runs as the owner's recorded MCP identity, unattended, on both branches", async () => {
+    for (const outputTemplate of [null, TEMPLATE_FOR_IDENTITY]) {
+      const seen: Array<{ key?: string; unattended?: boolean }> = [];
+      const h = makeHarness({ orchestrator: observingOrchestrator(seen) });
+      const routine = await h.runner.createRoutine({
+        ...baseInput,
+        outputTemplate,
+        mcpUserKey: 'owner-sub-123',
+      });
+      // An ambient turn of somebody else must not lend its identity.
+      await turnContext.run(
+        { turnId: 'other-turn', turnDate: '2026-11-26', mcpUserKey: 'someone-else' },
+        () => h.scheduler.fire(routine.id),
+      );
+      assert.deepEqual(seen, [{ key: 'owner-sub-123', unattended: true }]);
+    }
+  });
+
+  it('a routine without a recorded identity runs with none', async () => {
+    const seen: Array<{ key?: string; unattended?: boolean }> = [];
+    const h = makeHarness({ orchestrator: observingOrchestrator(seen) });
+    const routine = await h.runner.createRoutine(baseInput);
+    await turnContext.run(
+      { turnId: 'other-turn', turnDate: '2026-11-26', mcpUserKey: 'someone-else' },
+      () => h.scheduler.fire(routine.id),
+    );
+    assert.deepEqual(seen, [{ unattended: true }]);
+  });
+});
+
+const TEMPLATE_FOR_IDENTITY: RoutineOutputTemplate = {
+  format: 'markdown',
+  sections: [{ kind: 'static-markdown', text: 'Report' }],
+};

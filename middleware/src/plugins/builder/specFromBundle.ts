@@ -84,3 +84,52 @@ export function reconstructSpecFromBundle(
     source: 'agent_md_fallback',
   };
 }
+
+/**
+ * #1787/#1788 — the knowledge files a Builder snapshot carries for the draft
+ * itself, next to the operator's own knowledge files. `spec.json` is the
+ * spec, `slots.json` the slot code (`draft.slots`, a separate column the
+ * spec does not contain). Neither is operator knowledge: importers and the
+ * rollback route restore them into the draft, not into the knowledge dir.
+ */
+export const BUNDLE_SPEC_FILE = 'spec.json';
+export const BUNDLE_SLOTS_FILE = 'slots.json';
+
+/** `knowledge/slots.json` or `slots.json` → `slots.json`. */
+export function bundleKnowledgeBaseName(filename: string): string {
+  return filename.startsWith('knowledge/') ? filename.slice('knowledge/'.length) : filename;
+}
+
+export function isDraftSourceFile(filename: string): boolean {
+  const base = bundleKnowledgeBaseName(filename);
+  return base === BUNDLE_SPEC_FILE || base === BUNDLE_SLOTS_FILE;
+}
+
+/**
+ * Parses `slots.json` into slot key → source. A bundle without the file
+ * (exported before #1787) yields `null`: the caller keeps the slots it has.
+ * Anything that is not an object of strings is refused, never half-applied.
+ */
+export function parseBundleSlots(content: Buffer | null | undefined): Record<string, string> | null {
+  if (!content || content.byteLength === 0) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content.toString('utf8'));
+  } catch (err) {
+    throw new SpecReconstructError(
+      `slots.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      err,
+    );
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new SpecReconstructError('slots.json must be an object of slot key → source');
+  }
+  const slots: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== 'string') {
+      throw new SpecReconstructError(`slots.json: slot '${key}' is not a string`);
+    }
+    slots[key] = value;
+  }
+  return slots;
+}

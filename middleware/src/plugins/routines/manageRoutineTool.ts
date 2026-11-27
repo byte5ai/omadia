@@ -105,6 +105,11 @@ export interface ManageRoutineContext {
    * routine so it runs with that orchestrator's plugin grants.
    */
   agentSlug?: string;
+  /**
+   * #1907 / ADR-0206 — the creating turn's MCP OAuth user key. Stored on the
+   * routine so it acts as its owner on `per_user` MCP servers.
+   */
+  mcpUserKey?: string;
 }
 
 export type ManageRoutineContextResolver = () =>
@@ -287,6 +292,7 @@ export class ManageRoutineTool {
       ...(ctx.agentSlug ? { agentSlug: ctx.agentSlug } : {}),
       // #1743 / ADR 0240 — the creator's zone, else the instance's.
       timezone: resolveTimeZone(ctx.timeZone, this.defaultTimeZone),
+      ...(ctx.mcpUserKey ? { mcpUserKey: ctx.mcpUserKey } : {}),
     });
     return JSON.stringify({
       action: 'created',

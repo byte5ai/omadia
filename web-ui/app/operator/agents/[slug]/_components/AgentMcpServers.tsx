@@ -83,7 +83,14 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * saves it in one `PUT /mcp-grants` bulk replace ({@link replaceMcpToolAllowlist}).
  * Mounted into the agent detail page by the wave's wiring unit.
  */
-export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement {
+export function AgentMcpServers({
+  slug,
+  onGrantsChanged,
+}: {
+  slug: string;
+  /** #1954 — called after every grant write, so the grant list above reloads. */
+  onGrantsChanged?: () => void;
+}): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const broadReach = useBroadReachConfirm();
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
@@ -164,6 +171,7 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
       if (!res) return;
       setSaved({ id: server.id, granted: res.granted.length, revoked: res.revoked.length });
       await refresh();
+      onGrantsChanged?.();
       clearDraft(server.id);
     } catch (err) {
       setError(grantErrorText(err));

@@ -17,18 +17,23 @@ type Formatter = ReturnType<typeof useFormatter>;
 interface AgentToolGrantsProps {
   /** Slug of the orchestrator whose grants are listed. */
   readonly slug: string;
+  /**
+   * #1954 — bumped by the editor below (`AgentMcpServers`) after every grant
+   * write, so this list reloads instead of showing the state from mount time.
+   */
+  readonly refreshKey?: number;
 }
 
 /**
  * Issue #861 (epic #860) — per-agent tool-grant list with grant-epoch
  * display, detail-page slice.
  *
- * Read-only on purpose: it renders the per-agent read model from
+ * A list, not an editor: it renders the per-agent read model from
  * `GET /v1/operator/agents/:slug/grants` (`getAgentGrants`) — the agent's
  * own `agent_tool_grants` rows plus the `plugin_mcp_grants` of every plugin
- * assigned to it. Grant WRITES stay on the existing surfaces (`/admin/mcp`
- * grants tab and the per-agent MCP assignment editor) — spec says extend,
- * not duplicate.
+ * assigned to it. Grant WRITES happen in the MCP assignment editor right below
+ * it (`AgentMcpServers`) and on `/admin/mcp`; the editor bumps `refreshKey`
+ * after each write (#1954).
  *
  * The grant epoch is NOT a column: `bumpMcpGrantEpoch` stamps
  * `config.verdictEpoch` (a `now()::text` timestamp) into the grant's JSONB
@@ -74,7 +79,7 @@ export function AgentToolGrants(props: AgentToolGrantsProps): React.ReactElement
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, props.refreshKey]);
 
   return (
     <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">

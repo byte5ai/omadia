@@ -89,6 +89,17 @@ function fromTool(content: string): ToolDispatchResult {
   return { content, origin: 'tool' };
 }
 
+/**
+ * A fulfilled control-flow result (a returned `Error:` text or the MCP connect
+ * prompt), after `guardControlFlowResult`. Flagged `isError` because the tool
+ * did not produce an answer: the public MCP endpoint (#1937) uses the flag to
+ * answer with a tool error instead of a privacy refusal, and the loopback MCP
+ * server forwards it to the CLI as the spec's `isError`.
+ */
+function fromToolError(content: string): ToolDispatchResult {
+  return { content, isError: true, origin: 'tool' };
+}
+
 export interface DispatchableToolSpec {
   readonly name: string;
   readonly description: string;
@@ -137,6 +148,12 @@ export interface ToolDispatchCallerContext {
    * plugin memory to another namespace on this runtime.
    */
   readonly agentSlug?: string;
+  /**
+   * #1921 — what kind of principal `principal` names. `api_key` is set by the
+   * public MCP endpoint, so an MCP call beneath the dispatch is audited as an
+   * API-key call instead of as unattributed.
+   */
+  readonly principalKind?: 'api_key';
 }
 
 /** Per-dispatch options. All optional — omitting the whole argument is legacy behaviour. */
@@ -144,7 +161,7 @@ export interface ToolDispatchOptions {
   readonly caller?: ToolDispatchCallerContext;
   /**
    * Caller-supplied idempotency key. Applied ONLY to write-capable tools (see
-   * `isWriteCapableTool`): two dispatches sharing a key execute the tool at most
+   * `isWriteCapableTool`, or `treatAsWrite`): two dispatches sharing a key execute the tool at most
    * once while the record is live, and the MCP transport layer suppresses its
    * transient retry for the call.
    *
@@ -152,6 +169,15 @@ export interface ToolDispatchOptions {
    * flaky-proxy retry mitigation must stay in force for them.
    */
   readonly idempotencyKey?: string;
+  /**
+   * The caller has decided that this call is a write, whatever the tool
+   * declares (#1938). The public MCP endpoint sets it for a tool an operator
+   * listed under a key binding's write tools: such a tool already needs the
+   * write scope and spends the write budget there, so it gets the same
+   * at-most-once `idempotencyKey` handling as a tool that declares
+   * `writeCapabilities`. Can only widen the write set, never narrow it.
+   */
+  readonly treatAsWrite?: boolean;
   /**
    * Caller's own admissibility check, run on a freshly-produced result BEFORE
    * the idempotency store retains it. Throw to reject.
@@ -346,7 +372,8 @@ export class ToolDispatchService {
     const store = this.deps.idempotency;
     // Idempotency applies to write-capable tools only. A read tool keeps the
     // transport-retry mitigation and never replays a cached body.
-    if (key !== undefined && store !== undefined && this.isWriteCapable(name)) {
+    const isWrite = options?.treatAsWrite === true || this.isWriteCapable(name);
+    if (key !== undefined && store !== undefined && isWrite) {
       const outcome = await store.run(
         key,
         name,
@@ -558,7 +585,7 @@ export class ToolDispatchService {
     // text takes the same redaction as below.
     if (isInternExemptCall(name, input)) {
       if (isGuardedControlFlowResult(result, authPromptMint)) {
-        return fromTool(
+        return fromToolError(
           await guardControlFlowResult({
             toolName: name,
             result,
@@ -611,7 +638,7 @@ export class ToolDispatchService {
     // provenance; text that merely starts like it is interned below. Thrown
     // exceptions take `thrownResult`.
     if (isGuardedControlFlowResult(result, authPromptMint)) {
-      return fromTool(
+      return fromToolError(
         await guardControlFlowResult({
           toolName: name,
           result,

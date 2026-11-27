@@ -2555,6 +2555,56 @@ Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
 `test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
 unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
 
+### MCP-Control-Center: Operator-Routen (Welle 5, 2026-11-26)
+
+**Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
+liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
+Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0116,
+geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
+`POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
+`transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`
+erlaubt) → 400 mit `code` (`name_required`, `endpoint_invalid`, …); doppelter Name → 409
+`name_taken` (auch Katalog-Import und Registries). Ein Nicht-UUID-`:id` unter `/mcp-servers/…`
+und `/mcp-registries/…` → 404 `not_found` vor jedem Handler (MCP-Präzedenz #1318/#1398; Conductor antwortet laut ADR-0038 mit 400).
+
+**Statische Header / API-Keys (#1912, ADR-0210):** `GET/PUT /api/v1/operator/mcp-servers/:id/headers`
+(und `headers` beim `POST /mcp-servers`), nur http/sse. Body `[{name, value?, secret}]`; ein geheimer
+Header wird als `{header_<name>}` in `mcp_servers.headers` gespeichert, der Wert liegt im Vault
+(`@omadia/mcp-config`, `<serverId>:header_<name>`), ohne `value` bleibt der gespeicherte. Geheime
+Config-Felder werden jetzt auch im Endpoint eingesetzt (`McpConfigService.getConfigEndpoint`); das
+Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzhaltern abgeglichen
+(`reconcileConfigSchema`), verschwundene Felder samt Vault-Secret gelöscht. UI:
+`web-ui/app/admin/mcp/ServerHeadersForm.tsx`.
+
+### MCP-Laufzeit: Re-Send-Regel, typisierte Ergebnisse, unbeaufsichtigte Aufrufer (Welle 5, ADR-0205/0206)
+
+- **Re-Send (ADR-0205):** `McpManager.callTool` sendet einen Call ohne Antwort
+  (Timeout, Verbindungsabbruch, HTTP 5xx) nur erneut, wenn der Server das Tool
+  `readOnlyHint`/`idempotentHint` deklariert (Discovery speichert beide), oder
+  wenn der Server ihn nachweislich nie bekam (Connect-Fehler, HTTP 404 auf
+  `Mcp-Session-Id` → neue Session). Sonst `Error: outcome unknown — …`. Jeder
+  Versuch bekommt eine `mcp_call_log`-Zeile. Ein gepoolter Eintrag fällt nur,
+  wenn die Verbindung wirklich weg ist, und nur unter seinem exakten Key
+  (`dropEntryIfCurrent`). Jeder `tools/call` trägt einen Progress-Token.
+- **Typisiert (ADR-0206):** `callToolResult(cfg, tool, args, replay?, { unattended })`
+  → `{ text, status }` mit `ok | tool_error | failed | auth_required |
+  input_required | blocked | outcome_unknown`. `callTool` liefert weiter nur
+  `text` (Plugin-Vertrag unverändert). Conductor-Invoker und Test-Call-Route
+  (`status`-Feld in der Antwort) lesen den Status, nie den Text.
+- **Unbeaufsichtigt:** `turnContext.mcpUnattended` (Routinen, Trigger, deren
+  Data-Actions) bzw. `opts.unattended` (Conductor) → kein OAuth-Flow, kein
+  geparkter Input, sondern typisierte Ablehnung. Wird in jedem neu gebauten
+  Scope mitgetragen wie `mcpUserKey`.
+- **Blockiert:** `McpAuthProvider.blockedReason(cfg)` — `per_user`-OAuth-Server
+  ohne Identität bekommen keinen Request. Server ohne OAuth laufen wie bisher.
+- **Routinen:** `routines.mcp_user_key` (Routines-Migration 0007) = `mcpUserKey`
+  des anlegenden Turns; der Lauf handelt als Owner.
+- **Audit-Caller:** `auditCaller` — Sub-Agent (`mcpSubAgentName`), API-Key
+  (`principalKind: 'api_key'`), Platzhalter-Turn (`turnIdIsPlaceholder`) = kein Turn.
+- **Data-Actions:** `readOnlyHint`-MCP-Tools sind eigene Read-Tools für
+  `deliver_data`; Zeilen kommen aus `structuredContent` (`mcpReadToolInvoker`,
+  `captureMcpStructured`).
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
@@ -4861,6 +4911,32 @@ Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
   sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
   Admin-Session.
 
+### Plugin Builder: Build-Status, Smoke, Drafts löschen (Welle 5, W20)
+
+- **Build-Status** (ADR-0230): `plugins/builder/previewWarmBuild.ts` ist der
+  einzige Emitter von `build_status` (Auto-Rebuild in `index.ts` und
+  Preview-Routen). `building` nur bei echtem Build, jedes `failed` genau einmal
+  mit `buildN` und stabilem Code; fehlende Test-Credentials bleiben `ok` mit
+  `missingSetupKey`. `GET /drafts/:id/preview/status` meldet einen grünen
+  letzten Build bei kaltem Cache als `ok` + `warm: false`;
+  `PUT|DELETE /drafts/:id/preview/secrets` planen einen Rebuild.
+- **Runtime-Smoke** (ADR-0232): eigene Stub-Aktivierung der frischen ZIP
+  (`smokeMode`, Stub-Werte `'smoke-test'`, Verzeichnis `<draft>-<rev>-smoke`),
+  nie der warme Preview-Handle; Tools mit `side_effects: 'write'` werden nicht
+  aufgerufen; `validation_failed` ist ein Fehlschlag, `auth_rejected` nicht.
+- **`DELETE /drafts/:id`** verwirft zusätzlich die Test-Credentials des Drafts
+  (Vault-Namespace `core.builder-preview:<user>:<draft>`).
+- **`DELETE /drafts/:id/permanent`** (nur Owner, nur bereits gelöschte Drafts,
+  sonst `404`) entfernt einen Draft endgültig; UI: „Endgültig löschen“ in der
+  Liste gelöschter Drafts.
+- **Täglicher Purge** (`plugins/builder/draftPurge.ts`, gestartet in
+  `index.ts`): gelöschte, veröffentlichte Drafts nach der Grace-Period samt
+  Test-Credentials. Unveröffentlichte gelöschte Drafts bleiben bis zum
+  endgültigen Löschen.
+- **Profil-Snapshots/Bundles** tragen `knowledge/slots.json` (Slot-Code);
+  Import stellt ihn wieder her (Draft-Quota vor jeder Plugin-Installation),
+  Rollback schreibt Spec + Slots in den Draft (nur eigener Draft).
+
 ### Plugin Builder: ein Turn pro Draft, Stopp auf dem Server (#2214)
 
 Seit #1899 läuft ein Builder-Turn nach einem Disconnect weiter. `DraftTurnLock`
@@ -5364,10 +5440,17 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 
 | Variable | Wirkung |
 |---|---|
-| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Ob Compose-Deployments mit `false` ausgeliefert werden, ist nicht entschieden. |
+| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Der Compose-Stack setzt `false` (`middleware/compose.defaults.env`, ADR-0211, #1914): ein stdio-Kind läuft unter dem Middleware-User und kann `/proc/1/environ` (`VAULT_KEY`, `DATABASE_URL`) und `/data` lesen. Wieder einschalten mit `MCP_STDIO_ENABLED=true` in `middleware/.env`. |
 | `REGISTRY_URLS` | JSON-Liste `[{name,url,token?}]` der Plugin-Registries (Hub-Quellen). Wird **nur beim ersten Boot** gelesen (#1483): `seedRegistriesOnFirstBoot` schreibt die Liste nach `platform_settings` → `registry.list`; danach verwaltet Admin · Registries sie, und eine geleerte Liste bleibt über Neustarts leer. Ungesetzt → `hub.omadia.ai`; `'[]'` → Instanz ohne Registry (ZIP-Upload geht weiter). DB-loser Boot seedet weiterhin bei jedem Start. |
 | `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
+
+### Öffentlicher MCP-Endpunkt (#542, #1952, ADR-0142/0143)
+
+| Variable | Wirkung |
+|---|---|
+| `PUBLIC_MCP_ENABLED` | `true`/`false`, Default `false`. Mountet `POST /api/v1/mcp` (auch mit einem abschließenden `/`). Aus: keine Route. `serverInfo.version` ist die Build-Version (`OMADIA_VERSION`, sonst `unknown`). Jede authentifizierte Anfrage landet im Usage-Log des Keys (`/admin/api-keys`, #1936). |
+| `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING` | `true`/`false`, Default `false`. Ohne Privacy-Provider lehnt `tools/call` sonst jeden Aufruf ab. Nur für Installationen, deren freigegebene Tools nachweislich keine Personendaten tragen. |
 
 Die Outbound-Regel für operator-konfigurierte MCP-Ziele (Registry-URL, `http`-/`sse`-Endpoint) hat keine Env-Variable: Link-Local- und Cloud-Metadata-Ziele werden immer abgewiesen (400 bzw. 502 mit `code: blocked_host`), private und Loopback-Adressen bleiben erlaubt.
 

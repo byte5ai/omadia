@@ -290,6 +290,7 @@ import { PreviewCache } from './plugins/builder/previewCache.js';
 import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
 import { warmPreview } from './plugins/builder/previewWarmBuild.js';
+import { startDraftPurge } from './plugins/builder/draftPurge.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
 import { PreviewDraftAgents } from './plugins/builder/previewDraftAgents.js';
 import {
@@ -320,6 +321,7 @@ import {
 import { loadBuildTemplateConfig } from './plugins/builder/buildTemplateConfig.js';
 import {
   registerServiceType,
+  serviceMajorFromProvides,
   unregisterServiceType,
 } from './plugins/builder/serviceTypeRegistry.js';
 import { BuildPipeline } from './plugins/builder/buildPipeline.js';
@@ -615,6 +617,7 @@ import {
   SERVICE_USER_KEY,
   auditIdentity,
   delegationBlockedMessage,
+  delegationBlockedUnattendedMessage,
   resolveMcpUserKey,
 } from './services/mcpDelegation.js';
 import { McpOAuthService } from './services/mcpOAuthService.js';
@@ -695,7 +698,8 @@ import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.
 import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
-import { turnContext } from '@omadia/orchestrator';
+import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
+import { mcpReadToolInvoker } from './triggers/mcpReadTool.js';
 import { ConsultationStore } from './consultation/consultationStore.js';
 import { createConsultationBroker } from './consultation/consultationBroker.js';
 import { DiscretionStore } from './discretion/discretionStore.js';
@@ -1986,9 +1990,11 @@ async function main(): Promise<void> {
       const serviceTypes = entry.plugin.service_types ?? [];
       if (serviceTypes.length === 0) return;
       for (const st of serviceTypes) {
+        const major = serviceMajorFromProvides(st.service, entry.plugin.provides);
         registerServiceType(st.service, {
           providedBy: entry.plugin.id,
           typeImport: { from: st.type.from, name: st.type.name },
+          ...(major !== undefined ? { major } : {}),
         });
       }
       registeredServiceTypesByPlugin.set(
@@ -3408,6 +3414,27 @@ async function main(): Promise<void> {
                   await mcpOAuthService.markTokenRejected(server.id, userKey, token);
                 }
               },
+              // #1906 / ADR-0206 — checked before anything is sent: a
+              // `per_user` OAuth server with no caller identity gets no
+              // request at all, so "Nothing was sent to the server" is true.
+              // Only OAuth servers: delegation decides whose OAuth token a
+              // call carries, and a server without OAuth (stdio, open, static
+              // vault headers) has no per-user credential to withhold —
+              // blocking it would break every identity-less caller (trigger,
+              // API key) of the many servers created with the default.
+              blockedReason: async (cfg: McpServerConfig) => {
+                const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                if (!server) return null;
+                const ctx = turnContext.current();
+                const userKey = resolveMcpUserKey(server, ctx?.mcpUserKey, mcpOAuthUserKey);
+                if (userKey !== null) return null;
+                if (!(await mcpOAuthService.isProtected(server))) return null;
+                const noHuman =
+                  ctx?.mcpUnattended === true || currentDispatchCaller()?.principalKind === 'api_key';
+                return noHuman
+                  ? delegationBlockedUnattendedMessage(server.name)
+                  : delegationBlockedMessage(server.name);
+              },
               onAuthFailure: async (cfg: McpServerConfig) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                 if (!server) return null;
@@ -3456,6 +3483,8 @@ async function main(): Promise<void> {
                 ? {
                     getConfigHeaders: (cfg: McpServerConfig) =>
                       mcpConfigService.getConfigHeaders(cfg),
+                    getConfigEndpoint: (cfg: McpServerConfig) =>
+                      mcpConfigService.getConfigEndpoint(cfg),
                     getConfigEnv: (cfg: McpServerConfig) =>
                       mcpConfigService.getConfigEnv(cfg),
                   }
@@ -3649,8 +3678,11 @@ async function main(): Promise<void> {
     if (graphPool && Number.isFinite(rescanIntervalMs) && rescanIntervalMs > 0) {
       const rescanStore = new AgentGraphStore(graphPool);
       const rescanTimer = setInterval(() => {
-        void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
-          console.log(`[middleware] ${m}`),
+        void rescanAllMcpServers(
+          rescanStore,
+          mcpManager,
+          (m) => console.log(`[middleware] ${m}`),
+          mcpConfigService ? { secretsFor: (s) => mcpConfigService.secretValuesFor(s) } : {},
         )
           .then(() =>
             serviceRegistry
@@ -4272,6 +4304,7 @@ async function main(): Promise<void> {
   // and the per-tool write scopes are the actual authorization.
   mountPublicMcp(app, requireAuth, {
     enabled: config.PUBLIC_MCP_ENABLED,
+    appVersion: appVersion.version,
     allowWithoutPrivacyMasking: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING,
     vault: secretVault,
     graphPool,
@@ -5276,7 +5309,7 @@ async function main(): Promise<void> {
             return undefined;
           }
         },
-        async knownKeyIds() {
+        async keyStates() {
           try {
             // O(keys) per call — enumerates the channel-api vault namespace and
             // parses each record. Fine at operator scale (one read per list-page
@@ -5286,12 +5319,15 @@ async function main(): Promise<void> {
             // rather than hidden in a closure.
             const keyStore = createVerifyOnlyApiKeyStore(secretVault);
             const keys = await keyStore.list();
-            // NOT revoked or expired (#1328). Authentication skips both, so counting
-            // one as "known" reports a binding as healthy that can only ever
-            // 401. Same reasoning as the enabled-agent filter above: this set
-            // answers "would a real request resolve this id", not "is there a
-            // row somewhere".
-            return new Set(keys.filter((k) => isApiKeyActive(k)).map((k) => k.id));
+            // Revoked and expired keys (#1328) cannot authenticate, so the
+            // binding reaches nothing; their state is kept rather than dropped
+            // so the pane names the real reason instead of a typo (#1949).
+            return new Map(
+              keys.map((k) => [
+                k.id,
+                k.revokedAt !== undefined ? 'revoked' : isApiKeyActive(k) ? 'active' : 'expired',
+              ] as const),
+            );
           } catch (err) {
             console.warn(
               `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
@@ -5539,14 +5575,29 @@ async function main(): Promise<void> {
       ownChannelKey: (slug, channel) => getRegistry()?.channelIdentityFor(slug, channel)?.channelKey,
       dataPlanGuardOf: (slug) => getRegistry()?.get(slug)?.built.dataPlanGuard,
       // The agent's OWN read tools: granted plugin tools without write
-      // capabilities, never a sub-agent's inner tools (`via`), never MCP
-      // tools (they need a person's identity a trigger firing lacks).
+      // capabilities, and MCP tools their server declares read-only — never
+      // a sub-agent's inner tools (`via`).
       readToolsOf: (slug) => {
         const entry = getRegistry()?.get(slug);
         if (!entry) return undefined;
         const tools = new Map<string, (input: unknown) => Promise<string>>();
         for (const def of entry.built.bundle.raw.offeredToolDefinitions()) {
-          if (def.via !== undefined || def.invoke !== undefined) continue;
+          if (def.via !== undefined) continue;
+          if (def.invoke !== undefined) {
+            if (def.readOnly !== true) continue;
+            const invokeMcp = def.invoke;
+            // #547 — the rows are the call's `structuredContent`, not its
+            // text mirror (often prose). The fast-path invoker refuses a call
+            // without an attributable caller (a trigger firing), and an
+            // unattended or identity-less call is refused by the manager
+            // (ADR-0206), so the identity concern that kept MCP tools out of
+            // data actions is answered at the call.
+            tools.set(
+              def.name,
+              mcpReadToolInvoker(invokeMcp, () => entry.built.bundle.raw.labelHarnessRead(def.name)),
+            );
+            continue;
+          }
           const handler = nativeToolRegistry.get(def.name)?.handler;
           if (!handler) continue;
           // #2079 — what the read brought in labels the turn (S5 discretion):
@@ -7129,6 +7180,13 @@ async function main(): Promise<void> {
   // encrypted at rest. Production plugins keep using their own per-agent
   // namespace via the RequiresWizard flow — this buffer is workspace-only.
   const previewSecretBuffer = new PreviewSecretBuffer({ vault: secretVault });
+  // #1790 — purge soft-deleted published drafts past their grace period,
+  // and their test credentials with them. Daily; never blocks shutdown.
+  startDraftPurge({
+    draftStore,
+    previewSecretBuffer,
+    log: (line) => console.log(line),
+  });
 
   // BuildQueue + BuildPipeline are shared by preview rebuilds (B.3) and
   // future install-commits (B.5).
@@ -7285,6 +7343,13 @@ async function main(): Promise<void> {
       // packageUploadService is required only when bundles vendor plugins
       // — the import path is happy without it for source-only imports.
       draftStore,
+      // #1787 — bundle imports that create a draft respect the draft cap.
+      draftQuota,
+      // #1788 — a rollback that restored a draft rebuilds its preview. The
+      // scheduler is created further down; this runs at request time.
+      onDraftRestored: (userEmail: string, draftId: string) => {
+        builderRebuildScheduler.schedule(userEmail, draftId);
+      },
       uploadedPackageStore,
       ...(packageUploadService ? { packageUploadService } : {}),
     }),
@@ -7434,7 +7499,7 @@ async function main(): Promise<void> {
       // their build status on the spec bus. `warmPreview` emits every
       // `build_status` exactly once (#1731/#1733/#1807/#1809); a thrown
       // error here is already reported and only logged by the scheduler.
-      const handle = await warmPreview(
+      const { handle, builtZip } = await warmPreview(
         {
           previewCache,
           buildPipeline: builderBuildPipeline,
@@ -7444,13 +7509,16 @@ async function main(): Promise<void> {
         },
         { userEmail, draftId },
       );
-      // B.9-3: fire-and-forget runtime smoke. Dedup'd per (draftId, rev)
-      // inside the orchestrator — no-op on an unchanged handle.
-      builderRuntimeSmokeOrchestrator.attemptSmoke({
-        handle,
-        userEmail,
-        draftId,
-      });
+      // B.9-3: fire-and-forget runtime smoke on its own stub instance of the
+      // fresh build (#1778). Dedup'd per (draftId, rev) in the orchestrator.
+      if (builtZip) {
+        builderRuntimeSmokeOrchestrator.attemptSmoke({
+          rev: handle.rev,
+          zipBuffer: builtZip,
+          userEmail,
+          draftId,
+        });
+      }
     },
   });
 
@@ -7468,6 +7536,8 @@ async function main(): Promise<void> {
   const builderRuntimeSmokeOrchestrator = new RuntimeSmokeOrchestrator({
     draftStore,
     bus: builderSpecBus,
+    // #1778 — the smoke's own stub activation, never the warm preview.
+    activate: (activateOpts) => previewRuntime.activate(activateOpts),
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
@@ -7689,6 +7759,7 @@ async function main(): Promise<void> {
           schedule: (userEmail: string, draftId: string) =>
             builderRebuildScheduler.schedule(userEmail, draftId),
         },
+        knownPluginIds: () => pluginCatalog.list().map((entry) => entry.plugin.id),
       },
       // Issue #56 — paginated audit-log surface
       audit: { draftStore },

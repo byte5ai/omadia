@@ -189,6 +189,8 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
       turnDate: parent?.turnDate ?? new Date().toISOString().slice(0, 10),
       ...(parent?.chatParticipants ? { chatParticipants: parent.chatParticipants } : {}),
       ...(parent?.mcpUserKey ? { mcpUserKey: parent.mcpUserKey } : {}),
+      // ADR-0206 — a consultation inside an unattended run is unattended too.
+      ...(parent?.mcpUnattended ? { mcpUnattended: true } : {}),
       ...(parent?.audienceFloor ? { audienceFloor: parent.audienceFloor } : {}),
     };
     try {

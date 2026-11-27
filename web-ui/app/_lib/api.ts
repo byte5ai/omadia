@@ -2356,6 +2356,27 @@ export async function getDraftLibs(draftId: string): Promise<DraftLibsResponse> 
   );
 }
 
+/** #1790 — remove a draft from the deleted list for good. */
+export async function purgeBuilderDraft(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(`/v1/builder/drafts/${encodeURIComponent(id)}/permanent`),
+    {
+      method: 'DELETE',
+      headers: { accept: 'application/json', ...forwarded },
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (res.status === 204) return;
+  const text = await res.text().catch(() => '');
+  throw new ApiError(
+    res.status,
+    `DELETE builder/drafts/${id}/permanent failed: ${res.status}`,
+    text,
+  );
+}
+
 export async function restoreBuilderDraft(id: string): Promise<DraftEnvelope> {
   return postJson<DraftEnvelope>(
     `/v1/builder/drafts/${encodeURIComponent(id)}/restore`,

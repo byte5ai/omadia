@@ -24,6 +24,7 @@ export {
   hasScope,
   hasWriteScope,
   isMcpWriteScope,
+  isValidMcpWriteToolName,
   isValidScope,
   LEGACY_DEFAULT_SCOPES,
   MCP_INVOKE_SCOPE,

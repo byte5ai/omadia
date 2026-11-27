@@ -10,7 +10,8 @@ import type { AuthServerMetadata } from '../../src/services/mcpAuthDiscovery.js'
  */
 
 export const HARNESS_ISSUER = 'https://as.example';
-export const HARNESS_SERVER_ID = 'srv-1';
+// A UUID like every real `mcp_servers.id`: the operator routes 404 a non-UUID id (#1955).
+export const HARNESS_SERVER_ID = '00000000-0000-4000-8000-00000000a001';
 
 export interface HarnessTokenRow {
   serverId: string;

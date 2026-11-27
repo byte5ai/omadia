@@ -145,16 +145,35 @@ describe('makeBuilderAwareProfileLoader', () => {
     });
 
     const live = await loader(draft.id);
-    // spec.json is always first; user knowledge follows
-    assert.equal(live.knowledge.length, 2);
+    // spec.json and slots.json (#1787) first; user knowledge follows
+    assert.equal(live.knowledge.length, 3);
     assert.equal(live.knowledge[0]!.filename, 'spec.json');
     const parsedSpec = JSON.parse(live.knowledge[0]!.content.toString('utf8'));
     assert.equal(parsedSpec.id, draft.spec.id);
-    assert.equal(live.knowledge[1]!.filename, 'style.md');
+    assert.equal(live.knowledge[1]!.filename, 'slots.json');
+    assert.equal(live.knowledge[2]!.filename, 'style.md');
     assert.equal(
-      live.knowledge[1]!.content.toString('utf8'),
+      live.knowledge[2]!.content.toString('utf8'),
       'Be concise.',
     );
+  });
+
+  it('#1787: Builder-Draft path carries the draft slot code as slots.json', async () => {
+    const draft = await draftStore.create('op@example.com', 'Slot Bot');
+    await draftStore.update('op@example.com', draft.id, {
+      slots: { 'toolkit-impl': 'export const t = 1;' },
+    });
+    const loader = makeBuilderAwareProfileLoader({
+      liveProfileStorage: makeStorageStub({ agentMd: new Map(), knowledge: new Map() }),
+      draftStore,
+      installedRegistry: new InMemoryInstalledRegistry(),
+    });
+    const live = await loader(draft.id);
+    const slots = live.knowledge.find((k) => k.filename === 'slots.json');
+    assert.ok(slots, 'slots.json rides along');
+    assert.deepEqual(JSON.parse(slots!.content.toString('utf8')), {
+      'toolkit-impl': 'export const t = 1;',
+    });
   });
 
   it('Builder-Draft path renders agent.md inline when no mirror exists yet', async () => {
