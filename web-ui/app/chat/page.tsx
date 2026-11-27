@@ -26,6 +26,7 @@ import { AgentsConsultedFooter } from '../_components/chat/AgentsConsultedFooter
 import { AnswerDetails } from '../_components/chat/AnswerDetails';
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
+import { AttachmentGrid, FileAttachmentList } from '../_components/chat/FileAttachments';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
 import { parseNudgeBlock } from '../_components/chat/nudgeBlock';
 import {
@@ -52,8 +53,6 @@ import {
   newSessionId,
   stripStaleInteractives,
   type ChatSession,
-  type DiagramAttachment,
-  type OutgoingFileAttachment,
   type FollowUpOption,
   type Message,
   type SubAgentEvent,
@@ -1900,114 +1899,6 @@ function formatMs(ms: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds - mins * 60);
   return `${String(mins)}m${String(secs).padStart(2, '0')}s`;
-}
-
-/**
- * Renders diagram attachments (today only `render_diagram` PNGs) under the
- * markdown answer. Each image is wrapped in a link so clicking opens the full
- * resolution in a new tab — mirrors the Teams Adaptive-Card `selectAction`.
- *
- * Note on expiry: signed URLs have a 15-min TTL (middleware default). Old
- * messages loaded from persistence will show broken images after that —
- * acceptable in dev. A future refinement could call a refresh endpoint.
- */
-function AttachmentGrid({
-  attachments,
-}: {
-  attachments: DiagramAttachment[];
-}): React.ReactElement {
-  const t = useTranslations('chat');
-  return (
-    <div className="mt-3 flex flex-col gap-2">
-      {attachments.map((att, idx) => (
-        <a
-          key={`${att.url}-${String(idx)}`}
-          href={att.url}
-          target="_blank"
-          rel="noreferrer"
-          className="block overflow-hidden rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-2 transition hover:border-[color:var(--border-strong)]"
-          title={t('attachmentTitle', {
-            kind: att.diagramKind,
-            cachedSuffix: att.cacheHit ? t('attachmentCachedSuffix') : '',
-          })}
-        >
-          {/* Plain <img>: Next's Image component would complain about the
-              middleware origin without config, and these PNGs are cheap. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={att.url}
-            alt={att.altText}
-            className="mx-auto max-h-[500px] w-auto"
-          />
-          <div className="mt-1 text-[10px] text-[color:var(--fg-muted)]">
-            {att.diagramKind}
-            {att.cacheHit && ' · cached'}
-            {' · '}
-            <span className="font-mono">{att.altText}</span>
-          </div>
-        </a>
-      ))}
-    </div>
-  );
-}
-
-/**
- * Renders downloadable file attachments (e.g. `create_xlsx` / `create_docx`)
- * as a list of download links. Like diagrams, the signed URL carries a TTL —
- * old persisted messages may show expired links after it lapses (acceptable
- * in dev). Labels are extension-derived so no i18n keys are needed.
- */
-function FileAttachmentList({
-  files,
-}: {
-  files: OutgoingFileAttachment[];
-}): React.ReactElement {
-  return (
-    <div className="mt-3 flex flex-col gap-2">
-      {files.map((file, idx) => (
-        <a
-          key={`${file.url}-${String(idx)}`}
-          href={file.url}
-          download={file.altText}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-3 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-3 transition hover:border-[color:var(--border-strong)]"
-        >
-          <span aria-hidden className="text-xl">
-            {fileGlyph(file)}
-          </span>
-          <span className="flex min-w-0 flex-col">
-            <span className="truncate text-sm font-medium">{file.altText}</span>
-            <span className="text-[10px] uppercase text-[color:var(--fg-muted)]">
-              {fileExt(file.altText)}
-              {file.sizeBytes ? ` · ${formatFileSize(file.sizeBytes)}` : ''}
-            </span>
-          </span>
-          <span className="ml-auto text-sm text-[color:var(--fg-subtle)]" aria-hidden>
-            ↓
-          </span>
-        </a>
-      ))}
-    </div>
-  );
-}
-
-function fileGlyph(file: OutgoingFileAttachment): string {
-  const name = file.altText.toLowerCase();
-  if (file.mediaType.includes('spreadsheet') || name.endsWith('.xlsx')) return '📊';
-  if (file.mediaType.includes('word') || name.endsWith('.docx')) return '📄';
-  return '📎';
-}
-
-function fileExt(name: string): string {
-  const dot = name.lastIndexOf('.');
-  return dot >= 0 ? name.slice(dot + 1) : 'file';
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 

@@ -6819,3 +6819,22 @@ export async function triggerUpdate(body: {
 }): Promise<{ accepted: boolean; targetVersion: string; auditId: string }> {
   return postJson(UPDATE_BASE, body);
 }
+
+// ---------------------------------------------------------------------------
+// #1964 (ADR-0266) — renew an expired Office/Diagram download link
+// ---------------------------------------------------------------------------
+
+export interface RenewedFileLink {
+  url: string;
+  /** Expiry of `url`, unix seconds. */
+  expiresAt: number;
+}
+
+/**
+ * Ask the kernel for a freshly signed link to the same file. Refusals carry
+ * `file_link.too_old` (410), `file_link.unknown_route` (404) or
+ * `file_link.invalid_signature` (403) as {@link ApiError.code}.
+ */
+export async function renewFileLink(url: string): Promise<RenewedFileLink> {
+  return postJson<RenewedFileLink>('/v1/files/renew', { url });
+}

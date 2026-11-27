@@ -217,6 +217,7 @@ import {
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
 import { LoopGuard } from './loopGuard.js';
+import { fastLaneToolResultNote } from './fastLaneHandoff.js';
 import {
   TOOLS_OFF_DIRECTIVE,
   UNATTENDED_DIRECTIVE,
@@ -250,7 +251,7 @@ import { RunTraceCollector, shareEntityRefs, type InvocationHandle } from './run
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
-import type { CliTurnCards } from './cliChatAgent.js';
+import type { CliTurnAttachments, CliTurnCards } from './cliChatAgent.js';
 import type { CliTurnPrivacy } from './cliTurnPrivacy.js';
 import type { DispatchableToolSpec } from './toolDispatchService.js';
 import { CLI_MEMORY_RULES, type CliTurnMemory } from './cliMemoryTool.js';
@@ -1605,6 +1606,32 @@ function turnIncompleteMarker(
 }
 
 /**
+ * #2300 — a tool input built from the user's words (the fast lane's resolved
+ * input), masked leaf by leaf through the turn's prompt map, so the replayed
+ * `tool_use` carries the same surrogates the model saw in the prompt.
+ */
+async function maskToolInputForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  value: unknown,
+): Promise<unknown> {
+  if (privacy === undefined) return value;
+  if (typeof value === 'string') return maskPromptForWire(privacy, value, 'context');
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    for (const item of value) out.push(await maskToolInputForWire(privacy, item));
+    return out;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = await maskToolInputForWire(privacy, item);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * Mask a wire-bound prompt text through the turn's privacy handle. Returns
  * the text unchanged when no handle is present, the operator flag is off,
  * or the text is empty — byte-identical legacy behavior. Throws
@@ -2868,6 +2895,10 @@ interface ToolDispatchMeta {
    *  (`NativeToolResult.postcondition`). The run trace carries them to the
    *  verifier, which raises a `tool_postcondition` claim. */
   postcondition?: { readonly issues: readonly string[] };
+  /** #2300 / ADR-0265 — IN: the output of a call the fast lane already ran.
+   *  The handler does not run again; the output takes every step after it
+   *  (shield, ledger, labels) like a fresh result. */
+  readonly prefetchedOutput?: string;
   /** #1920 / ADR-0272 — set by the dispatch when an MCP tool's result went to
    *  the model unmasked (operator bypass in force, or no privacy guard). */
   unmaskedMcpResult?: boolean;
@@ -4390,6 +4421,19 @@ export class Orchestrator {
     const a = this.findFreeSlotsTool?.takeConsentRequired() ?? false;
     const b = this.bookMeetingTool?.takeConsentRequired() ?? false;
     return a || b;
+  }
+
+  /**
+   * #2303 (ADR-0177) — the files and diagrams a subscription-CLI turn's
+   * loopback tool calls produced. Called by `CliChatAgent` once, inside the
+   * CLI turn's context, so each sink returns only that turn's outputs.
+   */
+  public drainCliTurnAttachments(): CliTurnAttachments {
+    const { diagrams, files } = this.drainAttachments();
+    return {
+      ...(diagrams.length > 0 ? { attachments: diagrams } : {}),
+      ...(files.length > 0 ? { fileAttachments: files } : {}),
+    };
   }
 
   /**
@@ -7319,6 +7363,10 @@ export class Orchestrator {
     // Phase-1 Kemia hook — resolved ONCE at turn start. Empty when no
     // `responseGuard@1` provider is installed; identical cache shape then.
     const prependRules = await this.resolvePrependRules(messages);
+    // #2300 / ADR-0265 — the fast lane's executed call, as the first tool round.
+    const fastLaneRound = await this.fastLaneToolRound(input, turnMemory, traceCollector);
+    messages.push(...fastLaneRound);
+    if (fastLaneRound.length > 0) toolCalls += 1;
 
     // Round-loop guard + optional wall-clock budget. `forceFinalize` latches
     // once the guard (or the time budget) decides the turn must wrap up; the
@@ -8719,6 +8767,10 @@ export class Orchestrator {
 
     // Phase-1 Kemia hook — see chatInContextInner for rationale.
     const prependRules = await this.resolvePrependRules(messages);
+    // #2300 / ADR-0265 — see chatInContextInner.
+    const fastLaneRound = await this.fastLaneToolRound(input, turnMemory, traceCollector);
+    messages.push(...fastLaneRound);
+    if (fastLaneRound.length > 0) toolCalls += 1;
 
     // Round-loop guard + optional wall-clock budget — see chatInContextInner.
     const loopGuard = this.newLoopGuard();
@@ -10183,6 +10235,7 @@ export class Orchestrator {
           ? input
           : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<NativeToolOutput> => {
+      if (meta?.prefetchedOutput !== undefined) return meta.prefetchedOutput;
       if (
         privacy !== undefined &&
         ctx !== undefined &&
@@ -11106,6 +11159,53 @@ export class Orchestrator {
    *  helpers' own budgets never exceed them. */
   turnBudget(): { readonly maxTokens: number; readonly maxIterations: number } {
     return { maxTokens: this.maxTokens, maxIterations: this.maxIterations };
+  }
+
+  /**
+   * #2300 / ADR-0265 — the call the fast lane already ran before its miss,
+   * replayed as this turn's first tool round: the call as an assistant
+   * `tool_use`, its output as the `tool_result`, followed by a data-free
+   * kernel note. The output goes through {@link Orchestrator.dispatchTool}
+   * with the handler skipped, so the Privacy Shield, the replay ledger and the
+   * labels treat it like a fresh result of that tool, and the run trace lists
+   * the call (the verifier's evidence). The input is masked through the
+   * turn's prompt map first — the model only ever sees surrogates.
+   */
+  private async fastLaneToolRound(
+    input: ChatTurnInput,
+    turnMemory: TurnMemoryBinding | undefined,
+    traceCollector: RunTraceCollector | undefined,
+  ): Promise<Array<{ role: 'user' | 'assistant'; content: ContentBlock[] }>> {
+    const call = input.fastLaneCall;
+    if (call === undefined) return [];
+    const privacy = turnContext.current()?.privacyHandle;
+    const wireInput = await maskToolInputForWire(privacy, call.input);
+    const id = `toolu_fastlane_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const meta: ToolDispatchMeta = { replayed: false, prefetchedOutput: call.output };
+    const startedAt = Date.now();
+    const output = await this.dispatchTool(call.tool, wireInput, undefined, turnMemory, meta);
+    const isError = output.startsWith('Error:');
+    traceCollector?.recordOrchestratorToolCall(
+      {
+        callId: id,
+        toolName: call.tool,
+        durationMs: Date.now() - startedAt,
+        isError,
+        ...(meta.replayed ? { replayed: true } : {}),
+        ...(meta.postcondition ? { postcondition: meta.postcondition } : {}),
+      },
+      output,
+    );
+    return [
+      { role: 'assistant', content: [{ type: 'tool_use', id, name: call.tool, input: wireInput }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: id, content: output, ...(isError ? { is_error: true } : {}) },
+          { type: 'text', text: fastLaneToolResultNote(call) },
+        ],
+      },
+    ];
   }
 
   /** Opens a run-trace invocation for a domain tool; an internal helper's run

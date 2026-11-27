@@ -1848,6 +1848,13 @@
     "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
     "attachmentCachedSuffix": " · zwischengespeichert",
+    "fileTypeUnknown": "Datei",
+    "fileLink": {
+      "renewing": "Dieser Link ist abgelaufen. Er wird erneuert…",
+      "tooOld": "Dieser Datei-Link ist zu alt, um ihn zu erneuern. Bitte die Datei neu anfordern.",
+      "unavailable": "Diese Datei lässt sich hier nicht mehr erneuern (das Plugin, das sie erzeugt hat, ist nicht aktiv). Bitte die Datei neu anfordern.",
+      "failed": "Der Datei-Link konnte nicht erneuert werden. Chat neu laden oder die Datei neu anfordern."
+    },
     "clarifyKicker": "🤔 Rückfrage",
     "followUpsLabel": "Nächste Varianten",
     "verbosityLabel": "Antwortumfang",

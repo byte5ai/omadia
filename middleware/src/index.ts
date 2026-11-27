@@ -43,7 +43,9 @@ import {
   PostgresGeneratedObjectStore,
   type GeneratedObjectStore,
 } from './services/generatedObjects.js';
-import { GENERATED_OBJECTS_SERVICE_NAME } from '@omadia/plugin-api';
+import { FILE_LINK_RENEWAL_SERVICE_NAME, GENERATED_OBJECTS_SERVICE_NAME } from '@omadia/plugin-api';
+import { createFileLinkRenewalRegistry } from './services/fileLinkRenewal.js';
+import { createFileLinkRenewRouter } from './routes/fileLinkRenew.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
 import { createUpdateAuditStore } from './update/auditStore.js';
@@ -1716,6 +1718,11 @@ async function main(): Promise<void> {
     },
   });
   serviceRegistry.provide(GENERATED_OBJECTS_SERVICE_NAME, generatedObjects);
+  // ADR-0266 (#1964) — Office and Diagrams register a renewer for their signed
+  // download links; `POST /api/v1/files/renew` re-signs an expired one.
+  const fileLinkRenewal = createFileLinkRenewalRegistry();
+  serviceRegistry.provide(FILE_LINK_RENEWAL_SERVICE_NAME, fileLinkRenewal);
+
   // #2310 / ADR-0273 — `@omadia/channel-api` asks the kernel to drop the
   // public MCP binding of a key it deleted. The pool is resolved per call (it
   // arrives with the graph plugin); the vault check keeps live keys bound.
@@ -4669,6 +4676,14 @@ async function main(): Promise<void> {
         })
     : undefined;
   if (syncDurableRules) void syncDurableRules();
+
+  // ADR-0266 (#1964) — renew an expired Office/Diagram download link for a
+  // signed-in caller (the web chat reaches it as /bot-api/v1/files/renew).
+  app.use(
+    '/api/v1/files',
+    requireAuth,
+    createFileLinkRenewRouter({ registry: fileLinkRenewal }),
+  );
 
   app.use(
     '/api/v1/admin/memory/purge',

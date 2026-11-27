@@ -1998,7 +1998,12 @@ als `safe-cleartext` freigibt. Der Rohwert verlässt `buildDatasetFromTable` nie
 Secret: `DATASET_LINK_KEY_SECRET`, sonst HKDF aus `VAULT_KEY`; fehlt beides,
 gibt es keine Key-Spalten und der `[dataset-imported]`-Block sagt das. Header im
 `__k_`-Namensraum werden beim Import abgewiesen; `query_rows`-`filters` auf
-`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Die Privacy-Shield-Verben
+`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Seit #2302 (ADR-0267)
+nimmt `query_rows` `gt`/`gte`/`lt`/`lte` auf `date`-Spalten: Zelle und Grenze
+werden als Zeitpunkt verglichen (Datum allein = Mitternacht), die Grenze liest
+der Import-Parser (ISO, `d.m.yyyy`, `d/m/yyyy`), sonst `invalid_date_value`;
+nicht ISO-förmige oder unmögliche Zellen fallen aus dem Bereich, Spalten mit
+verschlüsselten Zellen bleiben für jeden Filter gesperrt. Die Privacy-Shield-Verben
 `v4_union` (mit `renameRight`) und `v4_distinct` (`by`, `keep`) vereinen zwei
 `query_rows`-Seiten oder Dateien und kollabieren auf den Link-Key; Prompt-Regel
 d) im `privacyV4Block` trägt das Rezept. `POST /api/v1/datasets` liefert je
@@ -5256,9 +5261,24 @@ Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test
   schreibt keine Authorize-URL in den Modelltext.
 - **Tool-Ausgaben pro Turn (#1961, ADR-0177).** `PerTurnBuffer` (`@omadia/diagrams`); Office
   und Diagrams legen Ausgaben unter der Turn-ID ab, der Sink (im Turn-Kontext aufgerufen) leert
-  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`.
+  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`. Seit #2303 leert
+  auch ein CLI-Turn die Sinks (`CliChatAgentDeps.drainTurnAttachments` →
+  `Orchestrator.drainCliTurnAttachments`, im erfassten Turn-Kontext) und liefert die Dateien am
+  `done`-Event aus.
 - **Signierte Links routengebunden (#1979, ADR-0176).** HMAC über `<route prefix><key>.<exp>`,
   Router prüfen ihr Key-Layout.
+- **Abgelaufene Datei-Links erneuern (#1964, ADR-0266).** `POST /api/v1/files/renew`
+  (`routes/fileLinkRenew.ts`, hinter `requireAuth`; Web-Chat über `/bot-api/v1/files/renew`),
+  Body `{ url }` → `200 { url, expiresAt }`: neuer Link für denselben Key mit der normalen TTL
+  des Plugins, ohne neu zu rendern. Regel: Session + Signatur gültig bei ignoriertem `exp` +
+  ursprüngliches `exp` höchstens 30 Tage alt. Fehler `400 file_link.bad_request`,
+  `401 file_link.session_required`, `403 file_link.invalid_signature`,
+  `404 file_link.unknown_route`, `410 file_link.too_old`; Ablehnungen werden mit gehashter
+  Key-ID geloggt (`[file-links] renew refused`), nie mit URL/Signatur. Kernel-Service
+  `fileLinkRenewal@1` (`services/fileLinkRenewal.ts`, plugin-api 1.110.0): Office (`/documents/dl`)
+  und Diagrams (`/diagrams/dl`) registrieren je einen Renewer (`linkRenewer.ts`). Web-Chat:
+  `app/_components/chat/FileAttachments.tsx` + `app/_lib/fileLinkRenewal.ts` erneuern beim
+  Rendern, bei `onError` des Bildes oder beim Klick nach Ablauf.
 - **Attachments (#1960/#1962, ADR-0178).** `ChatTurnInput.storedAttachments`
   (`StoredTurnAttachment`, channel-sdk 0.3.16) ist die einzige Quelle für Storage-Keys; der
   `[attachments-info]`-Parser ist entfernt. Ingest bindet jeden Key an den Raum des Turns
@@ -7061,10 +7081,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
   `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
 
-- **Fast-Lane-Übergabe als Verifier-Evidenz (ADR-0221, W15-17).** Der Answer-Verifier zählt den
-  `fastLaneHandoffHint` nicht als Beleg; Aussagen nur daraus können im `enforce`-Modus als
-  unbelegt gelten und einen Retry mit erneuter Abfrage auslösen. Den ausgeführten Aufruf in die
-  Evidenz des Verifiers geben.
 - **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
   `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
   `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
@@ -9078,10 +9094,11 @@ Antwort gibt.
 
 ---
 
-- **W00-Folgepunkte (2026-11-26):** (1) CLI-Agents leeren keine Attachment-Sinks — Office-/
-  Diagram-Ausgaben eines CLI-Turns werden nicht ausgeliefert (ADR-0177). (2) Per-User-MCP-Connect
-  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) Teams: Uploads
-  einer Nachricht, die die Themenwechsel-Karte auslöst, werden nach dem Klick nicht ingestiert.
+- **W00-Folgepunkte (2026-11-26):** (1) ~~CLI-Agents leeren keine Attachment-Sinks~~ — erledigt
+  mit #2303 (2026-11-27). (2) Per-User-MCP-Connect
+  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) ~~Teams: Uploads
+  einer Nachricht, die die Themenwechsel-Karte auslöst~~ — erledigt mit #2304
+  (`PendingTopicDecision.storedAttachments`, omadia-channel-teams Unreleased).
 
 ## 14. Commands (vom `middleware/`-Dir aus)
 
@@ -12135,13 +12152,15 @@ Ersetzt den Platzhalter aus #2007.
   Kennzeichnungs-Override und Audience.
 - **Fast-Lane-Übergabe** (`@omadia/fast-path` 0.7.0, ADR-0221 ergänzt ADR-0074):
   ein Miss nach gelaufener Abfrage trägt `ChatTriageOutcome.executed`;
-  `fastLaneHandoffHint` gibt Aufruf und (ohne Privacy Shield) Ausgabe als
-  `extraSystemHint` an den Agenten, als Daten markiert. Router kennt
+  seit #2300 (ADR-0265, löst ADR-0221 ab) trägt `ChatTurnInput.fastLaneCall`
+  den Aufruf; der Orchestrator spielt ihn als erste Tool-Runde ein
+  (`fastLaneToolRound`: `tool_use` + `tool_result` über `dispatchTool` mit
+  `prefetchedOutput`, also Shield/Ledger/Trace wie ein eigener Aufruf; der
+  Verifier zählt ihn). Kein Rohoutput mehr im System-Hint; der CLI-Pfad bekommt
+  nur einen datenfreien Hinweis. Router kennt
   `agent_no_tool`, bei nur einem Tool gilt Konfidenz 0,8. Eine geplante Spalte,
   die kein Datensatz füllt, ist eine falsche Map (`unmappable`).
 - **Setup-PATCH validiert `enum`** (#1998): wie der Install-Pfad; leerer Wert
   löscht ein optionales Enum, ein Pflicht-Enum kann nicht geleert werden.
 - **Web-Chat:** keine Nudge-Karte mehr (#1900, ADR-0021); der Session-Mirror
   speichert Antworten ohne `<!-- orchestrator:… -->`-Notizen (#1956).
-- **Offen (§13):** der Answer-Verifier zählt den Fast-Lane-Hint nicht als
-  Evidenz (ADR-0221, Folge-Punkt).

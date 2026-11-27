@@ -8,6 +8,28 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.110.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`DATASET_DATE_VALUE_PATTERN`** / **`datasetDateTime(value)`** (#2302, ADR-0267): the
+  stored ISO form of a `date` dataset cell and its comparable wall-clock milliseconds
+  (date-only = midnight, a trailing `Z` read as wall clock, impossible dates `undefined`).
+- **`fileLinkRenewal@1`** (`FILE_LINK_RENEWAL_SERVICE_NAME`, `FileLinkRenewalService`,
+  `FileLinkRenewer`, `SignedFileLink`, `RenewedFileLink`; ADR-0266, #1964): kernel-provided. A
+  plugin that hands out signed download links registers a renewer for its route prefix; the
+  kernel route `POST /api/v1/files/renew` uses it to re-sign an expired link for a signed-in
+  caller without re-generating the file.
+
+### Changed
+
+- `validateDatasetQueryOptions` accepts `gt`/`gte`/`lt`/`lte` on `date` columns; the bound
+  must be a `datasetDateTime` value, else `DatasetQueryValidationError` code
+  `invalid_date_value`. Ranges on `string`/`boolean` columns stay `op_type_mismatch`;
+  encrypted columns stay `encrypted_column`.
+
 ## 1.109.0 — 2026-11-27
 
 Additive. (Numbered after 1.108.0 of the sibling W31 PR #2331; the lander renumbers if needed.)

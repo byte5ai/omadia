@@ -7,6 +7,12 @@ import { mapRefreshRecords } from '../packages/harness-plugin-fast-path/src/refr
 import { ROUTER_TOOL, routeTurn } from '../packages/harness-plugin-fast-path/src/router.js';
 import type { ChatTriageOutcome } from '../packages/harness-plugin-fast-path/src/service.js';
 import { wrapChatAgentWithFastPath } from '../packages/harness-orchestrator/src/fastPathAgent.js';
+import {
+  FAST_LANE_HANDOFF_MAX_OUTPUT_CHARS,
+  fastLaneCallOf,
+  fastLaneCliHint,
+  fastLaneToolResultNote,
+} from '../packages/harness-orchestrator/src/fastLaneHandoff.js';
 
 /**
  * W17 — fast-lane misses: a wrong map is refused (#1898), the router can say
@@ -62,7 +68,7 @@ describe('router — none of the offered tools fits (#1931)', () => {
   });
 });
 
-describe('fast lane hands its executed call to the agent (#1930)', () => {
+describe('fast lane hands its executed call to the agent (#1930, #2300)', () => {
   const executed = {
     tool: 'odoo_query',
     input: { model: 'res.partner', limit: 100 },
@@ -90,39 +96,48 @@ describe('fast lane hands its executed call to the agent (#1930)', () => {
     return seen;
   }
 
-  it('without a shield the agent gets the call and its output', async () => {
+  it('the executed call travels as the fastLaneCall carrier, not as system text (#2300)', async () => {
     const input = await innerInputFor({ kind: 'agent', reason: 'summary-unresolvable', ms: 1, executed }, false);
-    assert.match(input.extraSystemHint ?? '', /BEREITS AUSGEFÜHRTER WERKZEUG-AUFRUF/);
-    assert.match(input.extraSystemHint ?? '', /"display":"Acme"/);
-    assert.match(input.extraSystemHint ?? '', /summary-unresolvable/);
-    assert.match(input.extraSystemHint ?? '', /keine Anweisung/);
-    assert.match(input.extraSystemHint ?? '', /<fast_lane_tool_output>\n\{"records"/);
+    assert.equal(input.extraSystemHint, undefined);
+    assert.deepEqual(input.fastLaneCall, {
+      tool: 'odoo_query',
+      input: { model: 'res.partner', limit: 100 },
+      output: executed.output,
+      reason: 'summary-unresolvable',
+      rows: 1,
+    });
   });
 
-  it('a tool error allows a corrected retry', async () => {
-    const input = await innerInputFor(
-      { kind: 'agent', reason: 'tool-error', ms: 1, executed: { ...executed, output: 'Error: bad domain' } },
-      false,
-    );
-    assert.match(input.extraSystemHint ?? '', /erneuter Aufruf mit angepasster Eingabe ist erlaubt/);
-  });
-
-  it('under a shield the output stays out', async () => {
+  it('under a shield the carrier is the same: the orchestrator interns the output', async () => {
     const input = await innerInputFor({ kind: 'agent', reason: 'unmappable', ms: 1, executed }, true);
-    assert.match(input.extraSystemHint ?? '', /odoo_query/);
-    assert.doesNotMatch(input.extraSystemHint ?? '', /Acme/);
+    assert.equal(input.fastLaneCall?.output, executed.output);
+    assert.equal(input.extraSystemHint, undefined);
   });
 
-  it('an empty result tells the agent not to repeat the call', async () => {
+  it('an over-long output is cut and marked', async () => {
+    const long = 'x'.repeat(FAST_LANE_HANDOFF_MAX_OUTPUT_CHARS + 10);
     const input = await innerInputFor(
-      { kind: 'agent', reason: 'empty-result', ms: 1, executed: { ...executed, rows: 0, output: '{"records":[]}' } },
+      { kind: 'agent', reason: 'truncated', ms: 1, executed: { ...executed, output: long } },
       false,
     );
-    assert.match(input.extraSystemHint ?? '', /keine Datensätze/);
+    assert.equal(input.fastLaneCall?.output.length, FAST_LANE_HANDOFF_MAX_OUTPUT_CHARS);
+    assert.equal(input.fastLaneCall?.truncated, true);
+  });
+
+  it('the notes after the tool result and for the CLI carry no data', () => {
+    const call = fastLaneCallOf(executed, 'unmappable');
+    assert.doesNotMatch(fastLaneToolResultNote(call), /Acme/);
+    assert.doesNotMatch(fastLaneCliHint(call), /Acme/);
+    assert.match(fastLaneToolResultNote(fastLaneCallOf({ ...executed, rows: 0 }, 'empty-result')), /keine Datensätze/);
+    assert.match(
+      fastLaneToolResultNote(fastLaneCallOf(executed, 'tool-error')),
+      /erneuter Aufruf mit angepasster Eingabe ist erlaubt/,
+    );
   });
 
   it('a miss before any call passes the input unchanged', async () => {
     const input = await innerInputFor({ kind: 'agent', reason: 'boundary', ms: 1 }, false);
     assert.equal(input.extraSystemHint, undefined);
+    assert.equal(input.fastLaneCall, undefined);
   });
 });

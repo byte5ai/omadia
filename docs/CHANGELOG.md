@@ -128,6 +128,66 @@ changelog.
   audited (`target: bulk-promotion`) and retired with reason `discretion`, so they do not block
   later runs; a failed lookup refuses. plugin-api **1.109.0**:
   `BulkPromoteRunOptions.mayPromote`, `BulkPromoteCandidate`.
+
+### Fixed — CLI agents deliver generated Office and diagram files (#2303, ADR-0177) (2026-11-27)
+
+- A subscription-CLI turn now drains the per-turn attachment sinks once, inside its captured turn
+  context (`CliChatAgentDeps.drainTurnAttachments` → `Orchestrator.drainCliTurnAttachments`), and
+  puts the files and diagrams on its `done` event (`attachments` / `fileAttachments`) and on the
+  semantic answer of `chat()`. A withheld answer carries none; the buffers are drained either way.
+  Closes the CLI follow-up named in ADR-0177.
+
+### Fixed — CLI sub-agents in a guarded turn get the v4 verb tools (#2301, ADR-0268) (2026-11-27)
+
+- A CLI sub-agent asked inside a turn under the Privacy Shield works under the calling turn's
+  handle like the main CLI turn: the loopback server offers the v4 verb tools (served by that
+  handle; `v4_render_answer` stays with the calling turn and is refused), tool inputs get the
+  turn's prompt surrogates restored and results are re-masked (`cliCallerPrivacy.ts`). Operator
+  jobs (Builder, preview chat) are unchanged (ADR-0196).
+
+### Fixed — Teams uploads held back by the topic-change card reach the click's turn (#2304) (2026-11-27)
+
+- `PendingTopicDecision.storedAttachments` (`@omadia/channel-sdk` **0.3.21**): a channel keeps the
+  uploads it stored with a message that triggered the topic card on the server-side pending entry
+  and passes them as `ChatTurnInput.storedAttachments` on the turn the click starts, so the kernel
+  binds them to the conversation and ingests them then (ADR-0178, binding at the turn that carries
+  them). Implemented in `omadia-channel-teams` (Unreleased, PR in that repo).
+
+### Changed — a fast-lane miss replays its executed call as a tool round (#2300, ADR-0265) (2026-11-27)
+
+- Owner decision 2026-11-27, supersedes ADR-0221: the call the fast lane already ran reaches the
+  agent as its first tool round (`tool_use` + `tool_result`) instead of a per-turn system hint.
+  The carrier is `ChatTurnInput.fastLaneCall` (`@omadia/channel-sdk` **0.3.21**); the orchestrator
+  produces the result through `dispatchTool` with the handler skipped, so the Privacy Shield
+  interns it (no duplicate query under a shield any more), the replay ledger records it and the
+  run trace lists it — the answer verifier counts it as evidence. A data-free kernel note follows
+  the result; the subscription CLI path gets only that note.
+
+### Fixed — `query_rows` accepts date range filters (#2302, ADR-0267) (2026-11-27)
+
+- `query_dataset` `query_rows` no longer refuses `gt`/`gte`/`lt`/`lte` on `date` columns (a v1
+  limit from before #1845 stored dates as ISO). Cells and bounds compare as wall-clock
+  timestamps (date-only = midnight) in both backends (Neon: guarded `::timestamp` cast,
+  in-memory: `datasetDateTime`, plugin-api **1.110.0**). The tool reads a string bound with the
+  import's parser (`normaliseDateFilterValue`: ISO, `d.m.yyyy`, `d/m/yyyy`, optional time); an
+  unreadable bound is `invalid_date_value` naming the accepted formats. Columns with encrypted
+  cells stay refused for every filter (`encrypted_column`, a range would be a bisection oracle);
+  non-ISO cells of datasets imported before #1845 never match a range.
+
+### Added — expired file and diagram links are renewed in the web chat (#1964, ADR-0266) (2026-11-27)
+
+- New kernel route `POST /api/v1/files/renew` (session-gated): body `{ url }` with an expired
+  `/documents/dl/…` or `/diagrams/dl/…` link returns a freshly signed link for the same key
+  (plugin's normal TTL), without re-generating the file. Rule: signed-in session, signature
+  valid with the expiry ignored, original expiry at most 30 days back; refusals `400`/`401`/
+  `403`/`404`/`410` with `file_link.*` codes, logged with a hashed key id only.
+- New kernel service `fileLinkRenewal@1` (plugin-api **1.110.0**); `@omadia/plugin-office`
+  0.1.8 and `@omadia/diagrams` 0.2.5 register a link renewer (`optional_requires:
+  fileLinkRenewal@1`).
+- Web chat: diagram images and file chips of older messages renew their link on render, on a
+  failed image load or on a click after expiry; a refusal shows a localized notice (en + de).
+  Teams cards and other channels keep expiring links.
+
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of

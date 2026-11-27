@@ -14,6 +14,7 @@ import {
   resolveDatasetCellKey,
   type DatasetCellKey,
 } from '../datasetCellCrypto.js';
+import { DATE_FILTER_FORMATS, normaliseDateFilterValue } from '../datasetDates.js';
 import { isLinkKeyColumn } from '../datasetLinkKey.js';
 import { turnContext } from '../turnContext.js';
 
@@ -111,6 +112,29 @@ function resolveDatasetId(
   return { refusal: NOT_FOUND_RESULT };
 }
 
+type DatasetFilterInput = z.infer<typeof FilterSchema>;
+
+const RANGE_OPS: ReadonlySet<DatasetFilterInput['op']> = new Set(['gt', 'gte', 'lt', 'lte']);
+
+/**
+ * #2302 (ADR-0267) — a range bound that reads as a date (`19.04.2024`,
+ * `2024-04-19T12:00+02:00`, …) goes to the graph in the ISO form the import
+ * stored the cells in, parsed by the import's own `datasetDates.ts`. Any
+ * other value passes unchanged: a number bound for a number column, and a
+ * non-date string, which the graph rejects for a date column
+ * (`invalid_date_value`). The tool cannot see column types here; a date
+ * string never parses as a number, so a number column is not affected.
+ */
+function withIsoDateBounds(
+  filters: readonly DatasetFilterInput[],
+): DatasetFilterInput[] {
+  return filters.map((f) => {
+    if (!RANGE_OPS.has(f.op) || typeof f.value !== 'string') return f;
+    const iso = normaliseDateFilterValue(f.value);
+    return iso === undefined ? f : { ...f, value: iso };
+  });
+}
+
 export const QUERY_DATASET_TOOL_NAME = 'query_dataset';
 
 /** Validation codes a look at `get_schema` can fix. */
@@ -122,6 +146,9 @@ const SCHEMA_HINT_CODES: ReadonlySet<string> = new Set([
   'aggregate_type_mismatch',
   'aggregate_column_required',
 ]);
+
+/** The graph's code for a date range bound it could not read (#2302). */
+const INVALID_DATE_VALUE_CODE = 'invalid_date_value';
 
 /**
  * #1093 — a backend failure answers as a tool error, never a throw (a throw is
@@ -141,7 +168,7 @@ export const queryDatasetToolSpec = {
     'Three operations via `query`:\n' +
     '- `list_datasets`: list the caller\'s datasets (id, name, row count, column names+types). Call this FIRST when you don\'t already know the `dataset_id`.\n' +
     '- `get_schema`: full column schema (name, inferred type) for one dataset — pass `dataset_id`.\n' +
-    '- `query_rows`: filter/aggregate over a dataset\'s rows — pass `dataset_id` plus any of `filters` (column/op/value, `op` one of eq/neq/gt/gte/lt/lte/contains — gt/gte/lt/lte only on number columns, contains only on string columns), `group_by` (a column name; needs `aggregate`), `aggregate` ({fn: count/sum/avg/min/max, column?}), `limit`, `offset`. With `group_by`, `limit`/`offset` page through the groups and `totalGroups` says how many there are — page on when it exceeds what you got. ' +
+    '- `query_rows`: filter/aggregate over a dataset\'s rows — pass `dataset_id` plus any of `filters` (column/op/value, `op` one of eq/neq/gt/gte/lt/lte/contains — gt/gte/lt/lte only on number and date columns, contains only on string columns; a date bound is best an ISO date `yyyy-mm-dd` or datetime `yyyy-mm-ddThh:mm`, a date-only bound is its midnight, so on a datetime column "through 2024-04-30" is `lt` 2024-05-01), `group_by` (a column name; needs `aggregate`), `aggregate` ({fn: count/sum/avg/min/max, column?}), `limit`, `offset`. With `group_by`, `limit`/`offset` page through the groups and `totalGroups` says how many there are — page on when it exceeds what you got. ' +
     'A column whose cells the privacy scan flagged at import is stored encrypted and cannot be a filter or `group_by` target (`encrypted_column` error) — read its rows unfiltered instead. ' +
     'A valid `dataset_id` is the uuid `list_datasets` returned for an UPLOADED dataset. A `ds_…` id from a privacy digest is a different id space and is NOT accepted here — use the `v4_*` verbs for those. ' +
     'NEVER invent column names — call `get_schema` first if unsure. Results are always paged/aggregated server-side; the response includes `totalMatched` so you can tell the user when there is more than what was returned. ' +
@@ -319,7 +346,7 @@ export class QueryDatasetTool {
             resolved.id,
             viewerOmadiaUserId,
             {
-              ...(args.filters ? { filters: args.filters } : {}),
+              ...(args.filters ? { filters: withIsoDateBounds(args.filters) } : {}),
               ...(args.group_by ? { groupBy: args.group_by } : {}),
               ...(args.aggregate ? { aggregate: args.aggregate } : {}),
               ...(args.limit !== undefined ? { limit: args.limit } : {}),
@@ -345,7 +372,9 @@ export class QueryDatasetTool {
             const schemaHint = SCHEMA_HINT_CODES.has(err.code)
               ? ' Call `get_schema` to see the real column names/types.'
               : '';
-            return `Error: ${err.code} — ${err.message}.${schemaHint}`;
+            const dateHint =
+              err.code === INVALID_DATE_VALUE_CODE ? ` Accepted date formats: ${DATE_FILTER_FORMATS}.` : '';
+            return `Error: ${err.code} — ${err.message}.${schemaHint}${dateHint}`;
           }
           return backendFailure(err);
         }

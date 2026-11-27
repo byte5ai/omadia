@@ -12,7 +12,9 @@ export type { OfficeServiceOptions } from './officeService.js';
 export { renderXlsx } from './xlsxRenderer.js';
 export { renderDocx } from './docxRenderer.js';
 export { createDocumentsRouter } from './documentsRouter.js';
-export { signDocumentUrl, verifyDocumentSig } from './signing.js';
+export { signDocumentUrl, verifyDocumentSig, verifyDocumentSigIgnoringExpiry } from './signing.js';
+export { createDocumentLinkRenewer, DOCUMENT_LINK_ROUTE_PREFIX } from './linkRenewer.js';
+export type { DocumentLinkRenewerOptions } from './linkRenewer.js';
 export { attachmentDisposition, sanitizeFilename } from './filename.js';
 // The machine-readable provenance contract a downstream reader branches on
 // (property names/values embedded in every generated file, and the free-text

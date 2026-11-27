@@ -141,7 +141,11 @@ and the restore, and the receipt rides the `done`. A blocked mask ends the turn
 before the spawn. A guarded turn without a handle (none could be built, or
 `OMADIA_PRIVACY_FORCE_GUARDED` without a running guard) is refused before the
 spawn. A CLI sub-agent asked inside a guarded turn masks through the calling
-turn's handle and returns its answer unrestored; the Builder and preview-chat
+turn's handle and returns its answer unrestored. Since #2301 (ADR-0268) it also
+gets the v4 verb tools served by that handle (`v4_render_answer` stays with the
+calling turn and is refused), its tool inputs get the turn's prompt surrogates
+restored (tools that run on model input keep them) and its results are
+re-masked (`cliCallerPrivacy.ts`); the Builder and preview-chat
 CLI sub-agents are operator jobs outside the shield, refused only under the org
 policy (ADR-0196).
 
@@ -1492,6 +1496,14 @@ that). Both signers put the route prefix into the HMAC payload
 only its own key layout (`documents/<tenant>/<sha256>/<file>` vs
 `<tenant>/<sha256>.png`). Revoking one route's public-path grant therefore ends
 session-less access to that plugin's objects; the other route does not serve them.
+
+**Renewing an expired link (#1964, ADR-0266).** `POST /api/v1/files/renew` re-signs an
+expired link for the same key, never a different one, and only for a signed-in session,
+only when the producing plugin accepts its own signature (expiry ignored, own key layout)
+and only within 30 days of the original expiry (`410 file_link.too_old` after). Accepted
+risk: any signed-in account that holds an old link can renew it within that window — it
+could fetch the file while the link was valid. Refusals are logged with a hashed key id,
+never the URL or signature. Channel users without a session cannot renew.
 
 ## 5-1. Stored attachments: stated by the adapter, bound at upload (#1960, #1962, ADR-0178)
 
@@ -8029,11 +8041,11 @@ has no user or whitelist management, so it is not a way out of an
   loopback peers (`req.ip`); with `TRUSTED_PROXY_ADDRESSES` containing `loopback` these reads count
   as proxied; any channel plugin can read any plugin's granted paths regardless of its own network
   allowlist.
-- **Fast-lane hand-off** (ADR-0221). After a miss whose query ran, the raw tool output (max 12 000
-  characters) reaches the agent as part of the per-turn system hint, masked through the turn's
-  privacy map like any `extraSystemHint`. Under a Privacy Shield the output is never included.
-  The block is tagged `<fast_lane_tool_output>` and declared data, not instruction; this is a prompt
-  rule, not an enforced boundary (accepted prompt-injection residual).
+- **Fast-lane hand-off** (ADR-0265, supersedes ADR-0221). After a miss whose query ran, the call
+  (max 12 000 characters of output) is replayed as the agent's first tool round: a `tool_use` with
+  the input masked through the turn's prompt map and a `tool_result` produced by `dispatchTool`
+  with the handler skipped, so the Privacy Shield interns it like any result of that tool and the
+  output never enters a system block. The subscription CLI gets only a data-free note.
 
 ## 11. Reviewer checklist
 

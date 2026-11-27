@@ -12,7 +12,9 @@ export { createKrokiClient } from './krokiClient.js';
 export type { KrokiClient } from './krokiClient.js';
 export { createTigrisStore, isNotFound } from './tigrisStore.js';
 export type { TigrisStore } from './tigrisStore.js';
-export { signUrl, verifySig } from './signing.js';
+export { signUrl, verifySig, verifySigIgnoringExpiry } from './signing.js';
+export { createDiagramLinkRenewer, DIAGRAM_LINK_ROUTE_PREFIX } from './linkRenewer.js';
+export type { DiagramLinkRenewerOptions } from './linkRenewer.js';
 export {
   renderFileLinkErrorPage,
   sendFileLinkError,

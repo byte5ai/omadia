@@ -1,5 +1,7 @@
 import {
+  FILE_LINK_RENEWAL_SERVICE_NAME,
   GENERATED_OBJECTS_SERVICE_NAME,
+  type FileLinkRenewalService,
   type GeneratedObjectsService,
   type NativeToolAttachment,
   type PluginContext,
@@ -8,6 +10,7 @@ import {
 import { DiagramService } from './diagramService.js';
 import { DiagramTool, diagramToolSpec, type DiagramBrandMemory } from './diagramTool.js';
 import { createDiagramsRouter } from './diagramsRouter.js';
+import { createDiagramLinkRenewer, DIAGRAM_LINK_ROUTE_PREFIX } from './linkRenewer.js';
 import { createKrokiClient } from './krokiClient.js';
 import { createTigrisStore } from './tigrisStore.js';
 
@@ -152,9 +155,18 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
   // `permissions.public_paths`, Store → plugin → "Grants"); before that the
   // prefix is closed — `404 public_path.not_granted` for everyone.
   // `/dl` because a public-path claim must be at least two segments deep.
-  const disposeRoute = ctx.routes.register('/diagrams/dl', router, {
+  const disposeRoute = ctx.routes.register(DIAGRAM_LINK_ROUTE_PREFIX, router, {
     auth: 'custom',
   });
+  // #1964 (ADR-0266) — expired links are renewed through the kernel route
+  // `POST /api/v1/files/renew`, so old chat messages keep their images.
+  // Optional: without the kernel service an expired link needs a new render.
+  const disposeRenewer = ctx.services
+    .get<FileLinkRenewalService>(FILE_LINK_RENEWAL_SERVICE_NAME)
+    ?.registerRenewer(
+      DIAGRAM_LINK_ROUTE_PREFIX,
+      createDiagramLinkRenewer({ secret: signingSecret, ttlSec: signedUrlTtlSec, publicBaseUrl }),
+    );
 
   ctx.log(
     `[diagrams] ready (kroki=${krokiBaseUrl}, bucket=${tigrisBucket}, tenant=${tenantId})`,
@@ -165,6 +177,7 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
       ctx.log('deactivating diagrams plugin');
       disposeTool();
       disposeRoute();
+      disposeRenewer?.();
       disposeDeleter?.();
     },
   };
