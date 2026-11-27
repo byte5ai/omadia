@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Added — per-user MCP connect from Teams, bound to the Teams SSO token (#2312, ADR-0301) (2026-11-27)
+
+- A directory person (ADR-0300) without an omadia login connects a `per_user` MCP server from
+  Teams: `POST /api/v1/directory/connect/mcp/:serverId/start` and `…/mcp/complete`, both behind
+  the kernel's Teams SSO verifier (on the closed public-path list). No bearer link: starting and
+  completing need the person's own SSO token; the flow key is their AAD object id.
+- Core migration **0124**: `mcp_oauth_flows.completion` (`session` | `teams-sso`) and
+  `authorize_url`. A `teams-sso` flow never completes at the session callback and vice versa;
+  the callback hands its code back to Teams (`authentication.notifySuccess`) instead of
+  exchanging it. `GET /api/v1/directory/connect/go/<state>` starts Teams' authentication window
+  on the deployment's host.
+- `ChatTurnResult.mcpConnectRequired` / `SemanticAnswer.mcpConnectRequired` (channel-sdk
+  **0.3.23**, additive): the servers whose kernel-minted connect prompt a turn got, for channels
+  that see no tool output.
+
 ### Added — file uploads in the web chat (#2336, #1985) (2026-11-27)
 
 - New kernel route `POST /api/chat/uploads`: recordings, PDFs, DOCX, text, CSV/XLSX and

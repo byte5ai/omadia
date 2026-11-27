@@ -285,6 +285,7 @@ export { runMultiOrchestratorMigrations } from './registry/migrator.js';
 // Agent Builder — editable graph store, MCP client, sub-agent materialisation,
 // and the persisted-routing → runtime mapping.
 export { AgentGraphStore } from './registry/agentGraphStore.js';
+export type { McpOAuthFlowCompletion } from './registry/agentGraphStore.js';
 export { computeSkillHash } from './registry/skillHash.js';
 export type {
   CanvasPos,

@@ -71,6 +71,12 @@ export interface TurnContextValue {
   turnId: string;
   turnDate: string;
   /**
+   * #2312 / ADR-0301 — the servers this turn's kernel-minted connect prompts
+   * named, by server id. Created per turn (shared by reference with the
+   * turn's sub-scopes) so concurrent turns of one agent never mix.
+   */
+  mcpConnectRequests?: Map<string, { readonly serverId: string; readonly serverName: string }>;
+  /**
    * #2043 — where a tool call of this turn comes from, handed to a plugin's
    * tool handler as its second argument. Built once at turn start from the
    * turn input (see `toolCallContext.ts`); kernel-stated, never model-supplied.

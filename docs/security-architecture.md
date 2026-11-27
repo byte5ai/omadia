@@ -1788,6 +1788,12 @@ Colleagues of the Entra tenant without a web login are directory people
 - **Links from other channels** (Telegram, …) use the ADR-0280 offer with a `directory:<id>`
   picker value; the identity node records `linkedDirectoryPersonId`, and turns key on the person
   only while the person is active.
+- **Connect without a web session (#2312, ADR-0301).** `/api/v1/directory/connect/*` sits on the
+  closed public-path list behind the kernel Teams SSO verifier (ADR-0114). Start keys the flow
+  on the token's `oid` (active person of the token's tenant, `per_user` server only) and marks
+  it `teams-sso`; the callback returns the code to Teams instead of exchanging it; complete
+  needs an SSO token of the same `oid`. A forwarded authorize URL, `/go/<state>` link or
+  callback page cannot store a token for anyone else; there is no bearer connect link.
 - **Admin surface** `/api/v1/admin/directory` (session-gated): list, "Sync now"
   (`directory.sync`), unlink (`channel_identity.unlink`), revoke a connection
   (`directory_person.revoke_connection`), each audited first.

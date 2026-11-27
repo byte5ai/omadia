@@ -184,7 +184,7 @@ export class DirectoryStore {
 
   async findByExternalId(source: DirectorySourceKind, tenantId: string, externalId: string): Promise<DirectoryPerson | null> {
     const res = await this.pool.query<PersonRow>(
-      `SELECT ${PERSON_COLUMNS} FROM directory_people WHERE source = $1 AND tenant_id = $2 AND external_id = $3`,
+      `SELECT ${PERSON_COLUMNS} FROM directory_people WHERE source = $1 AND LOWER(tenant_id) = LOWER($2) AND external_id = $3`,
       [source, tenantId, externalId],
     );
     return res.rows[0] ? toPerson(res.rows[0]) : null;

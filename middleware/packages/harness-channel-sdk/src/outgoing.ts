@@ -179,6 +179,14 @@ export interface SemanticAnswer {
   oauthConsentPending?: boolean;
 
   /**
+   * #2312 / ADR-0301 — MCP servers this turn could not use because the user has
+   * not connected them. Teams renders a Connect action that opens the
+   * Teams-SSO-bound connect dialog; channels without one ignore it (the
+   * answer text already says so). Additive.
+   */
+  mcpConnectRequired?: readonly { readonly serverId: string; readonly serverName: string }[];
+
+  /**
    * Palaia capture-disclosure (OB-81) — what the orchestrator persisted into
    * the knowledge graph for this turn. Surfaced as an expandable section by
    * connectors that can render disclosure UI (Teams Adaptive Card
