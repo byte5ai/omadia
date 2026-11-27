@@ -107,6 +107,10 @@ optional_requires:
   # its own turn. Resolved per turn; absent or not loaded → no own name is
   # exempt (fail safe).
   - "humanNames@1"
+  # ADR-0300 / #2324 — kernel-published with a database: is a linked account
+  # still active, and is a channel sender an active directory person? Resolved
+  # per turn; absent → links apply as recorded, no directory key.
+  - "turnIdentityDirectory@1"
   - "llmProviderPool@1"
   - "llmProviderCatalog@1"
   - "installedPluginConfigReader@1"

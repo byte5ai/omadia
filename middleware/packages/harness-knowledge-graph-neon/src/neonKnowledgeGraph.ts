@@ -2461,12 +2461,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         cluster_uuid: string;
         omadia_user_id: string;
         linked_user_id: string | null;
+        linked_person_id: string | null;
       }>(
         `SELECT
            ci.id AS identity_uuid,
            u.id  AS cluster_uuid,
            (u.properties->>'omadiaUserId') AS omadia_user_id,
-           (ci.properties->>'linkedUserId') AS linked_user_id
+           (ci.properties->>'linkedUserId') AS linked_user_id,
+           (ci.properties->>'linkedDirectoryPersonId') AS linked_person_id
          FROM graph_nodes ci
          JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
          JOIN graph_nodes u ON u.id = e.to_node AND u.type = 'User'
@@ -2510,7 +2512,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           isNewIdentity: false,
           isNewCluster: false,
           ...clusterAuthSubject,
-          ...(existing.linked_user_id ? { linkedUserId: existing.linked_user_id } : {}),
+          ...(existing.linked_user_id
+            ? { linkedUserId: existing.linked_user_id }
+            : existing.linked_person_id
+              ? { linkedDirectoryPersonId: existing.linked_person_id }
+              : {}),
         };
       }
 
@@ -2696,7 +2702,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       let omadiaUserId: string;
       let identityProps: Record<string, unknown>;
       if (input.target === null) {
-        if (!identity || typeof identity.properties['linkedUserId'] !== 'string') {
+        if (
+          !identity ||
+          (typeof identity.properties['linkedUserId'] !== 'string' &&
+            typeof identity.properties['linkedDirectoryPersonId'] !== 'string')
+        ) {
           throw Object.assign(new Error('not_linked'), { code: 'not_linked' });
         }
         omadiaUserId = randomUUID();
@@ -2733,7 +2743,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
             ...(input.displayName ? { displayName: input.displayName } : {}),
           }),
           lastSeenAt: now,
-          linkedUserId: input.target.userId,
+          ...linkTargetProps(input.target),
           linkedAt: now,
           ...(input.target.linkedBy ? { linkedBy: input.target.linkedBy } : {}),
         });
@@ -6663,4 +6673,14 @@ function vectorLiteral(v: readonly number[]): string {
     return x.toFixed(6);
   });
   return `[${parts.join(',')}]`;
+}
+
+/** The link props of a link target (ADR-0225, ADR-0300); refuses a target that names neither or both. */
+function linkTargetProps(target: { userId?: string; directoryPersonId?: string }): Record<string, string> {
+  const userId = target.userId?.trim() ?? '';
+  const personId = target.directoryPersonId?.trim() ?? '';
+  if ((userId === '') === (personId === '')) {
+    throw Object.assign(new Error('invalid_link_target'), { code: 'invalid_link_target' });
+  }
+  return userId !== '' ? { linkedUserId: userId } : { linkedDirectoryPersonId: personId };
 }

@@ -14,6 +14,7 @@ import type {
   SessionEvent,
   ConversationRosterProvider,
   PeopleDirectoryProvider,
+  DirectorySource,
   ConversationSendProvider,
   CoreApi,
   HttpMethod,
@@ -173,6 +174,8 @@ export interface CreateCoreApiOptions {
   rosterRegistry?: ConversationRosterRegistry;
   /** People directory (Conductor human-step principal resolution) — same optional pattern. */
   peopleDirectories?: PeopleDirectoryRegistry;
+  /** ADR-0300 — the kernel's directory of people; sources come from channel plugins. */
+  directories?: { register(channelId: string, source: DirectorySource): void };
   targetedSends?: TargetedSendRegistry;
   conversationEvents?: ConversationEventHub;
   /** #330 C3b — conversation-addressed proactive send (group nudges). */
@@ -383,6 +386,12 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
     const peopleDirectories = opts.peopleDirectories;
     api.registerPeopleDirectoryProvider = (channelId: string, provider: PeopleDirectoryProvider): void => {
       peopleDirectories.register(channelId, provider);
+    };
+  }
+  if (opts.directories) {
+    const directories = opts.directories;
+    api.registerDirectorySource = (channelId: string, source: DirectorySource): void => {
+      directories.register(channelId, source);
     };
   }
   if (opts.targetedSends) {

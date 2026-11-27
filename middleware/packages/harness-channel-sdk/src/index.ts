@@ -18,6 +18,7 @@ export type {
 
 // ADR-0225 — kernel-owned link from a channel account to an omadia account.
 export {
+  DIRECTORY_PERSON_LINK_PREFIX,
   MAX_LINK_OFFER_TTL_MS,
   type ChannelAccountLink,
   type ChannelIdentityLinkOutcome,
@@ -48,6 +49,14 @@ export type {
   PeopleDirectoryProvider,
   PeopleDirectoryUnavailableCode,
 } from './peopleDirectory.js';
+// ADR-0300 — a tenant's directory of people, read by a channel plugin for the kernel.
+export type {
+  DirectoryDeltaPage,
+  DirectoryDeltaResult,
+  DirectoryPersonChange,
+  DirectorySource,
+  DirectorySourceKind,
+} from './directorySource.js';
 export type {
   BotAddedEvent,
   ConversationMembershipEvent,

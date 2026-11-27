@@ -18,17 +18,26 @@
 
 /** An account an operator may link a channel account to (picker row). */
 export interface LinkableAccount {
-  /** `users.id`. */
+  /**
+   * What `offerLink` takes: an account's `users.id`, or — ADR-0300 — a
+   * directory person as `directory:<id>` (a colleague of the Entra tenant
+   * without a web login). Pass it through unchanged.
+   */
   readonly userId: string;
   readonly displayName: string;
   readonly email: string;
+  /** ADR-0300 — `person` for a directory person; absent or `account` for an account. */
+  readonly kind?: 'account' | 'person';
 }
+
+/** ADR-0300 — the `userId` prefix of a directory person in {@link LinkableAccount} and {@link ChannelAccountLink}. */
+export const DIRECTORY_PERSON_LINK_PREFIX = 'directory:';
 
 /** The account a channel account is linked to. */
 export interface ChannelAccountLink {
   readonly channelType: string;
   readonly channelUserId: string;
-  /** `users.id` of the linked account. */
+  /** `users.id` of the linked account, or `directory:<id>` for a directory person (ADR-0300). */
   readonly userId: string;
   /** The account's display name (from `users`), for texts like "connected as". */
   readonly displayName: string;

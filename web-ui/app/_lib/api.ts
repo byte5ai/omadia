@@ -2149,6 +2149,83 @@ export async function listAdminUsers(): Promise<AdminUsersListResponse> {
   return getJson<AdminUsersListResponse>('/v1/admin/users');
 }
 
+// ── ADR-0300 — directory of people (Entra) ──────────────────────────────────
+
+export interface DirectorySourceState {
+  source: 'entra';
+  tenantId: string;
+  channelId: string | null;
+  registered: boolean;
+  running: boolean;
+  lastStartedAt: string | null;
+  lastCompletedAt: string | null;
+  lastFullAt: string | null;
+  lastError: string | null;
+}
+
+export interface DirectoryPerson {
+  id: string;
+  source: 'entra';
+  tenantId: string;
+  objectId: string;
+  displayName: string;
+  upn: string | null;
+  mail: string | null;
+  accountEnabled: boolean;
+  status: 'active' | 'deprovisioned';
+  firstSeenAt: string;
+  syncedAt: string;
+  deprovisionedAt: string | null;
+}
+
+export interface DirectoryListResponse {
+  sources: DirectorySourceState[];
+  people: DirectoryPerson[];
+  total: number;
+}
+
+export interface DirectoryPersonDetail {
+  person: DirectoryPerson;
+  webLogin: { userId: string; email: string; status: string } | null;
+  linkedIdentities: { channelType: string; channelUserId: string }[];
+  connections: { serverId: string; serverName: string }[];
+}
+
+export async function listDirectory(query: {
+  search?: string;
+  status?: 'active' | 'deprovisioned';
+  offset?: number;
+}): Promise<DirectoryListResponse> {
+  const params = new URLSearchParams();
+  if (query.search) params.set('search', query.search);
+  if (query.status) params.set('status', query.status);
+  if (query.offset) params.set('offset', String(query.offset));
+  const qs = params.toString();
+  return getJson<DirectoryListResponse>(`/v1/admin/directory${qs ? `?${qs}` : ''}`);
+}
+
+export async function syncDirectory(tenantId: string): Promise<{ started: boolean }> {
+  return postJson<{ started: boolean }>('/v1/admin/directory/sync', { source: 'entra', tenantId });
+}
+
+export async function getDirectoryPerson(id: string): Promise<DirectoryPersonDetail> {
+  return getJson<DirectoryPersonDetail>(`/v1/admin/directory/people/${encodeURIComponent(id)}`);
+}
+
+export async function unlinkDirectoryIdentity(
+  id: string,
+  identity: { channelType: string; channelUserId: string },
+): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/v1/admin/directory/people/${encodeURIComponent(id)}/unlink`, identity);
+}
+
+export async function revokeDirectoryConnection(id: string, serverId: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(
+    `/v1/admin/directory/people/${encodeURIComponent(id)}/connections/${encodeURIComponent(serverId)}/revoke`,
+    undefined,
+  );
+}
+
 export async function getAdminUser(id: string): Promise<AdminUserResponse> {
   return getJson<AdminUserResponse>(`/v1/admin/users/${encodeURIComponent(id)}`);
 }

@@ -4,6 +4,7 @@ import type { IncomingTurn, ChannelUserRef, PlatformIdentity } from './incoming.
 import type { ChatStreamEvent } from './streamEvent.js';
 import type { ConversationRosterProvider } from './conversationRoster.js';
 import type { PeopleDirectoryProvider } from './peopleDirectory.js';
+import type { DirectorySource } from './directorySource.js';
 import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
@@ -223,6 +224,16 @@ export interface CoreApi {
    * channel type; the first registrant owns it.
    */
   registerPeopleDirectoryProvider?(channelId: string, provider: PeopleDirectoryProvider): void;
+
+  /**
+   * ADR-0300 — contribute the people directory of one tenant (Teams: Graph
+   * `/users/delta`). The kernel stores the people, runs the sync and
+   * deprovisions leavers; the plugin only reads. Optional — feature-detect
+   * (`typeof core.registerDirectorySource === 'function'`). One source per
+   * `(source, tenantId)`; the first registrant owns it, a foreign registration
+   * throws, deactivation drops the plugin's sources.
+   */
+  registerDirectorySource?(channelId: string, source: DirectorySource): void;
 
   /**
    * Register the channel's targeted-send (DM one participant) capability

@@ -1,3 +1,4 @@
+import type { TurnIdentityDirectory } from './resolveTurnOwnerIdentity.js';
 import type { ConsultationPort } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
 import {
@@ -270,6 +271,8 @@ export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
  * plugin activated.
  */
 export const HUMAN_NAMES_SERVICE = 'humanNames';
+/** ADR-0300 / #2324 — kernel-published, see `TurnIdentityDirectory` (`optional_requires`). */
+export const TURN_IDENTITY_DIRECTORY_SERVICE = 'turnIdentityDirectory';
 export type HumanNamesProvider = () => readonly string[] | null;
 
 /**
@@ -1253,6 +1256,9 @@ export async function activate(
   // (US4) calls the same factory once per configured Agent against the
   // same `deps`.
   const orchestratorDeps: OrchestratorDeps = {
+    // ADR-0300 / #2324 — published by the kernel inside its database block,
+    // after this plugin activated: resolved per turn.
+    identityDirectory: () => ctx.services.getOptional<TurnIdentityDirectory>(TURN_IDENTITY_DIRECTORY_SERVICE),
     provider,
     // #1033 W3 — the policy's other providers resolve through the same pool.
     providerPool,

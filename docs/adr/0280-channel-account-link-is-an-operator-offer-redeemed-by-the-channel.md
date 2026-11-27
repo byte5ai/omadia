@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Proposed — refined by [ADR-0302](0302-a-turn-origin-channel-type-is-checked-against-the-calling-plugin.md) (origin check, disabled accounts) and [ADR-0300](0300-entra-directory-people-anchor-channel-identities-and-per-person-tokens.md) (links to directory people)
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers. Implements [ADR-0225](0225-channel-account-links-to-an-omadia-user-only-through-the-kernel.md) for #1995; decided after the wave 6 recommendation and can be reversed.

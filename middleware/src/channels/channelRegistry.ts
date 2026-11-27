@@ -100,6 +100,8 @@ export interface ChannelRegistryDeps {
    *  channel's roster + targeted-send contributions like routes/webSockets. */
   rosterRegistry?: ConversationRosterRegistry;
   peopleDirectories?: PeopleDirectoryRegistry;
+  /** ADR-0300 — directory sources a channel contributed, dropped on deactivation. */
+  directories?: { unregisterChannel(channelId: string): void };
   targetedSends?: TargetedSendRegistry;
   conversationSends?: ConversationSendRegistry;
   /** #2043 — readiness providers and meeting sources, dropped the same way. */
@@ -294,6 +296,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     // #330 B1 — drop this channel's roster + targeted-send contributions.
     this.deps.rosterRegistry?.unregisterChannel(agentId);
     this.deps.peopleDirectories?.unregisterChannel(agentId);
+    this.deps.directories?.unregisterChannel(agentId);
     this.deps.targetedSends?.unregisterChannel(agentId);
     this.deps.conversationSends?.unregisterChannel(agentId);
     this.channelTypeClaims.release(agentId);

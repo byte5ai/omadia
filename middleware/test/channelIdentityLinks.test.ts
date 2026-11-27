@@ -60,7 +60,7 @@ describe('ADR-0225 · kernel channel identity links', () => {
     assert.equal(await links.listLinkableAccounts(undefined), null);
     assert.equal(await links.listLinkableAccounts('omadia_session=forged'), null);
     assert.deepEqual(await links.listLinkableAccounts(COOKIE), [
-      { userId: ANNA, displayName: 'Anna', email: 'anna@example.com' },
+      { userId: ANNA, displayName: 'Anna', email: 'anna@example.com', kind: 'account' },
     ]);
   });
 

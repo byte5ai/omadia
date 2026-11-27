@@ -86,6 +86,8 @@ const GROUPS: readonly GroupDef[] = [
     cards: [
       { href: '/admin/auth', key: 'auth' },
       { href: '/admin/users', key: 'users' },
+      // ADR-0300 — Entra directory people (not accounts).
+      { href: '/admin/directory', key: 'directory' },
       { href: '/admin/api-keys', key: 'apiKeys' },
       // #1315 — read-only admin audit log.
       { href: '/admin/audit', key: 'audit' },

@@ -90,6 +90,35 @@ changelog.
   and own-identity posts. `ai_disclosure_locale` is now the fallback for answers whose language is
   undecided (ADR-0320, supersedes ADR-0220 in part).
 
+### Added — Entra directory of people as anchor for channel identities and per-person tokens (#2335, ADR-0300) (2026-11-27)
+
+- New core migration **0123** `directory_people` + `directory_sync_state`: colleagues of the
+  Entra tenant without a web login. They are not accounts (ADR-0113: every account is an
+  administrator). The Teams plugin contributes the tenant source through the new optional
+  `CoreApi.registerDirectorySource` (channel-sdk **0.3.22**, `DirectorySource`); the kernel syncs
+  on registration, every 6 hours and on "Sync now" (Graph delta cursor stored after the last
+  page only) and deprovisions leavers: audit, revoke their MCP tokens (key = AAD object id),
+  remove their channel links, status `deprovisioned`.
+- A Teams turn whose sender is an active directory person keys `per_user` MCP tokens on the
+  object id (`TurnIdentityDirectory`, kernel service `turnIdentityDirectory@1`, orchestrator
+  `optional_requires`).
+- Channel account links (ADR-0280) can name a directory person: the picker lists active people
+  without an Entra account as `directory:<id>` (`LinkableAccount.kind = 'person'`); the identity
+  node records `linkedDirectoryPersonId` (plugin-api **1.114.0**, both graph backends,
+  `ChannelIdentityLinkInput.target.directoryPersonId`).
+- Admin page **Directory** (`/admin/directory`, en+de) on `/api/v1/admin/directory`: sync state
+  per tenant, people, linked channel accounts (unlink) and MCP connections (revoke). New audit
+  actions `directory_person.deprovision`, `directory_person.revoke_connection`, `directory.sync`.
+
+### Security — turn origin checked per plugin; links to disabled accounts not applied (#2324, ADR-0302) (2026-11-27)
+
+- `chatAgent@1` and `channelResolver@1` are per calling plugin: an `origin` whose channel type
+  the plugin does not hold is dropped before the turn runs (`turnOriginGuard.ts`). The scoped
+  `CoreApi.handleTurnStream` stamps the plugin's own `channelId`, drops a foreign origin and
+  refuses a sender (`userRef.kind`) of another plugin's channel.
+- A channel identity linked to a disabled or deleted account runs as its raw channel id again
+  (no account cluster, no `per_user` key) until the account is enabled.
+
 ### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
 
 - `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows

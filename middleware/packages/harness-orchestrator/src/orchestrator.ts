@@ -433,6 +433,7 @@ import { guardToolCommands } from './commandPolicyGuard.js';
 import {
   turnChannelKind,
   channelTurnMcpUserKey,
+  type TurnIdentityDirectory,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -851,6 +852,12 @@ export interface OrchestratorOptions {
    * Identity resolution reads no memory and recalls nothing.
    */
   identityGraph?: KnowledgeGraph;
+  /**
+   * ADR-0300 / #2324 — the kernel's `turnIdentityDirectory@1`, resolved per
+   * turn: account status and directory people for the turn owner. Absent: no
+   * directory key, links apply as recorded.
+   */
+  identityDirectory?: () => TurnIdentityDirectory | undefined;
   /**
    * Per-orchestrator memory isolation — a `MemoryToolHandler` bound to THIS
    * Agent's scoped (+ namespaced) MemoryStore. When set, the orchestrator
@@ -3370,6 +3377,7 @@ export class Orchestrator {
   private readonly knowledgeGraph: KnowledgeGraph | undefined;
   /** See {@link OrchestratorOptions.identityGraph}. */
   private readonly identityGraph: KnowledgeGraph | undefined;
+  private readonly identityDirectory: (() => TurnIdentityDirectory | undefined) | undefined;
   private readonly autoPromote: boolean;
   private readonly autoPromoteThreshold: number;
   private readonly autoPromoteDurableMinSignificance: number | undefined;
@@ -3471,6 +3479,7 @@ export class Orchestrator {
     this.requiredConsultToolName = options.requiredConsultToolName;
     this.knowledgeGraph = options.knowledgeGraph;
     this.identityGraph = options.identityGraph ?? options.knowledgeGraph;
+    this.identityDirectory = options.identityDirectory;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
       : undefined;
@@ -4546,7 +4555,7 @@ export class Orchestrator {
     input: ChatTurnInput,
   ): Promise<Pick<TurnContextValue, 'discretion' | 'audienceFloor'>> {
     const parent = turnContext.current();
-    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input, this.identityDirectory?.());
     const runTraceUserId = await resolveRunTraceOwner(
       this.knowledgeGraph,
       input,
@@ -6179,7 +6188,7 @@ export class Orchestrator {
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
     // `turnContext.current()?.resolvedOmadiaUserId` instead of each
     // re-deriving it independently.
-    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input, this.identityDirectory?.());
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
@@ -8160,7 +8169,7 @@ export class Orchestrator {
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
     // without this the resolved identity would never reach a channel turn's
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
-    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input, this.identityDirectory?.());
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).

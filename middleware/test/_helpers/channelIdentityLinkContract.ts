@@ -99,10 +99,38 @@ export async function unlinkRefusesAnIdentityNobodyLinked(kg: KnowledgeGraph): P
   }
 }
 
+/** ADR-0300 — a link to a directory person joins their Teams cluster and records the person. */
+export async function linkToADirectoryPersonRecordsThePerson(kg: KnowledgeGraph): Promise<void> {
+  const oid = '4f0c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
+  const teams = await kg.resolveOrCreateChannelIdentity({ channelKind: 'teams', channelUserId: oid, aadObjectId: oid });
+  await kg.linkChannelIdentity!({
+    channelKind: 'telegram',
+    channelUserId: '4720',
+    target: { omadiaUserId: teams.omadiaUserId, directoryPersonId: 'person-1', linkedBy: OPERATOR },
+  });
+  const linked = await kg.resolveOrCreateChannelIdentity({ channelKind: 'telegram', channelUserId: '4720' });
+  assert.equal(linked.omadiaUserId, teams.omadiaUserId);
+  assert.equal(linked.linkedDirectoryPersonId, 'person-1');
+  assert.equal(linked.linkedUserId, undefined);
+  await kg.linkChannelIdentity!({ channelKind: 'telegram', channelUserId: '4720', target: null });
+  const unlinked = await kg.resolveOrCreateChannelIdentity({ channelKind: 'telegram', channelUserId: '4720' });
+  assert.notEqual(unlinked.omadiaUserId, teams.omadiaUserId);
+  assert.equal(unlinked.linkedDirectoryPersonId, undefined);
+  await assert.rejects(
+    kg.linkChannelIdentity!({
+      channelKind: 'telegram',
+      channelUserId: '4721',
+      target: { omadiaUserId: teams.omadiaUserId, userId: ACCOUNT, directoryPersonId: 'person-1' },
+    }),
+    (err: unknown) => (err as { code?: string }).code === 'invalid_link_target',
+  );
+}
+
 export const LINK_CONTRACT: ReadonlyArray<readonly [string, (kg: KnowledgeGraph) => Promise<void>]> = [
   ['link joins an existing identity to the account cluster', linkJoinsAnExistingIdentityToTheAccount],
   ['link creates a missing identity in the account cluster', linkCreatesAMissingIdentity],
   ['link refuses a cluster that does not exist', linkRefusesAnUnknownCluster],
   ['unlink gives the identity a fresh cluster of its own', unlinkGivesTheIdentityAClusterOfItsOwn],
   ['unlink refuses an identity nobody linked', unlinkRefusesAnIdentityNobodyLinked],
+  ['link to a directory person records the person', linkToADirectoryPersonRecordsThePerson],
 ];
