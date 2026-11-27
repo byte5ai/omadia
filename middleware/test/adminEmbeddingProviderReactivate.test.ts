@@ -38,9 +38,15 @@ const LOCAL_CLIENT = {
   embed: async () => [],
 } as unknown as EmbeddingClient;
 
+const OLLAMA = '@omadia/embeddings';
+
 const CATALOG = [
   {
     plugin: { id: LOCAL, name: 'Embeddings (keyless)', provides: ['embeddingClient@1'] },
+  },
+  // In the store but not installed unless a test says so (#1814/#1857).
+  {
+    plugin: { id: OLLAMA, name: 'Embeddings', provides: ['embeddingClient@1'] },
   },
   {
     plugin: { id: KG_NEON, name: 'Knowledge Graph (Neon)', provides: ['knowledgeGraph@1'] },
@@ -329,6 +335,64 @@ describe('OM-98 POST /reactivate', () => {
       assert.equal(res.body['capabilityPublished'], false);
       assert.equal(res.body['dedupThreshold'], null);
       assert.equal(res.body['capabilityGap'], 'missing-weights');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('marks the written threshold as omadia’s recommendation (#1818)', async () => {
+    const h = await makeHarness({ vectors: 0 });
+    try {
+      const res = await h.post();
+      assert.equal(
+        h.registry.get(KG_NEON)?.config?.['_process_dedup_threshold_recommended_by'],
+        LOCAL,
+      );
+      assert.deepEqual(res.body['dedupThresholdProvenance'], {
+        source: 'recommended',
+        value: '0.45',
+        recommendedBy: LOCAL,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('asks for a reactivation, not a second adapter, when the keyless adapter is alone (#1857)', async () => {
+    // Weights complete, nothing published: the adapter activated before the
+    // download. With no sibling installed, a second adapter cannot be the cause.
+    const h = await makeHarness({ vectors: 0, publishesOnActivate: false, missingFiles: [] });
+    try {
+      const res = await h.post();
+      assert.equal(res.body['capabilityPublished'], false);
+      assert.equal(res.body['capabilityGap'], 'weights-ready-reactivate');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('keeps the sibling explanation when a second provider is installed (#1857)', async () => {
+    const h = await makeHarness({
+      vectors: 0,
+      publishesOnActivate: false,
+      missingFiles: [],
+      installed: [{ id: LOCAL }, { id: OLLAMA }, { id: KG_NEON }],
+    });
+    try {
+      const res = await h.post();
+      assert.equal(res.body['capabilityGap'], 'not-published');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('names the store providers that are not installed (#1814)', async () => {
+    const h = await makeHarness({ vectors: 0 });
+    try {
+      const res = await h.post();
+      assert.deepEqual(res.body['installableProviders'], [
+        { pluginId: OLLAMA, label: 'Embeddings', keyless: false },
+      ]);
     } finally {
       await h.close();
     }

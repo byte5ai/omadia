@@ -208,6 +208,46 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
     assert.equal(rows[0]!.count, '3', 'one mcp grant plus two unconstrained native grants');
   });
 
+  it('a repeated grant is a no-op, top-level and on a sub-agent (#1939, 0118)', async () => {
+    const store = new AgentGraphStore(pool);
+    const agent = await pool.query<{ id: string }>(
+      `INSERT INTO agents (slug, name) VALUES ($1, 'W09 Grant Agent') RETURNING id`,
+      [`${TENANT}repeat-agent`],
+    );
+    const agentId = agent.rows[0]!.id;
+    const sub = await pool.query<{ id: string }>(
+      `INSERT INTO agent_subagents (parent_agent_id, name) VALUES ($1, 'helper') RETURNING id`,
+      [agentId],
+    );
+    const subAgentId = sub.rows[0]!.id;
+    const server = await pool.query<{ id: string }>(
+      `INSERT INTO mcp_servers (name, transport, endpoint)
+       VALUES ($1, 'http', 'https://srv.invalid/mcp') RETURNING id`,
+      [`${TENANT}repeat-server`],
+    );
+    const mcpServerId = server.rows[0]!.id;
+
+    // Top level: the conflict branch used to bind an untyped, unused `$2` and
+    // answered 500 "could not determine data type of parameter $2".
+    const a = await store.createToolGrant({ agentId, toolKind: 'mcp', toolRef: 'echo', mcpServerId });
+    const b = await store.createToolGrant({ agentId, toolKind: 'mcp', toolRef: 'echo', mcpServerId });
+    assert.equal(b.id, a.id);
+
+    // Sub-agent: MCP and native, each twice — one row each.
+    const c = await store.createToolGrant({ subAgentId, toolKind: 'mcp', toolRef: 'echo', mcpServerId });
+    const d = await store.createToolGrant({ subAgentId, toolKind: 'mcp', toolRef: 'echo', mcpServerId });
+    assert.equal(d.id, c.id);
+    const e = await store.createToolGrant({ subAgentId, toolKind: 'native', toolRef: 'web_search' });
+    const f = await store.createToolGrant({ subAgentId, toolKind: 'native', toolRef: 'web_search' });
+    assert.equal(f.id, e.id);
+
+    const { rows } = await pool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM agent_tool_grants WHERE subagent_id = $1',
+      [subAgentId],
+    );
+    assert.equal(rows[0]!.count, '2');
+  });
+
   it('binds an OAuth flow to its authorize-time endpoints and cascades on server delete (0015 + 0016)', async () => {
     const server = await pool.query<{ id: string }>(
       `INSERT INTO mcp_servers (name, transport, endpoint)

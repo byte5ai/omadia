@@ -49,7 +49,7 @@ import {
 const RENDER_GOLDENS: ReadonlyArray<readonly [string, unknown, string]> = [
   ['text-only', { content: [{ type: 'text', text: 'hello world' }] }, 'hello world'],
   [
-    'mixed blocks (text + resource + unknown block)',
+    'mixed blocks (text + resource + image) — #1920: an image is a placeholder, never base64',
     {
       content: [
         { type: 'text', text: 'line one' },
@@ -57,7 +57,21 @@ const RENDER_GOLDENS: ReadonlyArray<readonly [string, unknown, string]> = [
         { type: 'image', data: 'AAAA', mimeType: 'image/png' },
       ],
     },
-    'line one\nfrom resource\n{"type":"image","data":"AAAA","mimeType":"image/png"}',
+    'line one\nfrom resource\n[image: image/png, 3 bytes — not shown to the model]',
+  ],
+  [
+    '#1920 — a blob resource is a placeholder too',
+    {
+      content: [
+        { type: 'resource', resource: { uri: 'file:///a.bin', blob: 'AAAAAA==', mimeType: 'application/pdf' } },
+      ],
+    },
+    '[binary resource: application/pdf, 4 bytes — not shown to the model]',
+  ],
+  [
+    'an unknown block stays its JSON',
+    { content: [{ type: 'resource_link', uri: 'file:///x' }] },
+    '{"type":"resource_link","uri":"file:///x"}',
   ],
   [
     'structuredContent-only (no content array)',

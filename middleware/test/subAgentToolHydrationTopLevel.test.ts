@@ -172,13 +172,27 @@ describe('registerDbSubAgentTools: top-level MCP grants (#457)', () => {
     assert.equal(host.registered.size, 0);
   });
 
-  it('falls back to a schema-less descriptor when the tool is not in discoveredTools', async () => {
+  it('#1917 — does not hand a model a tool the discovered server no longer offers', () => {
+    const host = fakeHost();
+    const n = registerDbSubAgentTools(
+      { subAgents: [], skills: [], toolGrants: [grant({ toolRef: 'vanished_tool' })] },
+      host,
+      fakeDeps([]),
+    );
+    assert.equal(n, 0);
+    assert.equal(host.registered.size, 0);
+  });
+
+  it('falls back to a schema-less descriptor for a server that was never discovered', async () => {
     const host = fakeHost();
     const calls: Array<{ server: string; tool: string; args: Record<string, unknown> }> = [];
     const n = registerDbSubAgentTools(
       { subAgents: [], skills: [], toolGrants: [grant({ toolRef: 'undiscovered_tool' })] },
       host,
-      fakeDeps(calls),
+      {
+        ...fakeDeps(calls),
+        mcpServers: [fakeServerRow({ lastDiscoveredAt: null, discoveredTools: [] })],
+      },
     );
     assert.equal(n, 1);
     const tool = host.registered.get('mcp__billing__undiscovered_tool');

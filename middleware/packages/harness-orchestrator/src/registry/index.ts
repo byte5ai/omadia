@@ -178,6 +178,15 @@ export class OrchestratorRegistry {
   /** #2055 — the routing view of the current snapshot, built on demand. */
   private routing: SnapshotRoutingView | undefined;
   private snapshot: ConfigSnapshot | undefined;
+  /**
+   * #1918 — the snapshot a diff is being applied FROM, while its actions run.
+   * A rebuild's post-build hook (sub-agent/MCP hydration) reads
+   * `currentSnapshot()` synchronously, before `adoptSnapshot` at the end of
+   * the diff; without this it saw the previous snapshot — stale MCP server
+   * status and discovered tools — and nothing corrected it later. Routing
+   * keeps reading `snapshot` until the diff is done.
+   */
+  private buildingSnapshot: ConfigSnapshot | undefined;
   /** #2043 — the grants each active facilitator was BUILT with (see
    *  `withEngineGrantDrift`), by slug. */
   private readonly facilitatorGrants = new Map<string, string>();
@@ -333,18 +342,23 @@ export class OrchestratorRegistry {
     const bindingsByAgent = groupBy(snap.channelBindings, (b) => b.agentId);
     const graph = indexGraph(snap);
 
-    for (const action of plan.actions) {
-      try {
-        this.runAction(action, pluginsByAgent, bindingsByAgent, graph);
-      } catch (err) {
-        // T022 — isolate per-action failures so a throw on one Agent never
-        // aborts the rest of the diff.
-        this.log(`registry: diff action FAILED — skipping`, {
-          action: action.kind,
-          slug: actionSlug(action),
-          error: (err as Error).message,
-        });
+    this.buildingSnapshot = snap;
+    try {
+      for (const action of plan.actions) {
+        try {
+          this.runAction(action, pluginsByAgent, bindingsByAgent, graph);
+        } catch (err) {
+          // T022 — isolate per-action failures so a throw on one Agent never
+          // aborts the rest of the diff.
+          this.log(`registry: diff action FAILED — skipping`, {
+            action: action.kind,
+            slug: actionSlug(action),
+            error: (err as Error).message,
+          });
+        }
       }
+    } finally {
+      this.buildingSnapshot = undefined;
     }
 
     this.channelIdentities = snap.channelIdentities ?? [];
@@ -803,7 +817,8 @@ export class OrchestratorRegistry {
 
   /** The currently-held snapshot. Useful for diffing in US5. */
   currentSnapshot(): ConfigSnapshot | undefined {
-    return this.snapshot;
+    // #1918 — during a diff, the snapshot the agents are being built from.
+    return this.buildingSnapshot ?? this.snapshot;
   }
 
   /**

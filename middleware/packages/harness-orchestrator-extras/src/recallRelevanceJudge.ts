@@ -66,8 +66,14 @@ export interface RecallRelevanceJudgeOptions {
   /**
    * Concrete model id the provider understands. The caller resolves the FAST
    * model class (`class:fast`) to this id so the judge stays vendor-neutral.
+   *
+   * #1855 / ADR-0194 — a function is asked on EVERY call. The plugin passes
+   * one when the operator configured no model: `class:fast` resolves against
+   * the catalog, and live model discovery replaces the built-in seed after
+   * the plugins activated, so a value fixed in `activate()` kept the seed's
+   * fast model after a restart and the discovered one after a reactivation.
    */
-  model: string;
+  model: string | (() => string);
   /** Max tokens for the verdict (ids only → tiny). Default 512. */
   maxTokens?: number;
   /** Per-candidate text cap fed to the model. Default 280 chars. */
@@ -147,7 +153,9 @@ No markdown fence, no commentary.`;
 export function createRecallRelevanceJudge(
   opts: RecallRelevanceJudgeOptions,
 ): RecallRelevanceJudge {
-  const model = opts.model.trim();
+  const modelSource = opts.model;
+  const currentModel = (): string =>
+    (typeof modelSource === 'function' ? modelSource() : modelSource).trim();
   const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
   const maxChars = opts.maxCandidateChars ?? DEFAULT_MAX_CANDIDATE_CHARS;
   const cacheMax = opts.verdictCacheMax ?? DEFAULT_VERDICT_CACHE_MAX;
@@ -164,6 +172,7 @@ export function createRecallRelevanceJudge(
       candidates: readonly RecallCandidate[],
     ): Promise<Set<string>> {
       const allIds = new Set(candidates.map((c) => c.id));
+      const model = currentModel();
       // Nothing to judge, or no usable message → keep everything (cheap legs win).
       if (candidates.length === 0 || userMessage.trim().length === 0) {
         return allIds;

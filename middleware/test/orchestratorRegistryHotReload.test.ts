@@ -631,3 +631,33 @@ test('T020: diffSnapshots is pure — exposes the action set without touching li
   const kinds = plan.actions.map((a) => a.kind).sort();
   assert.deepEqual(kinds, ['add', 'rebuild', 'remove']);
 });
+
+/**
+ * #1918 — the post-build hook (sub-agent/MCP tool hydration) reads
+ * `currentSnapshot()` while the rebuild runs. It must see the snapshot the
+ * agent is being built FROM, not the previous one: otherwise a just-enabled
+ * MCP server's tools are missing and a re-scan's tool versions lag one
+ * change behind until some unrelated edit forces another rebuild.
+ */
+test('a rebuild hook reads the snapshot the agent is built from (#1918)', async () => {
+  const store = new MutableFakeStore(baseSnapshot);
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+  });
+  await registry.start();
+  const next: ConfigSnapshot = {
+    ...baseSnapshot,
+    agentPlugins: [pluginRow('00000000-0000-0000-0000-000000000001', SEO_PLUGIN)],
+  };
+  const seen: Array<ConfigSnapshot | undefined> = [];
+  registry.setOnAgentBuilt(() => {
+    seen.push(registry.currentSnapshot());
+  });
+
+  store.set(next);
+  await registry.reload();
+
+  assert.equal(seen.length, 1, 'one rebuild');
+  assert.equal(seen[0], next, 'the hook saw the new snapshot, not the previous one');
+  assert.equal(registry.currentSnapshot(), next);
+});

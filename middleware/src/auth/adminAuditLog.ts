@@ -216,6 +216,8 @@ export type AuditAction =
   | 'mcp_server.skill_binding_change'
   | 'mcp_server.oauth_connect'
   | 'mcp_server.oauth_client_change'
+  // #1933 — a server's delegation mode changed (`per_user` ⇄ `service`).
+  // `service` makes every caller act under one shared authorization.
   | 'mcp_server.delegation_change'
   | 'mcp_server.registry_create'
   | 'mcp_server.registry_delete'

@@ -233,7 +233,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
             disabled={busy !== null}
             className="lg:col-span-1"
           >
-            {busy === 'upsert' ? '…' : 'Add'}
+            {busy === 'upsert' ? '…' : t('add')}
           </Button>
         </div>
       </section>

@@ -343,7 +343,7 @@ export interface McpAuthProvider {
    * stands. The provider owns the messaging + the protected/needs-client
    * decision, so the manager needs no OAuth knowledge.
    */
-  onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
+  onAuthFailure(cfg: McpServerConfig, failure?: string): Promise<string | null>;
   /**
    * #1906 — asked before anything is resolved or sent. A non-null answer is
    * the user-facing reason the call may not run at all (a `per_user` server
@@ -1793,7 +1793,7 @@ export class McpManager {
         if (token === null && !unattended && this.options?.auth) {
           let authMessage: string | null = null;
           try {
-            authMessage = await this.options.auth.onAuthFailure(cfg);
+            authMessage = await this.options.auth.onAuthFailure(cfg, failure);
           } catch {
             /* fall through to outcome unknown */
           }
@@ -1903,7 +1903,9 @@ export class McpManager {
       } else {
         let authMessage: string | null = null;
         try {
-          authMessage = await this.options.auth.onAuthFailure(cfg);
+          // #1929 — the failure text lets the provider tell a refused
+          // authorization from any other failure.
+          authMessage = await this.options.auth.onAuthFailure(cfg, rawFailure);
         } catch {
           /* fall back to the raw failure */
         }
@@ -2176,15 +2178,51 @@ function httpRequestInit(
 
 // ── adapters ────────────────────────────────────────────────────────────────
 
-/** Anthropic tool names must match `^[a-zA-Z0-9_-]{1,64}$`. Build a stable,
- *  collision-resistant native name for an MCP tool. */
+/** The tool-name grammar every provider accepts (Anthropic's). Shared with
+ *  the public MCP write-scope grammar (#1940). */
+export const MCP_NATIVE_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+const MCP_NATIVE_TOOL_NAME_MAX = 64;
+const MCP_NATIVE_TOOL_NAME_HASH_LEN = 8;
+
+/**
+ * The native name of an MCP tool, `mcp__<server>__<tool>` in the grammar
+ * {@link MCP_NATIVE_TOOL_NAME_PATTERN}: every other character becomes `_`.
+ *
+ * #1948 — a name longer than 64 characters keeps its first 55 and ends in
+ * `_<8 hex>` (SHA-256 of `<server>\0<tool>`): a plain cut gave two long
+ * names that share 64 characters the same name, and the second tool was
+ * silently dropped. A name that fits stays exactly as before, so stored
+ * references to it (API-key bindings, privacy settings) keep working. Two
+ * tools whose names only differ in replaced characters (`a.b` / `a_b`) still
+ * share a name; the grant routes refuse the second one
+ * ({@link mcpNativeToolNameCollision}).
+ */
 export function mcpNativeToolName(
   serverName: string,
   toolName: string,
 ): string {
-  const raw = `mcp__${serverName}__${toolName}`;
-  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return safe.length <= 64 ? safe : safe.slice(0, 64);
+  const safe = `mcp__${serverName}__${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (safe.length <= MCP_NATIVE_TOOL_NAME_MAX) return safe;
+  const hash = createHash('sha256')
+    .update(`${serverName}\0${toolName}`)
+    .digest('hex')
+    .slice(0, MCP_NATIVE_TOOL_NAME_HASH_LEN);
+  return `${safe.slice(0, MCP_NATIVE_TOOL_NAME_MAX - MCP_NATIVE_TOOL_NAME_HASH_LEN - 1)}_${hash}`;
+}
+
+/**
+ * #1948 — the already-granted tool of `serverName` whose native name equals
+ * that of `toolName`, if any (another tool, not `toolName` itself).
+ */
+export function mcpNativeToolNameCollision(
+  serverName: string,
+  toolName: string,
+  grantedToolNames: readonly string[],
+): string | undefined {
+  const target = mcpNativeToolName(serverName, toolName);
+  return grantedToolNames.find(
+    (other) => other !== toolName && mcpNativeToolName(serverName, other) === target,
+  );
 }
 
 function inputSchemaOrEmpty(tool: McpToolDescriptor): {
@@ -2285,7 +2323,11 @@ export function renderToolResult(res: any): string {
       } else if (block?.type === 'resource' && block.resource?.text) {
         parts.push(String(block.resource.text));
       } else {
-        parts.push(JSON.stringify(block));
+        // #1920 / ADR-0207 — binary content (an image, audio, a blob
+        // resource) never reaches the model as base64 text: it is unreadable
+        // as text, cannot be masked, and one 512×512 PNG overflowed the
+        // provider's context. The model gets its type and size.
+        parts.push(binaryBlockPlaceholder(block) ?? JSON.stringify(block));
       }
     }
     const joined = parts.join('\n').trim();
@@ -2303,6 +2345,34 @@ export function renderToolResult(res: any): string {
     return JSON.stringify(res.structuredContent);
   }
   return JSON.stringify(res ?? {});
+}
+
+/** Bytes a base64 string decodes to (padding-aware, no decode). */
+function base64Bytes(data: string): number {
+  const clean = data.replace(/\s/g, '');
+  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((clean.length * 3) / 4) - padding);
+}
+
+/**
+ * #1920 — the placeholder for a binary MCP content block, or undefined for a
+ * block that is not binary. Covers `image` and `audio` blocks and a
+ * `resource` whose content is a `blob`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function binaryBlockPlaceholder(block: any): string | undefined {
+  const kind: string | undefined =
+    block?.type === 'image' || block?.type === 'audio'
+      ? block.type
+      : block?.type === 'resource' && typeof block.resource?.blob === 'string'
+        ? 'binary resource'
+        : undefined;
+  if (kind === undefined) return undefined;
+  const data: unknown = kind === 'binary resource' ? block.resource.blob : block.data;
+  const mime: unknown = kind === 'binary resource' ? block.resource.mimeType : block.mimeType;
+  const size = typeof data === 'string' ? `${String(base64Bytes(data))} bytes` : 'unknown size';
+  const type = typeof mime === 'string' && mime.length > 0 ? mime.slice(0, 100) : 'unknown type';
+  return `[${kind}: ${type}, ${size} — not shown to the model]`;
 }
 
 /**

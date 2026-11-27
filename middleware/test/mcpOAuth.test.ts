@@ -300,7 +300,7 @@ describe('McpOAuthService.describeAuth (broker classification)', () => {
     redirectUri: 'https://host/cb',
   };
 
-  it('brokered=true when DCR actually succeeds (zero-setup)', async () => {
+  it('#1947 — reading the status registers nothing at the provider', async () => {
     const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
     const discovery = {
       discover: async () => ({
@@ -308,19 +308,25 @@ describe('McpOAuthService.describeAuth (broker classification)', () => {
         server: { ...AS, registrationEndpoint: 'https://as.example/register', tokenEndpoint: 'https://as.example/token' },
       }),
     } as never;
-    // "brokered" now reflects a REAL DCR probe: no stored client → register →
-    // success persists it → brokered.
+    let registrations = 0;
     const graph = { getMcpOAuthClient: async () => null, upsertMcpOAuthClient: async () => {} } as never;
-    const client = { registerClient: async () => ({ clientId: 'cid', clientSecret: 'sec' }) } as never;
+    const client = {
+      registerClient: async () => {
+        registrations += 1;
+        return { clientId: 'cid', clientSecret: 'sec' };
+      },
+    } as never;
     const vault = { get: async () => null, set: async () => {} } as never;
     const svc = new McpOAuthService({ graph, vault, redirectUri: 'https://host/cb', discovery, client });
     const d = await svc.describeAuth(server);
     assert.equal(d.protected, true);
-    assert.equal(d.brokered, true);
+    assert.equal(d.brokered, true, 'DCR as advertised');
+    assert.equal(d.acquisitionMode, 'dcr');
     assert.equal(d.issuerHost, 'as.example');
+    assert.equal(registrations, 0);
   });
 
-  it('brokered=false when advertised DCR is gated (registration declined, e.g. Figma)', async () => {
+  it('brokered=false once advertised DCR declined a registration on Connect (e.g. Figma)', async () => {
     const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
     const discovery = {
       discover: async () => ({
@@ -332,6 +338,7 @@ describe('McpOAuthService.describeAuth (broker classification)', () => {
     const client = { registerClient: async () => null } as never; // DCR 403 → null
     const vault = { get: async () => null } as never;
     const svc = new McpOAuthService({ graph, vault, redirectUri: 'https://host/cb', discovery, client });
+    await assert.rejects(svc.beginAuthorization(server, 'u1'), /McpOAuthNeedsClientError|client/i);
     assert.equal((await svc.describeAuth(server)).brokered, false);
   });
 

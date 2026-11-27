@@ -2671,6 +2671,25 @@ Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzh
   `deliver_data`; Zeilen kommen aus `structuredContent` (`mcpReadToolInvoker`,
   `captureMcpStructured`).
 
+### MCP-Grants, Result-Safety, OAuth-UX (Welle 5, ADR-0207/0208)
+
+- **Routen-Verträge:** `POST /mcp-servers/:id/discover` → 409 `mcp_tool_list_empty`, wenn
+  ein Server nach einer vollen Liste plötzlich keine Tools meldet (alte Liste bleibt);
+  `POST …/authorize` → 422 `mcp_oauth_discovery_failed` (`code`, `message`);
+  `PUT …/delegation` und `PUT /mcp-grants` mit `delegation: 'service'` → 409
+  `delegation_confirmation_required` ohne `confirm: true`, malformed id → 404; Admin-Audit
+  `mcp_server.delegation_change`. `auth-status` hat neu `discoveryError` und
+  `sharedAuthorization`.
+- **Grants:** Core-Migration (Unique-Index `agent_tool_grants_subagent_uidx`) macht
+  Sub-Agent-Grants idempotent; Helper bekommen die entdeckten Deskriptoren; nicht mehr
+  angebotene Tools gehen an kein Modell; native Namen >64 Zeichen bekommen `_<8hex>`,
+  Kollisionen → `mcp_tool_name_collision`.
+- **Result-Safety:** Bild/Audio/Blob → Platzhalter; `capToolResultText` (200k) auf den
+  nicht internierten Pfaden; KG-Ingest ohne Fehler/Auth-Prompts, Digest nur Anzahlen.
+- **OAuth:** `describeAuth` registriert nie (DCR wie beworben, Ablehnung beim Connect
+  gemerkt); `forgetClient` beim Löschen des letzten Servers eines Issuers (nur DCR/CIMD,
+  fail-closed); `onAuthFailure(cfg, failure)`.
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
@@ -3980,6 +3999,37 @@ Tests: `test/adminEmbeddingProviderReactivate.test.ts` (Route inkl.
 Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
 Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
 `web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
+
+**Alle Verbraucher folgen live (#1815/#1817/#1855, ADR-0194).** orchestrator-extras
+löst `embeddingClient@1` pro Aufruf auf (`liveEmbeddingClient.ts`: Recall,
+Widerspruchs- und Duplikaterkennung, Themenerkennung); der `topicDetector` ist
+publiziert, sobald ein LLM da ist, und antwortet ohne Anbieter mit
+continue-default. `memoryFeatureStatus.topicDetector` wird beim Lesen berechnet.
+Das KG-Gate prüft bei jedem Lesen von Client, Schreibfreigabe oder Epoche, ob die
+Registry den freigegebenen Client noch publiziert; sonst Rückzug (Writes aus,
+Epoche +1, Backfill gestoppt) und Neubewertung in place — Deinstallieren oder
+Deaktivieren braucht also keinen Admin-Klick mehr. Der Kernel markiert ein
+entsorgtes Modell-Service-Registrat (`embeddingClient`, `transcription`,
+`decisionModel`) als zurückgezogen: Aufrufe über eine gehaltene Referenz werfen
+`ModelServiceWithdrawnError`. Der Recall-Judge löst `class:fast` pro Aufruf auf,
+solange `kg_recall_relevance_judge_model` leer ist. Tests:
+`test/embeddingLiveRebind1815.test.ts`.
+
+**Admin-UX und Schwellen-Provenienz (#1814/#1816/#1818/#1857).** `capabilityGap` kennt
+zusätzlich `weights-ready-reactivate` (keyloser Adapter allein installiert, Gewichte
+vollständig, nur Reaktivieren fehlt). `GET /` liefert `installableProviders` (Store-Anbieter,
+nicht installiert) und `dedupThresholdProvenance` (`default` | `recommended` | `operator`).
+Die empfohlene `process_dedup_threshold` trägt ihren Ursprung im kernel-synthetischen
+KG-Config-Key `_process_dedup_threshold_recommended_by`
+(`src/routes/embeddingDedupThreshold.ts`): `/reactivate` und `/switch` gleichen sie an den
+neuen Anbieter an (`dedupThreshold` in beiden Responses, `reason` zusätzlich `cleared` und
+`unchanged`), das Deinstallieren eines Anbieters entfernt den für ihn empfohlenen Wert
+(`onUninstalled`). Ein Operator-Wert bleibt immer. `/health` zählt einen aktiven Adapter
+ohne publizierten Client als „Embeddings aus“ (`buildKgHealth(…, embeddingClientPublished)`).
+Kollisionstext von Store und Install-Endpoint: `describeProviderCollision`
+(`capabilityResolver.ts`). Tests: `test/embeddingDedupThreshold.test.ts`,
+`test/kgHealth.test.ts`, `test/adminEmbeddingProvider{Route,Reactivate}.test.ts`,
+`test/storeProviderCollision.test.ts`, `web-ui/app/_lib/__tests__/providerAdminLink.test.ts`.
 
 ### Run-Trace- und Capture-Filter-Zähler: `GET /api/admin/run-trace` (#684 / #1082)
 
@@ -5431,6 +5481,23 @@ migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
 - **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
   von #430 für die Begründung; offener Folge-Task.
 
+### `/api/v1/memory`: Paging und 404 für Nicht-Owner (#1853, 2026-11-26)
+
+`middleware/src/routes/memory.ts` — der HTTP-Vertrag der Memorable-Knowledge-Routen:
+
+- **Liste mit Cursor.** `GET /api/v1/memory?limit=&cursor=` liefert `{ …, nextCursor }`.
+  `limit` 1–500 (Default 50), `cursor` ist opak (der `nextCursor` der vorigen Antwort).
+  Nach einer vollen Seite fragt die Route eine Probe-Zeile ab; `nextCursor` ist `null`,
+  wenn danach nichts mehr kommt — die letzte Seite bietet kein leeres „Mehr laden“.
+  Die Seite `/memories` lädt nach. Getragen von `ListMemorableKnowledgeOptions.offset`
+  (plugin-api 1.99.0), beide KG-Backends sortieren mit Tie-Break auf der Id.
+- **Nicht-Owner bekommen 404.** Owner-Prüfungen (Owner hinzufügen/entfernen, Audit)
+  antworten `404 { code: 'memory.not_found' }` statt früher `403 memory.not_an_owner` —
+  dieselbe Antwort wie für eine unbekannte Id, damit die Route nicht verrät, dass ein
+  Eintrag existiert (ADR-0019 Offenlegung „none“, ADR-0104 Fehler-Envelope). Kein neues ADR.
+- **Audit-Aktion `delete_excerpt`** hat Label und Badge in der Web-UI
+  (`web-ui/app/_lib/memoryAuditLabels.ts`).
+
 ---
 
 ## 8. Skills
@@ -5558,6 +5625,13 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
 | `USAGE_FX_DISABLED` | `true` schaltet den Abruf des EZB-Tageskurses für die EUR-Ansicht des Kosten-Dashboards ab (`GET www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`, ohne Credentials, höchstens alle 6 h). Default aus — für air-gapped oder egress-beschränkte Installationen. Ohne Kurs bleibt das Dashboard in USD. Siehe Abschnitt Usage-Telemetrie, Lesepfad. |
+
+### Env-Variablen, die Plugin-Settings seeden (#1858, ADR-0193)
+
+| Variable | Wirkung |
+|---|---|
+| `GRAPH_EMBEDDING_BACKFILL_ENABLED`, `GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES`, `GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE`, `GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS` | Seeden die gleichnamigen Settings (`graph_embedding_backfill_*`) von `@omadia/knowledge-graph-neon`. `bootstrapKnowledgeGraphFromEnv` schreibt nur **gesetzte** Variablen und merkt sich im versteckten Key `_env_seeded`, welche Werte vom Boot stammen (`src/plugins/envSeededConfig.ts`). Ein vom Boot geschriebener Wert folgt der Variable bei jedem Boot (geändert oder, wenn die Variable wegfällt, entfernt → Plugin-Default). Speichert ein Operator den Wert im Store, gewinnt er; eine gesetzte Variable, die er überdeckt, loggt der Boot als `⚠ … is ignored`. Alt-Installationen ohne Marker: Werte gleich dem eingebauten Default (`true`/`5`/`20`/`5`, vom alten Migrationspfad immer geschrieben) zählen als Boot-Werte. Validierung in `config.ts` bleibt (Wert außerhalb des Bereichs stoppt den Boot). |
+| `MEMORY_BACKEND` | Gilt nur, solange auf `/admin/memory-backend` keine Auswahl gespeichert ist. Die gespeicherte Auswahl (`memory_backend`) gewinnt bei **jedem** Boot und wird beim Provider-Wechsel auf den neu installierten Sibling übertragen (#1834, ADR-0192). |
 
 ### Self-Update und Release-Check (#432, #1381)
 

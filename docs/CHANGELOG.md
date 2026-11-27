@@ -851,6 +851,171 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — MCP OAuth UX: honest reasons, confirmed service delegation, no DCR on status reads (ADR-0208) (2026-11-26)
+
+- **#1924** A provider configuration that cannot be used is reported with its reason:
+  `auth-status.discoveryError`, `POST /mcp-servers/:id/authorize` → `422
+  mcp_oauth_discovery_failed` (was 500), and a named chat message; only a missing client
+  registration gets the "one-time app registration" hint. The auth section says when the
+  metadata is unreadable instead of showing `?` placeholders.
+- **#1929** An MCP server off public https that refuses a call for authorization gets "OAuth
+  only for public https servers" (ADR-0108) instead of a raw 401. `McpAuthProvider.onAuthFailure`
+  now receives the failure text.
+- **#1933** `PUT /mcp-servers/:id/delegation` and the `delegation` field of `PUT
+  /mcp-grants` to `service` need `confirm: true` (else 409
+  `delegation_confirmation_required`), are written to the admin audit
+  (`mcp_server.delegation_change`) and answers 404 for a malformed id. The UI asks first and
+  shows a shared authorization under `service`; Connect/Disconnect there ask before replacing
+  or removing it for all callers. The Conductor dialog says the switch covers the whole server.
+- **#1947** Viewing a server no longer registers an OAuth client at the provider (DCR is
+  reported as advertised; registration happens on Connect). Deleting the last server of an
+  issuer removes its automatically acquired client (DCR/CIMD) and vault secret; a manual
+  client is kept, and nothing is removed while another server's issuer cannot be read. The registration hint shows only when
+  Connect opens the client form.
+- **#1906 (UI part)** The delegation switch is shown for MCP servers without OAuth too.
+
+### Fixed — MCP result safety: binary content, one result cap, KG ingest (ADR-0207) (2026-11-26)
+
+- **#1920** MCP `image`/`audio` blocks and blob resources reach the model as a type/size
+  placeholder, never as base64 text. A tool result the Privacy Shield does not intern
+  (operator bypass, bypassed sub-agent narration, no privacy guard) is cut to 200 000
+  characters with a notice (`capToolResultText`). Provider image blocks for unmasked
+  servers are a follow-up (ADR-0207).
+- **#1934** MCP → Knowledge-Graph ingest skips failed calls and the connect prompt; the
+  digest for a masked server holds counts only, no field names. The KG toggle's tooltip
+  (en/de) says that ingest needs an active Privacy Guard.
+
+### Fixed — MCP grants and hydration (W09-10) (2026-11-26)
+
+- **#1910** Sub-agent (helper) MCP tools carry the discovered description and input
+  schema, like top-level grants, instead of a placeholder and an empty schema.
+- **#1918** A rebuild's post-build hook reads the snapshot the agent is being built from
+  (`OrchestratorRegistry.currentSnapshot()` during a diff), so a re-scan, an enabled or a
+  disabled server reaches the agent's tools with that change, not one change later.
+- **#1917** An empty `tools/list` from a server that listed tools before is not stored
+  and prunes nothing (Discover answers 409 `mcp_tool_list_empty`, the re-scan reports a
+  failure). Pruning keeps hash-bound acknowledgements. A granted tool the discovered
+  server no longer lists is not handed to a model.
+- **#1939** A repeated canvas drop is a no-op: core migration
+  `0118_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
+  unique index `agent_tool_grants_subagent_uidx`; `createToolGrant` binds only the
+  parameters its conflict query uses (the agent node answered 500). Hydration builds one
+  tool per granted tool.
+- **#1948** Native MCP tool names longer than 64 characters end in a stable `_<8 hex>`
+  suffix instead of a plain cut; names that fit are unchanged. **A long tool's native name
+  therefore changes**: a per-tool privacy setting, API-key tool binding or allowlist entry
+  saved under the old cut name no longer matches (fails closed) and has to be saved again. Grants whose native names
+  collide after character replacement are refused (`mcp_tool_name_collision`). A tool name
+  may contain `:`; only a `<server>:` prefix is stripped from a grant ref.
+- **#1932** Replaying an answered MCP input request uses `mcpRowToConfig` (endpoint
+  placeholders, static headers), now in `src/services/mcpInputReplayer.ts`.
+
+### Fixed — memory admin: saved backend choice, env-seeded graph config, /memories paging, audit key, copy (#1834, #1858, #1853, #1854, #1839, ADR-0192, ADR-0193) (2026-11-26)
+
+- **#1834** A memory-backend switch saved on `/admin/memory-backend` now lasts until the
+  operator changes it. `bootstrapMemoryFromEnv` reads `memory_backend` before it removes the
+  non-selected sibling and carries it onto the sibling it installs or keeps; before, the
+  choice was removed with the old entry and the second boot silently swapped back.
+  `GET /api/v1/admin/memory/backend` reports `current` = the running backend and the new
+  `desired` = the saved choice; the admin page shows the saved choice separately while a
+  restart is pending, and the `/memory` badge names the running backend. ADR-0192 records
+  the rule and supersedes the "memory backend follows the environment on every boot"
+  sentence of ADR-0047 (ADR-0124 already stated the precedence).
+- **#1858** `GRAPH_EMBEDDING_BACKFILL_*` now take effect on existing installs. The boot
+  writes a backfill setting of `@omadia/knowledge-graph-neon` only when its variable is set,
+  records what it wrote in the hidden key `_env_seeded`, and on every boot lets boot-written
+  values follow the variable (or drops them when it is unset). A value an operator saved in
+  the Store wins; a set variable it overrides is logged as `⚠ … is ignored`. Values the old
+  migration wrote unasked (the built-in defaults) count as boot-written. ADR-0193 records
+  the rule (`src/plugins/envSeededConfig.ts`); the variables are now in `.env.example` and
+  handoff §10. A boot that self-heals a dual-active knowledge graph reconciles the
+  backfill settings too.
+- **#1853** `/memories` reaches every entry: `GET /api/v1/memory` takes an opaque `cursor`
+  and answers `nextCursor` (null on the last page; a full page is followed by a one-row
+  probe), backed by the new optional `ListMemorableKnowledgeOptions.offset`
+  (plugin-api 1.99.0, both providers, ties broken by id). The page shows how many entries
+  are loaded and a "Load more" button. The history labels `delete_excerpt` ("excerpt
+  deleted") with a badge. Owner checks on an existing entry of another user now answer 404
+  `memory.not_found` like an unknown id (`/:id/audit`, owners, PATCH, DELETE, excerpts)
+  instead of 403 `memory.not_an_owner` (ADR-0019 disclosure "none", ADR-0104). A failed
+  list load shows a localized headline with the server's message as detail, never the
+  client's transport line. Handoff §7 documents the route contract.
+- **#1854** Graph explorer: the owner/audit section of a memory is keyed by the entry, so
+  selecting another entry shows its own audit (a new request) and empty owner/reason inputs
+  instead of the previous entry's history and typed text.
+- **#1839** Memory, graph and knowledge admin copy: no visible text names internal planning
+  steps any more ("slice 6.5", "Slice 9", "slice 11", "#133"). Hard-coded English went into
+  the catalogs (en+de): `/memories` heading and row labels, the history's actor/before/after
+  lines (new namespace `memoryAudit`), the graph owner section (tabs, Delete, translated
+  action names via the shared `memoryAuditLabels.ts`), the recall card's insight kind,
+  kg-priorities "Add", the duplicates/inconsistencies status filter and "Detector". German
+  values that were English or jargon are translated (bulk promotion, duplicates and
+  inconsistencies, KG lifecycle, KG priorities, graph filters, `/memory` axes). The `/admin`
+  storage-backend card names Postgres and In-Memory instead of a filesystem option that
+  does not exist. The local model size is shown in decimal MB (135 MB, it divided by 1024
+  twice under an "MB" label), and the adapter's store text says 135 MB instead of 144 MB.
+  i18n literal ceiling lowered (109 after rebasing on main); four stale identical-value exceptions removed.
+
+### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
+
+- **#1815** `@omadia/orchestrator-extras` no longer captures `embeddingClient@1` in
+  `activate()`. Context recall (memory, durable and turn legs), contradiction and
+  merge-candidate detection (incl. the bulk merge services) and topic detection resolve the
+  client per call (`liveEmbeddingClient.ts`), so **Reactivate provider** / **Switch
+  provider** work without a restart. The topic detector is now published whenever an LLM
+  is available and answers continue-default (`reason: no-embedding-provider`) while no
+  provider is published; `memoryFeatureStatus@1` reports its state at read time.
+- **#1817** The knowledge-graph gate withdraws its approved client as soon as the registry
+  stops publishing it (uninstall, deactivate, reactivate): writes off, epoch bumped,
+  backfill stood down, then an in-place re-evaluation against the registry. The backfill no
+  longer counts an attempt for an embed that failed after the epoch moved. The kernel now
+  marks a disposed model-service registration (`embeddingClient`, `transcription`,
+  `decisionModel`) withdrawn: calls through a held reference reject with
+  `ModelServiceWithdrawnError` and never reach the removed adapter.
+- **#1855** The recall relevance judge resolves `class:fast` per call when
+  `kg_recall_relevance_judge_model` is unset, so it uses the discovered fast model after a
+  restart as after a reactivation. The boot log reads `recallJudge=on(class:fast per call, now …)`.
+- The orchestrator resolves the client per call too: `query_knowledge_graph`'s
+  `search_turns_semantic` and the durable-rules promotion hook take the same resolver
+  (`EmbeddingClientSource`, now exported by `@omadia/embeddings`). After a switch they
+  embed with the new provider; after an uninstall the tool answers "embeddings not
+  configured" instead of `embedding failed — … withdrawn`.
+- A `replace()` registration of a model service is withdrawn on its dispose as well (only
+  the wrapper that `replace()` created); `docs/security-architecture.md` §4 records the
+  egress rule.
+- Log lines of the extras now read `embed=live, now on|off`.
+
+### Fixed — embedding provider admin tells the truth and leads somewhere (#1814, #1816, #1818, #1857) (2026-11-26)
+
+- **#1816** `/health` no longer reports `kg.embeddings`/`semanticRecall: true` while the
+  active embedding adapter publishes no client (keyless adapter without weights, OpenAI
+  adapter without key). `buildKgHealth` takes whether `embeddingClient` is published, the
+  same evidence as the admin page's `capabilityPublished`, and warns
+  "embedding provider '<id>' is active but publishes no embedding client (…)".
+- **#1857** `capabilityGap` has a new reason `weights-ready-reactivate`: the keyless
+  adapter is the only installed provider, its weights are complete, it only needs
+  **Reactivate provider**. The box says so and carries the button; the "second adapter"
+  text (`not-published`) is left for installs that really have a second provider.
+- **#1818** The recommended `process_dedup_threshold` carries its provenance in the
+  kernel-synthetic KG config key `_process_dedup_threshold_recommended_by`
+  (`src/routes/embeddingDedupThreshold.ts`). A value is omadia's own while the marker names
+  a provider and the value still equals its recommendation; any edit makes it the
+  operator's, which is never touched. `/switch` now applies the target's recommendation as
+  `/reactivate` does, and removes omadia's value when the target has none; uninstalling a
+  provider removes the value recommended for it (install service `onUninstalled`). The page
+  shows the provenance (`dedupThresholdProvenance` in `GET /`), switch responses carry
+  `dedupThreshold`. A value written by older builds (no marker) that equals exactly one
+  provider's current recommendation is read as that recommendation, so the keyless
+  adapter's old `0.45` is cleared on a switch or uninstall; any other unmarked value stays
+  the operator's.
+- **#1814** The store's blocked-install box links to the admin page of the colliding
+  capability (`/admin/embedding-provider`, `/admin/transcription-provider`, otherwise
+  `/admin/providers`), and its text names both ways out. Store detail and install endpoint
+  now word the collision with one sentence (`describeProviderCollision`: "uninstall '<owner>'
+  first and then install this one"). `GET /admin/embedding-provider` lists
+  `installableProviders` (store providers not installed) and the page names them with the
+  steps to move. The keyless adapter's setup guide describes **Load model now** →
+  **Reactivate provider** instead of an `npm` command that a container cannot run.
 ### Added — MCP `structuredContent` feeds the data side channel (#547, ADR-0021) (2026-11-26)
 
 - MCP tools their server declares `readOnlyHint` are now data-action read tools for

@@ -197,7 +197,9 @@ export default function InconsistenciesListPage(): React.ReactElement {
               </dd>
             </div>
             <div>
-              <dt className="text-[color:var(--fg-muted)]">Detector</dt>
+              <dt className="text-[color:var(--fg-muted)]">
+                {t('detectorLabel')}
+              </dt>
               <dd
                 className={[
                   'font-mono text-base',
@@ -313,7 +315,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
                 : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
             ].join(' ')}
           >
-            {s === 'all' ? t('statusAll') : s}
+            {t(`statusFilter.${s}`)}
           </button>
         ))}
         <Button

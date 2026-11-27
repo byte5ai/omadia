@@ -269,6 +269,16 @@ export function startEmbeddingBackfill(
           );
           stats.succeeded++;
         } catch (err) {
+          // #1817 — a failure under a MOVED epoch is the provider going away
+          // mid-sweep (its client refuses once withdrawn), not a broken row:
+          // stop without burning an attempt, the next sweep re-embeds it.
+          if (fence.moved()) {
+            stats.staleEpochSkipped = (stats.staleEpochSkipped ?? 0) + 1;
+            log(
+              `[graph-embedding-backfill] embed failed after the gate moved (epoch ${String(fence.epoch)} → ${String(opts.gateEpoch?.() ?? fence.epoch)}) — the provider was withdrawn or switched; stopping this batch without counting an attempt`,
+            );
+            return;
+          }
           stats.failed++;
           const message = err instanceof Error ? err.message : String(err);
           try {
@@ -369,6 +379,11 @@ export function startEmbeddingBackfill(
         processFailures.delete(row.id);
         stats.succeeded++;
       } catch (err) {
+        // #1817 — see the node pass: a withdrawn provider is not this row's fault.
+        if (fence.moved()) {
+          stats.staleEpochSkipped = (stats.staleEpochSkipped ?? 0) + 1;
+          return;
+        }
         stats.failed++;
         processFailures.set(row.id, (processFailures.get(row.id) ?? 0) + 1);
         log(

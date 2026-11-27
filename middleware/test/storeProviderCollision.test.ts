@@ -21,6 +21,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import express from 'express';
 
+import { describeProviderCollision } from '../src/plugins/capabilityResolver.js';
 import { createStoreRouter } from '../src/routes/store.js';
 import type { Plugin } from '../src/api/admin-v1.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
@@ -147,6 +148,17 @@ describe('store router · already-provided capability (OM-06 / #671)', () => {
       body.blocking_reasons?.some((r) => r.includes(INCUMBENT)),
       'the human-readable reason should still name the incumbent',
     );
+  });
+
+  it('words the reason exactly like the 409 of the install endpoint (#1814)', async () => {
+    const body = await detail(RIVAL);
+    const expected = describeProviderCollision({
+      capability: 'llmProvider@1',
+      ownerId: INCUMBENT,
+    });
+    assert.ok(body.blocking_reasons?.includes(expected));
+    // The one sentence names the step that works for every provider kind.
+    assert.match(expected, /uninstall '@x\/provider-active' first/);
   });
 
   it('leaves an unrelated plugin installable', async () => {

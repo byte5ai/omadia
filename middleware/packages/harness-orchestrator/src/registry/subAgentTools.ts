@@ -12,6 +12,7 @@ import type {
 import {
   mcpToolToLocalSubAgentTool,
   type McpServerConfig,
+  type McpToolDescriptor,
 } from '../mcp/mcpClient.js';
 import {
   createDomainTool,
@@ -90,6 +91,13 @@ export interface SubAgentToolDeps {
    *  callable tool — a high_risk/scan_failed verdict without a valid ack
    *  must not stay callable just because the grant predates the verdict. */
   readonly blockedMcpGrant?: (serverId: string, toolName: string) => boolean;
+  /**
+   * #1910 / #1917 — the discovered descriptor (description, input schema,
+   * hints) of a granted MCP tool, so a helper's model sees the same tool the
+   * agent does. `undefined` means the server no longer offers the tool, and
+   * the grant is not materialised. Absent ⇒ a name-only descriptor.
+   */
+  readonly mcpDescriptor?: (serverId: string, toolName: string) => McpToolDescriptor | undefined;
   /**
    * #2050 — does the PARENT agent hold this granted capability right now?
    * Asked when the helper is built (a grant its agent lacks is never
@@ -461,6 +469,10 @@ export function resolveSubAgentTools(
   const parentHolds = deps.parentHolds;
   const guard = (t: LocalSubAgentTool, g: ToolGrantRow): LocalSubAgentTool =>
     parentHolds ? guardedByParent(t, g, parentHolds, deps.log) : t;
+  // #1939 — one tool per (kind, server, tool): a duplicated grant row (a second
+  // canvas drop) used to become a second tool of the same name, which the
+  // provider rejects for the whole helper.
+  const seen = new Set<string>();
   for (const g of grants) {
     // #2050 — a grant the parent agent does not hold is never materialised.
     if (parentHolds && !parentHolds(g)) {
@@ -470,6 +482,8 @@ export function resolveSubAgentTools(
       continue;
     }
     if (g.toolKind === 'native') {
+      if (seen.has(`native ${g.toolRef}`)) continue;
+      seen.add(`native ${g.toolRef}`);
       const t = deps.nativeTool?.(g.toolRef);
       if (t) out.push(guard(t, g));
       else deps.log?.(`sub-agent tool: native tool "${g.toolRef}" not resolvable — skipped`);
@@ -486,15 +500,25 @@ export function resolveSubAgentTools(
       continue;
     }
     const toolName = mcpToolNameFromRef(g.toolRef, cfg.name);
+    const key = `mcp ${g.mcpServerId} ${toolName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     if (deps.blockedMcpGrant?.(g.mcpServerId, toolName)) {
       deps.log?.(
         `sub-agent tool: mcp tool "${toolName}" on "${cfg.name}" blocked by scan-verdict policy — skipped`,
       );
       continue;
     }
-    out.push(
-      guard(mcpToolToLocalSubAgentTool(deps.mcpManager, cfg, { name: toolName }), g),
-    );
+    const descriptor = deps.mcpDescriptor
+      ? deps.mcpDescriptor(g.mcpServerId, toolName)
+      : { name: toolName };
+    if (descriptor === undefined) {
+      deps.log?.(
+        `sub-agent tool: mcp tool "${toolName}" is no longer offered by "${cfg.name}" — skipped`,
+      );
+      continue;
+    }
+    out.push(guard(mcpToolToLocalSubAgentTool(deps.mcpManager, cfg, descriptor), g));
   }
   // W0-3 — sort by name. Grants arrive in `created_at` row order, so two
   // machines that were seeded at different times would hand the sub-agent an
@@ -503,13 +527,13 @@ export function resolveSubAgentTools(
   return sortBySpecName(out);
 }
 
-/** `toolRef` for an mcp grant is "<serverName>:<toolName>"; fall back to the
- *  whole ref when it isn't prefixed. */
+/** `toolRef` for an mcp grant is the tool name, optionally prefixed with
+ *  "<serverName>:". #1948 — only that prefix is stripped: a tool name may
+ *  itself contain `:`, and cutting at the first one made such a tool
+ *  ungrantable. */
 export function mcpToolNameFromRef(toolRef: string, serverName: string): string {
   const prefix = `${serverName}:`;
-  if (toolRef.startsWith(prefix)) return toolRef.slice(prefix.length);
-  const idx = toolRef.indexOf(':');
-  return idx >= 0 ? toolRef.slice(idx + 1) : toolRef;
+  return toolRef.startsWith(prefix) ? toolRef.slice(prefix.length) : toolRef;
 }
 
 /** `ask_<slug>` constrained to Anthropic's tool-name charset (`[a-zA-Z0-9_-]{1,64}`).

@@ -317,7 +317,9 @@ export function McpAddPickStep({ server, missingTool, onPick, onClose, onServerC
     setDelegationBusy(true);
     setDelegationError(null);
     try {
-      const res = await setMcpServerDelegation(server.id, 'service');
+      // #1933 — the notice above the button states that this switches the
+      // whole server, chats included; clicking it is the confirmation.
+      const res = await setMcpServerDelegation(server.id, 'service', { confirm: true });
       onServerChange({ ...server, delegation: res.delegation });
     } catch (err) {
       setDelegationError(errorText(err));
