@@ -12212,7 +12212,7 @@ keine Konten (jedes Konto ist Admin, ADR-0113).
   `channelResolver@1` pro aufrufendem Plugin (`decorateOnProvide` + `perCallerService`),
   `scopedCoreApi.handleTurnStream` stempelt `channelId`.
 - **Linking:** Telegram & Co. verknüpfen über ADR-0280 auch auf `directory:<id>`
-  (`LinkableAccount.kind = 'person'`, Knoten-Prop `linkedDirectoryPersonId`, plugin-api 1.113.0).
+  (`LinkableAccount.kind = 'person'`, Knoten-Prop `linkedDirectoryPersonId`, plugin-api 1.114.0).
 - **Routen:** `GET /api/v1/admin/directory`, `POST …/sync`, `GET …/people/:id`,
   `POST …/people/:id/unlink`, `POST …/people/:id/connections/:serverId/revoke` (Session).
   Web-UI: `/admin/directory`.

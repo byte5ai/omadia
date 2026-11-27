@@ -212,6 +212,14 @@ export class DirectoryStore {
     return res.rows.map(toPerson);
   }
 
+  async countActive(source: DirectorySourceKind, tenantId: string): Promise<number> {
+    const res = await this.pool.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM directory_people WHERE source = $1 AND tenant_id = $2 AND status = 'active'`,
+      [source, tenantId],
+    );
+    return Number(res.rows[0]?.n ?? 0);
+  }
+
   async list(query: DirectoryListQuery = {}): Promise<{ people: DirectoryPerson[]; total: number }> {
     const limit = Math.min(Math.max(query.limit ?? DEFAULT_LIST_LIMIT, 1), MAX_LIST_LIMIT);
     const offset = Math.max(query.offset ?? 0, 0);

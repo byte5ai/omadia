@@ -25,6 +25,7 @@ export interface DirectorySyncDeps {
     | 'upsert'
     | 'findByExternalId'
     | 'listUnseenActive'
+    | 'countActive'
   >;
   /** Audit, token revocation, unlinking, then the status flip. */
   readonly deprovision: (person: DirectoryPerson, reason: DeprovisionReason) => Promise<void>;
@@ -34,6 +35,16 @@ export interface DirectorySyncDeps {
 export type DirectorySyncOutcome =
   | { readonly outcome: 'completed'; readonly full: boolean; readonly applied: number; readonly deprovisioned: number }
   | { readonly outcome: 'failed'; readonly error: string };
+
+/**
+ * A completed full read that would deprovision more than this share of a
+ * tenant's active people (with at least {@link MASS_DEPROVISION_MIN_ACTIVE}
+ * active) is refused instead: a source that reads a partial or wrong tenant
+ * must not revoke everyone's tokens. The run fails with `last_error` and
+ * deprovisions nobody; removals the delta reports one by one still apply.
+ */
+export const MASS_DEPROVISION_MAX_SHARE = 0.5;
+export const MASS_DEPROVISION_MIN_ACTIVE = 10;
 
 /** A source that never ends its pages must not loop forever. */
 export const MAX_SYNC_PAGES = 5_000;
@@ -138,7 +149,14 @@ export async function runDirectorySync(source: DirectorySource, deps: DirectoryS
     }
     if (run.full && run.runId) {
       try {
-        for (const person of await store.listUnseenActive(kind, tenantId, run.runId)) {
+        const unseen = await store.listUnseenActive(kind, tenantId, run.runId);
+        const active = await store.countActive(kind, tenantId);
+        if (active >= MASS_DEPROVISION_MIN_ACTIVE && unseen.length > active * MASS_DEPROVISION_MAX_SHARE) {
+          return fail(
+            `full read misses ${String(unseen.length)} of ${String(active)} active people — refusing to deprovision them`,
+          );
+        }
+        for (const person of unseen) {
           await deprovision(person, 'not_in_full_read');
         }
       } catch (err) {

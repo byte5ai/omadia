@@ -27,6 +27,11 @@ export interface DirectoryServiceDeps {
   readonly unlinkPersonIdentities: (person: DirectoryPerson) => Promise<number>;
   /** `users.status` of an account; `undefined` = unknown account. */
   readonly accountStatus: (userId: string) => Promise<'active' | 'disabled' | undefined>;
+  /**
+   * Whether `channelId` may contribute a source of this kind (Entra: only the
+   * plugin that holds the `teams` channel type). Absent: every kind allowed (tests).
+   */
+  readonly mayRegister?: (channelId: string, source: DirectorySourceKind) => boolean;
   readonly log?: (message: string) => void;
   readonly intervalMs?: number;
 }
@@ -58,6 +63,9 @@ export class DirectoryService {
     }
     if (source.source !== 'entra' || !GUID_RE.test(source.tenantId)) {
       throw new Error(`directory source of '${channelId}' names an unknown kind or tenant`);
+    }
+    if (this.deps.mayRegister && !this.deps.mayRegister(channelId, source.source)) {
+      throw new Error(`channel '${channelId}' may not contribute a ${source.source} directory: it does not serve that channel`);
     }
     const key = sourceKey(source.source, source.tenantId);
     const owner = this.sources.get(key)?.channelId;

@@ -56,6 +56,9 @@ class FakeStore {
   async findByExternalId(_s: string, _t: string, externalId: string) {
     return this.people.get(externalId) ?? null;
   }
+  async countActive() {
+    return [...this.people.values()].filter((p) => p.status === 'active').length;
+  }
   async listUnseenActive(_s: string, _t: string, runId: string) {
     return [...this.people.values()].filter((p) => p.status === 'active' && p.seenInRun !== runId);
   }
@@ -188,5 +191,18 @@ describe('ADR-0300 · directory sync', () => {
       deps,
     );
     assert.deepEqual(out, { outcome: 'completed', full: true, applied: 1, deprovisioned: 0 });
+  });
+
+  it('refuses a full read that would deprovision most of the tenant', async () => {
+    const store = new FakeStore();
+    const { deps, deprovisioned } = harness(store);
+    const many = Array.from({ length: 12 }, (_, i) => ({ externalId: `u${String(i)}` }));
+    await runDirectorySync(scriptedSource({ START: page(many, { deltaCursor: 'd1' }) }), deps);
+    const out = await runDirectorySync(
+      scriptedSource({ d1: { outcome: 'resync' }, START: page(many.slice(0, 2), { deltaCursor: 'd2' }) }),
+      deps,
+    );
+    assert.equal(out.outcome, 'failed');
+    assert.deepEqual(deprovisioned, []);
   });
 });

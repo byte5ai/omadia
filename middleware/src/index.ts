@@ -1803,7 +1803,15 @@ async function main(): Promise<void> {
   // foreign origin before the turn runs; the kernel's own reads stay
   // unwrapped. `channelTypesOfPlugin` is bound further down and only read at
   // turn time.
-  const mayStateTurnOrigin = createOriginTypeCheck((pluginId) => channelTypesOfPlugin(pluginId));
+  // Before `channelTypesOfPlugin` exists (a turn between plugin activation and
+  // its declaration), no plugin has claimed anything yet: the manifest-derived
+  // type is the same answer it would give.
+  const channelTypesOfPluginRef: { current?: (pluginId: string) => readonly string[] } = {};
+  const channelTypesFor = (pluginId: string): readonly string[] =>
+    channelTypesOfPluginRef.current
+      ? channelTypesOfPluginRef.current(pluginId)
+      : [deriveChannelType(pluginId, { manifest: pluginCatalog.get(pluginId)?.plugin.channel })];
+  const mayStateTurnOrigin = createOriginTypeCheck(channelTypesFor);
   const logOriginGuard = (m: string): void => console.warn(m);
   serviceRegistry.decorateOnProvide<{ readonly agent: ChatAgent }>(CHAT_AGENT_SERVICE, (bundle) =>
     perCallerService((caller) => chatAgentBundleFor(bundle, caller, mayStateTurnOrigin, logOriginGuard)) as unknown as {
@@ -3216,6 +3224,9 @@ async function main(): Promise<void> {
     unlinkPersonIdentities: (person) =>
       unlinkPersonIdentities(knowledgeGraph, pluginAdminAudit.current, person, (m) => console.warn(m)),
     accountStatus: async (userId) => (await linkableUsers.current?.findById(userId))?.status,
+    // ADR-0300 — an Entra directory comes only from the plugin that serves Teams:
+    // a source can deprovision a whole tenant.
+    mayRegister: (channelId, source) => source === 'entra' && channelTypesFor(channelId).includes('teams'),
     log: (m) => console.log(m),
   });
   // #2324 — account status and directory people for the turn owner, read per
@@ -4961,6 +4972,7 @@ async function main(): Promise<void> {
       ? claimed
       : [deriveChannelType(pluginId, { manifest: pluginCatalog.get(pluginId)?.plugin.channel })];
   };
+  channelTypesOfPluginRef.current = channelTypesOfPlugin;
   // Named here, not inline, for the wiring-pin tests' lazy
   // `createOperatorAgentsRouter\(\{…\}\)` match.
   const releaseAgentChannelBots = agentChannelIdentities

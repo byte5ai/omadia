@@ -58,7 +58,9 @@ Chosen option: **A**.
 - **The source is a channel contribution, the store is the kernel's.**
   `CoreApi.registerDirectorySource?(channelId, source)` (channel-sdk, optional,
   feature-detected) takes `{ source: 'entra', tenantId, delta(cursor?) }`. One source per
-  tenant; the first plugin to register a tenant owns it, a foreign re-registration throws,
+  tenant, and an `entra` source only from the plugin that holds the `teams` channel type (a
+  source can deprovision a whole tenant); the first plugin to register a tenant owns it, a
+  foreign re-registration throws,
   deactivation drops it (the registry rule of
   [ADR-0135](0135-channel-plugin-contract-and-channel-type-ownership.md)). The Teams plugin
   implements it with Graph `GET /users/delta` (`id, displayName, mail, userPrincipalName,
@@ -72,7 +74,8 @@ Chosen option: **A**.
   `directory_sync_state`.
 - **Deprovisioning.** A person is deprovisioned when the delta reports them removed, when
   `accountEnabled` becomes false, or when a *completed* full read did not contain them (never
-  after a failed or partial run). Deprovisioning, in this order: an audit row
+  after a failed or partial run, and never when that read misses more than half of at least ten
+  active people: the run then fails with `last_error` and deprovisions nobody). Deprovisioning, in this order: an audit row
   `directory_person.deprovision` (a failed audit write is logged and does not keep a leaver's
   tokens), the person's per-person MCP tokens are revoked and deleted server by server
   ([ADR-0168](0168-mcp-oauth-token-lifecycle-invalidation-marks-and-revoke-on-disconnect.md);

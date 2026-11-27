@@ -133,4 +133,20 @@ describe('ADR-0300 · directory service', () => {
     service.stop();
     assert.equal(service.registeredSources()[0]?.channelId, '@acme/other');
   });
+
+  it('refuses an Entra source from a plugin that does not serve Teams', () => {
+    const { store } = storeStub();
+    const service = new DirectoryService({
+      store: () => store,
+      audit: () => undefined,
+      revokePersonConnections: async () => ({ revoked: 0, failed: 0 }),
+      unlinkPersonIdentities: async () => 0,
+      accountStatus: async () => undefined,
+      mayRegister: (channelId) => channelId === '@omadia/channel-teams',
+      log: () => undefined,
+    });
+    assert.throws(() => service.register('@omadia/channel-telegram', source), /does not serve/);
+    service.register('@omadia/channel-teams', source);
+    service.stop();
+  });
 });

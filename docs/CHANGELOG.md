@@ -50,7 +50,7 @@ changelog.
   `optional_requires`).
 - Channel account links (ADR-0280) can name a directory person: the picker lists active people
   without an Entra account as `directory:<id>` (`LinkableAccount.kind = 'person'`); the identity
-  node records `linkedDirectoryPersonId` (plugin-api **1.113.0**, both graph backends,
+  node records `linkedDirectoryPersonId` (plugin-api **1.114.0**, both graph backends,
   `ChannelIdentityLinkInput.target.directoryPersonId`).
 - Admin page **Directory** (`/admin/directory`, en+de) on `/api/v1/admin/directory`: sync state
   per tenant, people, linked channel accounts (unlink) and MCP connections (revoke). New audit

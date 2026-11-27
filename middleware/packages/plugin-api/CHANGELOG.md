@@ -8,9 +8,9 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.113.0 — 2026-11-27
+## 1.114.0 — 2026-11-27
 
-Additive (ADR-0300, #2335; numbered after 1.112.0, the lander renumbers if needed).
+Additive (ADR-0300, #2335; 1.113.0 is W43 #2360, the lander renumbers if needed).
 
 - `ResolveOrCreateChannelIdentityResult.linkedDirectoryPersonId?` — an operator link to a
   directory person (a colleague of the Entra tenant without a web login), exclusive with
