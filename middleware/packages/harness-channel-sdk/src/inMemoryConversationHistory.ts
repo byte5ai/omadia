@@ -19,6 +19,8 @@
  * practice.
  */
 
+import type { StoredTurnAttachment } from './chatAgent.js';
+
 /** A single round-trip: user message + assistant answer. */
 export interface ConversationTurn {
   userMessage: string;
@@ -38,6 +40,14 @@ export interface PendingTopicDecision {
   userMessage: string;
   /** Unix millis of when we asked. */
   askedAt: number;
+  /**
+   * #2304 — the uploads the adapter stored with that message (ADR-0178). The
+   * turn the decision click starts passes them on as its
+   * `ChatTurnInput.storedAttachments`, so the kernel binds and ingests them
+   * then. Kept here, server-side — never taken from the card payload, which
+   * the client controls.
+   */
+  storedAttachments?: readonly StoredTurnAttachment[];
 }
 
 export interface InMemoryConversationHistoryStoreOptions {

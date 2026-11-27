@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Teams uploads held back by the topic-change card reach the click's turn (#2304) (2026-11-27)
+
+- `PendingTopicDecision.storedAttachments` (`@omadia/channel-sdk` **0.3.20**): a channel keeps the
+  uploads it stored with a message that triggered the topic card on the server-side pending entry
+  and passes them as `ChatTurnInput.storedAttachments` on the turn the click starts, so the kernel
+  binds them to the conversation and ingests them then (ADR-0178, binding at the turn that carries
+  them). Implemented in `omadia-channel-teams` (Unreleased, PR in that repo).
+
 ### Changed — a fast-lane miss replays its executed call as a tool round (#2300, ADR-0265) (2026-11-27)
 
 - Owner decision 2026-11-27, supersedes ADR-0221: the call the fast lane already ran reaches the
