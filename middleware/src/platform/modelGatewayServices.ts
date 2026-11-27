@@ -1,4 +1,5 @@
 import { admitModelCall, type ModelOperation } from '@omadia/llm-provider';
+import { isPerCallerService, perCallerService, resolvePerCallerService } from '@omadia/plugin-api';
 import { currentExecutionContext, runInExecutionContext } from '@omadia/usage-telemetry';
 
 /**
@@ -50,6 +51,23 @@ const GATED = Symbol.for('omadia.modelGateway.gated');
  */
 const withdrawnServices = new WeakSet<object>();
 
+/**
+ * #2298 — a per-caller factory registration (`perCallerService`) hands out a
+ * fresh object per caller, so withdrawing "the" wrapper cannot reach them.
+ * Every object the gated factory hands out carries its registration's token;
+ * withdrawing the factory withdraws the token, and with it every object it
+ * ever handed out, whoever still holds one.
+ */
+const registrationTokenOf = new WeakMap<object, object>();
+const factoryTokenOf = new WeakMap<object, object>();
+const withdrawnTokens = new WeakSet<object>();
+
+function isWithdrawn(proxy: object): boolean {
+  if (withdrawnServices.has(proxy)) return true;
+  const token = registrationTokenOf.get(proxy);
+  return token !== undefined && withdrawnTokens.has(token);
+}
+
 /** Raised when a model service is called after its provider withdrew it. */
 export class ModelServiceWithdrawnError extends Error {
   constructor(readonly serviceName: string) {
@@ -68,7 +86,9 @@ export class ModelServiceWithdrawnError extends Error {
 export function withdrawModelService(impl: unknown): void {
   if (impl === null || typeof impl !== 'object') return;
   if ((impl as Record<symbol, unknown>)[GATED] !== true) return;
-  withdrawnServices.add(impl);
+  const token = factoryTokenOf.get(impl);
+  if (token !== undefined) withdrawnTokens.add(token);
+  else withdrawnServices.add(impl);
 }
 
 /** The bare service name of a registry key (`embeddingClient@2` → `embeddingClient`). */
@@ -86,6 +106,39 @@ export function gateModelService<T>(name: PropertyKey, impl: T): T {
   const methods = GATED_SERVICES.get(baseName(name));
   if (!methods || impl === null || typeof impl !== 'object') return impl;
   if ((impl as Record<symbol, unknown>)[GATED] === true) return impl;
+  if (isPerCallerService(impl)) return gatePerCallerFactory(name, impl) as T;
+  return gateObject(name, methods, impl);
+}
+
+/**
+ * #2298 — a per-caller factory of a model service: every object it hands out
+ * is gated and tied to this registration, so disposing the registration
+ * withdraws them all (ADR-0194 rule 3 for factories).
+ */
+function gatePerCallerFactory(name: PropertyKey, factory: object): object {
+  const methods = GATED_SERVICES.get(baseName(name));
+  const token = {};
+  const gatedOf = new WeakMap<object, unknown>();
+  const gated = perCallerService((caller) => {
+    const instance = resolvePerCallerService(factory as Parameters<typeof resolvePerCallerService>[0], caller);
+    if (!methods || instance === null || typeof instance !== 'object') return instance;
+    const known = gatedOf.get(instance);
+    if (known !== undefined) return known;
+    const proxy = gateObject(name, methods, instance);
+    registrationTokenOf.set(proxy as object, token);
+    gatedOf.set(instance, proxy);
+    return proxy;
+  });
+  Object.defineProperty(gated, GATED, { value: true });
+  factoryTokenOf.set(gated, token);
+  return gated;
+}
+
+function gateObject<T>(
+  name: PropertyKey,
+  methods: ReadonlyMap<PropertyKey, ModelOperation>,
+  impl: T,
+): T {
   const serviceName = baseName(name);
   const proxy: T = new Proxy(impl as object, {
     get(target, prop, receiver) {
@@ -94,7 +147,7 @@ export function gateModelService<T>(name: PropertyKey, impl: T): T {
       const operation = methods.get(prop);
       if (operation === undefined || typeof value !== 'function') return value;
       return function gated(this: unknown, ...args: unknown[]): unknown {
-        if (withdrawnServices.has(proxy as object)) {
+        if (isWithdrawn(proxy as object)) {
           const refusal = new ModelServiceWithdrawnError(serviceName);
           if (prop === 'transcribeStream') throw refusal;
           return Promise.reject(refusal);

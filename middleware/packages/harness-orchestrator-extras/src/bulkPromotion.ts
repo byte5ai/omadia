@@ -39,6 +39,8 @@ import type {
   KnowledgeGraph,
   PalaiaExcerpt,
   PalaiaExcerptExtractor,
+  RetiredTurn,
+  UnretireOutcome,
 } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
@@ -351,6 +353,15 @@ export function createBulkPromotionService(
     const tally = { promoted: 0, already: 0, below: 0, skipped: 0, failed: 0 };
     for (const row of promoteRows.rows) {
       try {
+        // #2294 — the live path's discretion check, before any LLM call.
+        if (!(await mayPromote(options, row))) {
+          tally.skipped++;
+          log(`[discretion] bulk promotion of turn ${row.external_id} skipped: the turn carries another conversation's knowledge`);
+          // Retired, or every later run would pick the same high-significance
+          // turns first and spend its whole promote limit on them.
+          await retireTurnFromPromotion(deps.pool, deps.tenantId, row.external_id, 'discretion');
+          continue;
+        }
         const result = await promoteCandidate(row, threshold);
         countOutcome(tally, result);
         await retireIfFinal(row.external_id, result);
@@ -382,5 +393,70 @@ export function createBulkPromotionService(
     };
   }
 
-  return { preview, run };
+  /** #2295 — retired turns, newest first; ids and reasons only. */
+  async function listRetired(options: { limit?: number } = {}): Promise<RetiredTurn[]> {
+    const res = await deps.pool.query<{ external_id: string; scope: string | null; reason: string | null; at: string | null }>(
+      `SELECT t.external_id, t.scope,
+              t.properties->'${PROMOTION_RETIRED_PROP}'->>'reason' AS reason,
+              t.properties->'${PROMOTION_RETIRED_PROP}'->>'at'     AS at
+         FROM graph_nodes t
+        WHERE t.tenant_id = $1
+          AND t.type = 'Turn'
+          AND t.properties ? '${PROMOTION_RETIRED_PROP}'
+        ORDER BY t.properties->'${PROMOTION_RETIRED_PROP}'->>'at' DESC NULLS LAST
+        LIMIT $2`,
+      [deps.tenantId, clampLimit(options.limit)],
+    );
+    return res.rows.map((r) => {
+      const agentSlug = agentOfTurnScope(r.scope);
+      return {
+        turnId: r.external_id,
+        reason: r.reason ?? 'unknown',
+        retiredAt: r.at ?? '',
+        ...(agentSlug !== undefined ? { agentSlug } : {}),
+      };
+    });
+  }
+
+  /**
+   * #2295 — drop the retirement mark so the turn is a candidate again. A
+   * turn no person owns stays retired: it would only be retired again.
+   */
+  async function unretire(turnId: string): Promise<UnretireOutcome> {
+    const found = await deps.pool.query<{ person: boolean }>(
+      `SELECT (t.user_id ${OMADIA_USER_ID_SQL}) AS person
+         FROM graph_nodes t
+        WHERE t.tenant_id = $1 AND t.external_id = $2 AND t.type = 'Turn'
+          AND t.properties ? '${PROMOTION_RETIRED_PROP}'`,
+      [deps.tenantId, turnId],
+    );
+    const row = found.rows[0];
+    if (!row) return 'not_found';
+    if (!row.person) return 'no_person_owner';
+    await deps.pool.query(
+      `UPDATE graph_nodes
+          SET properties = properties - '${PROMOTION_RETIRED_PROP}'
+        WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'`,
+      [deps.tenantId, turnId],
+    );
+    return 'unretired';
+  }
+
+  return { preview, run, listRetired, unretire };
+}
+
+/** #2294 — the kernel's discretion gate for one candidate; a throw refuses. */
+async function mayPromote(options: BulkPromoteRunOptions, row: PromoteCandidate): Promise<boolean> {
+  if (!options.mayPromote) return true;
+  const owners = ownersOf(row.owners);
+  const agentSlug = agentOfTurnScope(row.scope);
+  try {
+    return await options.mayPromote({
+      turnId: row.external_id,
+      ...(owners !== undefined ? { owners } : {}),
+      ...(agentSlug !== undefined ? { agentSlug } : {}),
+    });
+  } catch {
+    return false;
+  }
 }

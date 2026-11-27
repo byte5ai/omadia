@@ -575,11 +575,10 @@ function resolveMemoryBackend(
  * plugin lands with the proper config instead of the empty auto-install
  * default that would miss the env-provided paths.
  *
- * Idempotent: once the registry entry exists, operator-owned settings
- * (seed_dir, seed_mode) are never overwritten. The single
- * exception is `dev_memory_endpoints_enabled`, which is reconciled from
- * `DEV_ENDPOINTS_ENABLED` on every boot so a container-env flip takes
- * effect on restart (see the reconcile path below).
+ * Every boot: `seed_dir` / `seed_mode` follow their variables while they are
+ * boot-owned and an operator value wins (ADR-0193 / ADR-0264, #2299);
+ * `dev_memory_endpoints_enabled` is reconciled from `DEV_ENDPOINTS_ENABLED`
+ * so a container-env flip takes effect on restart (see below).
  */
 export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
@@ -607,9 +606,8 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
     );
   }
 
-  // Idempotent: target already installed → reconcile only the env-driven
-  // dev-endpoints flag and the carried-over backend choice (operator-owned
-  // keys like seed_dir stay untouched).
+  // Target already installed → reconcile the env-driven dev-endpoints flag,
+  // the carried-over backend choice and (#2299) the boot-owned seed keys.
   if (deps.registry.has(targetId)) {
     const entry = deps.registry.get(targetId);
     if (!entry) return;
@@ -632,6 +630,9 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
         );
       }
     }
+    // #2299 (ADR-0193) — seed path and mode follow MEMORY_SEED_DIR /
+    // MEMORY_SEED_MODE while they are boot-owned; an operator value wins.
+    await reconcileEnvSeeds(deps, targetId, memorySeedSeeds(deps), 'memory seed settings', log);
     return;
   }
 
@@ -650,8 +651,8 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
     status: 'active',
     origin: 'bundled',
     config: {
-      seed_dir: deps.config.MEMORY_SEED_DIR,
-      seed_mode: deps.config.MEMORY_SEED_MODE,
+      // #2299 (ADR-0193) — seed path and mode with the boot-ownership marker.
+      ...seededConfig({}, memorySeedSeeds(deps), deps),
       dev_memory_endpoints_enabled: desiredDevEndpoints,
       // Carry the operator's saved choice over: the swap above removed the
       // entry it was saved on, and without it the next boot would fall back
@@ -728,38 +729,11 @@ export async function bootstrapEmbeddingsFromEnv(
   }
 
   if (deps.registry.has(EMBEDDINGS_TOOL_ID)) {
-    const entry = deps.registry.get(EMBEDDINGS_TOOL_ID);
-    if (entry && deps.config.OLLAMA_BASE_URL) {
-      const desiredModel = deps.config.OLLAMA_EMBEDDING_MODEL;
-      const desiredConcurrent =
-        typeof deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT === 'number' &&
-        Number.isFinite(deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT)
-          ? deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT
-          : undefined;
-      const needsUrl =
-        entry.config?.['ollama_base_url'] !== deps.config.OLLAMA_BASE_URL;
-      const needsModel =
-        !!desiredModel && entry.config?.['ollama_model'] !== desiredModel;
-      const needsConcurrent =
-        desiredConcurrent !== undefined &&
-        entry.config?.['max_concurrent'] !== desiredConcurrent;
-      if (needsUrl || needsModel || needsConcurrent) {
-        await deps.registry.register({
-          ...entry,
-          config: {
-            ...entry.config,
-            ollama_base_url: deps.config.OLLAMA_BASE_URL,
-            ...(desiredModel ? { ollama_model: desiredModel } : {}),
-            ...(desiredConcurrent !== undefined
-              ? { max_concurrent: desiredConcurrent }
-              : {}),
-          },
-        });
-        log(
-          `[bootstrap] ⚐ ${EMBEDDINGS_TOOL_ID} ollama_base_url reconciled from env (embeddings activated on an existing install)`,
-        );
-      }
-    }
+    // #2299 (ADR-0193) — the Ollama settings follow their variables while
+    // they are boot-owned (set: written; unset: removed), on every boot; an
+    // operator value wins and a shadowed variable is logged. Enabling the
+    // overlay on an existing install still takes effect at the next restart.
+    await reconcileEnvSeeds(deps, EMBEDDINGS_TOOL_ID, embeddingsSeeds(deps), 'Ollama settings', log);
     return;
   }
 
@@ -786,19 +760,7 @@ export async function bootstrapEmbeddingsFromEnv(
     return;
   }
 
-  const config: Record<string, unknown> = {};
-  if (deps.config.OLLAMA_BASE_URL) {
-    config['ollama_base_url'] = deps.config.OLLAMA_BASE_URL;
-  }
-  if (deps.config.OLLAMA_EMBEDDING_MODEL) {
-    config['ollama_model'] = deps.config.OLLAMA_EMBEDDING_MODEL;
-  }
-  if (
-    typeof deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT === 'number' &&
-    Number.isFinite(deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT)
-  ) {
-    config['max_concurrent'] = deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT;
-  }
+  const config = seededConfig({}, embeddingsSeeds(deps), deps);
 
   await deps.registry.register({
     id: EMBEDDINGS_TOOL_ID,
@@ -1069,23 +1031,117 @@ async function reconcileNeonBackfillSeeds(
   deps: BootstrapDeps,
   log: (msg: string) => void,
 ): Promise<void> {
-  const entry = deps.registry.get(KNOWLEDGE_GRAPH_NEON_ID);
-  if (!entry) return;
-  const result = applyEnvSeeds(
-    entry.config ?? {},
+  await reconcileEnvSeeds(
+    deps,
+    KNOWLEDGE_GRAPH_NEON_ID,
     neonBackfillSeeds(deps),
-    deps.env ?? process.env,
+    'embedding-backfill settings',
+    log,
   );
+}
+
+/**
+ * ADR-0193 — re-apply `seeds` to an installed entry on every boot: boot-owned
+ * keys follow their variables, an operator value wins and a set variable it
+ * shadows is logged. No-op without an entry or without a change.
+ */
+async function reconcileEnvSeeds(
+  deps: BootstrapDeps,
+  pluginId: string,
+  seeds: readonly EnvSeed[],
+  label: string,
+  log: (msg: string) => void,
+): Promise<void> {
+  const entry = deps.registry.get(pluginId);
+  if (!entry) return;
+  const result = applyEnvSeeds(entry.config ?? {}, seeds, deps.env ?? process.env);
   for (const s of result.shadowed) {
     log(
-      `[bootstrap] ⚠ ${KNOWLEDGE_GRAPH_NEON_ID}: ${s.envName}='${s.envValue}' is ignored — the plugin setting ${s.configKey}='${s.stored}' was set by an operator and wins (change it in the plugin settings)`,
+      `[bootstrap] ⚠ ${pluginId}: ${s.envName}='${s.envValue}' is ignored — the plugin setting ${s.configKey}='${s.stored}' was set by an operator and wins (change it in the plugin settings)`,
     );
   }
   if (result.config === null) return;
   await deps.registry.register({ ...entry, config: result.config });
-  log(
-    `[bootstrap] ⚐ ${KNOWLEDGE_GRAPH_NEON_ID}: embedding-backfill settings reconciled from the environment`,
-  );
+  log(`[bootstrap] ⚐ ${pluginId}: ${label} reconciled from the environment`);
+}
+
+/** ADR-0193 — the config a first install writes: only set variables (plus
+ *  kernel fallbacks), with the boot-ownership marker. */
+function seededConfig(
+  base: Record<string, unknown>,
+  seeds: readonly EnvSeed[],
+  deps: BootstrapDeps,
+): Record<string, unknown> {
+  return applyEnvSeeds(base, seeds, deps.env ?? process.env).config ?? base;
+}
+
+/**
+ * #2299 — `MEMORY_SEED_DIR` / `MEMORY_SEED_MODE` → the memory plugin. The
+ * kernel resolves the seed path against the middleware root; the plugin's
+ * own default (`memory-seed` relative to cwd) is a different directory, so
+ * an unset variable writes the kernel default instead of removing the key.
+ */
+function memorySeedSeeds(deps: BootstrapDeps): EnvSeed[] {
+  const c = deps.config;
+  return [
+    {
+      envName: 'MEMORY_SEED_DIR',
+      configKey: 'seed_dir',
+      value: c.MEMORY_SEED_DIR,
+      legacyDefault: c.MEMORY_SEED_DIR,
+      fallback: c.MEMORY_SEED_DIR,
+    },
+    {
+      envName: 'MEMORY_SEED_MODE',
+      configKey: 'seed_mode',
+      value: c.MEMORY_SEED_MODE,
+      // No legacy default: a pre-marker `missing` may be the operator's, and
+      // reading it as boot-owned would let a set `overwrite` replace memory
+      // files on every boot. Only a value equal to the variable is boot-owned.
+      legacyDefault: '',
+    },
+  ];
+}
+
+/**
+ * #2299 — the Ollama variables → `@omadia/embeddings`. `max_concurrent` keeps
+ * the kernel default (2) when unset: the plugin's own default is 4.
+ */
+function embeddingsSeeds(deps: BootstrapDeps): EnvSeed[] {
+  const c = deps.config;
+  const concurrent = String(c.GRAPH_EMBEDDING_MAX_CONCURRENT);
+  return [
+    // No built-in default: a pre-marker URL is boot-owned only when it
+    // equals the set variable (older boots reconciled it from there).
+    { envName: 'OLLAMA_BASE_URL', configKey: 'ollama_base_url', value: c.OLLAMA_BASE_URL ?? '', legacyDefault: '' },
+    {
+      envName: 'OLLAMA_EMBEDDING_MODEL',
+      configKey: 'ollama_model',
+      value: c.OLLAMA_EMBEDDING_MODEL,
+      legacyDefault: 'nomic-embed-text',
+    },
+    {
+      envName: 'GRAPH_EMBEDDING_MAX_CONCURRENT',
+      configKey: 'max_concurrent',
+      value: concurrent,
+      legacyDefault: '2',
+      fallback: '2',
+    },
+  ];
+}
+
+/** #2299 — the topic variables → `@omadia/orchestrator-extras`. Their
+ *  `Config` defaults equal the plugin's, so an unset variable removes the
+ *  boot-owned key. */
+function orchestratorExtrasSeeds(deps: BootstrapDeps): EnvSeed[] {
+  const c = deps.config;
+  const haiku = 'claude-haiku-4-5-20251001';
+  return [
+    { envName: 'TOPIC_CLASSIFIER_MODEL', configKey: 'fact_extractor_model', value: c.TOPIC_CLASSIFIER_MODEL, legacyDefault: haiku },
+    { envName: 'TOPIC_CLASSIFIER_MODEL', configKey: 'topic_classifier_model', value: c.TOPIC_CLASSIFIER_MODEL, legacyDefault: haiku },
+    { envName: 'TOPIC_UPPER_THRESHOLD', configKey: 'topic_upper_threshold', value: String(c.TOPIC_UPPER_THRESHOLD), legacyDefault: '0.55' },
+    { envName: 'TOPIC_LOWER_THRESHOLD', configKey: 'topic_lower_threshold', value: String(c.TOPIC_LOWER_THRESHOLD), legacyDefault: '0.15' },
+  ];
 }
 
 async function bootstrapOrchestratorExtrasFromEnv(
@@ -1098,7 +1154,12 @@ async function bootstrapOrchestratorExtrasFromEnv(
   // Phase 4: copy legacy vault key → provider:anthropic/api_key (non-destructive).
   await migrateAnthropicKeyToCanonical(deps, ORCHESTRATOR_EXTRAS_TOOL_ID, log);
 
-  if (deps.registry.has(ORCHESTRATOR_EXTRAS_TOOL_ID)) return;
+  if (deps.registry.has(ORCHESTRATOR_EXTRAS_TOOL_ID)) {
+    // #2299 (ADR-0193) — topic model and thresholds follow their variables
+    // while boot-owned, on every boot.
+    await reconcileEnvSeeds(deps, ORCHESTRATOR_EXTRAS_TOOL_ID, orchestratorExtrasSeeds(deps), 'topic settings', log);
+    return;
+  }
   if (isOptedOut(deps, ORCHESTRATOR_EXTRAS_TOOL_ID, log)) return;
 
   const catalogEntry = deps.catalog.get(ORCHESTRATOR_EXTRAS_TOOL_ID);
@@ -1116,23 +1177,7 @@ async function bootstrapOrchestratorExtrasFromEnv(
     });
   }
 
-  const config: Record<string, unknown> = {};
-  if (deps.config.TOPIC_CLASSIFIER_MODEL) {
-    config['fact_extractor_model'] = deps.config.TOPIC_CLASSIFIER_MODEL;
-    config['topic_classifier_model'] = deps.config.TOPIC_CLASSIFIER_MODEL;
-  }
-  if (
-    typeof deps.config.TOPIC_UPPER_THRESHOLD === 'number' &&
-    Number.isFinite(deps.config.TOPIC_UPPER_THRESHOLD)
-  ) {
-    config['topic_upper_threshold'] = deps.config.TOPIC_UPPER_THRESHOLD;
-  }
-  if (
-    typeof deps.config.TOPIC_LOWER_THRESHOLD === 'number' &&
-    Number.isFinite(deps.config.TOPIC_LOWER_THRESHOLD)
-  ) {
-    config['topic_lower_threshold'] = deps.config.TOPIC_LOWER_THRESHOLD;
-  }
+  const config = seededConfig({}, orchestratorExtrasSeeds(deps), deps);
 
   await deps.registry.register({
     id: ORCHESTRATOR_EXTRAS_TOOL_ID,

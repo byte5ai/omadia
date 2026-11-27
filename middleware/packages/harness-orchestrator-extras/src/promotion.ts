@@ -55,7 +55,10 @@ export const OMADIA_USER_ID_SQL =
 export type PromotionRetiredReason =
   | 'memory_deleted'
   | 'no_person_owner'
-  | 'hygiene';
+  | 'hygiene'
+  // #2294 / ADR-0263 — the discretion check refused it. Retired so it does
+  // not take a slot of every later run; an operator can allow it again.
+  | 'discretion';
 
 /**
  * ADR-0190 — keep a turn out of auto and bulk promotion for good. Written by

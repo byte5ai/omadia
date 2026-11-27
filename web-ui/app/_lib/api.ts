@@ -4103,6 +4103,26 @@ export async function runBulkPromote(
   );
 }
 
+/** #2295 — a turn retired from promotion (ids and reason only). */
+export interface RetiredTurn {
+  turnId: string;
+  reason: string;
+  retiredAt: string;
+  agentSlug?: string;
+}
+
+export async function listRetiredTurns(limit = 100): Promise<RetiredTurn[]> {
+  const res = await getJson<{ turns: RetiredTurn[] }>(
+    `/v1/admin/bulk-promote/retired?limit=${String(limit)}`,
+  );
+  return res.turns;
+}
+
+/** #2295 — let a retired turn be promoted again (audited operator act). */
+export async function unretireTurn(turnId: string): Promise<void> {
+  await postJson<{ ok: boolean }>('/v1/admin/bulk-promote/unretire', { turnId });
+}
+
 // ── Slice 9 — Contradiction detection workflow ───────────────────────────────
 
 export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';

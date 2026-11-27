@@ -5520,6 +5520,15 @@ Grenzen: `docs/security-architecture.md` §7c.
   `originAgent` (aus `<agentSlug>::…` der Turn-Scope) und die Member-Owner wie der
   Live-Pfad. Turns ohne Personen-Owner (`key:<id>`, Public API) sind keine Kandidaten.
   Ergebnis `promotePhase.skipped` zählt bewusst ausgelassene Turns.
+- **Diskretion im Bulk-Pfad (ADR-0263, #2294).** Der Kernel dekoriert `bulkPromotion@1`
+  (`withBulkPromotionGate`, `discretion/bulkPromotionGate.ts`): jeder Kandidat wird gegen die
+  gespeicherten Turn-Labels mit der Live-Flow-Regel geprüft (`mayPromote`, plugin-api 1.109.0);
+  verweigert = `skipped` + Audit `target: bulk-promotion`, Fehler = verweigert.
+- **Zurückholen (#2295).** `GET /api/v1/admin/bulk-promote/retired` listet ausgeschlossene
+  Turns (ID, Grund, Zeit, Agent), `POST …/unretire { turnId }` entfernt `promotionRetired`
+  (Admin-Audit `memory.promotion_unretire` vorab; Turns ohne Personen-Owner → 409). UI:
+  Admin › Bulk Promotion. `deleteExcerpt` schließt offene Excerpt-Paare
+  (`closed_reason: excerpt_deleted`).
 - **Auto-Merge** (`kg_auto_merge_enabled`, Default an; `kg_auto_merge_threshold`
   Default 0.98, Flag-Floor 0.90): löst nur Paare mit gleichem Text (Kind/Summary/
   Rationale ohne Groß-/Kleinschreibung, Leerraum, Satzzeichen) und entfernt nur
@@ -5725,6 +5734,9 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `GRAPH_EMBEDDING_BACKFILL_ENABLED`, `GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES`, `GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE`, `GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS` | Seeden die gleichnamigen Settings (`graph_embedding_backfill_*`) von `@omadia/knowledge-graph-neon`. `bootstrapKnowledgeGraphFromEnv` schreibt nur **gesetzte** Variablen und merkt sich im versteckten Key `_env_seeded`, welche Werte vom Boot stammen (`src/plugins/envSeededConfig.ts`). Ein vom Boot geschriebener Wert folgt der Variable bei jedem Boot (geändert oder, wenn die Variable wegfällt, entfernt → Plugin-Default). Speichert ein Operator den Wert im Store, gewinnt er; eine gesetzte Variable, die er überdeckt, loggt der Boot als `⚠ … is ignored`. Alt-Installationen ohne Marker: Werte gleich dem eingebauten Default (`true`/`5`/`20`/`5`, vom alten Migrationspfad immer geschrieben) zählen als Boot-Werte. Validierung in `config.ts` bleibt (Wert außerhalb des Bereichs stoppt den Boot). |
+| `MEMORY_SEED_DIR`, `MEMORY_SEED_MODE` | Seit #2299 nach derselben Regel (`memorySeedSeeds`, `seed_dir`/`seed_mode` von `@omadia/memory` bzw. `@omadia/memory-postgres`), bei jedem Boot. Ungesetztes `MEMORY_SEED_DIR` schreibt den Kernel-Default (aufgelöster Pfad `./seed/memory`) statt den Key zu löschen, weil der Plugin-Default (`memory-seed`) ein anderes Verzeichnis ist (`EnvSeed.fallback`, ADR-0264). |
+| `OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`, `GRAPH_EMBEDDING_MAX_CONCURRENT` | Seit #2299 nach derselben Regel für `@omadia/embeddings` (`ollama_base_url`, `ollama_model`, `max_concurrent`), bei jedem Boot statt des alten „Env gewinnt, wenn gesetzt“. Ungesetzte URL entfernt eine Boot-URL (kein Client); `max_concurrent` fällt auf den Kernel-Default `2` zurück (Plugin-Default wäre 4). Alt-Werte ohne Marker, die dem gesetzten Env-Wert entsprechen, zählen als Boot-Werte. |
+| `TOPIC_CLASSIFIER_MODEL`, `TOPIC_UPPER_THRESHOLD`, `TOPIC_LOWER_THRESHOLD` | Seit #2299 nach derselben Regel für `@omadia/orchestrator-extras` (`fact_extractor_model`, `topic_classifier_model`, `topic_*_threshold`), bei jedem Boot statt nur bei der Erstinstallation. |
 | `MEMORY_BACKEND` | Gilt nur, solange auf `/admin/memory-backend` keine Auswahl gespeichert ist. Die gespeicherte Auswahl (`memory_backend`) gewinnt bei **jedem** Boot und wird beim Provider-Wechsel auf den neu installierten Sibling übertragen (#1834, ADR-0192). |
 
 ### Self-Update und Release-Check (#432, #1381)

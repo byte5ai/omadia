@@ -82,6 +82,52 @@ changelog.
   `routes/graphRouterMounts.ts`); remote sessions get `403 dev.loopback_only`. The compose dev
   stack (`NODE_ENV=development`) keeps the opt-in behaviour.
 - Tests: `test/devEndpoints/` covers the production case for graph + memory browser.
+
+### Changed — every boot-seeded setting follows the ADR-0193 rule (#2299, ADR-0264) (2026-11-27)
+
+- `MEMORY_SEED_DIR`/`MEMORY_SEED_MODE` (memory plugins), `OLLAMA_BASE_URL`/
+  `OLLAMA_EMBEDDING_MODEL`/`GRAPH_EMBEDDING_MAX_CONCURRENT` (`@omadia/embeddings`) and
+  `TOPIC_CLASSIFIER_MODEL`/`TOPIC_*_THRESHOLD` (`@omadia/orchestrator-extras`) now seed their
+  settings through `applyEnvSeeds` on every boot: a set variable writes a boot-owned value, an
+  unset one removes it, an operator value wins and a shadowed variable is logged. Before, memory
+  and topic settings were written on the first install only and the Ollama URL/model were forced
+  from the environment whenever set.
+- `EnvSeed.fallback` (ADR-0264): for `seed_dir` and `max_concurrent` an unset variable writes the
+  kernel default (the plugins' own defaults differ). A pre-marker value equal to the set variable
+  counts as boot-owned. Values are written as strings.
+
+### Fixed — retractable factory model services; withdrawn embeds count no attempt (#2298) (2026-11-27)
+
+- A model service registered as a per-caller factory (`perCallerService`) now goes through the
+  model gate too: every object the factory hands out is gated and tied to its registration, and
+  disposing the registration withdraws all of them (`ModelServiceWithdrawnError`), as ADR-0194
+  rule 3 already did for plain registrations (`modelGatewayServices.ts`).
+- The Neon stores (`embedAndStoreTurn`, `embedAndStoreNode`) no longer count an embedding
+  attempt — nor write the vector — when the provider was withdrawn while the embed ran (the
+  resolver has no client any more, or the gate epoch moved); the backfill re-embeds the node
+  with the next approved provider. Closes the two residuals ADR-0194 lists.
+
+### Fixed — excerpt pairs close with their excerpt; retired turns can be allowed again (#2295) (2026-11-27)
+
+- `deleteExcerpt` (both backends) dismisses every open `ExcerptMergeCandidate` naming the deleted
+  excerpt (`closed_reason: excerpt_deleted`), like the pairs of a deleted memory; a `keep_a` /
+  `keep_b` resolution still ends its own pair as `resolved`.
+- Operators can list turns retired from promotion (ADR-0190) and allow one again:
+  `GET /api/v1/admin/bulk-promote/retired`, `POST …/unretire { turnId }` (audit
+  `memory.promotion_unretire`, written first; 404 `bulk.unretire_not_found`, 409
+  `bulk.unretire_no_person_owner`). Admin › Bulk Promotion shows the list with "Allow again"
+  for `memory_deleted` and `discretion` (en + de). Decision recorded in ADR-0263. plugin-api **1.109.0**: `BulkPromotionService.listRetired?`, `unretire?`.
+
+### Fixed — bulk memory promotion runs the discretion check (#2294, ADR-0263) (2026-11-27)
+
+- Bulk promotion skipped `guardMemoryEgress`, so a stored turn that read another conversation
+  could be promoted into a tier whose readers may not know it. The kernel now decorates the
+  published `bulkPromotion@1` service (`withBulkPromotionGate`): every candidate is checked
+  against the label set its turn record stored, with the live flow rule (owners of a
+  member-scoped turn, otherwise unknown readers). Refused turns count as `skipped`, are
+  audited (`target: bulk-promotion`) and retired with reason `discretion`, so they do not block
+  later runs; a failed lookup refuses. plugin-api **1.109.0**:
+  `BulkPromoteRunOptions.mayPromote`, `BulkPromoteCandidate`.
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of

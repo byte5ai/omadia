@@ -159,7 +159,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, isWebChatSessionId, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, isWebChatSessionId, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, withBulkPromotionGate, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -1778,6 +1778,11 @@ async function main(): Promise<void> {
   // context recall), whoever provides `processMemory`.
   serviceRegistry.decorateOnProvide<ProcessMemoryService>('processMemory', (inner) =>
     labelProcessMemory(inner, discretionStore),
+  );
+  // #2294 — bulk promotion runs the live path's discretion check on every
+  // stored turn, whoever provides `bulkPromotion`.
+  serviceRegistry.decorateOnProvide<BulkPromotionService>('bulkPromotion', (inner) =>
+    withBulkPromotionGate(inner, discretionStore),
   );
   serviceRegistry.provide('consultation', consultationBroker);
   // The offering snapshot is read once the pool exists (after plugin
@@ -4554,7 +4559,10 @@ async function main(): Promise<void> {
     app.use(
       '/api/v1/admin/bulk-promote',
       requireAuth,
-      createBulkPromotionRouter({ service: bulkPromotionService }),
+      createBulkPromotionRouter({
+        service: bulkPromotionService,
+        ...(graphPool ? { adminAudit: new AdminAuditLog(graphPool) } : {}),
+      }),
     );
     console.log(
       '[middleware] bulk-promotion endpoint ready at /api/v1/admin/bulk-promote',

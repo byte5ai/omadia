@@ -8,6 +8,19 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.109.0 — 2026-11-27
+
+Additive. (Numbered after 1.108.0 of the sibling W31 PR #2331; the lander renumbers if needed.)
+
+### Added
+
+- **`BulkPromoteRunOptions.mayPromote`** and **`BulkPromoteCandidate`** (#2294): a per-turn
+  discretion gate the kernel supplies by decorating the published `bulkPromotion@1` service. A
+  refused turn is counted as `skipped`; a throw refuses.
+- **`BulkPromotionService.listRetired?` / `unretire?`**, `RetiredTurn`, `UnretireOutcome`
+  (#2295): list turns retired from promotion (ids and reasons, no text) and let an operator
+  allow one again; a turn no person owns stays retired (`no_person_owner`).
+
 ## 1.108.0 — 2026-11-27
 
 Additive.

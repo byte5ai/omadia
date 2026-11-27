@@ -3205,6 +3205,22 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       if (edge.from !== excerptExternalId) continue;
       this.edges.delete(key);
     }
+    // #2295 — an open duplicate pair naming the deleted excerpt has nothing
+    // left to decide; close it like the pairs of a deleted memory. A
+    // resolution that deleted this excerpt overwrites its own pair after.
+    const deletedExcerpt = excerptExternalId;
+    for (const pair of this.nodes.values()) {
+      if (pair.type !== 'ExcerptMergeCandidate' || pair.props['status'] !== 'open') continue;
+      const exPair = pair.props['excerpt_pair'];
+      if (!Array.isArray(exPair) || !exPair.includes(deletedExcerpt)) continue;
+      pair.props = {
+        ...pair.props,
+        status: 'dismissed',
+        resolved_at: new Date().toISOString(),
+        resolved_by: resolvedByOf(actor),
+        closed_reason: 'excerpt_deleted',
+      };
+    }
 
     // Audit-row on the MK.
     const audit = this.aclAudit.get(memorableKnowledgeNodeId) ?? [];
