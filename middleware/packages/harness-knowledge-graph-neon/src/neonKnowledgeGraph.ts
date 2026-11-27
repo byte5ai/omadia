@@ -484,6 +484,20 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   }
 
   /**
+   * #2298 — did the provider of `client` go away (uninstalled, switched,
+   * gate refused) while its embed was in flight? Then a failure of that embed
+   * is the withdrawal, not the node's: no attempt is counted, and the backfill
+   * re-embeds the node with whatever provider is approved next. Reading the
+   * resolver re-evaluates the gate, so a withdrawal no one has noticed yet is
+   * seen here: no client any more, or a moved epoch (a switch approves a new
+   * client only through a re-evaluation, which moves it).
+   */
+  private providerWithdrawn(fence: { moved(): boolean }): boolean {
+    if (fence.moved()) return true;
+    return this.currentEmbeddingClient() === undefined || fence.moved();
+  }
+
+  /**
    * The embedding client to use right now, or `undefined` when there is none.
    *
    * A resolver that THROWS is treated as "none" rather than propagated: the
@@ -1158,7 +1172,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     try {
       const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
-      if (fence.moved()) {
+      if (this.providerWithdrawn(fence)) {
         // The gate re-evaluated while we were embedding, so this vector came
         // from a client the current verdict no longer approves. Dropping it is
         // a clean no-op: the row keeps `embedding IS NULL` and no attempt is
@@ -1184,6 +1198,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (this.providerWithdrawn(fence)) {
+        console.error(
+          `[graph] embed for turn uuid=${turnUuid.slice(0, 8)}… ended with its provider withdrawn — no attempt counted, the backfill sweep re-embeds it`,
+        );
+        return;
+      }
       console.error(
         `[graph] embed failed turn uuid=${turnUuid.slice(0, 8)}…:`,
         message,
@@ -4187,7 +4207,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     try {
       const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
-      if (fence.moved()) {
+      if (this.providerWithdrawn(fence)) {
         console.error(
           `[graph] discarded a previous-provider embedding for ${externalId} — the model gate re-evaluated mid-embed; the backfill sweep will re-embed it`,
         );
@@ -4205,6 +4225,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     } catch (err) {
       // Log + bump attempt counter so the backfill sweep can rate-limit.
       const message = err instanceof Error ? err.message : String(err);
+      if (this.providerWithdrawn(fence)) {
+        console.error(
+          `[graph] embed for ${externalId} ended with its provider withdrawn — no attempt counted, backfill will re-embed`,
+        );
+        return;
+      }
       console.error(
         `[graph] sync embed failed for ${externalId}: ${message} — backfill will retry`,
       );

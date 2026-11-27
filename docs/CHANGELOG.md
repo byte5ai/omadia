@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — retractable factory model services; withdrawn embeds count no attempt (#2298) (2026-11-27)
+
+- A model service registered as a per-caller factory (`perCallerService`) now goes through the
+  model gate too: every object the factory hands out is gated and tied to its registration, and
+  disposing the registration withdraws all of them (`ModelServiceWithdrawnError`), as ADR-0194
+  rule 3 already did for plain registrations (`modelGatewayServices.ts`).
+- The Neon stores (`embedAndStoreTurn`, `embedAndStoreNode`) no longer count an embedding
+  attempt — nor write the vector — when the provider was withdrawn while the embed ran (the
+  resolver has no client any more, or the gate epoch moved); the backfill re-embeds the node
+  with the next approved provider. Closes the two residuals ADR-0194 lists.
+
 ### Fixed — excerpt pairs close with their excerpt; retired turns can be allowed again (#2295) (2026-11-27)
 
 - `deleteExcerpt` (both backends) dismisses every open `ExcerptMergeCandidate` naming the deleted
