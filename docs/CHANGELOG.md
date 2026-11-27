@@ -284,19 +284,20 @@ background, detached from the asking turn. No migration.
   plugin's `listPlansForScope` returns the own conversation's plans of unprotected or unknown turns)
   and #2334 (under a shield a plugin's `processMemory` `get` / `history` / `edit` return processes
   stored unprotected; Neon only).
-- **Nightly Stryker run** (`.github/workflows/memory-acl-mutation.yml`,
+- **Weekly Stryker run** (`.github/workflows/memory-acl-mutation.yml`,
   `middleware/scripts/mutation/stryker.memory-acl.config.mjs`, `runUntilRed.mjs`) over the files that
   hold only access rules, against the in-memory memory-access suites. Report only until the first runs
   set a baseline. Its test command adds the unit tests that guard rules the sweeps cannot see (write
-  vetoes, the chat turn's session check). Stryker is installed by the workflow (pinned, `--no-save`),
-  not added to `package.json`.
+  vetoes, the chat turn's session check). `@stryker-mutator/core` 10.1.1 is a pinned devDependency
+  (lockfile integrity, no install at run time); the workflow runs weekly (Sunday 02:30 UTC) and on
+  `workflow_dispatch`, 120-minute ceiling until a measured run (owner decision 2026-11-27).
 - **Adversarial memory corpus** (`test/adversarial/corpus/memory-exfiltration.jsonl`, probe
   `memory_acl` in `test/adversarial/memoryExfiltration.ts`): seven scripted attacker turns over the
   memory-access world, each with a positive control; all hold. Four counter-proofs in
   `test/adversarialModel.test.ts` break the graph and expect `breached`. `baseline.json` records the
   seven as held.
-- CI `PG_TEST_FLOOR` 847 → 858: the known-leak todos for #2333 and #2334 in `canarySweepOff.pg` and
-  `canarySweepEnforce.pg`; re-pinned to the measured total (full `test:pg` 858 tests, 4 todo).
+- CI `PG_TEST_FLOOR` → 872: the known-leak todos for #2333 and #2334 in `canarySweepOff.pg` and
+  `canarySweepEnforce.pg` on top of main's measured 868 at landing.
 
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 

@@ -155,7 +155,7 @@ Step 6 proves these suites bite. `docs/testing/memory-acl-mutation-record.md`
 records removing each access predicate once by hand (in-memory graph, Neon
 SQL, graph view, `/memories` scopes, plugin boundary, REST routes, recall) and
 which suite turned red; `scripts/mutation/` holds the catalog and runner to
-repeat it. The nightly `memory-acl-mutation` workflow runs Stryker over the
+repeat it. The weekly `memory-acl-mutation` workflow runs Stryker over the
 files that hold only access rules
 (`scripts/mutation/stryker.memory-acl.config.mjs`). Under a Privacy Shield the
 canary sweep also reads each tool result before the shield interns it

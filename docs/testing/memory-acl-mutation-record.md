@@ -183,9 +183,9 @@ the issue) until fixed:
   own process tools skip them (#1540). Neon only, since only Neon has process
   memory.
 
-## Nightly Stryker run
+## Weekly Stryker run
 
-`.github/workflows/memory-acl-mutation.yml` runs Stryker nightly (and on demand)
+`.github/workflows/memory-acl-mutation.yml` runs Stryker weekly (and on demand)
 over the files that hold only access rules
 (`scripts/mutation/stryker.memory-acl.config.mjs`): `graphNodeAccess.ts`,
 `scopedMemoryStore.ts`, `membersMemory.ts`, `shieldedNeighbors.ts`,
@@ -195,7 +195,7 @@ over the files that hold only access rules
 conversation scope); `runUntilRed.mjs` stops at the first red file. A local run limited to `chatSessionAccess.ts` (44 mutants) killed 30 and left
 14, none timed out: the legacy-owner cache and its warning, the empty-session
 check in `chatViewer` and the no-store early return. They are what the first
-nightly reports show as the baseline. It reports
+weekly reports show as the baseline. It reports
 only for now; the first runs set the baseline, which is then raised, never
 lowered. The Neon SQL and the in-memory graph's search methods stay in the hand
 run above: Stryker only swaps whole SQL string literals, and the graph file is too

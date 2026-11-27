@@ -7114,7 +7114,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
      Snapshot der Memory-Defaults, Matrix nach Migrationen.
   5. Lifecycle-Invarianten (Promotion, Reaper, Merge, GC, Purge, Owner-Entfernung) mit Fake-Clock
      und fast-check.
-  6. Mutationsnachweis (Prädikate einzeln löschen, Stryker nightly), Exfiltrations-Korpus.
+  6. Mutationsnachweis (Prädikate einzeln löschen, Stryker wöchentlich), Exfiltrations-Korpus.
   Offen: die als `todo` geführten Lecks #2333 (Plugin-`listPlansForScope` unter Shield) und
   #2334 (Plugin-`processMemory` `get`/`history`/`edit` unter Shield), dazu die Testlücken #2340
   (keine User- und Fact-Items in der Welt; kein Test markiert einen Turn erst nach der Promotion

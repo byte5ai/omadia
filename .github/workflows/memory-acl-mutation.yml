@@ -4,7 +4,7 @@
 # in-memory memory-access suites against every mutant
 # (middleware/scripts/mutation/stryker.memory-acl.config.mjs). A surviving
 # mutant is an access rule no test checks. Too slow for every PR (one build,
-# then one suite run per mutant), so it runs nightly and on demand. No tokens,
+# then one suite run per mutant), so it runs weekly and on demand. No tokens,
 # no database. The hand-run proof over the Neon SQL and the in-memory graph is
 # docs/testing/memory-acl-mutation-record.md.
 #
@@ -16,8 +16,9 @@ name: memory-acl-mutation
 on:
   workflow_dispatch:
   schedule:
-    # Nightly 02:30 UTC, away from the weekly eval crons.
-    - cron: '30 2 * * *'
+    # Weekly, Sunday 02:30 UTC, away from the weekly eval crons (owner
+    # decision 2026-11-27: weekly + on demand, not nightly).
+    - cron: '30 2 * * 0'
 
 concurrency:
   group: memory-acl-mutation
@@ -36,7 +37,9 @@ jobs:
     name: memory ACL mutation (Stryker)
     if: github.repository == 'byte5ai/omadia'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # No measured run yet: 120 is a ceiling, not an estimate. Tighten it to
+    # the measured time plus a margin after the first runs.
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: middleware
@@ -56,10 +59,8 @@ jobs:
       - name: Install sharp linux-x64 native binary
         run: npm install --no-save --no-audit --no-fund --os=linux --cpu=x64 sharp
 
-      # Pinned and kept out of package.json: only this job needs it, and its
-      # dependency tree would otherwise sit in every PR's audit.
-      - name: Install Stryker
-        run: npm install --no-save --no-audit --no-fund @stryker-mutator/core@10.1.1
+      # @stryker-mutator/core is a pinned devDependency in package-lock.json
+      # (integrity hash, no install at run time; owner decision 2026-11-27).
 
       - name: Build workspace packages
         run: npm run build
