@@ -18,8 +18,9 @@ export const MAX_DELIVERIES_IN_CONTEXT = 3;
 export const MAX_DELIVERY_CHARS = 2_000;
 /**
  * ADR 0244 — only deliveries of the last day: older reports are not context
- * of today's turn, and a chat that once got a delivery would otherwise carry
- * the block (and lose the fast path, which passes turns with a hint) for good.
+ * of today's turn. Since #2317 (ADR-0278) the block travels as
+ * `conversationContextHint`, which keeps the chat on the fast path and is
+ * dropped (not the turn) when it cannot be masked.
  */
 export const DELIVERY_CONTEXT_WINDOW_MS = 24 * 60 * 60 * 1000;
 

@@ -575,7 +575,7 @@ export function createChatRouter(
               sessionScope,
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
-              ...(deliveriesHint ? { extraSystemHint: deliveriesHint } : {}),
+              ...(deliveriesHint ? { conversationContextHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),
@@ -835,7 +835,7 @@ export function createChatRouter(
               sessionScope: resolveScope(parsed.data),
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
-              ...(deliveriesHint ? { extraSystemHint: deliveriesHint } : {}),
+              ...(deliveriesHint ? { conversationContextHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),

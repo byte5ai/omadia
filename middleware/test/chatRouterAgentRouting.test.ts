@@ -334,4 +334,32 @@ describe('createChatRouter (Phase A)', () => {
       assert.equal(res.status, 200, sessionId);
     }
   });
+
+  it('10 (#2317): recent routine deliveries go as conversationContextHint, never as extraSystemHint', async () => {
+    let seen: ChatTurnInput | undefined;
+    availableAgents.set(SLUG_PUBLIC, {
+      chat: (input: ChatTurnInput): Promise<ChatTurnResult> => {
+        seen = input;
+        return Promise.resolve({ kind: 'message', text: 'ok' } as unknown as ChatTurnResult);
+      },
+      chatStream: () => {
+        throw new Error('not used');
+      },
+    } as unknown as ChatAgent);
+    const session = store.seed('sess-deliv');
+    session.messages.push({
+      role: 'assistant',
+      content: 'Morning report: 3 open invoices',
+      timestamp: Date.now(),
+      proactive: { deliveredAt: Date.now(), routineName: 'Morning' },
+    } as unknown as ChatSession['messages'][number]);
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'how many open orders?', sessionId: 'sess-deliv' }),
+    });
+    assert.equal(res.status, 200);
+    assert.ok(seen?.conversationContextHint?.includes('Morning report'), 'the delivery is context of the turn');
+    assert.equal(seen?.extraSystemHint, undefined, 'and does not take the fast path away');
+  });
 });

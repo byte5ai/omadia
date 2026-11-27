@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a routine delivery no longer disables the fast path or blocks a chat's turns (#2317, ADR-0278) (2026-11-27)
+
+The chat's recent routine deliveries now travel as `ChatTurnInput.conversationContextHint`
+(channel-sdk 0.3.19) instead of `extraSystemHint`. The fast path no longer passes such turns
+through for 24 hours, and a delivery whose text cannot be masked is left out of the turn
+instead of failing every turn of the chat until it leaves the window.
+
 ### Fixed — stale agent config saves return 409 instead of overwriting (#2315, ADR-0277) (2026-11-27)
 
 `PUT /api/v1/operator/agents/:slug/{plugins,bindings,model-policy,context-memory,fast-lane,agent-to-agent,availability}`

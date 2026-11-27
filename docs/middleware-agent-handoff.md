@@ -11994,6 +11994,10 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   `409 config_revision_conflict` (mit `resource`). GETs und Writes liefern `revision`;
   `GET /:slug/config-revisions` liefert alle Zähler. Web-UI
   sendet es aus den vier Detail-Panels.
+- **Zustellungs-Kontext als eigenes Feld (#2317, ADR-0278, channel-sdk 0.3.19):**
+  `ChatTurnInput.conversationContextHint` trägt den Block aus `routineDeliveriesHint`; kein
+  Fast-Path-Pass-Through-Grund; maskiert wie `extraSystemHint`, aber bei Block/Fehler fällt nur
+  der Block aus dem Turn (`wireConversationContextHint`, CLI `maskContextOrDrop`).
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 
