@@ -4695,9 +4695,14 @@ under LLM access deletes copies and `superseded:` copies in those two scopes, an
 provider plugin's uninstall purge removes its `superseded:` copies. A provider API key sent to the verifier's or extras' scope through the
 per-plugin editor is refused (`400 runtime.provider_key_in_kernel_scope`) instead
 of being stored where nothing reads it. Residual: an install that ran extras on a
-dedicated Anthropic key now runs it on the key under LLM access; the OAuth token
-fan-out and the back-compat `/setup` key seed still write copies into the module
-scopes (never read by the modules).
+dedicated Anthropic key now runs it on the key under LLM access.
+
+**OAuth tokens and the `/setup` seed (#2313, ADR-0275).** The OAuth device flow and the
+token store's refresh write provider OAuth tokens into the kernel scope only; the `/setup`
+key seed writes the Anthropic key there once. On boot, an OAuth copy the old fan-out left
+in a module scope replaces the kernel's when its `oauth_updated_at` stamp is newer (a
+rotated refresh token is the only valid one), then the module copy is deleted. Logs carry
+scope and provider only.
 
 ### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
 

@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — provider OAuth tokens and the /setup key seed write only the kernel scope (#2313, ADR-0275) (2026-11-27)
+
+The OAuth device flow and the token refresh no longer copy tokens into the verifier's and
+orchestrator-extras' vault scopes, and `/setup` seeds its Anthropic key once into the kernel
+scope. On boot, existing module copies are folded in newest-wins and deleted.
+
 ### Fixed — deleting a chat is recorded in the admin audit (#2318) (2026-11-27)
 
 Deleting a saved chat now writes a `chat.delete` row to the admin audit (ADR-0100): target

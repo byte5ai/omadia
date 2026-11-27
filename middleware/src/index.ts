@@ -22,7 +22,6 @@ import {
   registerProviderOAuthStoreBinding,
   resolveLlmProvider,
   writeProviderOAuthTokens,
-  type OAuthTokens,
 } from '@omadia/llm-provider';
 import express from 'express';
 import type { RequestHandler } from 'express';
@@ -7101,45 +7100,29 @@ async function main(): Promise<void> {
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
 
   // #294 — bind the process-wide OAuth token store for the ChatGPT provider to
-  // the vault: `load` reads every LLM-plugin scope newest-wins (rotation makes
-  // divergent copies dangerous), `persist` fans a refreshed/rotated token back
-  // out to all scopes with one shared stamp. Only wired when the experimental
-  // provider is on; harmless otherwise (no provider resolves the bearer).
+  // the vault. #2313 (ADR-0215): the tokens live in the kernel scope only;
+  // `consolidateProviderCredentials` folded any older per-module copy in at
+  // boot (newest-wins), so `load` reads one copy and `persist` writes one.
+  // Only wired when the experimental provider is on; harmless otherwise (no
+  // provider resolves the bearer).
   if (config.CHATGPT_SUBSCRIPTION_EXPERIMENTAL) {
     const oauthVault = secretVault;
     const OAUTH_PROVIDER = 'openai-chatgpt';
-    const LLM_SCOPES = [
-      '@omadia/orchestrator',
-      '@omadia/verifier',
-      '@omadia/orchestrator-extras',
-    ] as const;
+    const readKernel = (k: string): Promise<string | undefined> =>
+      oauthVault.get(KERNEL_PROVIDER_CREDENTIAL_SCOPE, k);
     registerProviderOAuthStoreBinding(OAUTH_PROVIDER, {
       load: async () => {
-        const copies: Array<{ tokens: OAuthTokens; updatedAt: number }> = [];
-        for (const scope of LLM_SCOPES) {
-          const tokens = await readProviderOAuthTokens(
-            (k) => oauthVault.get(scope, k),
-            OAUTH_PROVIDER,
-          );
-          if (tokens !== undefined) {
-            const updatedAt = await readProviderOAuthUpdatedAt(
-              (k) => oauthVault.get(scope, k),
-              OAUTH_PROVIDER,
-            );
-            copies.push({ tokens, updatedAt });
-          }
-        }
-        return copies;
+        const tokens = await readProviderOAuthTokens(readKernel, OAUTH_PROVIDER);
+        if (tokens === undefined) return [];
+        return [{ tokens, updatedAt: await readProviderOAuthUpdatedAt(readKernel, OAUTH_PROVIDER) }];
       },
       persist: async (tokens, updatedAtMs) => {
-        for (const scope of LLM_SCOPES) {
-          await writeProviderOAuthTokens(
-            (k, v) => oauthVault.setMany(scope, { [k]: v }),
-            OAUTH_PROVIDER,
-            tokens,
-            updatedAtMs,
-          );
-        }
+        await writeProviderOAuthTokens(
+          (k, v) => oauthVault.setMany(KERNEL_PROVIDER_CREDENTIAL_SCOPE, { [k]: v }),
+          OAUTH_PROVIDER,
+          tokens,
+          updatedAtMs,
+        );
       },
     });
     console.log('[middleware] ChatGPT-subscription OAuth token store bound (experimental)');
