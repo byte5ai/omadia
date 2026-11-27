@@ -12,10 +12,18 @@
  * sweep); the policy refresh + epoch bumps run once at the end.
  */
 import { mcpRowToConfig } from '../agents/subAgentToolHydration.js';
+import { redactSecrets } from './secretRedaction.js';
 import { refreshMcpGrantPolicy } from './mcpGrantPolicy.js';
 import { persistDiscoveredTools } from './mcpDiscoveryPersist.js';
 
-import type { AgentGraphStore, McpManager } from '@omadia/orchestrator';
+import type { AgentGraphStore, McpManager, McpServerRow } from '@omadia/orchestrator';
+
+export interface McpRescanOptions {
+  /** #1912 — the server's stored secret values, redacted out of a failure
+   *  message before it is returned, logged or stored: a secret filled into
+   *  the endpoint can be quoted by a transport error. */
+  readonly secretsFor?: (server: McpServerRow) => Promise<readonly string[]>;
+}
 
 export interface McpRescanResult {
   readonly scannedServers: number;
@@ -27,6 +35,7 @@ export async function rescanAllMcpServers(
   graph: AgentGraphStore,
   manager: Pick<McpManager, 'listTools'>,
   log?: (msg: string) => void,
+  options: McpRescanOptions = {},
 ): Promise<McpRescanResult> {
   const servers = await graph.listMcpServers();
   const failures: { serverId: string; serverName: string; error: string }[] = [];
@@ -56,9 +65,13 @@ export async function rescanAllMcpServers(
       await graph.bumpSkillBindingEpoch(server.id);
       scannedServers += 1;
       scannedTools += persisted.scanned;
+      await recordScan(graph, server.id, null, log);
     } catch (err) {
-      failures.push({ serverId: server.id, serverName: server.name, error: String(err) });
-      log?.(`[mcpRescan] server "${server.name}" failed: ${String(err)}`);
+      const secrets = await options.secretsFor?.(server).catch(() => []);
+      const error = redactSecrets(String(err), secrets ?? []);
+      failures.push({ serverId: server.id, serverName: server.name, error });
+      log?.(`[mcpRescan] server "${server.name}" failed: ${error}`);
+      await recordScan(graph, server.id, error, log);
     }
   }
   await refreshMcpGrantPolicy(graph);
@@ -66,4 +79,22 @@ export async function rescanAllMcpServers(
     `[mcpRescan] ${String(scannedServers)} server(s), ${String(scannedTools)} tool verdict(s), ${String(failures.length)} failure(s)`,
   );
   return { scannedServers, scannedTools, failures };
+}
+
+/**
+ * #1916 — persist the per-server outcome so the Control Center can show it,
+ * for the button and the periodic re-scan alike. Best effort: a failed stamp
+ * must neither abort the sweep nor turn a good scan into a failure.
+ */
+async function recordScan(
+  graph: AgentGraphStore,
+  serverId: string,
+  error: string | null,
+  log?: (msg: string) => void,
+): Promise<void> {
+  try {
+    await graph.recordMcpServerScan(serverId, error);
+  } catch (err) {
+    log?.(`[mcpRescan] could not record the scan outcome of ${serverId}: ${String(err)}`);
+  }
 }

@@ -89,6 +89,46 @@ describe('lintSpecTool', () => {
     assert.equal(result.ok, true);
   });
 
+  it('#1808: warns (not errors) when a page tool lacks required data_binding.args', async () => {
+    await patchSpecTool.run(
+      {
+        patches: [
+          ...validBaseline,
+          {
+            op: 'add',
+            path: '/tools/-',
+            value: {
+              id: 'get_current_weather',
+              description: 'weather',
+              input: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+            },
+          },
+          {
+            op: 'add',
+            path: '/ui_routes',
+            value: [
+              {
+                id: 'dashboard',
+                path: '/status',
+                tab_label: 'Weather',
+                page_title: 'Weather',
+                render_mode: 'library',
+                ui_template: 'kpi-tiles',
+                data_binding: { source: 'tool', tool_id: 'get_current_weather' },
+              },
+            ],
+          },
+        ],
+      },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+    const found = result.issues.find((i) => i.code === 'ui_route_data_binding_missing_args');
+    assert.ok(found, JSON.stringify(result.issues));
+    assert.equal(found!.severity, 'warning');
+    assert.match(found!.message, /city/);
+  });
+
   it('flags reserved tool ID collision', async () => {
     await patchSpecTool.run(
       {
@@ -363,4 +403,22 @@ describe('lintSpecTool', () => {
       'lintSpec must read draft.slots — the slot is persisted there by fillSlot, not on spec.slots',
     );
   });
+
+  // #1795 — a host the manifest linter rejects can reach the stored spec
+  // through a path other than patch_spec; lint_spec must still report it.
+  it('reports an invalid network.outbound host already in the spec as an error', async () => {
+    await patchSpecTool.run({ patches: validBaseline }, harness.context());
+    const draft = await harness.draftStore.load(harness.userEmail, harness.draftId);
+    assert.ok(draft);
+    await harness.draftStore.update(harness.userEmail, harness.draftId, {
+      spec: { ...draft.spec, network: { outbound: ['169.254.169.254'] } },
+    });
+    const result = await lintSpecTool.run({}, harness.context());
+    assert.equal(result.ok, false);
+    const issue = result.issues.find((i) => i.code === 'manifest.network_outbound_invalid');
+    assert.ok(issue, 'expected a manifest.network_outbound_invalid error');
+    assert.equal(issue.severity, 'error');
+    assert.equal(issue.path, '/network/outbound/0');
+  });
 });
+

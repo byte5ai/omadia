@@ -198,6 +198,10 @@ export interface McpServerRow {
   readonly discoveredTools: readonly unknown[];
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  /** #1916 — when the last security re-scan ran, and its failure message
+   *  (`null` after a successful scan). Absent on pre-0116 rows in tests. */
+  readonly lastScanAt?: Date | null;
+  readonly lastScanError?: string | null;
   /** Marketplace provenance (issue #455). `manual` for pre-0010 rows. */
   readonly source: 'manual' | 'marketplace';
   readonly registryId: string | null;
@@ -483,6 +487,9 @@ interface PersonaSkillDbRow {
   created_at: Date;
 }
 
+/** #1916 — longest re-scan failure message stored on `mcp_servers`. */
+const MAX_SCAN_ERROR_CHARS = 500;
+
 interface McpServerDbRow {
   id: string;
   name: string;
@@ -495,6 +502,8 @@ interface McpServerDbRow {
   discovered_tools: unknown[];
   created_at: Date;
   updated_at: Date;
+  last_scan_at?: Date | null;
+  last_scan_error?: string | null;
   // Marketplace provenance (issue #455); absent on pre-0010 rows in tests.
   source?: 'manual' | 'marketplace';
   registry_id?: string | null;
@@ -836,6 +845,8 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     discoveredTools: r.discovered_tools,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    lastScanAt: r.last_scan_at ?? null,
+    lastScanError: r.last_scan_error ?? null,
     source: r.source ?? 'manual',
     registryId: r.registry_id ?? null,
     license: r.license ?? null,
@@ -1931,6 +1942,18 @@ export class AgentGraphStore {
     );
   }
 
+  /**
+   * #1912 — the server's header TEMPLATES. A secret header is stored as its
+   * `{header_<name>}` placeholder; the value lives in the Vault
+   * (`McpConfigService`), never here.
+   */
+  async setMcpServerHeaders(id: string, headers: Record<string, string>): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET headers = $2::jsonb, updated_at = now() WHERE id = $1`,
+      [id, JSON.stringify(headers)],
+    );
+  }
+
   /** Epic #459 — set the NON-SECRET config values for a server (secrets go to
    *  the Vault, never here). */
   async setMcpServerConfig(id: string, config: Record<string, unknown>): Promise<void> {
@@ -2432,6 +2455,19 @@ export class AgentGraphStore {
          SET discovered_tools = $2::jsonb, last_discovered_at = now(), updated_at = now()
        WHERE id = $1`,
       [id, JSON.stringify(normalizeDiscoveredToolOrder(tools))],
+    );
+  }
+
+  /**
+   * #1916 — stamps the outcome of one security re-scan. `error` is `null` on
+   * success; a failure message is bounded so a chatty transport error cannot
+   * grow the row. Shown to operators only (MCP Control Center).
+   */
+  async recordMcpServerScan(id: string, error: string | null): Promise<void> {
+    const bounded = error === null ? null : error.slice(0, MAX_SCAN_ERROR_CHARS);
+    await this.pool.query(
+      `UPDATE mcp_servers SET last_scan_at = now(), last_scan_error = $2 WHERE id = $1`,
+      [id, bounded],
     );
   }
 

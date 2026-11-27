@@ -102,6 +102,11 @@ def report_version(payload) -> str:
     return skillspector_version()
 
 
+# skillspector exit codes on the pinned commit (#1813).
+EXIT_ABOVE_RISK_THRESHOLD = 1
+COMPLETED_SCAN_EXIT_CODES = (0, EXIT_ABOVE_RISK_THRESHOLD)
+
+
 def run_scan(files: list) -> dict:
     root = tempfile.mkdtemp(prefix="skillspector-")
     try:
@@ -110,13 +115,15 @@ def run_scan(files: list) -> dict:
             ["skillspector", "scan", root, "--no-llm", "--format", "json"],
             capture_output=True, text=True, timeout=SCAN_TIMEOUT_S,
         )
-        # Observed on the pinned commit: a completed scan exits 0 whether or
-        # not it found issues (findings do NOT change the exit code); usage/
-        # input errors exit non-zero with a prose message on stdout/stderr.
-        # Positive verification, fail-closed: success requires exit 0 AND
-        # parseable JSON AND the recognized report schema. 'Ran clean' is
-        # exit 0 + `issues: []`; everything ambiguous is a failure.
-        if proc.returncode != 0:
+        # Pinned commit c2d09df (#1813): exit 0 = completed scan at or below
+        # the risk threshold; exit 1 = completed scan ABOVE the threshold
+        # (`risk_score > RISK_THRESHOLD`), report still on stdout; exit 2 =
+        # real error (missing path, exception). Positive verification,
+        # fail-closed: success requires exit 0/1 AND parseable JSON AND the
+        # recognized report schema, and an exit-1 report must carry
+        # findings. A high-risk report is a completed scan with findings
+        # (ADR-0061: never read as clean, but not "failed" either).
+        if proc.returncode not in COMPLETED_SCAN_EXIT_CODES:
             detail = (proc.stderr or proc.stdout or "")[:2000]
             return {
                 "ok": False,
@@ -127,12 +134,17 @@ def run_scan(files: list) -> dict:
         except (json.JSONDecodeError, TypeError):
             return {
                 "ok": False,
-                "error": f"skillspector produced no JSON (exit={proc.returncode}): {proc.stderr[:2000]}",
+                "error": f"skillspector produced no JSON (exit={proc.returncode}): {(proc.stderr or '')[:2000]}",
             }
         try:
             findings = extract_findings(payload)
         except SchemaMismatch as err:
             return {"ok": False, "error": f"unrecognized scanner output: {err}"}
+        if proc.returncode == EXIT_ABOVE_RISK_THRESHOLD and not findings:
+            return {
+                "ok": False,
+                "error": "skillspector exited 1 (above risk threshold) but reported no issues",
+            }
         return {
             "ok": True,
             "scanner_version": report_version(payload),

@@ -47,10 +47,10 @@ describe('cellToString', () => {
     assert.equal(cellToString(new Date('2026-03-04T00:00:00.000Z')), '2026-03-04');
   });
 
-  it('keeps the time component when a Date carries one', () => {
+  it('keeps the time component when a Date carries one, as zone-less wall clock (#1845)', () => {
     assert.equal(
       cellToString(new Date('2026-03-04T09:30:00.000Z')),
-      '2026-03-04T09:30:00.000Z',
+      '2026-03-04T09:30:00',
     );
   });
 

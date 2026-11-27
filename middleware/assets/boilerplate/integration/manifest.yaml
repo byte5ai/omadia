@@ -103,11 +103,10 @@ playbook:
   when_to_use: >
     {{WHEN_TO_USE_DE}}
   combines_with: []
-  not_for:
-    - "{{NOT_FOR_CASE_1}}"
-  example_prompts:
-    - "{{EXAMPLE_PROMPT_1}}"
-    - "{{EXAMPLE_PROMPT_2}}"
+  # Static defaults — codegen writes spec.playbook.not_for and
+  # spec.playbook.example_prompts here via the YAML AST.
+  not_for: []
+  example_prompts: []
 
 entities:
   produces: []

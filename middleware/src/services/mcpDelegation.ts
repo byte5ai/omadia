@@ -72,14 +72,31 @@ export function auditIdentity(
 }
 
 /** Operator-facing explanation when a `per_user` server has no caller identity.
- *  Returned through `onAuthFailure`, so the turn fails closed with a reason
- *  instead of silently borrowing the operator's authority. */
+ *  Returned through the auth provider's `blockedReason` before anything is
+ *  sent (#1906), so the turn fails closed with a reason instead of silently
+ *  borrowing the operator's authority. */
 export function delegationBlockedMessage(serverName: string): string {
   return (
     `🔒 The MCP server "${serverName}" is set to per-user delegation, but this conversation has no ` +
     `mapped user identity, so there is no one to act as. Nothing was sent to the server. ` +
     `Either sign in through a channel that maps your identity, or have an operator switch this ` +
     `server to a shared service identity in the MCP Control Center.`
+  );
+}
+
+/**
+ * ADR-0206 — the same refusal for an unattended run (routine, trigger,
+ * workflow). Telling a signed-in owner to "sign in through a channel" is
+ * wrong there (#1907): the run has no channel, and only a routine created
+ * after the owner identity was recorded carries one.
+ */
+export function delegationBlockedUnattendedMessage(serverName: string): string {
+  return (
+    `🔒 The MCP server "${serverName}" is set to per-user delegation, but this call (a routine, ` +
+    `trigger, workflow or API-key call) has no user identity to act as. Nothing was sent to the server. ` +
+    `A routine runs as its owner only when it was created from a signed-in chat: delete it and create ` +
+    `it again there. Otherwise have an operator switch this server to a shared service identity in ` +
+    `the MCP Control Center.`
   );
 }
 

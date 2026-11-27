@@ -26,6 +26,8 @@
  * the typeImport in scope and runs against the real TypeScript types.
  */
 
+import { parseCapabilityRef } from '@omadia/plugin-api';
+
 export interface ServiceTypeImport {
   /** npm package id, used both for `import type` and for the
    *  `peerDependencies` entry codegen injects into the agent's
@@ -40,6 +42,12 @@ export interface ServiceTypeRegistration {
    *  `spec.depends_on` for the lookup to resolve at runtime. */
   providedBy: string;
   typeImport: ServiceTypeImport;
+  /** #1779 — the major the provider declares for this service under its
+   *  manifest `provides:` (`odoo.client@1` → 1). Codegen writes
+   *  `requires: ['<service>@^<major>']` from it, so the generated manifest
+   *  declares every service its `external_reads` look up (ADR-0053). Absent
+   *  when the provider does not declare the service under `provides:`. */
+  major?: number;
 }
 
 const REGISTRY = new Map<string, ServiceTypeRegistration>();
@@ -71,6 +79,25 @@ export function lookupServiceType(
   name: string,
 ): ServiceTypeRegistration | undefined {
   return REGISTRY.get(name);
+}
+
+/**
+ * The major `provides` declares for `service` (`['odoo.client@1']` → 1), or
+ * undefined when the list has no well-formed entry for it.
+ */
+export function serviceMajorFromProvides(
+  service: string,
+  provides: readonly string[] | undefined,
+): number | undefined {
+  for (const raw of provides ?? []) {
+    try {
+      const ref = parseCapabilityRef(raw);
+      if (ref.name === service) return ref.major;
+    } catch {
+      // Not a capability string; the manifest loader reports it elsewhere.
+    }
+  }
+  return undefined;
 }
 
 export function getKnownServiceNames(): readonly string[] {

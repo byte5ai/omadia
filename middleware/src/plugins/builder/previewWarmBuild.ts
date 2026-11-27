@@ -94,6 +94,13 @@ export function missingSetupValueKey(err: unknown): string | null {
   return typeof key === 'string' && key.length > 0 ? key : null;
 }
 
+export interface WarmPreviewResult {
+  readonly handle: PreviewHandle;
+  /** The plugin ZIP when this call built it (cache miss), else `null`. The
+   *  runtime smoke activates its own stub instance from it (#1778). */
+  readonly builtZip: Buffer | null;
+}
+
 /**
  * Returns the warm preview handle, building and activating it on a cache
  * miss. Emits the build status on the draft's bus; see the module rules.
@@ -101,11 +108,12 @@ export function missingSetupValueKey(err: unknown): string | null {
 export async function warmPreview(
   deps: WarmPreviewDeps,
   opts: WarmPreviewOptions,
-): Promise<PreviewHandle> {
+): Promise<WarmPreviewResult> {
   const { userEmail, draftId } = opts;
   let builtN: number | undefined;
+  let builtZip: Buffer | null = null;
   try {
-    return await deps.previewCache.ensureWarm({
+    const handle = await deps.previewCache.ensureWarm({
       userEmail,
       draftId,
       build: async () => {
@@ -113,6 +121,7 @@ export async function warmPreview(
         const result = await runBuild(deps, opts);
         await deps.previewSecretBuffer.warm(userEmail, draftId);
         builtN = result.buildN;
+        builtZip = result.buildResult.zip;
         deps.bus.emit(draftId, {
           type: 'build_status',
           phase: 'ok',
@@ -130,6 +139,7 @@ export async function warmPreview(
         };
       },
     });
+    return { handle, builtZip };
   } catch (err) {
     if (isBuildStatusReported(err)) throw err;
     reportActivationFailure(deps, draftId, builtN, err);

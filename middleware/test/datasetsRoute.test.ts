@@ -90,6 +90,16 @@ describe('POST /api/v1/datasets', () => {
     assert.equal(res.status, 422);
   });
 
+  it('#1847 — a ragged CSV fails with its own code and line, not dataset.import_failed', async () => {
+    const form = new FormData();
+    form.append('file', new Blob(['a,b\n1,2\n3\n'], { type: 'text/csv' }), 'ragged.csv');
+    const res = await fetch(h.baseUrl, { method: 'POST', body: form });
+    assert.equal(res.status, 422);
+    const body = (await res.json()) as { code: string; line?: number };
+    assert.equal(body.code, 'dataset.csv_ragged_rows');
+    assert.equal(typeof body.line, 'number');
+  });
+
   it('uploads a CSV, lists it, reads its schema + rows, then deletes it', async () => {
     const form = new FormData();
     form.append('file', new Blob([CSV], { type: 'text/csv' }), 'people.csv');

@@ -8,6 +8,8 @@ import {
   ServerMirroredSessionError,
   chatSessionOwnedBy,
   isValidSessionId,
+  mcpInputReplyLabel,
+  parseMcpInputReply,
 } from '@omadia/orchestrator';
 
 import { LLM_SETUP_HINT } from '../llmSetupHint.js';
@@ -201,6 +203,27 @@ const SessionSchema = z.object({
   messages: z.array(MessageSchema),
 });
 
+type ClientSession = z.infer<typeof SessionSchema>;
+
+/**
+ * #1953 — a user message that is an MCP input reply envelope carries every
+ * value the user typed into the input card, secret fields included. The web
+ * UI no longer stores it, but an older tab still PUTs it back; it is replaced
+ * by the field-names-only label the orchestrator uses for the turn log, so no
+ * value is persisted. Ordinary messages are untouched.
+ */
+export function scrubMcpInputEnvelopes(session: ClientSession): ClientSession {
+  let changed = false;
+  const messages = session.messages.map((message) => {
+    if (message.role !== 'user') return message;
+    const reply = parseMcpInputReply(message.content);
+    if (reply === undefined) return message;
+    changed = true;
+    return { ...message, content: mcpInputReplyLabel(reply) };
+  });
+  return changed ? { ...session, messages } : session;
+}
+
 interface ChatSessionDeps {
   /** Live resolver for the chat session store. Returns `undefined` while the
    *  orchestrator plugin has not published it yet (no ANTHROPIC_API_KEY) — the
@@ -310,7 +333,7 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       // #1071 — merge, not overwrite: the client PUTs the whole document from
       // a copy hydrated at page load, which would otherwise delete a routine
       // delivery the server appended since.
-      const stored = await store.saveFromClient(parsed.data, {
+      const stored = await store.saveFromClient(scrubMcpInputEnvelopes(parsed.data), {
         viewer,
         legacyOwner: await legacyOwner(),
       });

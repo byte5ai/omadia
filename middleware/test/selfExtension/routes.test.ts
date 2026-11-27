@@ -125,6 +125,18 @@ describe('self-extension routes', () => {
     await app.close();
   });
 
+  it('#1786: the proposal sees the draft slot code (slots live on draft.slots)', async () => {
+    const [summary] = await store.list(USER);
+    await store.update(USER, summary!.id, { slots: { 'toolkit-impl': 'export const old = 1;' } });
+    const app = await makeApp(USER, store);
+    const r = await postJson(app.baseUrl, `/b/self-extension/${AGENT_ID}/propose`, {
+      rationale: 'rewrite the toolkit',
+      patches: [{ op: 'replace', path: '/slots/toolkit-impl', value: 'export const fresh = 2;' }],
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    await app.close();
+  });
+
   it('propose a clean tool-add → needs_approval', async () => {
     const app = await makeApp(USER, store);
     const r = await postJson(app.baseUrl, `/b/self-extension/${AGENT_ID}/propose`, {

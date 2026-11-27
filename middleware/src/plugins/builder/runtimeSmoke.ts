@@ -25,22 +25,30 @@ import type { AgentSpecSkeleton } from './types.js';
  *      with a per-tool timeout, capture the outcome.
  *   3. tear the preview down.
  *
- * Pass criteria (Resolution #3): no-crash + no-timeout = pass.
+ * Pass criteria (ADR-0232, superseding ADR-0056's smoke rule): a tool
+ * passes only when its handler ran and did not crash.
  *   - 'ok': handler resolved normally.
- *   - 'validation_failed': handler threw a ZodError because the
- *     synthetic input didn't satisfy a tighter inner schema. We treat
- *     this as a controlled exit, not a smoke failure — B.10 LLM-judge
- *     will assess whether the validation rules themselves are sensible.
+ *   - 'auth_rejected': handler ran and the upstream refused the stub
+ *     credentials (401/403). A controlled exit: the code path worked.
+ *   - 'skipped': the spec declares the tool `side_effects: 'write'`; the
+ *     smoke never calls it (#1778). Neither pass nor fail.
+ *   - 'validation_failed': the tool's own input schema rejected the
+ *     synthetic input, so the handler never ran (#1727). A FAILURE.
  *   - 'threw': handler raised any other error.
  *   - 'timeout': handler hung past `toolTimeoutMs`.
  *
- * Setup-fields / secrets (Resolution #4): every key gets a stub value
- * `'smoke-test'`. Tools that hit real external auth will get a 401
- * from the provider — that's a controlled exit (status='ok' or
- * status='threw' depending on the SDK's error shape), not a smoke fail.
+ * Setup-fields / secrets: every key gets the stub value `'smoke-test'` on a
+ * separate activation with `ctx.smokeMode === true` — never the operator's
+ * test credentials of the warm preview (#1778, ADR-0059).
  */
 
-export type ToolSmokeStatus = 'ok' | 'timeout' | 'threw' | 'validation_failed';
+export type ToolSmokeStatus =
+  | 'ok'
+  | 'auth_rejected'
+  | 'skipped'
+  | 'timeout'
+  | 'threw'
+  | 'validation_failed';
 
 export interface ToolSmokeResult {
   toolId: string;
@@ -51,6 +59,8 @@ export interface ToolSmokeResult {
 
 export type RuntimeSmokeReason =
   | 'ok'
+  /** Every tool is declared `side_effects: 'write'`, so none was called. */
+  | 'writes_skipped'
   | 'activate_failed'
   | 'tool_failures'
   | 'no_tools'
@@ -147,12 +157,13 @@ export interface RuntimeSmokeOptions {
   spec: AgentSpecSkeleton;
   draftId: string;
   rev: number;
-  previewRuntime: PreviewRuntime;
+  /** Activates the stub instance. Either the runtime or `activate`. */
+  previewRuntime?: PreviewRuntime;
   /** Per-tool budget. Default 10s. */
   toolTimeoutMs?: number;
   /** Per-admin-route budget. Default 5s. */
   adminRouteTimeoutMs?: number;
-  /** Test override — replaces the PreviewRuntime.activate step. */
+  /** Replaces `previewRuntime.activate` (the orchestrator, tests). */
   activate?: (opts: PreviewActivateOptions) => Promise<PreviewHandle>;
 }
 
@@ -163,8 +174,9 @@ const SMOKE_STUB_VALUE = 'smoke-test';
 /**
  * Lower-level helper: invoke each tool on an already-activated
  * PreviewHandle, then probe contributed admin-route GET endpoints
- * (Theme D). Used by RuntimeSmokeOrchestrator (B.9-3) which reuses
- * the chat-cache's handle instead of activating a second time.
+ * (Theme D). `runRuntimeSmoke` calls it on its own stub activation; never
+ * call it on the warm preview handle, which holds the operator's test
+ * credentials (#1778).
  *
  * Phase order:
  *   1. tools_smoke — invoke each tool with synthetic input.
@@ -173,7 +185,8 @@ const SMOKE_STUB_VALUE = 'smoke-test';
  *      probe every GET handler for `{ ok: boolean, ... }` schema.
  *
  * Pass criteria:
- *   - All tools pass OR are `validation_failed`.
+ *   - Every tool is `ok`, `auth_rejected` or `skipped` (ADR-0232);
+ *     `validation_failed` means the handler never ran and fails.
  *   - All admin-routes pass OR are `empty_warning` (legitimate empty)
  *     OR are `introspection_failed` (we cannot prove a violation
  *     without a route list — soft pass).
@@ -231,14 +244,35 @@ export async function invokeToolsOnHandle(opts: {
   if (tools.length === 0) {
     return buildResult(true, [], 'no_tools');
   }
+  const writeTools = writeToolIds(opts.spec);
   const results: ToolSmokeResult[] = [];
   for (const tool of tools) {
-    results.push(await invokeOne(tool, toolTimeoutMs));
+    results.push(
+      writeTools.has(tool.id)
+        ? { toolId: tool.id, status: 'skipped', durationMs: 0 }
+        : await invokeOne(tool, toolTimeoutMs),
+    );
   }
-  const toolsOk = results.every(
-    (r) => r.status === 'ok' || r.status === 'validation_failed',
-  );
-  return buildResult(toolsOk, results, 'ok');
+  const toolsOk = results.every((r) => isToolSmokePass(r.status));
+  const nothingRan = results.every((r) => r.status === 'skipped');
+  return buildResult(toolsOk, results, nothingRan ? 'writes_skipped' : 'ok');
+}
+
+/** ADR-0232 — a handler that never ran is no pass. */
+export function isToolSmokePass(status: ToolSmokeStatus): boolean {
+  return status === 'ok' || status === 'auth_rejected' || status === 'skipped';
+}
+
+/** #1778 — tools the spec declares as writing are never smoke-called. */
+function writeToolIds(spec: AgentSpecSkeleton): ReadonlySet<string> {
+  const tools = Array.isArray(spec.tools) ? spec.tools : [];
+  const ids = new Set<string>();
+  for (const raw of tools) {
+    if (!raw || typeof raw !== 'object') continue;
+    const t = raw as { id?: unknown; side_effects?: unknown };
+    if (typeof t.id === 'string' && t.side_effects === 'write') ids.add(t.id);
+  }
+  return ids;
 }
 
 export async function runRuntimeSmoke(
@@ -260,9 +294,9 @@ export async function runRuntimeSmoke(
 
   let handle: PreviewHandle;
   try {
-    handle = await (opts.activate
-      ? opts.activate(activateOpts)
-      : opts.previewRuntime.activate(activateOpts));
+    if (opts.activate) handle = await opts.activate(activateOpts);
+    else if (opts.previewRuntime) handle = await opts.previewRuntime.activate(activateOpts);
+    else throw new Error('runRuntimeSmoke needs previewRuntime or activate');
   } catch (err) {
     return {
       ok: false,
@@ -274,55 +308,14 @@ export async function runRuntimeSmoke(
   }
 
   try {
-    const tools = handle.toolkit.tools;
-    const routeTimeoutMs =
-      opts.adminRouteTimeoutMs ?? DEFAULT_ADMIN_ROUTE_TIMEOUT_MS;
-    const adminRouteResults = await smokeAdminRoutes({
-      captures: handle.routeCaptures,
+    return await invokeToolsOnHandle({
+      handle,
       spec: opts.spec,
-      timeoutMs: routeTimeoutMs,
+      toolTimeoutMs,
+      ...(opts.adminRouteTimeoutMs !== undefined
+        ? { adminRouteTimeoutMs: opts.adminRouteTimeoutMs }
+        : {}),
     });
-    const adminOk = adminRouteResults.every((r) => isAdminRouteOk(r));
-    const adminViolation = !adminOk;
-    const uiRouteResults = await smokeUiRoutes({
-      captures: handle.routeCaptures,
-      timeoutMs: routeTimeoutMs,
-    });
-    const uiOk = uiRouteResults.every((r) => isUiRouteOk(r));
-    const uiViolation = !uiOk;
-
-    const finish = (
-      toolsOk: boolean,
-      results: ToolSmokeResult[],
-      baseReason: RuntimeSmokeReason,
-    ): RuntimeSmokeResult => ({
-      ok: toolsOk && adminOk && uiOk,
-      reason: !toolsOk
-        ? 'tool_failures'
-        : adminViolation
-          ? 'admin_route_schema_violation'
-          : uiViolation
-            ? 'ui_route_render_failed'
-            : baseReason,
-      results,
-      ...(adminRouteResults.length > 0 ? { adminRouteResults } : {}),
-      ...(uiRouteResults.length > 0 ? { uiRouteResults } : {}),
-      durationMs: Date.now() - start,
-    });
-
-    if (tools.length === 0) {
-      return finish(true, [], 'no_tools');
-    }
-
-    const results: ToolSmokeResult[] = [];
-    for (const tool of tools) {
-      results.push(await invokeOne(tool, toolTimeoutMs));
-    }
-
-    const toolsOk = results.every(
-      (r) => r.status === 'ok' || r.status === 'validation_failed',
-    );
-    return finish(toolsOk, results, 'ok');
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -392,13 +385,46 @@ async function invokeOne(
           const message = err instanceof Error ? err.message : String(err);
           resolve({
             toolId: tool.id,
-            status: isZodError ? 'validation_failed' : 'threw',
+            status: isZodError
+              ? 'validation_failed'
+              : isAuthRejection(err)
+                ? 'auth_rejected'
+                : 'threw',
             durationMs: Date.now() - toolStart,
             errorMessage: truncateMessage(message),
           });
         },
       );
   });
+}
+
+const AUTH_STATUS_CODES: ReadonlySet<number> = new Set([401, 403]);
+// Message fallback for SDKs without a typed status: only HTTP-shaped auth
+// refusals, so a handler bug like "order 403 not found" stays a failure.
+const AUTH_MESSAGE_RE =
+  /\b(?:status(?:\s+code)?|HTTP(?:\/\d(?:\.\d)?)?)\s*:?\s*(?:401|403)\b|\b401\s+Unauthori[sz]ed\b|\b403\s+Forbidden\b|\binvalid[ _-]?api[ _-]?key\b/i;
+
+/**
+ * The upstream refused the stub credentials: a typed HTTP status on the
+ * error (or its `response` / `cause`), else the message. ADR-0056 already
+ * counts this as a controlled exit of a smoke on stub credentials.
+ */
+function isAuthRejection(err: unknown): boolean {
+  const candidates = [err, readField(err, 'response'), readField(err, 'cause')];
+  for (const c of candidates) {
+    for (const key of ['status', 'statusCode']) {
+      const v = readField(c, key);
+      if (typeof v === 'number' && AUTH_STATUS_CODES.has(v)) return true;
+    }
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return AUTH_MESSAGE_RE.test(message);
+}
+
+function readField(value: unknown, key: string): unknown {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
 }
 
 function truncateMessage(s: string, max = 800): string {

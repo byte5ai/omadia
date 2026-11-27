@@ -100,6 +100,23 @@ describe('#544 W2-1 McpInputCard', () => {
     expect(parsed.inputResponses).toEqual({ customerNumber: 'K-1234', pin: '9876' });
   });
 
+  it('#1953: the display text names the fields but carries no value', async () => {
+    const onSubmit = vi.fn();
+    renderWithIntl(
+      <McpInputCard request={REQUEST} disabled={false} onSubmit={onSubmit} />,
+    );
+    await userEvent.type(screen.getByLabelText(/Kundennummer/), 'K-1234');
+    await userEvent.type(screen.getByLabelText(/PIN/), '9876');
+    await userEvent.click(screen.getByRole('button'));
+
+    const displayText = onSubmit.mock.calls[0]![1] as string;
+    expect(displayText).toContain('customerNumber, pin');
+    expect(displayText).toContain('Kunden-CRM');
+    expect(displayText).not.toContain('9876');
+    expect(displayText).not.toContain('K-1234');
+    expect(displayText).not.toContain(MCP_INPUT_REPLY_PREFIX);
+  });
+
   it('MUTATION CHECK: cannot be submitted twice', async () => {
     const onSubmit = vi.fn();
     renderWithIntl(
