@@ -7651,7 +7651,13 @@ server). That separates caches, not servers: all stdio children share the one
 run-as UID, so a hostile stdio server can read the other stdio servers'
 `/proc/<pid>/environ` (their config values, Vault secrets of their rows
 included), files and caches (accepted in ADR-0270; one UID per server is the
-follow-up). `/home/node` is `0700` too. On Fly the entrypoint sets the Machines
+follow-up). The shim is also the child's supervisor (#2329, ADR-0317): the
+middleware cannot signal a process of another UID, and sudo cannot forward a
+SIGKILL it receives itself, so the shim starts the server in its own process
+group (`setsid`) and, on SIGTERM or when its parent sudo is gone, sends TERM to
+that group and KILL after `MCP_STDIO_STOP_GRACE_S` (3 s). A server that ignores
+stdin EOF and SIGTERM does not outlive `close()` as an orphan of `omadia-mcp`.
+`/home/node` is `0700` too. On Fly the entrypoint sets the Machines
 API socket `/.fly/api` to `0600` when it is present (open check: not verified
 live).
 

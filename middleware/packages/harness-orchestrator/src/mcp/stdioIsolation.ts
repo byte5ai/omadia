@@ -20,7 +20,7 @@
  *     sudoers rule allows with `SETENV`. `-H` sets HOME to the target user's
  *     home, and sudo sets USER/LOGNAME/PATH (secure_path) itself.
  *
- *     A small `/bin/sh` shim then sets `umask 077` and gives each server its
+ *     A small `/bin/sh` shim (a supervisor since #2329, see below) sets `umask 077` and gives each server its
  *     own npm cache (`$HOME/.npm-cache/<hash of the server id>`), so one
  *     server's `npx` does not install into, or run from, another server's
  *     cache by accident. That separates caches, not servers: every stdio
@@ -45,12 +45,50 @@ export const MCP_STDIO_SUDO_COMMAND = 'sudo';
 export const MCP_STDIO_LOCALE_ENV_KEYS: readonly string[] = ['LANG', 'LC_ALL', 'LC_CTYPE', 'TZ'];
 
 /**
+ * #2329 — seconds the shim waits after SIGTERM before it SIGKILLs the
+ * server. Below the SDK's 2 s + 2 s close sequence plus a margin, far below
+ * the 30 s retire grace (#2307).
+ */
+export const MCP_STDIO_STOP_GRACE_S = 3;
+
+/**
  * Runs as the target user, between sudo and the server: `$0` is the cache
  * key, `"$@"` the server's own command line (positional, never re-parsed by
  * the shell). A row that sets `npm_config_cache` itself keeps its value.
+ *
+ * #2329 — a supervisor, not an `exec`: the middleware cannot signal a child
+ * of another UID, and sudo cannot forward a SIGKILL it receives itself. The
+ * shim starts the server in its own process group (`setsid`, where
+ * installed) and keeps the middleware's stdin for it. On SIGTERM (which sudo
+ * forwards), or when its parent sudo is gone (`/proc`, Linux), it sends TERM
+ * to the server's group, then KILL after {@link MCP_STDIO_STOP_GRACE_S}
+ * seconds, so a server that ignores both stdin EOF and SIGTERM is still
+ * gone. The server's exit status is the shim's.
  */
-export const MCP_STDIO_CHILD_SHIM =
-  'umask 077 && : "${npm_config_cache:=$HOME/.npm-cache/$0}" && export npm_config_cache && exec "$@"';
+export const MCP_STDIO_CHILD_SHIM = [
+  'umask 077',
+  ': "${npm_config_cache:=$HOME/.npm-cache/$0}"',
+  'export npm_config_cache',
+  'exec 3<&0',
+  'if command -v setsid >/dev/null 2>&1; then setsid "$@" <&3 3<&- & else "$@" <&3 3<&- & fi',
+  'child=$!',
+  'exec 3<&- </dev/null',
+  'parent=$PPID',
+  'stop() {',
+  "  trap '' TERM INT HUP",
+  '  kill -s TERM -- "-$child" 2>/dev/null || kill -s TERM "$child" 2>/dev/null',
+  '  n=0',
+  `  while [ "$n" -lt ${String(MCP_STDIO_STOP_GRACE_S)} ] && kill -0 "$child" 2>/dev/null; do sleep 1; n=$((n + 1)); done`,
+  '  kill -s KILL -- "-$child" 2>/dev/null || kill -s KILL "$child" 2>/dev/null',
+  '  exit 143',
+  '}',
+  'trap stop TERM INT HUP',
+  'if [ -d "/proc/$parent" ]; then',
+  '  (while [ -d "/proc/$parent" ] && kill -0 "$child" 2>/dev/null; do sleep 1; done',
+  '   [ -d "/proc/$parent" ] || kill -s TERM "$$") &',
+  'fi',
+  'wait "$child"',
+].join('\n');
 
 /** Cache directory name of one server: stable, path-safe, not the raw id. */
 export function stdioCacheKey(serverId: string): string {

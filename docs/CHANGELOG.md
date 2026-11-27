@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a stubborn stdio MCP server no longer survives close() under MCP_STDIO_RUN_AS (#2329, ADR-0317) (2026-11-27)
+
+- The `/bin/sh` shim between sudo and the server (`MCP_STDIO_CHILD_SHIM`) now supervises the
+  server instead of `exec`ing it. It starts the server in its own process group (`setsid`), and on
+  SIGTERM, or when its parent sudo is gone, it sends TERM to that group and KILL after
+  `MCP_STDIO_STOP_GRACE_S` (3 s). Before, a server that ignored stdin EOF and SIGTERM lived on as an
+  orphan of `omadia-mcp` once the SDK SIGKILLed sudo. No change to the image or the sudoers rule.
+
 ### Fixed — file-announcement detector edge cases (#2351) (2026-11-27)
 
 - `announcesFileBuild` (`fileAnnouncement.ts`) no longer forces a file retry for `Ich erstelle dir

@@ -1,5 +1,6 @@
 import { afterEach, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +9,7 @@ import { join } from 'node:path';
 import {
   MCP_STDIO_CHILD_SHIM,
   MCP_STDIO_RUN_AS_PATTERN,
+  MCP_STDIO_STOP_GRACE_S,
   McpManager,
   stdioCacheKey,
   stdioChildEnv,
@@ -76,8 +78,34 @@ describe('stdioLaunch / stdioChildEnv', () => {
     assert.notEqual(stdioCacheKey('srv-1'), stdioCacheKey('srv-2'));
     assert.equal(stdioCacheKey('srv-1'), stdioCacheKey('srv-1'));
     // The server's command line is passed positionally ("$@"), never spliced into the script.
-    assert.ok(MCP_STDIO_CHILD_SHIM.endsWith('exec "$@"'));
+    assert.ok(!MCP_STDIO_CHILD_SHIM.includes('eval'), 'nothing is re-parsed');
+    assert.match(MCP_STDIO_CHILD_SHIM, /setsid "\$@" <&3/);
     assert.ok(MCP_STDIO_CHILD_SHIM.startsWith('umask 077'));
+  });
+
+  it('#2329 · the shim keeps stdin and the exit status, and outlives no stubborn server after SIGTERM', async () => {
+    const run = (script: string, input: string) =>
+      new Promise<{ out: string; code: number | null }>((resolve) => {
+        const child = spawn('/bin/sh', ['-c', MCP_STDIO_CHILD_SHIM, 'key', '/bin/sh', '-c', script]);
+        let out = '';
+        child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+        child.on('close', (code) => resolve({ out, code }));
+        child.stdin.end(input);
+      });
+    const echoed = await run('read l; echo "got:$l"; exit 7', 'hello\n');
+    assert.equal(echoed.out.trim(), 'got:hello');
+    assert.equal(echoed.code, 7);
+
+    // A server that ignores stdin EOF and SIGTERM.
+    const shim = spawn('/bin/sh', ['-c', MCP_STDIO_CHILD_SHIM, 'key', '/bin/sh', '-c', `trap '' TERM; echo $$; while :; do sleep 1; done`]);
+    const serverPid = await new Promise<number>((resolve) => shim.stdout.once('data', (d: Buffer) => resolve(Number(String(d).trim()))));
+    const closed = new Promise<void>((resolve) => shim.once('close', () => resolve()));
+    shim.stdin.end();
+    shim.kill('SIGTERM');
+    const started = Date.now();
+    await closed;
+    assert.ok(Date.now() - started < (MCP_STDIO_STOP_GRACE_S + 3) * 1000, 'the shim ends within its grace');
+    assert.throws(() => process.kill(serverPid, 0), /ESRCH/, 'the server is gone');
   });
 
   it('refuses a user name that is not a plain POSIX name', () => {
