@@ -381,7 +381,9 @@ jobs:
           # Neon sweeps. 799 → 806 with W03 recall/memorables: memorableLifecycle.pg
           # (3 Neon tests, ADR-0190), recallFtsOrQuery1822.pg (3),
           # correctedInsight1863.pg (1).
-          PG_TEST_FLOOR: '806'
+          # 806 → 809 with the ACL contract after migrations
+          # (memoryAccess/aclAfterMigrations.pg, 3 tests, memory-ACL step 4d).
+          PG_TEST_FLOOR: '809'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

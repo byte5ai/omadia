@@ -306,6 +306,35 @@ changelog.
 - **A provider plugin's config change reaches every LLM plugin (#1891).** A config or secret write to a provider plugin (e.g. `anthropic_base_url` of `@omadia/plugin-llm-anthropic`) rebuilds the provider plugin, then in `rebuildOrder` the LLM plugins that may run on its provider (the agent runtime always, last; the verifier and orchestrator-extras when their provider chain names it); orchestrator-extras no longer keeps calling the old endpoint until a restart. A plugin that does not come back up — or a provider plugin that itself stays down, in which case nothing is rebuilt onto it — is reported as `runtime.dependent_rebuild_failed`.
 - **System modules use the kernel provider pool; provider keys in one vault scope (#2240, ADR-0215).** The verifier and orchestrator-extras build their providers from the kernel `llmProviderPool` only, like the agent runtime. Provider API keys live in one kernel vault scope (id `@omadia/orchestrator`); LLM access (and the orchestrator's own secret editor) writes only there and rebuilds every installed LLM plugin, so one rotation reaches all three. Boot migration `consolidateProviderCredentials` clears the verifier's and extras' scopes key by key: a copy equal to the kernel key is dropped, every other copy is renamed to `superseded:<key>` (numbered when taken) — never deleted, never logged, never promoted into the kernel scope (a key only a module held must be entered under LLM access; the boot log says so); idempotent. A revoke under LLM access and a provider plugin's uninstall also remove the `superseded:` copies. A provider API key sent to the verifier's or extras' own scope is refused with `400 runtime.provider_key_in_kernel_scope`; both manifests drop their `anthropic_api_key` field (`@omadia/verifier` 0.2.0, `@omadia/orchestrator-extras` 0.3.0). An install that ran extras on a dedicated Anthropic key now runs it on the LLM-access key (old key kept as `superseded:<key>`, boot log warns). The verifier now shares the pool's retry budget. ADR-0215 (Proposed) supersedes the pool part of ADR-0165.
 
+### Added — memory completeness guards (memory-ACL test plan, step 4) (2026-11-26)
+
+- **Surface inventory** (`middleware/test/memoryAccess/surfaceInventory.test.ts`). Every
+  mounted route (94), native tool registration (33) and `PluginContext` method (59) is read
+  from the source (TypeScript AST) and must appear in the hand-written table
+  `surfaceClassification.ts` as `no-memory`, `viewer-scoped`, `operator-only` or `dev-only`,
+  each with a reason. A viewer-scoped entry names the test that proves its filter, and the
+  canary-sweep entry point where one covers it. A new route or tool fails until classified.
+  `ctx.sql` is classified operator-only: a non-archetype plugin with a granted
+  `permissions.sql` runs on the shared pool, where memory tables are readable.
+- **Lint rule against viewer-less graph reads** (`middleware/eslint/viewerlessGraphReads.mjs`,
+  wired into `eslint.config.mjs` as `no-restricted-syntax`). `listSessions`, `getNeighbors`,
+  `listMemoriesForScope`, the topic and issue lists, the subgraph walk, the owner-less list,
+  and `getSession` / `getMemorableKnowledge` without their viewer argument are errors outside
+  an allowlist of 20 files, each with a reason. `viewerlessGraphReads.test.ts` proves the rule
+  fires on a new file and that no allowlist entry has gone stale.
+- **Memory defaults pinned** (`memoryAccess/memoryDefaults.test.ts`): `KG_ACL_AUTO_PROMOTE`
+  (on, 0.7), `KG_DURABLE_AUTOPROMOTE` (on, 0.85), `KG_RECALL_TEAM_VISIBILITY` (on), auto-merge
+  (on, 0.9), the scratch reaper (on, 24 h, keeps unpromoted scratch),
+  `OMADIA_INJECTIVE_SCOPE_KEYS` (off), memory visibility without a value (`private`, both
+  backends), `agents.context_memory` (`members`) and the orchestrator fallback (`off`). A
+  changed default fails until the pin, this CHANGELOG and the oracle change together.
+- **ACL contract after migrations** (`memoryAccess/aclAfterMigrations.pg.test.ts`). The world
+  is written into a schema migrated up to graph migration 0036, with defaulted memories stored
+  `team` as the code before #1823 did; the boot migrator then applies the rest. Memorable
+  knowledge and excerpts must equal the oracle for the world as the migrations are documented
+  to leave it (`migrated()`, written from 0037's intent). A migration that widened visibility
+  showed 18,036 leaks. `PG_TEST_FLOOR` 795 → 798.
+
 ### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
 
 - With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
