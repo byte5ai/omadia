@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { MouseEvent, ReactElement } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import type { DiagramAttachment, OutgoingFileAttachment } from '../../_lib/chatSessions';
 import {
@@ -18,13 +18,21 @@ import {
  * (#1964, ADR-0266) instead of showing a broken image or a dead chip.
  */
 
-/** On a click, an expired link is renewed first and then opened. */
+/**
+ * On a click, an expired link is renewed first and then opened. The tab is
+ * opened synchronously inside the click (a tab opened after the await would be
+ * blocked as a popup) and pointed at the fresh link once it is there.
+ */
 function openFresh(link: RenewableFileLink) {
   return (event: MouseEvent<HTMLAnchorElement>): void => {
     if (!isSignedLinkExpired(link.url)) return;
     event.preventDefault();
+    const tab = window.open('', '_blank');
+    if (tab) tab.opener = null;
     void link.renew().then((fresh) => {
-      if (fresh) window.open(fresh, '_blank', 'noreferrer');
+      if (fresh && tab) tab.location.href = fresh;
+      else if (fresh) window.location.assign(fresh);
+      else tab?.close();
     });
   };
 }
@@ -87,7 +95,7 @@ function DiagramItem({ att }: { att: DiagramAttachment }): ReactElement {
         />
         <div className="mt-1 text-[10px] text-[color:var(--fg-muted)]">
           {att.diagramKind}
-          {att.cacheHit && ' · cached'}
+          {att.cacheHit && t('attachmentCachedSuffix')}
           {' · '}
           <span className="font-mono">{att.altText}</span>
         </div>
@@ -120,6 +128,8 @@ export function AttachmentGrid({
 }
 
 function FileItem({ file }: { file: OutgoingFileAttachment }): ReactElement {
+  const t = useTranslations('chat');
+  const format = useFormatter();
   const link = useRenewableFileLink(file.url);
   return (
     <div>
@@ -137,8 +147,8 @@ function FileItem({ file }: { file: OutgoingFileAttachment }): ReactElement {
         <span className="flex min-w-0 flex-col">
           <span className="truncate text-sm font-medium">{file.altText}</span>
           <span className="text-[10px] uppercase text-[color:var(--fg-muted)]">
-            {fileExt(file.altText)}
-            {file.sizeBytes ? ` · ${formatFileSize(file.sizeBytes)}` : ''}
+            {fileExt(file.altText) ?? t('fileTypeUnknown')}
+            {file.sizeBytes ? ` · ${formatFileSize(file.sizeBytes, format)}` : ''}
           </span>
         </span>
         <span className="ml-auto text-sm text-[color:var(--fg-subtle)]" aria-hidden>
@@ -175,13 +185,15 @@ function fileGlyph(file: OutgoingFileAttachment): string {
   return '📎';
 }
 
-function fileExt(name: string): string {
+function fileExt(name: string): string | undefined {
   const dot = name.lastIndexOf('.');
-  return dot >= 0 ? name.slice(dot + 1) : 'file';
+  return dot >= 0 ? name.slice(dot + 1) : undefined;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+/** Locale-aware number, unit symbols as is (B, KB, MB read the same in en and de). */
+function formatFileSize(bytes: number, format: ReturnType<typeof useFormatter>): string {
+  if (bytes < 1024) return `${format.number(bytes)} B`;
+  const oneDecimal = { maximumFractionDigits: 1, minimumFractionDigits: 1 };
+  if (bytes < 1024 * 1024) return `${format.number(bytes / 1024, oneDecimal)} KB`;
+  return `${format.number(bytes / (1024 * 1024), oneDecimal)} MB`;
 }

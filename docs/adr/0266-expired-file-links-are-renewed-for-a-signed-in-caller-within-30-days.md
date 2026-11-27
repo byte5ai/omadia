@@ -84,6 +84,12 @@ Chosen option: **A**.
   have fetched the file while the link was valid, the link already is the bearer proof
   (ADR-0137), and the session adds the identity the link alone lacks. The renewal itself is
   not audited as a success, only refusals are logged.
+- 🔴 **Bad:** The 30 days count from the expiry of the link presented, not from the first issue:
+  a renewed link has a fresh `exp`, so a holder who renews at least once a month keeps a link
+  alive without end. Accepted for now: the web chat always renews from the URL stored in the
+  message, so ordinary use stays within the bound, and binding the first issue time would
+  change the signed payload of both producers. Follow-up if a hard bound is needed: a signed
+  `iat` carried forward on renewal.
 - 🔴 **Bad:** Renewal works only for files still in the bucket; a file deleted with its chat
   or person (ADR-0187) or by the lifecycle rule renews into a 404 page.
 - 🔴 **Bad:** Rotating a plugin's signing secret still ends every old link for good.
@@ -96,7 +102,7 @@ Chosen option: **A**.
 
 - 🟢 Fits ADR-0161 (same-origin `/api`) and ADR-0178 (no conversation binding).
 - 🟢 Stateless; works for every file a link was ever issued for.
-- 🔴 A leaked link stays renewable by any signed-in account for 30 days.
+- 🔴 A leaked link stays renewable by any signed-in account for 30 days past each expiry (it can be chained).
 
 ### B — Bind generated files to their conversation
 

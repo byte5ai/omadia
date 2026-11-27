@@ -351,7 +351,10 @@ function dateRangeClause(
   const patternIdx = params.length;
   params.push(String(value));
   const valueIdx = params.length;
-  return `(CASE WHEN ${cell} ~ $${String(patternIdx)}::text THEN (${cell})::timestamp END) ${opSql} $${String(valueIdx)}::timestamp`;
+  // The pattern checks the shape only; `pg_input_is_valid` (Postgres 16+,
+  // ADR-0166) drops an impossible ISO-shaped cell (`2024-02-30`) instead of
+  // failing the whole query on the cast, as the in-memory backend does.
+  return `(CASE WHEN ${cell} ~ $${String(patternIdx)}::text AND pg_input_is_valid(${cell}, 'timestamp') THEN (${cell})::timestamp END) ${opSql} $${String(valueIdx)}::timestamp`;
 }
 
 function buildDatasetFilterClause(

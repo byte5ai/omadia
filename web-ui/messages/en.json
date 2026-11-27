@@ -1848,6 +1848,7 @@
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
     "attachmentCachedSuffix": " · cached",
+    "fileTypeUnknown": "file",
     "fileLink": {
       "renewing": "This link has expired. Renewing it…",
       "tooOld": "This file link is too old to renew. Ask for the file again.",

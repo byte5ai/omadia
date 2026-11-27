@@ -43,9 +43,13 @@ export function createFileLinkRenewalRegistry(): FileLinkRenewalRegistry {
 
     resolve(pathname: string): ResolvedRenewer | undefined {
       for (const [routePrefix, renewer] of renewers) {
+        // A `public_base_url` with a path (`https://host/omadia`) puts the
+        // route prefix behind it; the signature binds prefix + key, so the
+        // segment before it carries nothing the renewer trusts.
         const head = `${routePrefix}/`;
-        if (pathname.startsWith(head) && pathname.length > head.length) {
-          return { routePrefix, renewer, encodedKey: pathname.slice(head.length) };
+        const at = pathname.indexOf(head);
+        if (at >= 0 && pathname.length > at + head.length) {
+          return { routePrefix, renewer, encodedKey: pathname.slice(at + head.length) };
         }
       }
       return undefined;

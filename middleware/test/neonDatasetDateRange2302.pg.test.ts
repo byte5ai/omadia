@@ -51,6 +51,8 @@ async function seed(p: Pool): Promise<{ kg: NeonKnowledgeGraph; datasetId: strin
       { name: 'e', amount: 5, due: '2024-12-01' },
       { name: 'f', amount: 6, due: '19.04.2024' },
       { name: 'g', amount: 7, due: null },
+      // ISO-shaped but impossible: skipped, never a failed query (review finding)
+      { name: 'h', amount: 8, due: '2024-02-30' },
     ],
   });
   return { kg, datasetId };

@@ -1848,6 +1848,7 @@
     "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
     "attachmentCachedSuffix": " · zwischengespeichert",
+    "fileTypeUnknown": "Datei",
     "fileLink": {
       "renewing": "Dieser Link ist abgelaufen. Er wird erneuert…",
       "tooOld": "Dieser Datei-Link ist zu alt, um ihn zu erneuern. Bitte die Datei neu anfordern.",

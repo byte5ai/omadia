@@ -10,8 +10,9 @@
  *
  *  - the v4 verb tools (`v4_filter`, `v4_aggregate`, …) over the same loopback
  *    server, served by the caller's handle — the datasets are the turn's;
- *  - tool inputs with the turn's prompt surrogates restored and results
- *    re-masked, as `Orchestrator.cliTurnPrivacy` does for the main turn.
+ *  - tool inputs with the turn's prompt surrogates restored (except for tools
+ *    that run on model input, which keep them) and results re-masked, as
+ *    `Orchestrator.cliTurnPrivacy` does for the main turn.
  *
  * `v4_render_answer` stays with the calling turn: a render is the turn's
  * answer, and a sub-agent's answer is an input to that turn, not the answer.
@@ -19,6 +20,7 @@
 
 import type { LoopbackDispatch } from './cliMemoryTool.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
+import { runsOnModelInput } from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -69,7 +71,12 @@ export function withCallerPrivacyDispatch(
         const result = await handle.runV4Tool({ toolName: name, input: toolInput });
         return { content: result.resultText };
       }
-      const restored = restorePromptSurrogatesInToolInput(handle, toolInput);
+      // #1544 — tools that run on model input (process, memory, card tools)
+      // keep the surrogates, as `Orchestrator.toolKeepsSurrogates` rules for
+      // the main turn: a restored value would be stored in clear.
+      const restored = runsOnModelInput(name)
+        ? toolInput
+        : restorePromptSurrogatesInToolInput(handle, toolInput);
       const result = await base.dispatch(name, restored, options);
       return { ...result, content: remaskEchoedValues(handle, result.content) };
     },

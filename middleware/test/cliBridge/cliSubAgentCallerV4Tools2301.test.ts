@@ -71,6 +71,19 @@ describe('CLI sub-agent under the caller handle (#2301)', () => {
     assert.equal(out.content, `Kontakt: ${SURROGATE}`);
   });
 
+  it('keeps the surrogates for a tool that runs on model input', async () => {
+    const seen: unknown[] = [];
+    const base: LoopbackDispatch = {
+      dispatch: async (_name, input) => {
+        seen.push(input);
+        return { content: 'ok' };
+      },
+    };
+    const dispatch = withCallerPrivacyDispatch(callerHandle([]), base);
+    await dispatch.dispatch('write_process', { title: SURROGATE });
+    assert.deepEqual(seen, [{ title: SURROGATE }]);
+  });
+
   it('tells the sub-agent model how to work with digests', () => {
     assert.match(CALLER_PRIVACY_SUB_AGENT_DIRECTIVE, /v4_\*/);
   });

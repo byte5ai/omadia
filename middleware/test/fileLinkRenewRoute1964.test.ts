@@ -163,6 +163,8 @@ describe('#1964 · file link renewal registry', () => {
     assert.equal(registry.resolve('/diagrams/dl/a%2Fb.png')?.encodedKey, 'a%2Fb.png');
     assert.equal(registry.resolve('/diagrams/dl/'), undefined);
     assert.equal(registry.resolve('/diagrams/dlx/a.png'), undefined);
+    // a public_base_url with a path prefix (review finding)
+    assert.equal(registry.resolve('/omadia/diagrams/dl/a.png')?.encodedKey, 'a.png');
     dispose();
     assert.equal(registry.resolve('/diagrams/dl/a.png'), undefined);
   });

@@ -1998,7 +1998,12 @@ als `safe-cleartext` freigibt. Der Rohwert verlässt `buildDatasetFromTable` nie
 Secret: `DATASET_LINK_KEY_SECRET`, sonst HKDF aus `VAULT_KEY`; fehlt beides,
 gibt es keine Key-Spalten und der `[dataset-imported]`-Block sagt das. Header im
 `__k_`-Namensraum werden beim Import abgewiesen; `query_rows`-`filters` auf
-`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Die Privacy-Shield-Verben
+`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Seit #2302 (ADR-0267)
+nimmt `query_rows` `gt`/`gte`/`lt`/`lte` auf `date`-Spalten: Zelle und Grenze
+werden als Zeitpunkt verglichen (Datum allein = Mitternacht), die Grenze liest
+der Import-Parser (ISO, `d.m.yyyy`, `d/m/yyyy`), sonst `invalid_date_value`;
+nicht ISO-förmige oder unmögliche Zellen fallen aus dem Bereich, Spalten mit
+verschlüsselten Zellen bleiben für jeden Filter gesperrt. Die Privacy-Shield-Verben
 `v4_union` (mit `renameRight`) und `v4_distinct` (`by`, `keep`) vereinen zwei
 `query_rows`-Seiten oder Dateien und kollabieren auf den Link-Key; Prompt-Regel
 d) im `privacyV4Block` trägt das Rezept. `POST /api/v1/datasets` liefert je

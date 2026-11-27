@@ -141,7 +141,11 @@ and the restore, and the receipt rides the `done`. A blocked mask ends the turn
 before the spawn. A guarded turn without a handle (none could be built, or
 `OMADIA_PRIVACY_FORCE_GUARDED` without a running guard) is refused before the
 spawn. A CLI sub-agent asked inside a guarded turn masks through the calling
-turn's handle and returns its answer unrestored; the Builder and preview-chat
+turn's handle and returns its answer unrestored. Since #2301 (ADR-0268) it also
+gets the v4 verb tools served by that handle (`v4_render_answer` stays with the
+calling turn and is refused), its tool inputs get the turn's prompt surrogates
+restored (tools that run on model input keep them) and its results are
+re-masked (`cliCallerPrivacy.ts`); the Builder and preview-chat
 CLI sub-agents are operator jobs outside the shield, refused only under the org
 policy (ADR-0196).
 
