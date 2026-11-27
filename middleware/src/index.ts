@@ -4424,6 +4424,8 @@ async function main(): Promise<void> {
     '/api',
     requireAuth,
     createChatRouter({
+      // #2336 — checks the uploads a turn names against their chat binding.
+      attachmentBindings,
       // #1756 — routine delivery times in the instance zone (ADR 0240).
       timeZone: config.PROACTIVE_TIMEZONE,
       agentResolver,

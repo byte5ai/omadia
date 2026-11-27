@@ -1,4 +1,5 @@
 import { currentToolCallContext } from './toolCallContext.js';
+import { turnContext } from './turnContext.js';
 
 /**
  * Turn sources that never carry a user upload: the web chat and the HTTP API
@@ -10,12 +11,14 @@ const NO_UPLOAD_CHANNEL_TYPES: ReadonlySet<string> = new Set(['http', 'api', 'we
 /**
  * #1976 — may this turn carry an uploaded file? `read_attachment` and
  * `transcribe_recording` read stored uploads by key, so they are offered only
- * on a turn that came in through a messaging channel. The web chat has no
- * file upload: offering them there made the model ask for a re-upload and
- * point the user at internal markup. Constant for the turn, as
+ * on a turn that came in through a messaging channel, or on a turn that
+ * states its own uploads (#2336, ADR-0310: a web-chat message with files).
+ * Offering them on a turn without files made the model ask for a re-upload
+ * and point the user at internal markup. Constant for the turn, as
  * `isAvailable` requires; outside a turn it is `false`.
  */
 export function turnMayCarryUploads(): boolean {
+  if ((turnContext.current()?.turnUploadKeys?.size ?? 0) > 0) return true;
   // Both carriers: the in-process orchestrator's turn context and the
   // subscription-CLI runtime's own tool-call store.
   const context = currentToolCallContext();

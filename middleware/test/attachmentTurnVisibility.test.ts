@@ -100,6 +100,18 @@ describe('#1976 — read_attachment only where an upload can exist', () => {
     assert.ok(!toolNames(requests[0]).includes('read_attachment'));
   });
 
+  it('#2336 — a web-chat turn that states its own uploads is offered read_attachment', async () => {
+    const requests: LlmRequest[] = [];
+    await orchestrator(requests, reader({})).runTurn({
+      userMessage: 'Lies den Anhang',
+      sessionScope: 's2336-web',
+      storedAttachments: [
+        { fileName: 'a.pdf', contentType: 'application/pdf', storageKey: 'web-chat/s2336-web/u/a.pdf' },
+      ],
+    } as unknown as Parameters<Orchestrator['runTurn']>[0]);
+    assert.ok(toolNames(requests[0]).includes('read_attachment'));
+  });
+
   it('a channel turn is offered read_attachment', async () => {
     const requests: LlmRequest[] = [];
     await orchestrator(requests, reader({})).runTurn({
