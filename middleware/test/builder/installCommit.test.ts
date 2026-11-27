@@ -124,6 +124,7 @@ interface FakeIngestHandle {
     fileBuffer: Buffer;
     originalFilename: string;
     uploadedBy: string;
+    allowDowngrade?: boolean;
   }>;
 }
 
@@ -137,6 +138,7 @@ function makeFakeIngest(opts: {
   pluginId?: string;
   pluginVersion?: string;
   pluginBytes?: number;
+  activationError?: string;
   /** Make ingest throw an unexpected exception. */
   throwError?: Error;
 }): FakeIngestHandle {
@@ -144,12 +146,14 @@ function makeFakeIngest(opts: {
     fileBuffer: Buffer;
     originalFilename: string;
     uploadedBy: string;
+    allowDowngrade?: boolean;
   }> = [];
   const fake = {
     ingest: async (input: {
       fileBuffer: Buffer;
       originalFilename: string;
       uploadedBy: string;
+      allowDowngrade?: boolean;
     }) => {
       calls.push({ ...input });
       if (opts.throwError) throw opts.throwError;
@@ -164,6 +168,7 @@ function makeFakeIngest(opts: {
       }
       return {
         ok: true as const,
+        ...(opts.activationError === undefined ? {} : { activation_error: opts.activationError }),
         plugin_id: opts.pluginId ?? 'de.test.installed.agent',
         version: opts.pluginVersion ?? '0.1.0',
         package: {
@@ -280,6 +285,52 @@ describe('installDraft (B.6-1 orchestrator)', () => {
       ingestCall.originalFilename,
       /^de\.test\.draft\.installcommit-0\.1\.0\.zip$/,
     );
+  });
+
+  it('forwards explicit downgrade confirmation and reports an activation failure without marking the draft published', async () => {
+    const pipeline = makeFakePipeline({ store: h.store });
+    const ingest = makeFakeIngest({ activationError: 'activation test' });
+    const result = await installDraft(
+      {
+        userEmail: h.userEmail,
+        draftId: h.draftId,
+        downgradeConfirmation: {
+          pluginId: 'de.test.draft.installcommit',
+          fromVersion: '0.2.0',
+          toVersion: '0.1.0',
+        },
+      },
+      {
+        draftStore: h.store,
+        buildPipeline: pipeline.pipeline,
+        packageUploadService: ingest.service,
+      },
+    );
+    assert.equal(ingest.ingestCalls()[0]?.allowDowngrade, true);
+    assert.equal(result.ok ? 'success' : result.reason, 'activation_failed');
+    assert.notEqual((await h.store.load(h.userEmail, h.draftId))?.status, 'published');
+  });
+
+  it('rejects a stale publish review before ingesting any package', async () => {
+    const pipeline = makeFakePipeline({ store: h.store });
+    const ingest = makeFakeIngest({});
+    const result = await installDraft(
+      {
+        userEmail: h.userEmail,
+        draftId: h.draftId,
+        review: {
+          fingerprint: '0'.repeat(64),
+          installed: { version: null, manifestFingerprint: null },
+        },
+      },
+      {
+        draftStore: h.store,
+        buildPipeline: pipeline.pipeline,
+        packageUploadService: ingest.service,
+      },
+    );
+    assert.equal(result.ok ? 'success' : result.code, 'builder.install_review_stale');
+    assert.deepEqual(ingest.ingestCalls(), []);
   });
 
   it('build_failed → returns reason build_failed, draft NOT marked published', async () => {

@@ -46,7 +46,13 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function SelfExtensionPanel({ agentId }: { agentId: string }): React.ReactElement {
+export function SelfExtensionPanel({
+  agentId,
+  canEditSpec = true,
+}: {
+  agentId: string;
+  canEditSpec?: boolean;
+}): React.ReactElement {
   const t = useTranslations('selfExtension');
   const router = useRouter();
 
@@ -142,8 +148,8 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       setTplRationale('');
       setTplParamsText('{}');
       await reload();
-    } catch (err) {
-      setTplError(errMessage(err));
+    } catch {
+      setTplError(t('proposalFailed'));
     } finally {
       setTplBusy(false);
     }
@@ -167,7 +173,9 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       setPatchesText('');
       await reload();
     } catch (err) {
-      setComposeError(errMessage(err));
+      setComposeError(err instanceof ApiError && err.code === 'self_ext.source_not_found'
+        ? t('sourceDraftMissing')
+        : t('proposalFailed'));
     } finally {
       setComposeBusy(false);
     }
@@ -192,7 +200,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
     <div className="space-y-4">
       <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">{t('intro')}</p>
 
-      {/* compose */}
+      {canEditSpec && (
       <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
         <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
           <Sparkles className="size-3.5" aria-hidden />
@@ -227,6 +235,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
           {t('propose')}
         </Button>
       </div>
+      )}
 
       {/* template compose (standalone plugins that expose selfExtend templates) */}
       {templates.length > 0 ? (

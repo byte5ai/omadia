@@ -62,6 +62,7 @@ export function graphToFlow(
 
   nodes.push({
     id: nodeId.agent(graph.agent.id),
+    deletable: false,
     type: 'agent',
     position: graph.agent.position ?? gridPos(1, 0),
     data: { kind: 'agent', labels, agent: graph.agent },
@@ -79,6 +80,7 @@ export function graphToFlow(
   graph.skills.forEach((skill, i) => {
     nodes.push({
       id: nodeId.skill(skill.id),
+      deletable: false,
       type: 'skill',
       position: gridPos(3, i),
       data: { kind: 'skill', labels, skill },
@@ -87,9 +89,11 @@ export function graphToFlow(
 
   const grantByTool = new Map(graph.tools.map((g) => [g.toolRef, g]));
   const toolRefs = new Set(graph.tools.map((g) => g.toolRef));
+  const mcpToolRefs = new Set(graph.tools.filter((grant) => grant.toolKind === 'mcp').map((grant) => grant.toolRef));
   Array.from(toolRefs).forEach((ref, i) => {
     nodes.push({
       id: nodeId.tool(ref),
+      connectable: !mcpToolRefs.has(ref) && !ref.startsWith('mcp:'),
       type: 'tool',
       position: gridPos(3, graph.skills.length + i),
       data: { kind: 'tool', labels, toolRef: ref, grant: grantByTool.get(ref) ?? null },
@@ -99,6 +103,7 @@ export function graphToFlow(
   graph.mcpServers.forEach((server, i) => {
     nodes.push({
       id: nodeId.mcp(server.id),
+      deletable: false,
       type: 'mcp',
       position: gridPos(4, i),
       data: { kind: 'mcp', labels, server },

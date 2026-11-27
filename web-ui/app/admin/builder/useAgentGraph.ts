@@ -31,6 +31,7 @@ export interface UseAgentGraph {
   mutate: (
     optimistic: (g: AgentGraph) => AgentGraph,
     commit: (g: AgentGraph) => Promise<AgentGraph | void>,
+    refreshAfterFailure?: boolean,
   ) => Promise<void>;
 }
 
@@ -47,7 +48,19 @@ function friendlyError(
   // agent does not have) instead of a bare status.
   const helperCode = helperRefusalCode(err);
   if (helperCode !== null) return t(`helperErrors.${helperCode}`);
-  if (err instanceof ApiError) return t('apiError', { status: err.status });
+  if (err instanceof ApiError) {
+    if (err.code === 'config.helper_name_exists' || err.code === 'config.mcp_server_name_exists') {
+      const body = JSON.parse(err.body) as { params?: { name?: string } };
+      if (body.params?.name) return t(`configErrors.${err.code.slice('config.'.length)}`, { name: body.params.name });
+    }
+    if (err.code === 'config.mcp_tool_required') return t('configErrors.mcp_tool_required');
+    if (err.code === 'config_validation' || (err.status === 409 && err.serverMessage)) {
+      return err.serverMessage
+        ? t('configErrorDetail', { detail: err.serverMessage })
+        : t('configError');
+    }
+    return t('apiError', { status: err.status });
+  }
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -88,7 +101,7 @@ export function useAgentGraph(slug: string | null, t: TFn): UseAgentGraph {
   }, [slug, reload]);
 
   const mutate = useCallback<UseAgentGraph['mutate']>(
-    async (optimistic, commit) => {
+    async (optimistic, commit, refreshAfterFailure) => {
       const current = stateRef.current;
       if (current.kind !== 'ready') return;
       const snapshot = current.graph;
@@ -99,12 +112,15 @@ export function useAgentGraph(slug: string | null, t: TFn): UseAgentGraph {
         const reconciled = await commit(next);
         if (reconciled) setState({ kind: 'ready', graph: reconciled });
       } catch (err) {
-        // Rollback to the authoritative pre-mutation snapshot.
-        setState({ kind: 'ready', graph: snapshot });
+        // A delete can have succeeded for part of a selection.
+        const graph = refreshAfterFailure && slug
+          ? await getAgentGraph(slug).catch(() => snapshot)
+          : snapshot;
+        setState({ kind: 'ready', graph });
         setActionError(friendlyError(err, t, refusal));
       }
     },
-    [t, refusal],
+    [slug, t, refusal],
   );
 
   return {

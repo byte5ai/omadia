@@ -38,6 +38,7 @@ export type SpecBusEvent =
        *  collapse onto one key. Absent when the build failed before a
        *  number was assigned (spec / codegen / template). */
       buildN?: number;
+      templateId?: string;
       /** A stable code (`tsc`, `codegen_failed`, `activate_failed: …`),
        *  never a log line: no user e-mail, no draft id (#1733). */
       reason?: string;

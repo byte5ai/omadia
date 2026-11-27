@@ -11,6 +11,7 @@ export interface NodeShellProps {
   selected?: boolean;
   /** Render a target handle (left) — node can be a connection target. */
   hasTarget?: boolean;
+  targetConnectable?: boolean;
   /** Render a source handle (right) — node can start a connection. */
   hasSource?: boolean;
   children?: React.ReactNode;
@@ -38,6 +39,7 @@ export function NodeShell({
   badge,
   selected,
   hasTarget,
+  targetConnectable = true,
   hasSource,
   children,
 }: NodeShellProps): React.ReactElement {
@@ -54,6 +56,7 @@ export function NodeShell({
       {hasTarget && (
         <Handle
           type="target"
+          isConnectable={targetConnectable}
           position={Position.Left}
           style={{ background: accent, width: 9, height: 9 }}
         />

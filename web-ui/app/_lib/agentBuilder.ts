@@ -1495,9 +1495,7 @@ const EDGE_RULES: readonly EdgeRule[] = [
   { source: 'agent', target: 'subagent', kind: 'subagent' },
   { source: 'subagent', target: 'skill', kind: 'skill' },
   { source: 'agent', target: 'tool', kind: 'tool_grant' },
-  { source: 'agent', target: 'mcp', kind: 'tool_grant' },
   { source: 'subagent', target: 'tool', kind: 'tool_grant' },
-  { source: 'subagent', target: 'mcp', kind: 'tool_grant' },
   { source: 'schedule', target: 'agent', kind: 'schedule' },
 ];
 

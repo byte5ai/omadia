@@ -28,6 +28,8 @@ import type {
   SnapshotSummary,
 } from './snapshotTypes';
 import type {
+  BuilderInstallManifest,
+  BuilderInstallOptions,
   BuilderModelId,
   BuilderTurnEvent,
   CloneFromInstalledResponse,
@@ -40,6 +42,7 @@ import type {
   ListBuilderTemplatesResponse,
   ListDraftsResponse,
   PreviewStreamEvent,
+  SetupField,
   TemplateSlotsResponse,
 } from './builderTypes';
 
@@ -2396,6 +2399,7 @@ export async function restoreBuilderDraft(id: string): Promise<DraftEnvelope> {
 export async function patchBuilderSpec(
   id: string,
   patches: JsonPatch[],
+  expectedSetupFields?: readonly SetupField[],
 ): Promise<DraftEnvelope> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(
@@ -2407,7 +2411,7 @@ export async function patchBuilderSpec(
         'content-type': 'application/json',
         ...forwarded,
       },
-      body: JSON.stringify({ patches }),
+      body: JSON.stringify({ patches, expectedSetupFields }),
       credentials: 'include',
       cache: 'no-store',
     },
@@ -2592,6 +2596,7 @@ export async function refreshPreview(draftId: string): Promise<{
 export async function getPreviewStatus(draftId: string): Promise<{
   phase: 'idle' | 'ok' | 'failed';
   buildN?: number;
+  templateId?: string;
   agentId?: string;
   errorCount?: number;
   reason?: string;
@@ -2603,6 +2608,7 @@ export async function getPreviewStatus(draftId: string): Promise<{
   return getJson<{
     phase: 'idle' | 'ok' | 'failed';
     buildN?: number;
+    templateId?: string;
     agentId?: string;
     errorCount?: number;
     reason?: string;
@@ -2725,8 +2731,13 @@ export async function patchBuilderModel(
  * orchestrator outcome (404 / 409 / 413 / 422 / 500) returns a typed
  * InstallResponse.
  */
+export async function getBuilderInstallManifest(draftId: string): Promise<BuilderInstallManifest> {
+  return getJson(`/v1/builder/drafts/${encodeURIComponent(draftId)}/install/manifest`);
+}
+
 export async function installBuilderDraft(
   draftId: string,
+  options?: BuilderInstallOptions,
 ): Promise<InstallResponse> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(
@@ -2740,6 +2751,7 @@ export async function installBuilderDraft(
       },
       credentials: 'include',
       cache: 'no-store',
+      ...(options ? { body: JSON.stringify(options) } : {}),
     },
   );
   const text = await res.text();
@@ -3741,11 +3753,11 @@ export async function stopBuilderTurn(
 export async function resolveBuilderUserChoice(input: {
   draftId: string;
   choiceId: string;
-  value: string;
-}): Promise<{ ok: boolean }> {
+} & ({ value: string } | { answer: string })): Promise<{ ok: boolean }> {
+  const selection = 'value' in input ? { value: input.value } : { answer: input.answer };
   return postJson<{ ok: boolean }>(
     `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/user-choice/${encodeURIComponent(input.choiceId)}`,
-    { value: input.value },
+    selection,
   );
 }
 

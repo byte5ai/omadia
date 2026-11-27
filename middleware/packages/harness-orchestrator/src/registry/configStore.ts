@@ -311,7 +311,11 @@ export interface ChannelBindingInput {
  * leaking the raw `pg` error.
  */
 export class ConfigValidationError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly reason?: string,
+    readonly params?: Record<string, string>,
+  ) {
     super(message);
     this.name = 'ConfigValidationError';
   }

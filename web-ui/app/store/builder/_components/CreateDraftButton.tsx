@@ -31,22 +31,17 @@ export function CreateDraftButton({
     setError(null);
     startTransition(async () => {
       try {
-        await createBuilderDraft();
+        await createBuilderDraft({ name: t('defaultName') });
         router.refresh();
       } catch (err) {
         if (err instanceof ApiError) {
-          try {
-            const body = JSON.parse(err.body) as { message?: string };
-            setError(body.message ?? err.message);
-          } catch {
-            setError(err.message);
-          }
+          setError(err.code === 'quota.exceeded' ? t('quotaReachedTooltip') : t('failed'));
         } else {
-          setError(err instanceof Error ? err.message : String(err));
+          setError(t('failed'));
         }
       }
     });
-  }, [router]);
+  }, [router, t]);
 
   return (
     <div className="flex flex-col items-end gap-2">

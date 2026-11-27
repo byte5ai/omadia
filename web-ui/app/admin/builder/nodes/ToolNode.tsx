@@ -7,6 +7,7 @@ import type { ToolNodeData } from './types';
 export function ToolNodeView({
   data,
   selected,
+  isConnectable,
 }: NodeProps & { data: ToolNodeData }): React.ReactElement {
   const { toolRef, labels } = data;
   return (
@@ -16,6 +17,7 @@ export function ToolNodeView({
       badge={labels['tool']}
       selected={selected}
       hasTarget
+      targetConnectable={isConnectable}
     />
   );
 }

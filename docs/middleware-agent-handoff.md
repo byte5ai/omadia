@@ -4767,6 +4767,20 @@ weg; ob es ein ZIP ist, entscheidet yauzl am Inhalt (`zip.invalid`, 422). Der
 Multipart-Fallback-Code ist `multipart` (→ `upload.multipart`), nicht mehr
 doppelt präfixiert.
 
+### Plugin Builder: Manifest prüfen und bereitstellen (ADR-0237)
+
+`GET /drafts/:id/install/manifest` zeigt dem Entwurfsinhaber das durch Codegen
+erzeugte Manifest und das zur installierten Version passende Katalog-Manifest.
+Der Install-POST prüft die Fingerabdrücke des betrachteten Entwurfs und
+des Katalog-Manifests sowie die installierte Version. Der gemeinsame Ingest akzeptiert ein Downgrade mit
+`allowDowngrade` und Bestätigung für genau die angezeigte Plugin-ID und das
+Versionspaar. Eine fehlgeschlagene Reaktivierung antwortet mit
+`422 builder.activation_failed`. Das Paket liegt im Store, der Entwurf behält
+seinen Status. Bei Erfolg führt der Dialog auf die Store-Detailseite, wo der
+Administrator installieren und anschließend explizite Freigaben vergeben kann.
+Die Store-Detailantwort meldet den eigenen Quellentwurf getrennt von verfügbaren
+Selbst-Erweiterungs-Templates.
+
 ### Install-Drawer und Store-Detailseite (#1494, #1495, #1490)
 
 - **Validierungsfehler beenden den Job nicht mehr (#1494).**
@@ -5117,6 +5131,25 @@ Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
   sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
   Admin-Session.
 
+**Workspace-Editoren.** Beschreibung und Einsatzbereich werden nach
+einer Eingabepause oder beim Verlassen gespeichert. Bei Setup-Feldern sendet
+die Web-UI den zuletzt gelesenen Stand als `expectedSetupFields` mit. Der
+Spec-PATCH meldet `409 builder.setup_fields_changed`, wenn die Basis nicht
+mehr aktuell ist. Der Client liest die Felder erneut und übernimmt Änderungen
+an anderen Feldern. Wurde der bearbeitete Wert gleichzeitig geändert, zeigt er
+den Konflikt an. Der Templatewechsel lädt Slotliste und Editor-Typen neu.
+Der erfolgreiche Build-Status liefert die kanonische `templateId`, die der
+Publish-Dialog mit der aktuellen Vorlage abgleicht (ADR-0230).
+Leere neue Entwürfe beginnen mit `tool`. Für einen externen Client
+wählt der Builder `integration`, bevor er Slots schreibt.
+
+**Vorschau-Turns.** Die Modellnutzung trägt eine Turn-ID und die Session
+`builder-preview:<draftId>`. Die Nutzungsseite fasst Vorschau und Builder
+zusammen und zählt einen Entwurf einmal. Eine Modellablehnung markiert den
+Nutzereintrag mit `status: declined`. Die UI rendert den Systemhinweis aus
+`turn_declined` bzw. dem gespeicherten Status. Abgelehnte Nachrichten gehen
+nicht in den Modellkontext späterer Vorschau-Turns (ADR-0236).
+
 ### Plugin Builder: Build-Status, Smoke, Drafts löschen (Welle 5, W20)
 
 - **Build-Status** (ADR-0230): `plugins/builder/previewWarmBuild.ts` ist der
@@ -5175,6 +5208,11 @@ Chat-Route und AutoFix) lässt pro Draft genau einen laufenden Turn zu.
   denselben Abort ab (`error builder.turn_timeout`).
 - **Detached-Turn.** Das `finally` des Turn-Tasks wirft nicht mehr:
   `finalize()` ist abgesichert, der Lock wird immer freigegeben.
+- **Rückfragen.** Eine offene Frage bleibt im Chat. Die Choice-Karte bietet
+  konkrete Optionen, eine freie Antwort und Schließen. Der vorhandene
+  Owner-Endpunkt akzeptiert dazu `value`, `answer` oder `cancel: true`.
+  Nach fünf Minuten läuft die Karte ab und verschwindet auch in anderen
+  Tabs. Die freie Antwort zählt als Chat-Eingabe (ADR-0235).
 - **Grenze.** Der Lock liegt im Speicher wie Ring-Buffer und Choice-Karten:
   ein Turn überlebt keinen Neustart, sein Lock auch nicht. Mehrere
   Middleware-Instanzen teilen ihn nicht.
@@ -10537,11 +10575,10 @@ Entschieden (Marcel, 2026-10-16): sichtbarer Manifest-Text wird als
   Pakete gehen nicht über den Hub.
 - Out-of-Tree-Pakete (Teams, Odoo, LLM-Provider, …) konvertieren in ihren
   eigenen Repos; die Checkliste steht in #1401.
-- Offen: der Agent-Builder (`src/plugins/builder/codegen.ts`
-  `mapSetupFieldSpecToManifest`) schreibt `label`/`help`/Enum-Labels weiter als
-  nackte Strings — er kennt pro Feld nur einen Text in unbekannter Sprache.
-  Builder-Agents lösen deshalb die Loader-Warnung aus, bis die Builder-Spec
-  zweisprachige Felder bekommt (Folge-Issue).
+- Der Plugin Builder übernimmt `label_localized`, `help_localized` und
+  `enum_labels` aus der Entwurfsspezifikation (ADR-0239). Codegen schreibt die
+  Werte als `{en, de}`-Map ins Manifest. Bei bestehenden einsprachigen Angaben
+  wird der vorhandene Text in beiden Sprachen angezeigt.
 
 ## Plugin-Registries: Status sichtbar, Seed nur beim ersten Boot, Änderungen im Audit (#1458 / #1482 / #1483 / #1487, 2026-10-28)
 

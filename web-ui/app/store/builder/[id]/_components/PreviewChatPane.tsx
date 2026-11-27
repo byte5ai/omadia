@@ -55,6 +55,7 @@ import { isSendKey } from '../../../../_lib/composerKeys';
 
 type ChatItem =
   | { kind: 'message'; key: string; role: 'user' | 'assistant'; text: string }
+  | { kind: 'declined'; key: string }
   | {
       kind: 'tool';
       key: string;
@@ -78,6 +79,7 @@ type ChatItem =
 export interface BuildStatusSnapshot {
   phase: 'idle' | 'building' | 'ok' | 'failed';
   buildN?: number;
+  templateId?: string;
   reason?: string;
   errorCount?: number;
   /** #1809 — `ok` build whose preview waits for a test credential. */
@@ -141,6 +143,7 @@ interface PreviewChatPaneProps {
    *  message). Fires `false` on unmount so a stale `true` never wedges the
    *  toggle. */
   onStreamingChange?: (streaming: boolean) => void;
+  onOpenPreviewModel?: () => void;
 }
 
 /**
@@ -164,15 +167,17 @@ export function PreviewChatPane({
   onFixSmokeWithBuilder,
   onBufferedSecretKeysChange,
   onStreamingChange,
+  onOpenPreviewModel,
 }: PreviewChatPaneProps): React.ReactElement {
   const t = useTranslations('builder.preview.chat');
   const [items, setItems] = useState<ChatItem[]>(() =>
-    initialTranscript.map((entry, i) => ({
-      kind: 'message' as const,
-      key: `init-${String(i)}`,
-      role: entry.role,
-      text: entry.content,
-    })),
+    initialTranscript.flatMap((entry, i): ChatItem[] => {
+      const key = `init-${String(i)}`;
+      const message = { kind: 'message' as const, key, role: entry.role, text: entry.content };
+      return entry.status === 'declined'
+        ? [message, { kind: 'declined', key: `${key}-declined` }]
+        : [message];
+    }),
   );
   const [input, setInput] = useState('');
   const [inflight, setInflight] = useState(false);
@@ -309,6 +314,8 @@ export function PreviewChatPane({
             text: ev.text,
           },
         ]);
+      } else if (ev.type === 'turn_declined') {
+        setItems((prev) => [...prev, { kind: 'declined', key: ev.turnId }]);
       } else if (ev.type === 'tool_use') {
         setItems((prev) => [
           ...prev,
@@ -362,6 +369,7 @@ export function PreviewChatPane({
         const snapshot: BuildStatusSnapshot = {
           phase: ev.phase,
           ...(ev.buildN !== undefined ? { buildN: ev.buildN } : {}),
+          ...(ev.templateId !== undefined ? { templateId: ev.templateId } : {}),
           ...(ev.reason !== undefined ? { reason: ev.reason } : {}),
           ...(totalIssueCount > 0 ? { errorCount: totalIssueCount } : {}),
           ...(ev.missingSetupKey !== undefined
@@ -535,6 +543,18 @@ export function PreviewChatPane({
             <EmptyHint />
           ) : (
             items.map((item) => {
+              if (item.kind === 'declined') {
+                return (
+                  <div key={item.key} role="status" className="rounded-lg bg-[color:var(--bg-soft)] px-3 py-2 text-[13px]">
+                    <p>{t('declined')}</p>
+                    {onOpenPreviewModel && (
+                      <Button type="button" variant="ghost" size="sm" disabled={inflight} onClick={onOpenPreviewModel}>
+                        {t('previewModelSettings')}
+                      </Button>
+                    )}
+                  </div>
+                );
+              }
               // Render an `ask_user_choice` tool_use as a real Smart-Card
               // instead of the generic ToolCard's raw JSON dump. The
               // preview-agent doesn't pause server-side — clicking just

@@ -141,8 +141,12 @@ export interface ToolTestCase {
 export interface SetupField {
   key: string;
   label?: string;
+  label_localized?: { en: string; de: string };
   description?: string;
-  type?: 'string' | 'secret' | 'url' | 'number' | 'boolean' | 'oauth';
+  help?: string;
+  help_localized?: { en: string; de: string };
+  enum_labels?: Record<string, { en: string; de: string }>;
+  type?: 'string' | 'secret' | 'url' | 'number' | 'integer' | 'boolean' | 'oauth' | 'enum' | 'host_list' | 'json_file';
   required?: boolean;
   /** Spec 005 (#371) — for `type: 'oauth'` fields: the oauth_providers[].id
    *  this field connects through, plus the requested scopes. */
@@ -223,6 +227,7 @@ export interface TranscriptEntry {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  status?: 'declined';
 }
 
 export interface Draft extends DraftSummary {
@@ -290,6 +295,7 @@ export type SpecBusEvent =
       type: 'build_status';
       phase: 'building' | 'ok' | 'failed';
       buildN?: number;
+      templateId?: string;
       reason?: string;
       errorCount?: number;
       /** #1809 — only with `ok`: the build compiled, but the preview waits
@@ -412,6 +418,7 @@ export interface InstallSuccess {
   publishedAgentId: string;
   version: string;
   packageBytes: number;
+  activated?: true;
 }
 
 export type InstallFailureReason =
@@ -423,6 +430,7 @@ export type InstallFailureReason =
   | 'conflict'
   | 'too_large'
   | 'manifest_invalid'
+  | 'activation_failed'
   | 'ingest_failed';
 
 export interface InstallFailure {
@@ -436,6 +444,26 @@ export interface InstallFailure {
 }
 
 export type InstallResponse = InstallSuccess | InstallFailure;
+
+export interface BuilderInstallManifest {
+  pluginId: string;
+  version: string;
+  fingerprint: string;
+  manifest: Record<string, unknown>;
+  generatedFeatures: { external_reads: unknown[]; ui_routes: unknown[] };
+  installedVersion: string | null;
+  installedManifest: Record<string, unknown> | null;
+  installedManifestFingerprint: string | null;
+}
+
+export interface BuilderInstallOptions {
+  review: {
+    fingerprint: string;
+    installed: { version: string | null; manifestFingerprint: string | null };
+  };
+  allowDowngrade?: true;
+  downgradeConfirmation?: { pluginId: string; fromVersion: string; toVersion: string };
+}
 
 // -----------------------------------------------------------------------------
 // Boilerplate types — GET /drafts/:id/types (B.6-11).
@@ -532,6 +560,7 @@ export interface TemplateSlotsResponse {
 
 export type PreviewStreamEvent =
   | { type: 'chat_message'; role: 'user' | 'assistant'; text: string }
+  | { type: 'turn_declined'; turnId: string }
   | { type: 'tool_use'; useId: string; toolId: string; input: unknown }
   | {
       type: 'tool_result';
@@ -546,6 +575,7 @@ export type PreviewStreamEvent =
       type: 'build_status';
       phase: 'building' | 'ok' | 'failed';
       buildN?: number;
+      templateId?: string;
       reason?: string;
       /** #1809 — `ok` whose preview waits for this test credential. */
       missingSetupKey?: string;

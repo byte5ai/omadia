@@ -49,7 +49,7 @@ export function ActivationFailureNotice({
         <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
         <span>
           {lead ? `${lead} ` : null}
-          {t(`${key}.what`)}
+          {key !== 'unknown' || !lead ? t(`${key}.what`) : null}
         </span>
       </p>
       <p className="mt-1 pl-6 leading-relaxed">{t(`${key}.next`)}</p>

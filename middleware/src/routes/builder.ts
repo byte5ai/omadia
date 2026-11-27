@@ -355,7 +355,7 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
       const name =
         typeof body.name === 'string' && body.name.trim().length > 0
           ? body.name.trim().slice(0, 200)
-          : 'Neuer Agent';
+          : '';
 
       await deps.quota.assertCanCreate(email);
       const draft = await deps.store.create(email, name);

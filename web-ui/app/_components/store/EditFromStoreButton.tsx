@@ -15,12 +15,6 @@ import { Button } from '@/app/_components/ui/Button';
  * `/api/v1/builder/drafts/from-installed/:agentId` and on success
  * redirects the operator to the cloned draft's workspace.
  *
- * Failure modes (typed via `CloneFromInstalledFailureReason`):
- *   source_not_found  → inline message ("Original-Draft nicht mehr
- *                       verfügbar — Reverse-Codegen kommt erst in B.7")
- *   quota_exceeded    → inline message ("Draft-Quota erreicht — lösche
- *                       bestehende Drafts")
- *
  * Per Open Question #4 (Edit-from-Store-State = clone): the published
  * plugin stays live during edit. The new draft has no `published_agent_id`
  * link; re-install routes through the install-commit flow with a
@@ -36,7 +30,7 @@ export interface EditFromStoreButtonProps {
 type Phase =
   | { kind: 'idle' }
   | { kind: 'cloning' }
-  | { kind: 'failed'; message: string; hint: string | null };
+  | { kind: 'failed'; message: string };
 
 export function EditFromStoreButton({
   publishedAgentId,
@@ -55,17 +49,18 @@ export function EditFromStoreButton({
         router.push(`/store/builder/${encodeURIComponent(result.draftId)}`);
         return;
       }
-      const hintKey = HINT_KEYS[result.reason];
       setPhase({
         kind: 'failed',
-        message: result.message,
-        hint: hintKey ? t(hintKey) : null,
+        message: result.code === 'builder.source_draft_not_found'
+          ? t('sourceDraftMissing')
+          : result.reason === 'quota_exceeded'
+            ? t('hintQuotaExceeded')
+            : t('cloneFailed'),
       });
-    } catch (err) {
+    } catch {
       setPhase({
         kind: 'failed',
-        message: err instanceof Error ? err.message : String(err),
-        hint: null,
+        message: t('cloneFailed'),
       });
     }
   };
@@ -97,11 +92,6 @@ export function EditFromStoreButton({
               <p className="text-[12px] text-[color:var(--fg-strong)]">
                 {phase.message}
               </p>
-              {phase.hint ? (
-                <p className="text-[11px] italic text-[color:var(--fg-muted)]">
-                  {phase.hint}
-                </p>
-              ) : null}
             </div>
           </div>
         </div>
@@ -109,11 +99,3 @@ export function EditFromStoreButton({
     </div>
   );
 }
-
-/** Message-key leaves under `store.editFromStore` — translated at render. */
-const HINT_KEYS: Partial<
-  Record<'source_not_found' | 'quota_exceeded', string>
-> = {
-  source_not_found: 'hintSourceNotFound',
-  quota_exceeded: 'hintQuotaExceeded',
-};

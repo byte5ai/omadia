@@ -10,6 +10,7 @@ import {
   type EdgeChangeset,
   type NodeChangeset,
   type NodeTypes,
+  type OnBeforeDelete,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
@@ -24,6 +25,7 @@ import {
   createSkill,
   createMcpServer,
   deleteGraphEdge,
+  getAgentGraph,
   patchPositions,
   resolveEdgeKind,
   type CanvasPosition,
@@ -89,6 +91,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selected, setSelected] = useState<BuilderNodeData | null>(null);
   const dragTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleting = useRef(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   // Re-derive the flow graph whenever the authoritative state changes.
@@ -112,11 +115,12 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
     const s = kindOfNodeId(c.source ?? '');
     const tgt = kindOfNodeId(c.target ?? '');
     if (!s || !tgt) return false;
-    return resolveEdgeKind(s, tgt) !== null;
-  }, []);
+    return nodes.find((node) => node.id === c.target)?.connectable !== false && resolveEdgeKind(s, tgt) !== null;
+  }, [nodes]);
 
   const onConnect = useCallback(
     (c: Connection) => {
+      if (!isValidConnection(c)) return;
       const s = kindOfNodeId(c.source);
       const tgt = kindOfNodeId(c.target);
       if (!s || !tgt) return;
@@ -141,23 +145,43 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
         },
       );
     },
-    [slug, mutate],
+    [slug, mutate, isValidConnection],
   );
 
-  const onEdgesDelete = useCallback(
-    (deleted: Edge[]) => {
-      void mutate(
-        (g) => g,
-        async () => {
-          for (const e of deleted) {
-            const kind = (e.data as { kind?: EdgeKind } | undefined)?.kind;
-            if (!kind || e.id.startsWith('tmp-')) continue;
-            await deleteGraphEdge(slug, e.id, kind);
-          }
-        },
-      );
+  const onBeforeDelete = useCallback<OnBeforeDelete<BuilderNode, Edge>>(
+    async ({ edges: selectedEdges }) => {
+      if (deleting.current) return false;
+      const helperIds = new Set(selectedEdges.filter((edge) => edge.data?.kind === 'subagent').map((edge) => edge.target));
+      const unique = new Map<string, { id: string; kind: EdgeKind; label: string }>();
+      for (const edge of selectedEdges) {
+        const kind = (edge.data as { kind?: EdgeKind } | undefined)?.kind;
+        if (!kind || edge.id.startsWith('tmp-')) continue;
+        if (kind !== 'subagent' && helperIds.has(edge.source)) continue;
+        const labelNodeId = kind === 'schedule' || kind === 'channel_bind' ? edge.source : edge.target;
+        const label = nodeLabel(nodes.find((node) => node.id === labelNodeId)) ?? labelNodeId;
+        unique.set(edge.id, { id: edge.id, kind, label });
+      }
+      if (unique.size === 0) return false;
+      const operations = [...unique.values()];
+      const summary = operations.map(({ kind, label }) => t(`delete.items.${kind}`, { name: label })).join('\n');
+      if (!window.confirm(t('delete.confirm', { summary }))) return false;
+
+      deleting.current = true;
+      try {
+        await mutate(
+          (graph) => graph,
+          async () => {
+            for (const { id, kind } of operations) await deleteGraphEdge(slug, id, kind);
+            return getAgentGraph(slug);
+          },
+          true,
+        );
+      } finally {
+        deleting.current = false;
+      }
+      return false;
     },
-    [slug, mutate],
+    [nodes, slug, mutate, t],
   );
 
   // Debounced persistence of node positions after a drag settles.
@@ -237,7 +261,6 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           } else if (kind === 'schedule') {
             await createSchedule(slug, { cron: '0 9 * * *', timezone: 'UTC' });
           } else {
-            // channel — created via binding edge once wired; nothing to POST yet.
             return;
           }
           await reload();
@@ -288,7 +311,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          onEdgesDelete={onEdgesDelete}
+          onBeforeDelete={onBeforeDelete}
           onNodeDragStop={onNodeDragStop}
           onSelectionChange={onSelectionChange}
           isValidConnection={isValidConnection}
@@ -318,6 +341,18 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
       )}
     </div>
   );
+}
+
+function nodeLabel(node: BuilderNode | undefined): string | undefined {
+  const data = node?.data;
+  switch (data?.kind) {
+    case 'channel': return `${data.channel.channelType} · ${data.channel.channelKey}`;
+    case 'subagent': return data.subAgent.name;
+    case 'skill': return data.skill.name;
+    case 'tool': return data.toolRef;
+    case 'schedule': return `${data.schedule.cron} · ${data.schedule.timezone}`;
+    default: return undefined;
+  }
 }
 
 function nodeUnderPoint(nodes: BuilderNode[], pos: CanvasPosition): BuilderNode | null {

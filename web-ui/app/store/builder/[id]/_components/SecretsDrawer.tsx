@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -15,6 +15,7 @@ import {
 } from '../../../../_lib/api';
 import type { SetupField } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
+import { pickLocalized } from '../../../../_lib/localized';
 
 interface SecretsDrawerProps {
   draftId: string;
@@ -253,6 +254,9 @@ function SecretFieldRow({
   onChange: (v: string) => void;
 }): React.ReactElement {
   const t = useTranslations('builder.preview.secrets');
+  const locale = useLocale();
+  const label = pickLocalized(field.label_localized, locale) ?? field.label;
+  const description = pickLocalized(field.help_localized, locale) ?? field.help ?? field.description;
   const inputType = field.type === 'secret' ? 'password' : field.type === 'number' ? 'number' : 'text';
   return (
     <li>
@@ -283,12 +287,12 @@ function SecretFieldRow({
           ) : null}
         </span>
       </div>
-      {field.label && field.label !== field.key ? (
-        <p className="text-[11px] text-[color:var(--fg-muted)]">{field.label}</p>
+      {label && label !== field.key ? (
+        <p className="text-[11px] text-[color:var(--fg-muted)]">{label}</p>
       ) : null}
-      {field.description ? (
+      {description ? (
         <p className="text-[11px] text-[color:var(--fg-subtle)]">
-          {field.description}
+          {description}
         </p>
       ) : null}
       {field.type === 'boolean' ? (

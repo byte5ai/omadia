@@ -26,6 +26,7 @@ type RunOutcome = 'ok' | 'tsc';
 
 function makeHarness(opts: {
   outcomes: RunOutcome[];
+  template?: string;
   activate?: () => Promise<PreviewHandle>;
   newestBuild?: () => number;
 }) {
@@ -42,7 +43,9 @@ function makeHarness(opts: {
     run: async (): Promise<PipelineRunResult> => {
       buildN += 1;
       const outcome = opts.outcomes.shift() ?? 'ok';
-      const draft = { spec: { setup_fields: [] } } as unknown as PipelineRunResult['draft'];
+      const draft = {
+        spec: { setup_fields: [], template: opts.template },
+      } as unknown as PipelineRunResult['draft'];
       if (outcome === 'ok') {
         return {
           draft,
@@ -101,9 +104,10 @@ describe('warmPreview', () => {
   });
 
   it('a cache hit emits no building event (#1807)', async () => {
-    const h = makeHarness({ outcomes: ['ok'] });
+    const h = makeHarness({ outcomes: ['ok'], template: 'agent-pure-llm' });
     await warmPreview(h.deps, { userEmail: USER, draftId: DRAFT });
     assert.deepEqual(h.events.map((e) => e.phase), ['building', 'ok']);
+    assert.equal(h.events[1]?.templateId, 'tool');
     await warmPreview(h.deps, { userEmail: USER, draftId: DRAFT });
     assert.deepEqual(h.events.map((e) => e.phase), ['building', 'ok']);
   });
@@ -121,6 +125,7 @@ describe('warmPreview', () => {
     const last = h.events.at(-1)!;
     assert.equal(last.phase, 'ok');
     assert.equal(last.buildN, 1);
+    assert.equal(last.templateId, 'integration');
     assert.equal(last.missingSetupKey, 'probe_token');
     assert.equal(h.recorded.length, 0);
     assert.deepEqual(h.missing, [{ buildN: 1, key: 'probe_token' }]);

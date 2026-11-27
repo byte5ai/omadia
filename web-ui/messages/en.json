@@ -437,6 +437,24 @@
         "helper_name_conflict": "Its tool name collides with another helper or tool of this agent, so it is not offered. Choose a different name.",
         "reason": "Reason: {reason}"
       },
+      "configError": "The configuration was rejected.",
+      "configErrorDetail": "The configuration was rejected. {detail}",
+      "configErrors": {
+        "helper_name_exists": "A helper named {name} already exists for this agent.",
+        "mcp_server_name_exists": "An MCP server named {name} already exists.",
+        "mcp_tool_required": "Drag an individual MCP tool from the toolbox onto the agent or helper."
+      },
+      "delete": {
+        "confirm": "Remove the following from the agent configuration?\n\n{summary}",
+        "items": {
+          "channel_bind": "Unbind channel {name}",
+          "subagent": "Delete helper {name} and its tool grants",
+          "skill": "Detach skill {name} from the helper",
+          "tool_grant": "Remove the tool grant for {name}",
+          "schedule": "Delete schedule {name}",
+          "persona_skill": "Detach working mode {name}"
+        }
+      },
       "apiError": "Error {status}",
       "persona": {
         "title": "Working modes",
@@ -518,6 +536,8 @@
     }
   },
   "selfExtension": {
+    "sourceDraftMissing": "There is no Builder draft for this plugin in your account.",
+    "proposalFailed": "The self-extension proposal could not be submitted.",
     "intro": "Propose a self-extension for this installed plugin: add tools or capabilities by patching its spec. The escalation guard auto-denies any privilege widening — a plugin can never grant itself rights it does not already hold.",
     "composeTitle": "New proposal",
     "rationalePlaceholder": "Why is this extension needed?",
@@ -3534,6 +3554,12 @@
     "detailPackageMissingHint": "This plugin is assigned, but its package is not installed on this instance, so it does not run. Install the package again in the store (the canvas packages come from byte5ai/omadia-ui-support), or detach the plugin."
   },
   "builder": {
+    "choice": {
+      "answerLabel": "Your own answer",
+      "send": "Send answer",
+      "dismiss": "Dismiss",
+      "failed": "Could not save your response. Try again."
+    },
     "issueReport": {
       "kicker": "Report core bug to omadia",
       "publicWarning": "This text goes into the <strong>public</strong> repo. Secrets and personal data were removed automatically — please review before filing.",
@@ -3607,10 +3633,12 @@
         "errorUnknown": "Unknown error — please try again.",
         "errorProviderGeneric": "The Plugin Builder couldn't reach the AI service just now. Please try again in a moment.",
         "errorChoiceFailed": "Your choice could not be saved.",
+        "errorStopFailed": "Could not stop the turn. Try again.",
         "errorChoiceFailedMessage": "Your choice could not be saved: {message}"
       }
     },
     "workspace": {
+      "previewModelLabel": "Preview",
       "backToDrafts": "Drafts",
       "publish": "Publish",
       "viewModeAriaLabel": "Choose view",
@@ -3672,7 +3700,11 @@
       "kindIntegration": "Integration",
       "kindTool": "Tool",
       "kindIntegrationHint": "Plugin kind: integration — an external system with credentials. Granted to agents per agent.",
-      "kindToolHint": "Plugin kind: tool — local logic without an external system. Granted to agents per agent."
+      "kindToolHint": "Plugin kind: tool — local logic without an external system. Granted to agents per agent.",
+      "codegenModelLabel": "Code generation",
+      "installSlotsLoading": "The Builder is loading the template requirements.",
+      "installSlotsUnavailable": "Template requirements could not be loaded. Reload the draft and try again.",
+      "installIncompleteSimple": "The plugin is still missing required pieces. Ask the Builder to finish it, then run a preview."
     },
     "tools": {
       "form": {
@@ -3714,7 +3746,7 @@
         "inputLabel": "Input",
         "preview": "Preview",
         "previewEmpty": "Paste input to see the preview.",
-        "invalidJson": "Input is not valid JSON. YAML support is coming in the B.11+ cleanup.",
+        "invalidJson": "The input is invalid JSON.",
         "collisionNote": "Collisions are skipped — existing tools stay unchanged.",
         "confirmImport": "Confirm import",
         "collisionBadge": "Collision",
@@ -3744,7 +3776,65 @@
         "closeModal": "Close modal",
         "empty": "No templates available.",
         "personalBadge": "Mine",
-        "deleteTemplate": "Delete template {label}"
+        "deleteTemplate": "Delete template {label}",
+        "curated": {
+          "rest-get-list": {
+            "label": "REST GET (list)",
+            "blurb": "GET /resource with a page size and cursor.",
+            "description": "List resources from a REST API with optional filtering.",
+            "fields": {
+              "limit": "Maximum number of entries to return.",
+              "cursor": "Pagination cursor from the previous response.",
+              "filter": "Search text."
+            }
+          },
+          "rest-post-create": {
+            "label": "REST POST (create)",
+            "blurb": "POST /resource with a JSON body and an idempotency key.",
+            "description": "Create a REST resource with an idempotency key.",
+            "fields": {
+              "payload": "JSON body for the resource.",
+              "idempotency_key": "Deduplication key. A UUID is recommended."
+            }
+          },
+          "graphql-query": {
+            "label": "GraphQL query",
+            "blurb": "GraphQL POST with a query and variables.",
+            "description": "Run a GraphQL query.",
+            "fields": {
+              "query": "GraphQL query with variables.",
+              "variables": "GraphQL variable names and their values."
+            }
+          },
+          "kg-lookup": {
+            "label": "Knowledge graph lookup",
+            "blurb": "Look up relationships by subject and predicate.",
+            "description": "Find relationships in the knowledge graph.",
+            "fields": {
+              "subject": "Entity name or canonical entity URI.",
+              "predicate": "Relationship type. Leave blank to include all types."
+            }
+          },
+          "memory-read": {
+            "label": "Read memory",
+            "blurb": "Read an agent memory entry by key.",
+            "description": "Read a memory entry for the agent.",
+            "fields": {
+              "key": "Memory key. Case-sensitive."
+            }
+          },
+          "memory-write": {
+            "label": "Write memory",
+            "blurb": "Write or replace an agent memory entry.",
+            "description": "Write or replace a memory entry for the agent.",
+            "fields": {
+              "key": "Memory key. Case-sensitive.",
+              "value": "String value. Encode structured data as JSON.",
+              "ttl_seconds": "Zero keeps the entry indefinitely."
+            }
+          }
+        },
+        "personalDescription": "Personal template"
       },
       "schema": {
         "collapseConstraints": "Collapse constraints",
@@ -3799,7 +3889,8 @@
         "llmAccessMissing": "The Plugin Builder needs LLM access (an API key or a connected subscription).",
         "turnInProgress": "A builder turn is still running on this draft. Your message was not sent; the running turn is shown below.",
         "turnTimeout": "The builder turn took too long and was stopped.",
-        "stopFailed": "Could not stop the turn on the server: {message}"
+        "stopFailed": "Could not stop the turn on the server: {message}",
+        "resumeExhausted": "The Builder could not reconnect to this turn. Reload the draft to see its latest state."
       },
       "inputLabel": "Builder message",
       "scrollToBottomAriaLabel": "Jump to latest message",
@@ -3862,7 +3953,7 @@
         },
         "empty": {
           "title": "Test the plugin with the preview agent.",
-          "body": "A neutral draft agent holds only this plugin’s tools. Spec + slots are recompiled before each turn if anything changed."
+          "body": "Try the tools this plugin provides. Changes are included in the next preview."
         },
         "smoke": {
           "running": "smoke #{buildN} running …",
@@ -3874,6 +3965,8 @@
           "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
           "fixWithBuilder": "Fix with builder"
         },
+        "declined": "The model declined this request for safety reasons.",
+        "previewModelSettings": "Preview model settings",
         "replyMarker": "Preview"
       },
       "secrets": {
@@ -3970,7 +4063,14 @@
           "noProviders": "Declare an oauth_providers descriptor first (ask the Plugin Builder) — then pick it here.",
           "scopes": "scopes",
           "scopesPlaceholder": "comma-separated, e.g. profile, email"
-        }
+        },
+        "fieldKey": "Field key",
+        "fieldLabel": "Label",
+        "fieldType": "Field type",
+        "fieldRequired": "Required field",
+        "fieldDescription": "Setup instructions",
+        "saveConflict": "The setup fields changed. Check the latest values and try again.",
+        "saveFailed": "The setup field could not be saved."
       }
     },
     "slots": {
@@ -4212,7 +4312,7 @@
           "title": "Admin UI",
           "subtitle": "An iframe in the store detail, operator-only. For maintaining data that does not come from the API.",
           "toggleLabel": "Provide Admin UI",
-          "toggleHelp": "Plugin mounts an HTML page at <code>admin_ui_path</code>. The Web UI embeds it as an <code>&lt;iframe&gt;</code> on the store detail page after install.",
+          "toggleHelp": "The plugin serves an HTML page at <code>admin_ui_path</code>. After installation, the Store shows it in an <code>iframe</code>.",
           "pathLabel": "Path (absolute, ends with <code>index.html</code>)",
           "bodyLabel": "Admin UI Body (HTML)",
           "bodyHint": "Content between the marker regions. Inline style + script allowed.",
@@ -4272,11 +4372,11 @@
         },
         "componentSlot": {
           "label": "Component (TSX, default-export)",
-          "hint": "Props: { data: unknown; fetchError: string | null }"
+          "hint": "Props include data (unknown) and fetchError (string or null)."
         },
         "renderSlot": {
           "label": "Render Slot (renderRoute callback body)",
-          "hint": "Return: HtmlFragment (e.g. htmlDoc({ title, body }))"
+          "hint": "Returns an HtmlFragment from htmlDoc with a title and body."
         },
         "itemTemplate": {
           "heading": "Item Template (path interpolation: <code>item.fieldname</code>)",
@@ -4389,9 +4489,8 @@
       "publishTitle": "Publish plugin",
       "closeModalAria": "Close modal",
       "closeAria": "Close",
-      "diffGateEyebrow": "Publish diff gate",
-      "publishLeadPrefix": "This surface will be written to the plugin store. After “Publish”,",
-      "publishLeadSuffix": "can be granted to agents in the tenant.",
+      "publishLeadPrefix": "Publishing sends",
+      "publishLeadSuffix": "to the Store. For a new plugin, install it there and choose which agents may use it.",
       "back": "Back",
       "publishing": "Publishing …",
       "succeeded": "Succeeded",
@@ -4433,20 +4532,36 @@
       "hintSpecInvalid": "The spec has a schema problem. Check required fields in the spec editor.",
       "hintTooLarge": "Reduce slot content or asset sizes — the server limit has been reached.",
       "bumpInvalidSemver": "Version '{version}' is not semver — adjust it manually in the spec editor.",
-      "bumpAndPublish": "Bump version ({current} → {next}) + publish",
+      "bumpAndPublish": "Bump version ({current} → {next}) and review",
       "retry": "Try again",
       "typescriptErrors": "{count, plural, one {# TypeScript error} other {# TypeScript errors}}",
       "codegenIssues": "{count, plural, one {# codegen issue} other {# codegen issues}}",
       "successHeading": "Plugin published",
-      "successBody": "is visible in the store. Redirecting …",
       "conflictLabel": "Conflict",
       "dismissConflictAria": "Dismiss conflict notice",
       "manifestPreviewOpenAria": "Open manifest preview",
       "manifestPreviewRefreshAria": "Refresh manifest preview",
       "manifestPreviewCloseAria": "Close manifest preview",
       "manifestPreviewLoading": "# (preview loading)",
-      "previewError": "Preview error",
-      "kvKind": "Kind"
+      "previewError": "The manifest preview could not be loaded.",
+      "kvKind": "Kind",
+      "manifestComparison": "Manifest comparison",
+      "manifestReview": "Manifest review",
+      "compareVersion": "Compared with installed version {version}.",
+      "baselineUnavailable": "The manifest for installed version {version} is unavailable. The draft manifest is shown below.",
+      "manifestUnavailable": "The draft manifest could not be loaded. Check the draft or try again.",
+      "loadingManifest": "Loading the draft manifest …",
+      "added": "Added",
+      "removed": "Removed",
+      "changed": "Changed",
+      "generatedFeatures": "Generated external reads and UI routes for the draft",
+      "downgradeHeading": "Older than the installed version",
+      "confirmDowngrade": "Downgrade to {version}",
+      "activationFailed": "The package was published, but the new version did not start.",
+      "successActivated": "was published and activated. Manage access for agents in the Store.",
+      "successNeedsInstall": "was published to the Store. Install or activate it there, then grant access to the agents you choose.",
+      "openStore": "Open plugin in Store",
+      "reviewStale": "The draft or installed version changed. Load the manifest review again before publishing."
     },
     "common": {
       "missingCountAria": "{count} missing",
@@ -4542,7 +4657,9 @@
       "create": {
         "label": "New plugin",
         "pending": "Creating…",
-        "quotaReachedTooltip": "Draft quota reached — delete an existing one before creating a new draft."
+        "quotaReachedTooltip": "Draft quota reached — delete an existing one before creating a new draft.",
+        "defaultName": "New plugin",
+        "failed": "The plugin draft could not be created."
       },
       "import": {
         "button": "Import bundle",
@@ -5233,9 +5350,10 @@
       "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
     },
     "editFromStore": {
+      "sourceDraftMissing": "There is no Builder draft for this plugin in your account.",
+      "cloneFailed": "The Builder draft could not be opened.",
       "cloning": "Cloning draft …",
       "editInBuilder": "Edit in Builder",
-      "hintSourceNotFound": "The original Builder draft no longer exists (deleted or installed by another operator). Reverse codegen from the installed manifest.yaml arrives in B.7.",
       "hintQuotaExceeded": "Delete existing drafts under “Drafts” before cloning this one."
     },
     "requiresWizard": {

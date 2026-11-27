@@ -78,7 +78,7 @@ export async function cloneFromInstalled(
       ok: false,
       reason: 'source_not_found',
       code: 'builder.source_draft_not_found',
-      message: `Kein Source-Draft für veröffentlichtes Plugin '${publishedAgentId}' gefunden. Edit-from-Store benötigt den Original-Draft des Builders; eine Reverse-Codegen-Variante aus der veröffentlichten manifest.yaml kommt erst in B.7.`,
+      message: `There is no Builder draft for plugin '${publishedAgentId}' owned by this operator.`,
     };
   }
 

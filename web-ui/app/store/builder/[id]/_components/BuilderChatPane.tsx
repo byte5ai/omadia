@@ -23,7 +23,6 @@ import {
 
 import {
   ApiError,
-  resolveBuilderUserChoice,
   stopBuilderTurn,
   streamBuilderTurn,
 } from '../../../../_lib/api';
@@ -36,7 +35,7 @@ import type {
 } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
 import { humanizeProviderError } from '../../../../_lib/providerErrorMessage';
-import { ChoiceCard } from '../../../../_components/ChoiceCard';
+import { BuilderChoiceCard, type BuilderChoice } from './BuilderChoiceCard';
 
 import { BuilderMarkdown } from './BuilderMarkdown';
 import { isSendKey } from '../../../../_lib/composerKeys';
@@ -103,20 +102,8 @@ interface BuilderChatPaneProps {
   onPendingInputConsumed?: () => void;
   /** Pending `ask_user_choice` smart-card, hoisted by Workspace from
    *  the SpecEventBus. Rendered below the latest assistant message. */
-  pendingUserChoice?: {
-    choiceId: string;
-    question: string;
-    options: ReadonlyArray<{
-      value: string;
-      label: string;
-      description?: string;
-    }>;
-  } | null;
-  /** Called optimistically after the operator picks an option, so the
-   *  parent can clear the card without waiting for the bus echo. The
-   *  `user_choice_resolved` event still arrives later for sibling-tab
-   *  consistency, but the local pane reacts instantly. */
-  onUserChoiceResolved?: () => void;
+  pendingUserChoice?: BuilderChoice | null;
+  onUserChoiceResolved?: (choiceId: string) => void;
   /** Issue #224 — lifts the in-flight turn flag to the Workspace so it can
    *  lock the simple/extended view toggle while a reply streams (toggling
    *  unmounts this pane and would abort the stream + drop the live message).
@@ -291,6 +278,10 @@ export function BuilderChatPane({
         if (ev.type === 'error' && ev.code === 'builder.turn_stopped') break;
         if (ev.type === 'error' && ev.code === 'builder.turn_timeout') {
           setError(t('error.turnTimeout'));
+          break;
+        }
+        if (ev.type === 'error' && ev.code === 'builder.resume_exhausted') {
+          setError(t('error.resumeExhausted'));
           break;
         }
         if (ev.type === 'error') {
@@ -569,65 +560,6 @@ export function BuilderChatPane({
 
   const empty = items.length === 0;
 
-  // ask_user_choice → operator pick. Lock the buttons while the POST is
-  // in flight so an antsy double-click doesn't fire the resolver twice
-  // (the second call returns 404 once the coordinator has cleared, but
-  // we still want a single source of UI feedback). The card is cleared
-  // optimistically; if the resolver errors out, the bus echo will
-  // re-instate it on the next `user_choice_required` and the operator
-  // can retry.
-  const [choiceSubmitting, setChoiceSubmitting] = useState(false);
-  const onChooseUserChoice = useCallback(
-    async (value: string) => {
-      if (!pendingUserChoice || choiceSubmitting) return;
-      const { choiceId, options } = pendingUserChoice;
-      // Surface the operator's pick as a user chat-message so the
-      // transcript shows what they answered — the resolver does NOT fire
-      // a `chat_message` event back (the choice goes through the tool
-      // Promise, not a fresh turn), so the optimistic insert is the
-      // only way to keep the conversation readable. Prefer the option's
-      // label over the raw value so the transcript reads naturally.
-      const picked = options.find((o) => o.value === value);
-      const transcriptText = picked?.label ?? value;
-      setItems((prev) => [
-        ...prev,
-        {
-          kind: 'message',
-          key: nextKey('msg'),
-          role: 'user',
-          text: transcriptText,
-          ts: Date.now(),
-        },
-      ]);
-      scrollToBottom();
-      setChoiceSubmitting(true);
-      setError(null);
-      onUserChoiceResolved?.();
-      try {
-        await resolveBuilderUserChoice({ draftId, choiceId, value });
-      } catch (err) {
-        if (err instanceof ApiError) {
-          setError(humanizeApiError(err));
-        } else if (err instanceof Error) {
-          setError(t('error.choiceSaveFailedDetail', { message: err.message }));
-        } else {
-          setError(t('error.choiceSaveFailed'));
-        }
-      } finally {
-        setChoiceSubmitting(false);
-      }
-    },
-    [
-      pendingUserChoice,
-      choiceSubmitting,
-      draftId,
-      nextKey,
-      onUserChoiceResolved,
-      scrollToBottom,
-      t,
-    ],
-  );
-
   // #1738 — while an `ask_user_choice` card is open the turn is blocked on
   // the operator, not on the model, so a growing activity gap is expected
   // and must not read as "likely stuck — press Stop?" (Stop would abort the
@@ -651,17 +583,17 @@ export function BuilderChatPane({
             items.map((item) => <ChatItemView key={item.key} item={item} />)
           )}
           {pendingUserChoice ? (
-            <ChoiceCard
-              choice={{
-                question: pendingUserChoice.question,
-                options: pendingUserChoice.options.map((o) => ({
-                  value: o.value,
-                  label: o.label,
-                })),
-              }}
-              disabled={choiceSubmitting}
-              onChoose={(v) => {
-                void onChooseUserChoice(v);
+            <BuilderChoiceCard
+              key={pendingUserChoice.choiceId}
+              draftId={draftId}
+              choice={pendingUserChoice}
+              onResolved={onUserChoiceResolved}
+              onReply={(text) => {
+                setItems((prev) => [
+                  ...prev,
+                  { kind: 'message', key: nextKey('msg'), role: 'user', text, ts: Date.now() },
+                ]);
+                scrollToBottom();
               }}
             />
           ) : null}

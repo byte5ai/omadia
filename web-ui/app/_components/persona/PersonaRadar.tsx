@@ -98,7 +98,7 @@ export function PersonaRadar({
       data-testid="persona-radar"
     >
       <svg
-        viewBox={`0 0 ${size} ${size}`}
+        viewBox={`-24 0 ${size + 48} ${size}`}
         width={size}
         height={size}
         role="img"
