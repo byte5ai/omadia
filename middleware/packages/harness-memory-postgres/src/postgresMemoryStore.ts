@@ -140,6 +140,28 @@ export class PostgresMemoryStore implements MemoryStore {
     );
   }
 
+  /**
+   * #1753 (ADR-0322) — one statement, no read: the row grows in place
+   * (`content || $2`), so a transcript or delivery journal is not shipped to
+   * the process and back on every append.
+   */
+  async appendFile(virtualPath: string, content: string): Promise<void> {
+    const p = this.normalize(virtualPath);
+    if (await this.directoryExists(p)) {
+      throw new MemoryIsDirectoryError(virtualPath);
+    }
+    const size = Buffer.byteLength(content, 'utf8');
+    await this.pool.query(
+      `INSERT INTO memory_files (virtual_path, content, size_bytes)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (virtual_path) DO UPDATE
+         SET content = memory_files.content || EXCLUDED.content,
+             size_bytes = memory_files.size_bytes + EXCLUDED.size_bytes,
+             updated_at = now()`,
+      [p, content, size],
+    );
+  }
+
   async delete(virtualPath: string): Promise<void> {
     const p = this.normalize(virtualPath);
     if (p === MEMORY_ROOT) {

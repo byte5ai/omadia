@@ -2847,7 +2847,9 @@ createFile(virtualPath: string, content: string): Promise<void>;
 writeFile(virtualPath: string, content: string): Promise<void>;
 delete(virtualPath: string): Promise<void>;
 rename(fromVirtualPath: string, toVirtualPath: string): Promise<void>;
+appendFile?(virtualPath: string, content: string): Promise<void>;
 }
+export declare function appendToMemoryFile(store: MemoryStore, virtualPath: string, content: string): Promise<void>;
 export interface MemoryEntry {
 virtualPath: string;
 isDirectory: boolean;

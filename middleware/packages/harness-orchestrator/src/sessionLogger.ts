@@ -7,6 +7,7 @@ import type {
 } from '@omadia/plugin-api';
 import { isNoReply, scopeGraphKey } from '@omadia/channel-sdk';
 import {
+  appendToMemoryFile,
   qualifyScope,
   turnNodeId,
   type EntityRef,
@@ -188,11 +189,13 @@ export class SessionLogger {
         ...(entry.source !== undefined ? { source: entry.source } : {}),
       });
 
-      const previous = (await this.store.fileExists(virtualPath))
-        ? await this.store.readFile(virtualPath)
-        : renderHeader(scope, day);
-
-      await this.store.writeFile(virtualPath, previous + turn);
+      // #1753 (ADR-0322) — append, never read the day's file back: a routine
+      // that runs every few minutes made every turn re-read and re-write the
+      // whole growing file.
+      const block = (await this.store.fileExists(virtualPath))
+        ? turn
+        : renderHeader(scope, day) + turn;
+      await appendToMemoryFile(this.store, virtualPath, block);
     } catch (err) {
       console.error(
         '[session-log] markdown write failed:',

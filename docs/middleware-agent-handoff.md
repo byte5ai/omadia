@@ -5343,8 +5343,20 @@ Tools zu nutzen. Funktionierte on first try.
 interface MemoryStore {
   list / fileExists / directoryExists / readFile /
   createFile / writeFile / delete / rename
+  appendFile?   // #1753, ADR-0322, plugin-api 1.113.0
 }
 ```
+
+**Anhängen (#1753, ADR-0322).** `appendFile` ist optional; Aufrufer gehen über
+`appendToMemoryFile(store, path, text)` (plugin-api), das ohne `appendFile` auf Lesen + Schreiben
+zurückfällt. Postgres hängt in einem Statement an (`content || $2`), In-Memory ebenso;
+`LabelledMemoryStore` und `ScopedMemoryStore` reichen es mit ihren Schreib-Prüfungen durch
+(andere Decorators nutzen den Rückfall). Nutzer: der `SessionLogger` (Tages-Transkript, nie mehr
+zurückgelesen) und das **Zustell-Journal** des Web-Chats: eine Routine-Zustellung schreibt eine
+Zeile `{ message, at }` nach `/memories/chat-sessions/<id>.deliveries.jsonl`, statt das
+Chat-Dokument neu zu schreiben. `ChatSessionStore.get`/`list` lesen Dokument + Journal, der
+nächste `save` (Client-PUT, Turn-Spiegel, Reset) schreibt das zusammengeführte Dokument und
+löscht das Journal; `delete` nimmt es mit.
 
 Heute: `FilesystemMemoryStore` (Pfad-Traversal-Schutz, Null-Byte-Schutz,
 URL-encoded-`..`-Schutz). Austauschbar gegen Postgres/S3 ohne
@@ -7076,7 +7088,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
   pro Prozess); Zustellungs-Kontext für Kanal-Routinen von vor #2316 (ohne `origin_scope`);
-  Zustellungen und Transkripte ohne Komplett-Rewrite pro Lauf (#1753, Rest); Graph-Knoten
+  Graph-Knoten
   gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
   `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).

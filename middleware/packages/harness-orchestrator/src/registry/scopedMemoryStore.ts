@@ -1,5 +1,5 @@
 import type { MemoryAxes } from '@omadia/channel-sdk';
-import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
+import { appendToMemoryFile, type MemoryEntry, type MemoryStore } from '@omadia/plugin-api';
 
 /**
  * `ScopedMemoryStore` (US8 / T034).
@@ -605,6 +605,14 @@ export class ScopedMemoryStore implements MemoryStore {
       throw new MemoryScopeViolation(this.options.agentSlug, 'write', virtualPath);
     }
     return this.options.inner.writeFile(virtualPath, content);
+  }
+
+  /** #1753 (ADR-0322) — the write check, then the inner store appends. */
+  async appendFile(virtualPath: string, content: string): Promise<void> {
+    if (!this.allowedWrite(virtualPath)) {
+      throw new MemoryScopeViolation(this.options.agentSlug, 'write', virtualPath);
+    }
+    return appendToMemoryFile(this.options.inner, virtualPath, content);
   }
 
   async delete(virtualPath: string): Promise<void> {

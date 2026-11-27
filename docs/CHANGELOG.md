@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — routine deliveries and transcripts are appended, plugin-api 1.113.0 (#1753) (2026-11-27)
+
+- `MemoryStore.appendFile?` (optional) and the helper `appendToMemoryFile` (plugin-api **1.113.0**,
+  additive); Postgres and in-memory stores append in place. The session transcript is appended per
+  turn instead of read and written back; a web-chat routine delivery is one line in
+  `/memories/chat-sessions/<id>.deliveries.jsonl`, folded into the chat document by its next save
+  (ADR-0322).
+
 ### Fixed — routine deliveries appear live in the open web chat (#2354) (2026-11-27)
 
 - New `GET /api/chat/sessions/:id/events` (SSE, owner only, bound to the session like the builder
