@@ -694,7 +694,7 @@
     "chatValidationFailed": "Validation issues:",
     "chatValidationWarnings": "Draft warnings",
     "chatDraftHeading": "Draft",
-    "chatDraftSummary": "{steps} step(s) · trigger: {trigger}",
+    "chatDraftSummary": "{steps, plural, one {# step} other {# steps}} · trigger: {trigger}",
     "chatPublish": "Publish draft",
     "chatPublishing": "Publishing…",
     "chatPublished": "Published {slug}.",
@@ -713,7 +713,7 @@
     "chatPersonPartial": "Directory incomplete — a missing name proves nothing.",
     "chatPersonApplied": "Applied: {name}",
     "chatPersonChange": "Change",
-    "chatDraftMissing": "{count} connector(s) missing",
+    "chatDraftMissing": "{count, plural, one {# connector missing} other {# connectors missing}}",
     "chatConnectedNote": "Connected {actionId} for step {stepId}.",
     "actionMcpBadge": "MCP",
     "chatProposalCoverage": "{filled} of {total} slots prefilled",
@@ -1445,6 +1445,10 @@
         "what": "The change was saved, but not every plugin that uses it restarted.",
         "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
       },
+      "provider_key_in_kernel_scope": {
+        "what": "Provider API keys are no longer stored per plugin. The agent runtime, the verifier and the background tasks all use the keys under LLM access.",
+        "next": "Enter the key under Admin → LLM access. Nothing was saved here."
+      },
       "empty_secrets_patch": {
         "what": "The save carried no changed value.",
         "next": "Change or clear at least one field before saving."
@@ -1816,7 +1820,9 @@
       "heading": "“{server}” needs additional details for “{tool}”.",
       "secretHint": "Hidden while typing — the value is still sent to the server as entered.",
       "warning": "Whatever you enter is sent to the external server “{server}”. Only provide details you want that server to have.",
-      "submit": "Send to server"
+      "submit": "Send to server",
+      "sentLabel": "Sent to “{server}”: {fields}",
+      "sentLabelEmpty": "Sent to “{server}” (no fields filled in)"
     },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
@@ -2314,6 +2320,7 @@
       "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
       "not_found": "This agent does not exist anymore — reload the page.",
       "plugin_not_assigned": "This plugin is not assigned to the agent anymore — reload the page.",
+      "model_policy_tool_incompatible": "This provider cannot run an agent's turns: the subscription CLI answers only requests without tools. Pick a provider with an API key.",
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
       "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
@@ -2452,7 +2459,7 @@
     },
     "grants": {
       "heading": "Tool grants",
-      "hint": "Read-only view of the tools this agent may call and the MCP servers its plugins were granted. Manage grants on the MCP admin page.",
+      "hint": "The tools this agent may call and the MCP servers its plugins were granted. You change grants in the MCP server editor below or on the MCP admin page; this list updates after every save.",
       "loading": "Loading grants…",
       "refresh": "Refresh",
       "empty": "This agent holds no tool grants yet.",
@@ -2510,6 +2517,10 @@
       "sameRef": "Fallback and primary are the same model — pick a different fallback or None.",
       "sameProvider": "Same provider as the primary — a provider outage affects both.",
       "deferred": "The primary names {provider}, but the host currently runs {active} and has no pool for {provider} — the effort applies, the model switch does not.",
+      "toolIncompatible": "This policy names {provider}, which cannot run this agent's turns (the subscription CLI answers only requests without tools). Pick a provider with an API key and save.",
+      "primaryUnavailable": "{provider} is unavailable right now (no key, or the provider was removed). With fallback None this agent's turns fail with a notice; with a fallback they run on the fallback.",
+      "summaryUnavailableNoFallback": "{primary} unavailable · no fallback, turns fail",
+      "summaryUnavailableWithFallback": "{primary} unavailable · runs on fallback {fallback}",
       "fallbackNoVision": "The fallback model cannot read images — on a turn with attachments the primary is used without a fallback.",
       "primaryNoVision": "The primary model cannot read images.",
       "summaryAuto": "Auto ({model})",
@@ -3853,6 +3864,8 @@
           "running": "smoke #{buildN} running …",
           "okNoTools": "smoke #{buildN} ✓ (no tools declared)",
           "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {the only tool writes, so the smoke did not call it} other {all # tools write, so the smoke called none of them}}",
+          "writesSkippedSuffix": "{count, plural, one { · # write tool not called} other { · # write tools not called}}",
           "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
           "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
           "fixWithBuilder": "Fix with builder"
@@ -4243,7 +4256,11 @@
           "heading": "Data Source",
           "toolLabel": "Tool:",
           "noToolOption": "— No tool bound —",
-          "help": "The selected tool is called with empty input on every page request; its output flows as props into the render function."
+          "help": "The selected tool is called with the fixed input below on every page request; its output flows as props into the render function.",
+          "argsLabel": "Input:",
+          "argsPlaceholder": "'{' \"city\": \"Berlin\" '}'",
+          "argsInvalid": "The input must be a JSON object, for example '{' \"city\": \"Berlin\" '}'.",
+          "argsMissing": "The tool requires {count, plural, one {this field} other {these fields}}, which the input does not set: {fields}"
         },
         "interactive": {
           "label": "Interactive (Hydration)",
@@ -4342,6 +4359,8 @@
       "toastNoDiff": "No difference since last snapshot",
       "toastSnapshotCreated": "Snapshot created ({hash})",
       "toastRollbackDone": "Rollback complete · {count, plural, one {# file} other {# files}} restored",
+      "toastRollbackDraftRestored": "Rollback complete · draft spec and slot code restored",
+      "toastRollbackSpecOnly": "Rollback complete · draft spec restored; this snapshot has no slot code, so the slots stay as they are",
       "noteOptional": "Note (optional)",
       "notePlaceholder": "Why this state?",
       "vendorBundleLabel": "Pack plugin ZIPs into the bundle (air-gap export)",
@@ -4356,7 +4375,7 @@
       "colLive": "Live",
       "rollbackConfirmTitle": "Confirm rollback",
       "rollbackBodyPrefix": "Live ",
-      "rollbackBodySuffix": " + knowledge files are reset to the snapshot state. Plugin pins stay unchanged.",
+      "rollbackBodySuffix": " + knowledge files, the draft's spec and its slot code are reset to the snapshot state. A snapshot taken before slot code was captured restores the spec only. Plugin pins stay unchanged.",
       "rollbackTypeHint": "Type the first 12 characters of the bundle hash to confirm.",
       "rollbackExpected": "Expected:",
       "rollbackExecute": "Perform rollback",
@@ -4506,6 +4525,8 @@
           "failed": "Export failed: {message}"
         },
         "confirmDelete": "Delete draft \"{name}\"?",
+        "confirmPurge": "Delete draft \"{name}\" permanently? Its spec, slot code and test credentials are removed. This cannot be undone.",
+        "purge": "Delete permanently",
         "lastUpdated": "Last {relative}",
         "relative": {
           "justNow": "just now",
@@ -4534,7 +4555,13 @@
         },
         "errors": {
           "notZip": "Bundle must be a .zip file.",
-          "conflict": "Profile already has diverging live content ({assets}). Enable “Overwrite” to replace it."
+          "conflict": "Profile already has diverging live content ({assets}). Enable “Overwrite” to replace it.",
+          "quotaExceeded": "The draft limit is reached. Delete a draft, then import again."
+        },
+        "notice": {
+          "replaced": "The installed plugin {id} was switched from {from} to {to} by this bundle.",
+          "kept": "{id} {version} was already installed; the installed package was kept.",
+          "continue": "Continue"
         }
       },
       "quota": {
@@ -4891,6 +4918,7 @@
       "permissions": {
         "memoryReads": "Memory · Reads",
         "memoryWrites": "Memory · Writes",
+        "memoryTrees": "Memory · Own trees",
         "graphReads": "Graph · Reads",
         "graphWrites": "Graph · Writes",
         "entitySystems": "Graph · Entity systems",
@@ -4902,7 +4930,7 @@
         "flagCredentialFlows": "Runs credential flows on its own routes",
         "publicPathsTitle": "Public (unauthenticated) paths",
         "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
-        "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
+        "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is removed when the plugin is uninstalled.",
         "none": "No permissions declared.",
         "runtimeCredentials": "Runtime credentials",
         "sqlNotGranted": "Declaring is not granting: the plugin gets no database connection until you consent under “Grants” after installing it."
@@ -5013,6 +5041,7 @@
       "success": "Installation successful",
       "installNow": "Install now",
       "unknownError": "Unknown error.",
+      "missingPlugins": "Missing plugins:",
       "unexpectedJobState": "Unexpected job state: {state}",
       "updateActivationFailedLead": "Updated, but the plugin did not start.",
       "activationFailedLead": "Installed, but the plugin did not start.",
@@ -5425,8 +5454,20 @@
       "restoreBody": "The key {keyId} immediately regains everything on this row: {tools}.",
       "restoreConfirm": "Restore",
       "warnings": {
-        "keyUnknown": "No API key with this id exists yet. The binding was saved, but it reaches nothing until such a key is created — double-check the id for a typo.",
-        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent."
+        "keyUnknown": "No API key with this id exists. The binding reaches nothing until such a key is created — check the id for a typo.",
+        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent.",
+        "keyRevoked": "The API key of this binding was revoked, so the binding reaches nothing.",
+        "keyExpired": "The API key of this binding has expired, so the binding reaches nothing."
+      },
+      "keyInactive": "Key inactive",
+      "replaced": "The existing binding of this key was replaced.",
+      "replaceTitle": "Replace the existing binding?",
+      "replaceBody": "The key {keyId} is already bound to {agent} with the tools {tools}. Saving replaces agent, tools and write budget of that binding.",
+      "replaceConfirm": "Replace binding",
+      "writeRateInvalid": "Enter a whole number from 0 to 600 for the write budget.",
+      "writeRateZero": "A write budget of 0 blocks every call to the write tools.",
+      "errors": {
+        "writeToolNameInvalid": "A write tool name can only contain letters, digits, “_” and “-” (at most 64 characters), otherwise it can never be granted as a write scope. ({detail})"
       }
     },
     "plugins": {
@@ -5440,7 +5481,7 @@
       "transport": "Transport",
       "transportDeprecated": "Deprecated",
       "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
-      "stdioHint": "A stdio server runs as a process inside the middleware container, with the middleware's permissions (same user, filesystem and network access). Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
+      "stdioHint": "A stdio server runs as a process inside the middleware container under the middleware's user. Its own environment is minimal, but it can read the middleware's environment and data directory, including VAULT_KEY and DATABASE_URL, and so every stored secret. Only add commands you trust. Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
       "showDeprecatedTransports": "Show deprecated transports",
       "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
@@ -5474,7 +5515,7 @@
       },
       "config": {
         "title": "Configuration",
-        "intro": "Fill in the values for this server's placeholders. Non-secret values are stored in the database; fields marked secret are stored encrypted in the Vault. Values are substituted into the endpoint/headers at connect time.",
+        "intro": "Fill in the values for this server's placeholders. Non-secret values are stored in the database; fields marked secret are stored encrypted in the Vault. Both are substituted into the endpoint and headers at connect time.",
         "secret": "secret",
         "secretStored": "•••••••• (stored — leave blank to keep)",
         "secretPlaceholder": "enter secret value",
@@ -5495,6 +5536,42 @@
       "state": {
         "enabled": "enabled",
         "disabled": "disabled"
+      },
+      "unackedRisks": "{count, plural, one {This server cannot be enabled yet: one tool needs a review first: {tools}.} other {This server cannot be enabled yet: # tools need a review first: {tools}.}} Open the server, check the tools and acknowledge them.",
+      "stdioOptionDisabled": "stdio (turned off)",
+      "stdioDisabledHint": "stdio servers are turned off on this deployment (MCP_STDIO_ENABLED=false). Only http servers can be added.",
+      "rescanSummary": "{servers, plural, one {# server} other {# servers}} re-scanned, {tools, plural, one {# tool} other {# tools}} checked, {failed, plural, =0 {no failures} one {# server failed} other {# servers failed}}.",
+      "rescanFailure": "{name}: {error}",
+      "lastScanFailedAt": "Last re-scan failed ({at})",
+      "lastScanFailed": "Last re-scan failed",
+      "headers": {
+        "title": "Headers",
+        "intro": "Static request headers, for example an API key in x-api-key or Authorization: Bearer …. A header marked secret is stored encrypted in the Vault and never shown again; leave it blank to keep the stored value. Prefer a header over a key in the endpoint URL: an upstream error can quote the URL.",
+        "name": "Header name",
+        "namePlaceholder": "x-api-key",
+        "value": "Header value",
+        "valuePlaceholder": "value",
+        "secret": "secret",
+        "secretStored": "•••••••• (stored — leave blank to keep)",
+        "secretPlaceholder": "enter secret value",
+        "add": "Add header",
+        "remove": "Remove",
+        "save": "Save headers",
+        "saved": "Saved",
+        "errors": {
+          "nameInvalid": "A header name may only contain letters, digits and - _ . ! # $ % & ' * + ^ ` | ~.",
+          "nameReserved": "The MCP transport sets this header itself (for example Content-Type, Accept, Host).",
+          "nameDuplicate": "A header is listed twice.",
+          "valueInvalid": "A header value may not contain line breaks and has at most 8192 characters.",
+          "valueRequired": "A header that is not secret needs a value.",
+          "secretRequired": "A new secret header needs a value.",
+          "tooMany": "A server has at most 20 headers.",
+          "secretsUnavailable": "No Vault is configured, so secret headers cannot be stored.",
+          "invalid": "The header list could not be read. Reload the page and try again.",
+          "notSupported": "A stdio server takes its credentials as config fields, not headers.",
+          "loadFailed": "The headers could not be loaded ({detail}).",
+          "saveFailed": "The headers could not be saved ({detail})."
+        }
       }
     },
     "sandbox": {
@@ -5556,7 +5633,7 @@
       "browseOnly": "browse-only entry",
       "browseOnlyHint": "This registry entry has no connectable endpoint — it only points at the source (a self-hosted server). Host it yourself, then add it manually via \"Add server\".",
       "authHintRemote": "🔒 may require authorization",
-      "authHintLocal": "local (env credentials)",
+      "authHintLocal": "local (stdio): runs inside the middleware and can read its secrets",
       "addRegistry": "Add a registry",
       "addRegistryConfirm": "Add registry",
       "removeRegistry": "Remove registry",
@@ -5585,7 +5662,8 @@
       "errorTimeoutHint": "The registry accepted the connection but did not finish answering in time. Its browse listing may still work — clear the search box to list the catalog, or try again.",
       "errorBlocked": "The registry \"{name}\" is blocked for security reasons.",
       "errorBlockedHint": "A registry must not point at a link-local or cloud-metadata address such as 169.254.169.254 or metadata.google.internal. Private and intranet addresses are allowed. Change the registry URL or pick another registry above.",
-      "errorDetail": "Details: {detail}"
+      "errorDetail": "Details: {detail}",
+      "stdioDisabledHint": "This entry runs as a stdio server, and stdio is turned off on this deployment."
     },
     "grants": {
       "grantHeading": "Grant tools to an agent",
@@ -5594,7 +5672,7 @@
       "grantAll": "Grant all tools",
       "grantHint": "Pick an agent and a server, then grant the tools it may use. This is the step that makes a registered server usable in chat.",
       "noToolsDiscover": "This server has no discovered tools yet — run Discover on the Servers tab first.",
-      "toolCount": "{count} tools",
+      "toolCount": "{count, plural, one {# tool} other {# tools}}",
       "holder": "Granted to",
       "server": "Server",
       "tool": "Tool",
@@ -5618,7 +5696,8 @@
       "manageHint": {
         "skill": "manage in the skill editor",
         "plugin": "manage via plugin grants"
-      }
+      },
+      "grantAllSkipped": "{count, plural, one {One tool was not granted because it needs a review first: {tools}.} other {# tools were not granted because they need a review first: {tools}.}}"
     },
     "audit": {
       "time": "Time",
@@ -5632,7 +5711,7 @@
       "ok": "ok",
       "failed": "failed",
       "loadMore": "Load more",
-      "unresolved": "unresolved",
+      "unresolved": "not resolved",
       "kind": {
         "agent": "Agent",
         "subagent": "Helper",
@@ -5640,6 +5719,18 @@
         "plugin": "Plugin",
         "unattributed": "Unattributed",
         "api_key": "API key (public MCP)"
+      },
+      "reason": {
+        "authRequired": "The server needs a sign-in first.",
+        "maskingSkipped": "Privacy masking did not run; the result was discarded.",
+        "maskingFailed": "Privacy masking failed; the result was discarded.",
+        "privacyProviderAbsent": "No privacy provider is installed.",
+        "writeRateLimited": "Write limit of the key reached.",
+        "notAllowlisted": "The tool is not released for this key.",
+        "noBinding": "The key has no public MCP binding.",
+        "agentInactive": "The bound agent is not active.",
+        "capacity": "The endpoint was at capacity.",
+        "toolError": "The tool reported an error."
       }
     },
     "guard": {
@@ -5678,7 +5769,7 @@
         "statusEnabled": "enabled",
         "statusDisabled": "disabled",
         "serviceBadge": "service",
-        "toolCount": "{count} tool(s)"
+        "toolCount": "{count, plural, one {# tool} other {# tools}}"
       },
       "manual": {
         "nameLabel": "Server name",
@@ -5716,6 +5807,17 @@
         "delegationButton": "Enable service delegation"
       },
       "initialServerMissing": "The connected server is no longer available — pick or create one."
+    },
+    "input": {
+      "nameRequired": "Enter a name.",
+      "nameTooLong": "The name is too long (at most 120 characters).",
+      "endpointRequired": "Enter an endpoint: a URL for http, a command line for stdio.",
+      "endpointInvalid": "The endpoint must be an http:// or https:// URL. Placeholders in curly braces are allowed.",
+      "invalidTransport": "Choose a transport: http, stdio or sse.",
+      "invalidStatus": "The status must be enabled or disabled.",
+      "nameTaken": "This name is already taken. Choose another one.",
+      "urlInvalid": "The registry URL must be an http:// or https:// URL.",
+      "notFound": "This entry no longer exists. Reload the page."
     }
   },
   "adminRegistries": {
@@ -5790,7 +5892,7 @@
         "plugin": "Plugin scope"
       },
       "mcpWriteToolsHint": "Comma-separated tool names. Each name grants the scope {prefix}name for exactly that tool.",
-      "mcpWriteToolsInvalid": "Tool names may contain only lowercase letters, digits, “_” and “-”, starting with a letter.",
+      "mcpWriteToolsInvalid": "Tool names may contain only letters, digits, “_” and “-” (at most 64 characters).",
       "expiryInvalid": "The expiry date must lie in the future.",
       "scopesUnavailable": "The scope list could not be loaded, so only chat:write is offered."
     },
@@ -6663,10 +6765,14 @@
     },
     "upload": "Import",
     "uploading": "Importing",
-    "uploadLimits": "Up to {maxRows} rows and {maxMb} MB per file. Every cell passes the privacy scan before it is stored.",
+    "uploadLimits": "Up to {maxRows} rows and {maxMb} MB per file. Text cells pass the privacy scan before they are stored; number, date and true/false columns are not scanned.",
     "receipt": {
       "imported": "Import complete — {rows} rows stored.",
-      "privacyScan": "Privacy scan: {scanned} cells checked, {masked} masked.",
+      "privacyScan": "Privacy scan: {scanned} text cells checked, {masked} flagged.",
+      "importedSheets": "Import complete — {sheets} sheets, {rows} rows stored, one dataset per sheet.",
+      "sheet": "Sheet “{sheet}”: {rows} rows.",
+      "flaggedEncrypted": "Flagged cells are stored encrypted with their real values; only you can read them.",
+      "flaggedMasked": "Flagged cells are stored as pseudonyms; their real values are not kept.",
       "truncated": "{cells} cells exceeded the 4,000-character per-cell cap and were cut. Affected columns: {columns}."
     },
     "loading": "loading…",
@@ -6696,6 +6802,13 @@
       "notCsv": "Only CSV and Excel files (.xlsx, .xlsm) are supported.",
       "noFile": "No file arrived — pick a CSV or Excel file first.",
       "importFailed": "The file could not be imported. {detail}",
+      "csvUnreadable": "The CSV file could not be read. Check that it is separated by commas, semicolons or tabs and that every quote is closed.",
+      "csvUnreadableAtLine": "The CSV file could not be read at line {line}. Check that it is separated by commas, semicolons or tabs and that every quote is closed.",
+      "csvRaggedRows": "A row of the CSV file has a different number of columns than the header.",
+      "csvRaggedRowsAtLine": "Line {line} of the CSV file has a different number of columns than the header.",
+      "csvEmpty": "The file has no header row or no data rows.",
+      "rowCap": "The file has more than {maxRows} rows.",
+      "reservedColumn": "A column name starts with the reserved prefix \"__k_\". Rename the column and import again.",
       "notFound": "This dataset no longer exists — it may have been deleted in another tab.",
       "generic": "The request failed (HTTP {status}).",
       "unexpected": "The request failed. {detail}"
@@ -6739,14 +6852,18 @@
     "publishedLabel": "Service published",
     "publishedYes": "yes — {provider}",
     "publishedNo": "no",
-    "capabilityMissing": "The active adapter publishes no service — it is running but not configured (missing API key).",
+    "capabilityMissing": "The active adapter publishes no service — it is running but not configured (missing API key, or an endpoint host that is not allowed).",
+    "openSetup": "Open its setup fields",
     "providersTitle": "Installed providers",
     "noProviders": "No transcription@1 adapter is installed. Install one (e.g. \"Transcription (OpenAI)\") from the plugin store first.",
     "activeBadge": "active",
     "switchTo": "Activate",
     "switching": "switching…",
     "switchFailed": "Switch failed: {message}",
-    "switchTargetUnavailable": "The target adapter activated but published no service (missing API key) — the previous provider was restored where possible.",
+    "switchTargetUnavailable": "The target adapter activated but published no service (not configured) — the previous provider was restored where possible.",
+    "switchTargetUnavailableRestored": "The target adapter activated but published no service (not configured: missing API key or an endpoint host that is not allowed) — the previous provider ({provider}) was restored and is live.",
+    "switchTargetUnavailableNoneLive": "The target adapter activated but published no service (not configured) — the previous provider could not be restored, so no provider is live now.",
+    "switchTargetUnavailableNoPrevious": "The target adapter activated but published no service (not configured). No provider was active before, so none is live now — complete its setup fields, then activate it again.",
     "switchInProgress": "Another switch is still running — the state below was re-read; retry when it settles.",
     "switchAlreadyActive": "That provider is already active."
   },

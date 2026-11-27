@@ -1,5 +1,6 @@
 export {
   activate,
+  verifyConnection,
   REALTIME_EXPERIMENTAL_ENV,
   type OpenAiTranscriptionPluginHandle,
 } from './plugin.js';
@@ -26,3 +27,9 @@ export {
   type RealtimeSocketFactory,
 } from './realtimeTransport.js';
 export { RealtimeTranscriptionError, mapRealtimeEvent } from './deltaMapper.js';
+export {
+  DEFAULT_DECLARED_HOST,
+  parseAllowedHosts,
+  probeOpenAiKey,
+  undeclaredHost,
+} from './endpointCheck.js';

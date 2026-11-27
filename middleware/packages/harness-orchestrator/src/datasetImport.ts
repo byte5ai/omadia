@@ -39,8 +39,10 @@
  *
  * Cost note: this is O(rows × string-columns) baseline-detector calls,
  * each a handful of regex passes over one cell's text — CPU-bound, not
- * network-bound (`createBaselineDetector` never makes an HTTP call), so a
- * few thousand rows costs single-digit milliseconds. If a future GLiNER
+ * network-bound (`createBaselineDetector` never makes an HTTP call). The
+ * table is masked by `maskTableCells` in linear time and the pipeline yields
+ * to the event loop every few hundred cells/rows, so a 50,000-row import no
+ * longer stalls `/health` and every chat (#1867). If a future GLiNER
  * (C1 transformer) sidecar is wired in for this path — it is NOT, in this
  * change, only the C0 baseline is applied — that additional per-row HTTP
  * hop is the piece worth budgeting for; see the PR description's
@@ -51,7 +53,7 @@ import { parse as parseCsvSync } from 'csv-parse/sync';
 
 import {
   createBaselineDetector,
-  maskPrompt,
+  maskTableCells,
 } from '@omadia/plugin-privacy-guard';
 import type {
   DatasetColumnSchema,
@@ -61,6 +63,13 @@ import type {
 } from '@omadia/plugin-api';
 
 import { encryptCell, type DatasetCellKey } from './datasetCellCrypto.js';
+import {
+  decodeCsvBytes,
+  sniffCsvDelimiter,
+  uniqueHeaders,
+  type CsvDelimiter,
+} from './datasetCsvDialect.js';
+import { dateOrderForColumn, normaliseDateCell } from './datasetDates.js';
 import {
   isLinkKeyColumn,
   linkKeyColumnName,
@@ -78,6 +87,14 @@ export const MAX_DATASET_ROWS = 50_000;
  *  parser caps cells identically; one format must not be able to smuggle a
  *  larger cell past the scan budget than the other. */
 export const MAX_CELL_CHARS = 4_000;
+
+/** Rows coerced/encrypted between two yields to the event loop (#1867). */
+const IMPORT_YIELD_EVERY_ROWS = 500;
+
+const yieldToEventLoop = (): Promise<void> =>
+  new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 
 /** #430 fixup — per-cell truncation stats. `MAX_CELL_CHARS` still caps every
  *  cell (protects the privacy scan + storage from an absurd single-cell
@@ -102,9 +119,28 @@ export interface TableParse {
   truncation: TableTruncationStats;
 }
 
-export type TableParseResult =
-  | ({ ok: true } & TableParse)
-  | { ok: false; reason: string };
+/**
+ * #1847 — stable codes for a failed import. The route sends them as
+ * `dataset.<code>` so the admin UI shows translated copy instead of a parser
+ * library's English text; `reason` stays the English diagnostic for logs and
+ * the chat-attachment path.
+ */
+export type DatasetImportErrorCode =
+  | 'csv_unreadable'
+  | 'csv_ragged_rows'
+  | 'csv_empty'
+  | 'row_cap'
+  | 'reserved_column';
+
+export interface TableParseFailure {
+  ok: false;
+  reason: string;
+  code?: DatasetImportErrorCode;
+  /** 1-based source line the parser stopped at, when it reports one. */
+  line?: number;
+}
+
+export type TableParseResult = ({ ok: true } & TableParse) | TableParseFailure;
 
 /** @deprecated Use {@link TableTruncationStats} — kept so existing importers
  *  of the CSV-era name keep compiling. */
@@ -112,55 +148,67 @@ export type CsvTruncationStats = TableTruncationStats;
 /** @deprecated Use {@link TableParseResult}. */
 export type CsvParseResult = TableParseResult;
 
+/** csv-parse error → coded failure naming the separator that was used. */
+function csvParseFailure(err: unknown, delimiter: CsvDelimiter): TableParseFailure {
+  const message = err instanceof Error ? err.message : String(err);
+  const detail = (err ?? {}) as { code?: unknown; lines?: unknown };
+  const shown = delimiter === '\t' ? 'tab' : `"${delimiter}"`;
+  return {
+    ok: false,
+    reason: `invalid CSV (separator ${shown}) — ${message}`,
+    code:
+      detail.code === 'CSV_RECORD_INCONSISTENT_FIELDS_LENGTH' ? 'csv_ragged_rows' : 'csv_unreadable',
+    ...(typeof detail.lines === 'number' ? { line: detail.lines } : {}),
+  };
+}
+
 /** Parse CSV bytes into header-keyed string rows. Never throws — a
- *  malformed CSV (ragged rows, empty file, encoding garbage) resolves to
- *  `{ ok: false, reason }` so callers can surface a clean 4xx/tool-error
- *  instead of a 500 / unhandled rejection. */
+ *  malformed CSV (ragged rows, empty file) resolves to `{ ok: false, reason,
+ *  code }` so callers can surface a clean 4xx/tool-error instead of a 500.
+ *  #1847: detects the encoding (UTF-8, else Windows-1252) and the separator
+ *  (`,` `;` tab), and keeps every column of a repeated header name. */
 export function parseCsv(bytes: Buffer): CsvParseResult {
+  const { text } = decodeCsvBytes(bytes);
+  const delimiter = sniffCsvDelimiter(text);
   let records: unknown;
   try {
-    records = parseCsvSync(bytes, {
-      columns: true,
+    records = parseCsvSync(text, {
+      delimiter,
       skip_empty_lines: true,
       trim: true,
       bom: true,
     });
   } catch (err) {
+    return csvParseFailure(err, delimiter);
+  }
+  const [headerRecord, ...dataRecords] = Array.isArray(records) ? (records as unknown[][]) : [];
+  if (!headerRecord || headerRecord.every((h) => String(h ?? '').trim() === '')) {
+    return { ok: false, reason: 'CSV header row is empty', code: 'csv_empty' };
+  }
+  if (dataRecords.length === 0) {
+    return { ok: false, reason: 'CSV has no data rows', code: 'csv_empty' };
+  }
+  const headers = uniqueHeaders(headerRecord.map((h) => String(h ?? '')));
+  if (dataRecords.length > MAX_DATASET_ROWS) {
     return {
       ok: false,
-      reason: `invalid CSV — ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  if (!Array.isArray(records) || records.length === 0) {
-    return { ok: false, reason: 'CSV has no data rows' };
-  }
-  const first = records[0];
-  if (typeof first !== 'object' || first === null) {
-    return { ok: false, reason: 'CSV did not parse into row objects' };
-  }
-  const headers = Object.keys(first as Record<string, unknown>);
-  if (headers.length === 0) {
-    return { ok: false, reason: 'CSV header row is empty' };
-  }
-  if (records.length > MAX_DATASET_ROWS) {
-    return {
-      ok: false,
-      reason: `CSV has ${String(records.length)} rows, exceeding the ${String(MAX_DATASET_ROWS)}-row import cap`,
+      reason: `CSV has ${String(dataRecords.length)} rows, exceeding the ${String(MAX_DATASET_ROWS)}-row import cap`,
+      code: 'row_cap',
     };
   }
   let truncatedCellCount = 0;
   const truncatedColumnSet = new Set<string>();
-  const rows = (records as Array<Record<string, unknown>>).map((record) => {
+  const rows = dataRecords.map((record) => {
     const row: Record<string, string> = {};
-    for (const h of headers) {
-      const v = record[h];
+    headers.forEach((h, idx) => {
+      const v = record[idx];
       const full = v === undefined || v === null ? '' : String(v);
       if (full.length > MAX_CELL_CHARS) {
         truncatedCellCount += 1;
         truncatedColumnSet.add(h);
       }
       row[h] = full.slice(0, MAX_CELL_CHARS);
-    }
+    });
     return row;
   });
   return {
@@ -176,7 +224,6 @@ export function parseCsv(bytes: Buffer): CsvParseResult {
 
 const NUMBER_RE = /^-?\d+(?:\.\d+)?$/;
 const BOOLEAN_RE = /^(?:true|false)$/i;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?)?$|^\d{1,2}[./]\d{1,2}[./]\d{2,4}$/i;
 /** A pure-digit value with a leading zero (`'0301234567'`, `'01234'`), or its
  *  negative counterpart (`'-0123'`), is a zero-padded identifier — phone
  *  number, postal code, account number — not a number. `Number()` silently
@@ -187,6 +234,18 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?)?$|^\d{1,2}[./]
  *  intentionally excluded from this pattern (with or without a leading
  *  minus sign). */
 const LEADING_ZERO_RE = /^-?0\d/;
+
+/** Significant digits a JS number keeps exactly (#1844). */
+const MAX_EXACT_DIGITS = 15;
+
+/** #1844 — a numeric literal `Number()` would round: more significant digits
+ *  than a double holds (`9007199254740993` → `…992`). Such a value is an
+ *  identifier (order, account, card number), not a quantity, so its column
+ *  stays `string` — exact, and inside the privacy scan. */
+function losesPrecision(value: string): boolean {
+  const digits = value.replace(/^-/, '').replace('.', '').replace(/^0+/, '');
+  return digits.length > MAX_EXACT_DIGITS;
+}
 
 /** Infer one column's type from every non-empty value across all rows —
  *  ALL values must agree for a type to win; a single non-conforming cell
@@ -199,13 +258,21 @@ function inferColumnType(values: readonly string[]): DatasetColumnType {
   if (nonEmpty.length === 0) return 'string';
   if (
     nonEmpty.every((v) => NUMBER_RE.test(v)) &&
-    !nonEmpty.some((v) => LEADING_ZERO_RE.test(v))
+    !nonEmpty.some((v) => LEADING_ZERO_RE.test(v) || losesPrecision(v))
   ) {
     return 'number';
   }
   if (nonEmpty.every((v) => BOOLEAN_RE.test(v))) return 'boolean';
-  if (nonEmpty.every((v) => DATE_RE.test(v))) return 'date';
+  if (dateOrderForColumn(nonEmpty) !== undefined) return 'date';
   return 'string';
+}
+
+/** #1845 — the stored form of every cell of a `date` column: ISO-8601 in the
+ *  one day/month reading that fits the whole column. */
+function dateNormaliser(values: readonly string[]): (raw: string) => string {
+  const nonEmpty = values.map((v) => v.trim()).filter((v) => v.length > 0);
+  const order = dateOrderForColumn(nonEmpty) ?? 'dmy';
+  return (raw) => normaliseDateCell(raw, order) ?? raw;
 }
 
 export interface PrivacyScanStats {
@@ -236,7 +303,7 @@ export type BuildDatasetResult =
       truncation: TableTruncationStats;
       linkKeys: LinkKeyReport;
     }
-  | { ok: false; reason: string };
+  | TableParseFailure;
 
 export interface BuildDatasetOptions {
   /** When set, every `string` column additionally gets a `__k_<column>`
@@ -317,27 +384,40 @@ export async function buildDatasetFromTable(
     return {
       ok: false,
       reason: `column name "${reserved}" uses the reserved "__k_" prefix (link-key columns are generated on import) — rename the column and upload again`,
+      code: 'reserved_column',
     };
   }
 
   const columnTypes = new Map<string, DatasetColumnType>();
+  const dateCells = new Map<string, (raw: string) => string>();
   for (const header of parsed.headers) {
-    columnTypes.set(
-      header,
-      inferColumnType(parsed.rows.map((r) => r[header] ?? '')),
-    );
+    const values = parsed.rows.map((r) => r[header] ?? '');
+    const type = inferColumnType(values);
+    columnTypes.set(header, type);
+    if (type === 'date') dateCells.set(header, dateNormaliser(values));
   }
 
   const linkKey = opts.linkKey;
   const keyedColumns = linkKey
     ? selectLinkKeyColumns(parsed.headers, columnTypes)
     : new Set<string>();
+  const stringHeaders = parsed.headers.filter((h) => columnTypes.get(h) === 'string');
 
-  const detectors = [createBaselineDetector()];
+  // 'string' cells are the only ones that can carry free text, so the only
+  // ones that go through the privacy scan (see module doc). #1867 — the whole
+  // table is masked in one linear pass with one surrogate per distinct value
+  // (#1546), yielding to the event loop as it goes; per-cell `maskPrompt` with
+  // a growing turn map was quadratic and blocked the middleware.
+  const scanCells: string[] = [];
+  for (const rawRow of parsed.rows) {
+    for (const header of stringHeaders) scanCells.push(rawRow[header] ?? '');
+  }
+  const { masked } = await maskTableCells(scanCells, [createBaselineDetector()]);
+
   const cellKey = opts.cellKey;
-  let scannedCells = 0;
+  const scannedCells = scanCells.length;
   let maskedCells = 0;
-  let surrogates: Awaited<ReturnType<typeof maskPrompt>>['map'] | undefined;
+  let cellIndex = 0;
   // Display-safe value of every column in the FIRST row — the schema sample.
   // A flagged cell's stored value is now a ciphertext, which tells a human
   // nothing; the sample keeps showing the masked surrogate instead.
@@ -345,6 +425,11 @@ export async function buildDatasetFromTable(
 
   const scrubbedRows: Array<Record<string, unknown>> = [];
   for (const rawRow of parsed.rows) {
+    // Encryption and link keys are synchronous crypto per cell — keep the
+    // event loop breathing on a large table (#1867).
+    if (scrubbedRows.length > 0 && scrubbedRows.length % IMPORT_YIELD_EVERY_ROWS === 0) {
+      await yieldToEventLoop();
+    }
     const isFirstRow = scrubbedRows.length === 0;
     const outRow: Record<string, unknown> = {};
     for (const header of parsed.headers) {
@@ -363,33 +448,25 @@ export async function buildDatasetFromTable(
       if (type === 'date') {
         // Skipped like number/boolean: no free-text surface, and masking a
         // persisted date is irreversible + contradicts the declared type
-        // (#727). Store the real date so the schema and the data agree.
-        outRow[header] = raw.trim() === '' ? null : raw;
+        // (#727). Store the real date — as ISO-8601 (#1845), so the verbs'
+        // text compare sorts and filters it in date order.
+        const toIso = dateCells.get(header);
+        outRow[header] = raw.trim() === '' ? null : toIso ? toIso(raw) : raw;
         if (isFirstRow) firstRowDisplay[header] = outRow[header];
         continue;
       }
-      // 'string' — the only cells that can carry free text, so the only ones
-      // that go through the privacy scan (see module doc).
-      scannedCells += 1;
+      const scanned = masked[cellIndex] ?? raw;
+      cellIndex += 1;
       let display = raw;
-      if (raw.length === 0) {
-        outRow[header] = raw;
+      if (scanned !== raw) {
+        maskedCells += 1;
+        display = scanned;
+        // A flagged cell keeps its REAL value — encrypted, readable only
+        // server-side for the entitled user (render, Excel). Without a key
+        // the irreversible surrogate is stored, exactly as before.
+        outRow[header] = cellKey ? encryptCell(cellKey, header, raw) : scanned;
       } else {
-        // #1546 — ONE surrogate map for the whole table. A fresh map per
-        // cell minted the first pool surrogate every time, so without a
-        // cell key 60 different e-mails were stored as one address.
-        const scanned = await maskPrompt(raw, detectors, surrogates);
-        surrogates = scanned.map;
-        if (scanned.maskedText !== raw) {
-          maskedCells += 1;
-          display = scanned.maskedText;
-          // A flagged cell keeps its REAL value — encrypted, readable only
-          // server-side for the entitled user (render, Excel). Without a key
-          // the irreversible surrogate is stored, exactly as before.
-          outRow[header] = cellKey ? encryptCell(cellKey, header, raw) : scanned.maskedText;
-        } else {
-          outRow[header] = raw;
-        }
+        outRow[header] = raw;
       }
       if (isFirstRow) firstRowDisplay[header] = display;
       // The link key is computed from the RAW value — that is the whole
@@ -457,7 +534,7 @@ export type ImportCsvDatasetResult =
       privacyScan: PrivacyScanStats;
       truncation: CsvTruncationStats;
     }
-  | { ok: false; reason: string };
+  | TableParseFailure;
 
 /** End-to-end: CSV bytes → privacy-scrubbed rows → persisted dataset. The
  *  single function both entry points (REST route, chat-attachment

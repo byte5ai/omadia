@@ -111,6 +111,16 @@ const POLICY_CATALOG: Record<string, ModelInfo | undefined> = {
     contextWindow: 1,
     vision: false,
   },
+  'claude-cli:sonnet-cli': {
+    id: 'claude-cli:sonnet-cli',
+    provider: 'claude-cli',
+    modelId: 'sonnet-cli',
+    label: 'Sonnet (CLI)',
+    class: 'balanced',
+    maxTokens: 1,
+    contextWindow: 1,
+    vision: false,
+  },
 };
 
 interface AgentMem {
@@ -772,7 +782,9 @@ describe('createOperatorAgentsRouter', () => {
         // #1033 — a two-provider catalogue; only anthropic holds a key.
         getModelPolicyContext: () => ({
           resolveModel: (provider: string, model: string) => POLICY_CATALOG[`${provider}:${model}`],
-          usable: async (provider: string) => provider === 'anthropic',
+          usable: async (provider: string) => provider === 'anthropic' || provider === 'claude-cli',
+          runsToolTurns: (provider: string) => provider !== 'claude-cli',
+          switchesProviders: true,
           activeProvider: 'anthropic',
         }),
         // W1a (#860) — getters read the CURRENT fakes so afterEach resets apply.
@@ -929,6 +941,32 @@ describe('createOperatorAgentsRouter', () => {
         body: JSON.stringify({ primary: 'sometimes' }),
       });
       assert.equal(malformed.status, 400);
+    });
+
+    it('#1871 — PUT refuses the subscription CLI with 400 and a code, persists nothing', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: { provider: 'claude-cli', model: 'sonnet-cli' }, fallback: 'auto' }),
+      });
+      assert.equal(res.status, 400);
+      const body = (await res.json()) as { error: string; message: string };
+      assert.equal(body.error, 'model_policy_tool_incompatible');
+      assert.match(body.message, /claude-cli/);
+      assert.equal((await store.getAgentBySlug('public'))?.modelPolicy, undefined);
+      assert.equal(registry.reloadCalls, 0);
+    });
+
+    it('#1877 — GET reports a primary whose provider has no key as unavailable, never deferred', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      store.agents.set(agent.id, {
+        ...agent,
+        modelPolicy: { primary: { provider: 'openai', model: 'gpt-5.5' }, fallback: 'none' },
+      });
+      const body = (await (await fetch(`${baseUrl}/public/model-policy`)).json()) as Record<string, unknown>;
+      assert.equal(body['primaryUnavailable'], 'openai');
+      assert.equal(body['deferredProvider'], undefined);
     });
 
     it('GET /:slug/model-policy reads an unrecognised stored shape as the default', async () => {

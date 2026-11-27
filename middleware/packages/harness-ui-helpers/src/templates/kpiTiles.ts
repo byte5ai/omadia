@@ -11,6 +11,7 @@
  */
 
 import { html, type HtmlFragment } from '../html.js';
+import { renderErrorBanner } from './errorBanner.js';
 
 export interface KpiTile {
   readonly label: string;
@@ -93,9 +94,3 @@ function renderTile(tile: KpiTile): HtmlFragment {
   </div>`;
 }
 
-function renderErrorBanner(message: string): HtmlFragment {
-  return html`<div class="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800">
-    <strong class="block text-sm font-semibold mb-1">Daten konnten nicht gelesen werden</strong>
-    <code class="block break-all text-rose-900/80">${message}</code>
-  </div>`;
-}

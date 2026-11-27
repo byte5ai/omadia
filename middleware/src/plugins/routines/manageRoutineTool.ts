@@ -97,6 +97,11 @@ export interface ManageRoutineContext {
    * routine so it runs with that orchestrator's plugin grants.
    */
   agentSlug?: string;
+  /**
+   * #1907 / ADR-0206 — the creating turn's MCP OAuth user key. Stored on the
+   * routine so it acts as its owner on `per_user` MCP servers.
+   */
+  mcpUserKey?: string;
 }
 
 export type ManageRoutineContextResolver = () =>
@@ -265,6 +270,7 @@ export class ManageRoutineTool {
       conversationRef,
       timeoutMs: args.timeoutMs,
       ...(ctx.agentSlug ? { agentSlug: ctx.agentSlug } : {}),
+      ...(ctx.mcpUserKey ? { mcpUserKey: ctx.mcpUserKey } : {}),
     });
     return JSON.stringify({
       action: 'created',

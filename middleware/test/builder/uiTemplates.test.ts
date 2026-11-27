@@ -144,7 +144,7 @@ describe('renderListCard', () => {
       }),
     );
     assert.ok(out.includes('connection refused'));
-    assert.ok(out.includes('Daten konnten nicht gelesen werden'));
+    assert.ok(out.includes('The data could not be loaded'));
     assert.ok(!out.includes('<ul'));
   });
 
@@ -344,7 +344,17 @@ describe('renderKpiTiles', () => {
       }),
     );
     assert.ok(out.includes('oops'));
-    assert.ok(out.includes('Daten konnten nicht gelesen werden'));
+    assert.ok(out.includes('The data could not be loaded'));
+  });
+
+  it('#1808: a Zod issue list becomes the missing field names, never raw JSON', () => {
+    const zod = JSON.stringify([
+      { expected: 'string', code: 'invalid_type', path: ['city'], message: 'Required' },
+    ]);
+    const out = unwrap(renderKpiTiles({ tiles: [], fetchError: zod }));
+    assert.ok(out.includes('city'));
+    assert.ok(!out.includes('invalid_type'), 'no raw Zod output for end users');
+    assert.ok(!out.includes('<code'));
   });
 
   it('html-escapes tile values', () => {

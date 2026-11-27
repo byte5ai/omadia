@@ -153,10 +153,12 @@ import {
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
 import { sortByToolName } from './toolOrdering.js';
+import { turnMayCarryUploads } from './attachmentToolAvailability.js';
 import {
   checkVisionEmbeddable,
   detectTabularFormat,
   extractAttachmentText,
+  PLAIN_EXTRACT_FAILURE,
   type TabularFormat,
 } from './attachmentExtract.js';
 import {
@@ -237,13 +239,20 @@ import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
+import type { CliTurnPrivacy } from './cliTurnPrivacy.js';
+import type { DispatchableToolSpec } from './toolDispatchService.js';
 import { CLI_MEMORY_RULES, type CliTurnMemory } from './cliMemoryTool.js';
 import type {
   CliCompletedTurn,
   CliRecalledContext,
   CliTurnRecord,
 } from './cliTurnRecord.js';
-import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  internFailedNotice,
+  isInternExemptCall,
+  isPromptMaskedUploadCall,
+  runsOnModelInput,
+} from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -317,7 +326,9 @@ import type {
   SeamMessage,
 } from './llmProviderSeam.js';
 import { completeWithFallback, streamMessageEvents } from './streaming.js';
-import type { KgWalkPayload, ModelRef } from '@omadia/plugin-api';
+import type { KgWalkPayload, ModelRef, SystemNotice } from '@omadia/plugin-api';
+import { SYSTEM_SPEAKER } from '@omadia/plugin-api';
+import { buildSystemNotice } from './management/systemNotices.js';
 import type { LlmProviderPool } from '@omadia/llm-provider';
 
 /**
@@ -338,6 +349,33 @@ interface TurnExecution {
   readonly effort?: EffortLevel;
   readonly identity?: string;
   readonly fallback?: TurnFallback;
+  /**
+   * #1877 — the pinned primary's provider could not be served, so the turn
+   * starts on the policy's fallback. Callers mark the turn as a fallback
+   * (receipt `fallbackUsed`, the `provider_fallback` chip).
+   */
+  readonly startedOnFallback?: boolean;
+}
+
+/**
+ * #1877 — the policy pins a primary whose provider the pool cannot serve (no
+ * key, removed) and allows no usable fallback. The turn fails with the
+ * `model_unavailable` notice instead of running on another provider.
+ */
+/** #1877 — why no fallback could take the turn of an unavailable primary. */
+export type ModelUnavailableReason = 'no_fallback' | 'fallback_unavailable' | 'fallback_no_vision';
+
+export class PrimaryModelUnavailableError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly providerId: string,
+    readonly reason: ModelUnavailableReason,
+  ) {
+    super(
+      `agent '${agentId}': primary provider '${providerId}' is not available and no fallback can take the turn (${reason})`,
+    );
+    this.name = 'PrimaryModelUnavailableError';
+  }
 }
 
 /** #1033 W3 — does the wire history carry an image block? (vision gate) */
@@ -1585,6 +1623,37 @@ async function preMaskUserMessage(
   }
 }
 
+/**
+ * ADR-0198 — the text of a file the user uploaded in this turn (a
+ * `transcribe_recording` transcript), masked like the #268 attachment tail:
+ * PII spans become the turn's surrogates, the rest stays readable. A blocked
+ * mask fails closed — the text is withheld behind the kernel's notice, as an
+ * interning failure would be.
+ */
+async function maskOwnUploadText(
+  privacy: PrivacyTurnHandle,
+  toolName: string,
+  text: string,
+): Promise<string> {
+  try {
+    return remaskEchoedValues(privacy, await maskPromptForWire(privacy, text, 'context'));
+  } catch (err) {
+    console.warn(
+      `[orchestrator.dispatchTool:${toolName}] prompt masking of the upload text failed ${errorClassForLog(err)} — result WITHHELD`,
+    );
+    return internFailedNotice(toolName);
+  }
+}
+
+/**
+ * ADR-0198 — storage keys of the files uploaded in this turn: only the
+ * uploads the channel adapter stated as structured data (ADR-0178), never
+ * keys parsed from the message text.
+ */
+function turnUploadKeysOf(input: ChatTurnInput): ReadonlySet<string> {
+  return new Set((input.storedAttachments ?? []).map((info) => info.storageKey));
+}
+
 /** `maskPromptForWire` for the #268 ingested attachment tail — skips the
  *  empty/whitespace case (`ingestAttachments` returns '' without docs). */
 async function maskIngestedForWire(
@@ -2496,6 +2565,9 @@ const MEMORY_PROMPT_BLOCKS: Readonly<Record<MemoryPromptKind, string>> = {
  *  a file is only offered on a turn that actually carries it. */
 const FILE_EXPORT_TOOL_NAME = 'create_xlsx';
 
+/** #1972 — the office file tools whose prompt rules and forced retry need a grant. */
+const OFFICE_FILE_TOOL_NAMES = ['create_xlsx', 'create_docx'] as const;
+
 /**
  * #1559 — rule a)'s sentence about results above the chat row cap. Offers an
  * Excel file only when `create_xlsx` is offered this turn; without it the
@@ -2504,7 +2576,75 @@ const FILE_EXPORT_TOOL_NAME = 'create_xlsx';
 function privacyRowCapRule(hasFileExport: boolean): string {
   return hasFileExport
     ? 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit `create_xlsx` und derselben `datasetId`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").'
-    : 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil (wie viele Zeilen es insgesamt sind). **Biete KEINE Excel- oder andere Datei an** — in dieser Instanz gibt es kein Export-Werkzeug (`create_xlsx` ist nicht verfügbar). Will der User alles sehen, schlag eine engere Abfrage vor (Filter, Sortierung, Top-N).';
+    : 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil (wie viele Zeilen es insgesamt sind). **Biete KEINE Excel- oder andere Datei an** — dir steht kein Export-Werkzeug zur Verfügung (`create_xlsx` ist nicht verfügbar). Will der User alles sehen, schlag eine engere Abfrage vor (Filter, Sortierung, Top-N).';
+}
+
+/**
+ * #1972 — the "file instead of chat answer" rules (14, 15). Only an agent that
+ * holds `create_xlsx` or `create_docx` this turn sees them; without the grant
+ * it must neither offer nor announce a file.
+ */
+const FILE_GENERATION_RULES_BLOCK = `
+
+**Datei-Erzeugung (Excel/Word) — höchste Priorität bei Datei-Anfragen:**
+
+14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Werkzeug-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
+
+15. **Ankündigen heißt ausführen — im selben Turn.** Sätze wie "ich baue jetzt die Excel…", "ich erstelle die Datei…", "jetzt generiere ich…" MÜSSEN im selben Turn vom \`create_xlsx\`/\`create_docx\`-Tool-Call begleitet sein. **Beende einen Turn NIEMALS mit einer bloßen Ankündigung** ohne den dazugehörigen Tool-Call — eine beschriebene, aber nicht gebaute Datei ist für den User wertlos. Wenn du sagst, du baust eine Datei, dann RUF das Tool im selben Turn auf. Gelingt der Build nicht (Tool gibt \`Error:\` zurück), behaupte KEINEN Erfolg und verspreche keinen Download — sag dem User knapp, dass und warum die Datei nicht erzeugt werden konnte.`;
+
+/** #1972 — the dedup recipe's file branch, only with `create_xlsx` offered. */
+function dedupFileExportClause(hasFileExport: boolean): string {
+  return hasFileExport
+    ? ' bzw. — wenn der User eine Datei will — `create_xlsx` mit der Ergebnis-`datasetId`'
+    : '';
+}
+
+/**
+ * Privacy Shield v4 — the data-plane contract the model gets before its first
+ * tool call (see `buildSystemPrompt`). Exported for the subscription-CLI path
+ * (ADR-0195), whose system prompt carries the same directive while the turn is
+ * guarded.
+ */
+export function privacyV4Directive(hasFileExport: boolean): string {
+  return `
+**Datenschutz-Datenschicht (Privacy Shield v4) — PFLICHT bei jeder Datenfrage:**
+
+Ergebnisse von Fach-Werkzeugen durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
+
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. ${privacyRowCapRule(hasFileExport)}
+
+a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
+
+a3) **Personennamen immer vollständig schreiben.** Namen, die im Gespräch oder in Tool-Ergebnissen stehen, können Platzhalter sein, die der Server vor der Zustellung in die echten Namen zurückübersetzt. Das gelingt nur mit dem **vollständigen Namen genau so, wie er im Kontext steht** (Vor- UND Nachname). Schreibe deshalb nie nur den Vornamen oder nur den Nachnamen, keine Abkürzung, keinen Spitznamen und keine andere Schreibweise — auch nicht bei der zweiten Erwähnung („Laura Schmitt und Lukas Becker fehlen noch … Laura Schmitt und Lukas Becker können …", nicht „Laura und Lukas können …"). Dasselbe gilt für Namen, die du an Tools oder Fach-Werkzeuge weitergibst.
+
+b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
+   **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
+
+b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
+
+   **Verboten**, weil du es nicht wissen kannst: „der Privacy Shield greift hier nicht", „der Inhalt liegt im Klartext vor", „die Daten wurden anonymisiert", „das ist DSGVO-konform", „bei Datei-Uploads gibt es keinen Schutz" — und jede andere Aussage darüber, was das System mit den Daten getan oder nicht getan hat, die nicht wörtlich in einem der genannten Blöcke steht.
+
+   Ein **falscher Alarm ist schlimmer als gar kein Hinweis**: der User handelt danach. Steht kein \`PRIVACY STATUS\` dabei, sag „dazu liegt mir keine Angabe vor" oder schweig zum Thema — rate nicht, und leite nichts aus früheren Gesprächen, Transkripten oder deinem Allgemeinwissen ab. Das Verhalten des Systems ändert sich mit Releases; ein Transkript von letzter Woche ist **kein** Beleg für heute.
+
+   Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
+
+c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
+   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Werkzeug-Aufrufe.
+   2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
+   3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
+   4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+
+d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
+   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
+   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
+   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
+   4. Ausgabe über \`v4_render_answer\`${dedupFileExportClause(hasFileExport)}. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
+   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
+
+e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
+   1. Führe **dieselbe Quell-Abfrage** erneut aus (dasselbe Fach-Werkzeug, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
+   2. Weicht die neue Zeilenzahl von der Notiz ab, fehlt die Notiz, oder kannst du einen Schritt nicht nachbilden (z.B. weil seine Filterwerte nicht in der Notiz stehen), dann **sag ausdrücklich, dass deine Antwort auf einer neuen Abfrage beruht** und von der angezeigten Tabelle abweichen kann — und behaupte nicht, du beschreibst „die Tabelle".
+`;
 }
 
 function buildSystemPrompt(
@@ -2522,11 +2662,14 @@ function buildSystemPrompt(
   answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
   /** #1559 — `create_xlsx` is offered this turn. */
   hasFileExport = false,
+  /** #1972 — `create_xlsx` or `create_docx` is offered to this agent this turn. */
+  hasOfficeFileTools = false,
   /** #1992 — the operator's fallback answer language (ADR-0220). */
   answerLanguage: AnswerLanguage = DEFAULT_ANSWER_LANGUAGE,
 ): string {
   // #1890 — identity, language line and the operator's answer-size contract
   // come from `identityPreamble`, the same text the Prompt tab previews.
+  const fileGenerationBlock = hasOfficeFileTools ? FILE_GENERATION_RULES_BLOCK : '';
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
   const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
@@ -2566,47 +2709,7 @@ function buildSystemPrompt(
   // first tool call so it knows to (a) always terminate a data answer with
   // `v4_render_answer` and (b) fetch the entity directory it needs for the
   // join-back that re-attaches a masked identity column to an aggregate.
-  const privacyV4Block = hasPrivacyV4
-    ? `
-**Datenschutz-Datenschicht (Privacy Shield v4) — PFLICHT bei jeder Datenfrage:**
-
-Ergebnisse von Fach-Werkzeugen durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
-
-a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. ${privacyRowCapRule(hasFileExport)}
-
-a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
-
-a3) **Personennamen immer vollständig schreiben.** Namen, die im Gespräch oder in Tool-Ergebnissen stehen, können Platzhalter sein, die der Server vor der Zustellung in die echten Namen zurückübersetzt. Das gelingt nur mit dem **vollständigen Namen genau so, wie er im Kontext steht** (Vor- UND Nachname). Schreibe deshalb nie nur den Vornamen oder nur den Nachnamen, keine Abkürzung, keinen Spitznamen und keine andere Schreibweise — auch nicht bei der zweiten Erwähnung („Laura Schmitt und Lukas Becker fehlen noch … Laura Schmitt und Lukas Becker können …", nicht „Laura und Lukas können …"). Dasselbe gilt für Namen, die du an Tools oder Fach-Werkzeuge weitergibst.
-
-b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
-   **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
-
-b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
-
-   **Verboten**, weil du es nicht wissen kannst: „der Privacy Shield greift hier nicht", „der Inhalt liegt im Klartext vor", „die Daten wurden anonymisiert", „das ist DSGVO-konform", „bei Datei-Uploads gibt es keinen Schutz" — und jede andere Aussage darüber, was das System mit den Daten getan oder nicht getan hat, die nicht wörtlich in einem der genannten Blöcke steht.
-
-   Ein **falscher Alarm ist schlimmer als gar kein Hinweis**: der User handelt danach. Steht kein \`PRIVACY STATUS\` dabei, sag „dazu liegt mir keine Angabe vor" oder schweig zum Thema — rate nicht, und leite nichts aus früheren Gesprächen, Transkripten oder deinem Allgemeinwissen ab. Das Verhalten des Systems ändert sich mit Releases; ein Transkript von letzter Woche ist **kein** Beleg für heute.
-
-   Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
-
-c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
-   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Werkzeug-Aufrufe.
-   2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
-   3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
-   4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
-
-d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
-   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
-   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
-   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
-   4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
-   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
-
-e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
-   1. Führe **dieselbe Quell-Abfrage** erneut aus (dasselbe Fach-Werkzeug, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
-   2. Weicht die neue Zeilenzahl von der Notiz ab, fehlt die Notiz, oder kannst du einen Schritt nicht nachbilden (z.B. weil seine Filterwerte nicht in der Notiz stehen), dann **sag ausdrücklich, dass deine Antwort auf einer neuen Abfrage beruht** und von der angezeigten Tabelle abweichen kann — und behaupte nicht, du beschreibst „die Tabelle".
-`
-    : '';
+  const privacyV4Block = hasPrivacyV4 ? privacyV4Directive(hasFileExport) : '';
 
   return `${identityPreamble(assistantIdentity, answerVerbosity, answerLanguage)}
 Werkzeuge:
@@ -2677,13 +2780,7 @@ Regeln:
     - **Mermaid**: eingeschränkt, im Zweifel ohne Logo rendern.
     Tool-Call-Shape: \`render_diagram({kind: "vegalite", source: "<spec mit brand://logo>", brand_logo_storage_key: "<aus memory>"})\`. Ohne den Parameter bleibt \`brand://logo\` ungeändert — Kroki rendert das Bild-Feld dann leer.
 
-**Konvergenz — keine Tool-Schleifen:** Rufe denselben Tool **nicht** wiederholt mit identischen Argumenten auf, wenn das Ergebnis sich nicht ändert. Bringt ein Tool-Aufruf keinen neuen Erkenntnisgewinn, wechsle die Strategie (andere Argumente, anderer Tool) oder gib mit den vorhandenen Informationen die bestmögliche Endantwort. Du hast pro Turn ein begrenztes Tool-Budget — arbeite zielgerichtet darauf hin, die Frage zu beantworten, statt im Kreis zu laufen.
-
-**Datei-Erzeugung (Excel/Word) — höchste Priorität bei Datei-Anfragen:**
-
-14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Werkzeug-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
-
-15. **Ankündigen heißt ausführen — im selben Turn.** Sätze wie "ich baue jetzt die Excel…", "ich erstelle die Datei…", "jetzt generiere ich…" MÜSSEN im selben Turn vom \`create_xlsx\`/\`create_docx\`-Tool-Call begleitet sein. **Beende einen Turn NIEMALS mit einer bloßen Ankündigung** ohne den dazugehörigen Tool-Call — eine beschriebene, aber nicht gebaute Datei ist für den User wertlos. Wenn du sagst, du baust eine Datei, dann RUF das Tool im selben Turn auf. Gelingt der Build nicht (Tool gibt \`Error:\` zurück), behaupte KEINEN Erfolg und verspreche keinen Download — sag dem User knapp, dass und warum die Datei nicht erzeugt werden konnte.`;
+**Konvergenz — keine Tool-Schleifen:** Rufe denselben Tool **nicht** wiederholt mit identischen Argumenten auf, wenn das Ergebnis sich nicht ändert. Bringt ein Tool-Aufruf keinen neuen Erkenntnisgewinn, wechsle die Strategie (andere Argumente, anderer Tool) oder gib mit den vorhandenen Informationen die bestmögliche Endantwort. Du hast pro Turn ein begrenztes Tool-Budget — arbeite zielgerichtet darauf hin, die Frage zu beantworten, statt im Kreis zu laufen.${fileGenerationBlock}`;
 }
 
 /**
@@ -3786,12 +3883,9 @@ export class Orchestrator {
    */
   private fileAnnouncedButNotBuilt(answer: string, filesProduced: number): boolean {
     if (filesProduced > 0) return false;
-    if (
-      !this.nativeTools.has('create_xlsx') &&
-      !this.nativeTools.has('create_docx')
-    ) {
-      return false;
-    }
+    // #1972 — only an agent that may call an office file tool this turn gets
+    // the forced retry; for any other it would be a turn it cannot use.
+    if (!this.hasOfficeFileToolThisTurn()) return false;
     return FILE_ANNOUNCE_RE.test(answer);
   }
 
@@ -4358,6 +4452,87 @@ export class Orchestrator {
   }
 
   /**
+   * ADR-0195 (#2239) — the Privacy Shield for one subscription-CLI turn: the
+   * same handle, masks, restore and receipt an in-process turn gets, shaped
+   * for `CliChatAgent` (see `cliTurnPrivacy.ts`). `undefined` when no privacy
+   * guard runs; the CLI agent then refuses a turn the org policy requires to
+   * be guarded. Called in the CLI turn's captured context.
+   */
+  public cliTurnPrivacy(
+    input: ChatTurnInput,
+    turnId: string,
+    model: string,
+  ): CliTurnPrivacy | undefined {
+    const service = this.privacyGuard?.();
+    if (service === undefined) return undefined;
+    const handle = this.buildPrivacyHandle(service, input.sessionScope ?? turnId, turnId);
+    const ran = { model, provider: 'claude-cli', fallbackUsed: false };
+    const tools: DispatchableToolSpec[] = handle.v4ToolSpecs().map((spec) => ({
+      name: spec.name,
+      description: spec.description,
+      input_schema: spec.input_schema as DispatchableToolSpec['input_schema'],
+    }));
+    return {
+      handle,
+      tools,
+      directive: privacyV4Directive(this.isFileExportOfferedThisTurn()),
+      maskUserMessage: (text) => maskPromptForWire(handle, text),
+      maskRecalled: async (text) => (await maskRecalledForWire(handle, text)) ?? text,
+      wrapDispatch: (base) => ({
+        dispatch: async (name, toolInput, options) => {
+          if (name.startsWith('v4_')) {
+            const v4Tool = splitV4ToolResult(name, await this.runV4ToolForTurn(handle, name, toolInput));
+            if (v4Tool.canvasSentinel !== undefined) {
+              await tapCanvasSentinel(name, v4Tool.canvasSentinel);
+            }
+            return { content: v4Tool.llmText };
+          }
+          // #1544 — tools run on the user's values; same rule as the
+          // in-process dispatch (`toolKeepsSurrogates`).
+          const restored = this.toolKeepsSurrogates(name)
+            ? toolInput
+            : restorePromptSurrogatesInToolInput(handle, toolInput);
+          const result = await base.dispatch(name, restored, options);
+          return { ...result, content: remaskEchoedValues(handle, result.content) };
+        },
+      }),
+      streamRestorer: async () =>
+        (await personalFieldsWithheld()) ? undefined : handle.snapshotPromptRestorer(),
+      releaseAnswer: async (answer) => {
+        const taken = await handle.takeRenderedAnswerV4();
+        const rendered = taken !== undefined ? await renderedAnswerForAudience(taken) : undefined;
+        const base = rendered?.text ?? answer;
+        let restored = base;
+        try {
+          restored = await restoreAnswerForUser(handle, base);
+        } catch (err) {
+          console.warn('[orchestrator] CLI restorePromptPseudonyms threw — answer left as-is:', err);
+        }
+        if (rendered === undefined) return { answer: restored };
+        return {
+          answer: restored,
+          answerSource: 'privacy-render',
+          ...(rendered.isError === true ? { answerIsError: true } : {}),
+          ...(rendered.maskedValues.length > 0 ? { maskedValues: rendered.maskedValues } : {}),
+        };
+      },
+      finalize: async (userMessage) => {
+        try {
+          const receipt = await handle.finalize(userMessage);
+          if (receipt === undefined) return {};
+          const rowed = await this.settleTurnReceipt(turnId, input, receipt, undefined, ran);
+          return { privacyReceipt: receipt, ...(rowed ? { receiptId: turnId } : {}) };
+        } catch (err) {
+          console.warn('[orchestrator] CLI privacy finalize threw — receipt dropped:', err);
+          return {};
+        }
+      },
+      refusalFor: (error) =>
+        error instanceof PromptMaskBlockedError ? promptMaskBlockedAnswer(error) : undefined,
+    };
+  }
+
+  /**
    * Issue #1391 — persist a turn the subscription CLI answered, the way the
    * in-process `done` branch persists its own: the session-log row (markdown
    * transcript, chat-session mirror and the graph's `Session` / `Turn` / `Run`
@@ -4367,9 +4542,11 @@ export class Orchestrator {
    * row and nothing else, so Memory and the session log stayed empty for every
    * turn on that provider.
    *
-   * No privacy handle exists on this path (the CLI child gets the turn
-   * unmasked, see `CliChatAgent.maskHistory`), so the row carries the real
-   * texts and no masked view, and the facts are extracted from the same texts.
+   * ADR-0195 — a guarded CLI turn hands its wire texts (`turn.wireView`):
+   * the row then carries the masked view and the protected flag, and the
+   * facts are extracted from the wire texts and restored, as in-process.
+   * Without a handle the row carries the real texts, no masked view, and is
+   * flagged `unprotected`.
    *
    * Never throws: every step is best-effort, as on the in-process path, and a
    * turn without a session scope (a CLI sub-agent's single shot) writes nothing.
@@ -4385,6 +4562,14 @@ export class Orchestrator {
     // `userId`, and `ingestRun` drops a trace owned by that.
     const { userId: _rawTraceOwner, ...traceWithoutOwner } = turn.runTrace;
     const runTrace = { ...traceWithoutOwner, ...runTraceUserSpread(input) };
+    // ADR-0195 — under the CLI turn's own handle the row gets the masked view
+    // and the protected flag an in-process turn gets; the fact extraction
+    // reads the wire texts and restores what it extracts.
+    const privacy = turn.wireView !== undefined ? turnContext.current()?.privacyHandle : undefined;
+    const rowView =
+      privacy !== undefined && turn.wireView !== undefined
+        ? maskedRowView(privacy, turn.wireView.userMessage, turn.wireView.answer)
+        : { unprotected: true };
     let persistedTurnId: string | undefined;
     if (this.sessionLogger) {
       persistedTurnId = await this.turnRecords.writeRow(
@@ -4398,17 +4583,26 @@ export class Orchestrator {
           ...turnOwnersField(turnMemory),
           runTrace,
           entityRefs: [],
-          // #1507 — a CLI turn runs without the Privacy Shield.
-          unprotected: true,
+          // #1507 — a CLI turn without a handle runs without the shield.
+          ...rowView,
         },
         'cli answer',
       );
     }
     this.turnRecords.startFactExtraction(
       persistedTurnId,
-      this.factExtractor
-        ? { userMessage: input.userMessage, assistantAnswer: turn.answer }
-        : undefined,
+      !this.factExtractor
+        ? undefined
+        : privacy !== undefined && turn.wireView !== undefined
+          ? (() => {
+              const restoreFacts = privacy.snapshotPromptRestorer();
+              return {
+                userMessage: turn.wireView.userMessage,
+                assistantAnswer: turn.wireView.answer,
+                ...(restoreFacts ? { restoreFacts } : {}),
+              };
+            })()
+          : { userMessage: input.userMessage, assistantAnswer: turn.answer },
       [],
     );
     const captureDisclosure = this.turnRecords.takeCaptureDisclosure(persistedTurnId);
@@ -4914,6 +5108,8 @@ export class Orchestrator {
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
     const turn = await this.runTurn(input);
+    // #1877 — the turn did not run; the notice is the whole answer.
+    if (turn.systemNotice) return toSemanticAnswer(turn);
     // Phase 3 — the level this answer was generated under, on EVERY answer
     // this path returns (choice cards and gate returns included),
     // so a channel can always offer the neighbouring steps. Resolved here,
@@ -5533,7 +5729,16 @@ export class Orchestrator {
   }
 
   async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
-    const result = await this.runTurnCore(input);
+    let result: ChatTurnResult;
+    try {
+      result = await this.runTurnCore(input);
+    } catch (err) {
+      if (!(err instanceof PrimaryModelUnavailableError)) throw err;
+      // #1877 — every caller of `runTurn` (chat, the verifier, routines) gets
+      // the `model_unavailable` notice instead of a generic error.
+      const notice = this.modelUnavailableNotice(input, err.reason);
+      return { answer: notice.text, toolCalls: 0, iterations: 0, systemNotice: notice };
+    }
     const aiDisclosure = this.resolveTurnDisclosure(input);
     return aiDisclosure ? { ...result, aiDisclosure } : result;
   }
@@ -5902,6 +6107,8 @@ export class Orchestrator {
         memoryFileRead: { value: false },
         // The turn's wire view (prompt + answer), for a verifier hand-over.
         wireView: {},
+        // ADR-0198 — the files the user uploaded in this turn.
+        turnUploadKeys: turnUploadKeysOf(input),
         // #1543 — this turn's render provenance notes, for the persisted row.
         renderProvenance: { notes: [] },
         graphReadScope: {},
@@ -5915,6 +6122,9 @@ export class Orchestrator {
         // every call as `unresolved` and then fails closed. See the W4-1 block
         // above for where the value comes from.
         ...(mcpUserKey ? { mcpUserKey } : {}),
+        // ADR-0206 — an unattended entry point (routine, trigger) stays
+        // unattended inside the turn.
+        ...(parent?.mcpUnattended ? { mcpUnattended: true } : {}),
         ...floorFields,
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
@@ -6375,9 +6585,7 @@ export class Orchestrator {
   ): Promise<TurnExecution> {
     const primary = await this.resolvePrimaryExecution(turnModel);
     if (primary.primaryUnavailable !== undefined) {
-      console.warn(
-        `[orchestrator] agent '${this.agentId}': primary provider '${primary.primaryUnavailable}' is not available (no key?) — running on '${this.provider.id}'`,
-      );
+      return this.executionOnFallback(primary.primaryUnavailable, hasImages);
     }
     const { provider, model, effort } = primary;
     let fallback: TurnFallback | undefined;
@@ -6408,12 +6616,71 @@ export class Orchestrator {
   }
 
   /**
+   * #1877 — the pinned primary cannot be served. The policy's fallback (an
+   * explicit ref, or for `auto` the agent's own provider and model) becomes
+   * the execution and the turn is marked as a fallback. With `none`, or a
+   * fallback the pool cannot serve either, the turn fails visibly
+   * ({@link PrimaryModelUnavailableError}) — never silently elsewhere.
+   */
+  private async executionOnFallback(
+    unavailable: string,
+    hasImages: boolean,
+  ): Promise<TurnExecution> {
+    const ref = this.fallbackRef;
+    const refuse = (reason: ModelUnavailableReason, why: string): never => {
+      console.warn(`[orchestrator] agent '${this.agentId}': primary provider '${unavailable}' is not available — ${why}`);
+      throw new PrimaryModelUnavailableError(this.agentId, unavailable, reason);
+    };
+    if (!ref) return refuse('no_fallback', 'the model policy allows no fallback; the turn fails');
+    if (hasImages && this.fallbackVisionSupported === false) {
+      return refuse('fallback_no_vision', `fallback model '${ref.model}' cannot read images; the turn fails`);
+    }
+    const fbProvider =
+      ref.provider === this.provider.id
+        ? this.provider
+        : await this.providerPool?.get(ref.provider).catch(() => undefined);
+    if (!fbProvider) {
+      return refuse('fallback_unavailable', `fallback provider '${ref.provider}' is not available either; the turn fails`);
+    }
+    console.warn(
+      `[orchestrator] agent '${this.agentId}': primary provider '${unavailable}' is not available — starting on fallback '${fbProvider.id}:${ref.model}'`,
+    );
+    const family = Orchestrator.familyOf(ref.model);
+    const primaryFamily = this.primaryRef ? Orchestrator.familyOf(this.primaryRef.model) : family;
+    return {
+      provider: fbProvider,
+      model: ref.model,
+      ...(ref.effort !== undefined ? { effort: ref.effort } : {}),
+      ...(family !== primaryFamily && this.identityByFamily?.[family]
+        ? { identity: this.identityByFamily[family] }
+        : {}),
+      startedOnFallback: true,
+    };
+  }
+
+  /** #1877 — the `model_unavailable` notice for this agent, in the turn's locale. */
+  private modelUnavailableNotice(input: ChatTurnInput, reason: ModelUnavailableReason): SystemNotice {
+    const locale = this.turnLocale(input);
+    return buildSystemNotice('model_unavailable', {
+      // The template words the reason (`systemNotices.ts`).
+      items: [reason],
+      agent: {
+        slug: this.agentId,
+        displayName: this.identityName ?? this.agentId,
+        agentId: this.traceAgentId,
+      },
+      ...(locale ? { locale } : {}),
+    });
+  }
+
+  /**
    * #1033 W3 — the provider/model the agent's policy puts the turn on: the
    * policy's primary when it names another provider the pool can serve, else
    * the agent's own provider with `turnModel`. `primaryUnavailable` names a
-   * policy provider the pool could not serve (the caller logs it). Shared by
-   * the turn loop and the working-mode classifier (#2051), so both run under
-   * the same policy.
+   * policy provider the pool could not serve; `resolveTurnExecution` turns it
+   * into the fallback or the `model_unavailable` refusal (#1877). The
+   * working-mode classifier (#2051) goes through `resolveTurnExecution` too,
+   * so both run under the same policy.
    */
   private async resolvePrimaryExecution(turnModel: string): Promise<{
     provider: LlmProvider;
@@ -6732,6 +6999,21 @@ export class Orchestrator {
    * `auto` and triage is configured, otherwise the policy's primary
    * ({@link resolvePrimaryExecution}), never a hardcoded vendor id.
    */
+  /**
+   * #1877 — where the working-mode classifier runs: the same execution the
+   * turn gets (the primary, or the policy's fallback when the primary cannot
+   * be served), `undefined` when neither may take the user's message.
+   */
+  private async workingModeClassifierExecution(): Promise<{ provider: LlmProvider; model: string } | undefined> {
+    try {
+      const exec = await this.resolveTurnExecution(this.model, false);
+      return { provider: exec.provider, model: exec.model };
+    } catch (err) {
+      if (err instanceof PrimaryModelUnavailableError) return undefined;
+      throw err;
+    }
+  }
+
   private async resolveTurnWorkingMode(userMessage: string): Promise<{
     mode: SelectedWorkingMode | undefined;
     verdict?: {
@@ -6744,7 +7026,11 @@ export class Orchestrator {
     if (this.personaSkills.length === 0) return { mode: undefined };
     const classifier = this.modelRouting
       ? { provider: this.provider, model: this.modelRouting.classifierModel }
-      : await this.resolvePrimaryExecution(this.model);
+      : await this.workingModeClassifierExecution();
+    // #1877 — the primary is unavailable and no fallback may take the turn:
+    // the user's message goes to no other provider, not even to classify it.
+    // The turn itself then ends with the `model_unavailable` notice.
+    if (!classifier) return { mode: undefined };
     const r = await routeTurnWorkingMode(
       classifier.provider,
       this.personaSkills,
@@ -6967,12 +7253,15 @@ export class Orchestrator {
       traceCollector?.recordWorkingMode(turnModeResolved.verdict.skillId, turnWorkingMode.name);
     }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
+    // #1877 — throws `PrimaryModelUnavailableError` when the pinned primary
+    // cannot be served and no fallback is allowed; `chat()` answers it with
+    // the `model_unavailable` notice.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     Orchestrator.publishTurnExecution(turnExec);
     // #650 — stamp the resolved model on the trace here, once, rather than at
     // each of `finish()`'s call sites. Buffered path.
     traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
-    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id, turnExec.startedOnFallback === true);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -7760,6 +8049,8 @@ export class Orchestrator {
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
       wireView: {},
+      // ADR-0198 — see the matching `turnContext.run` above.
+      turnUploadKeys: turnUploadKeysOf(input),
       renderProvenance: { notes: [] },
       graphReadScope: {},
       orchestratorExecution: {},
@@ -7772,6 +8063,7 @@ export class Orchestrator {
       ...streamFloorFields,
       // W3-A / W4-1 — see the matching `turnContext.run` above.
       ...(mcpUserKey ? { mcpUserKey } : {}),
+      ...(parent?.mcpUnattended ? { mcpUnattended: true } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
       ...(parent?.captureRawToolResult
         ? { captureRawToolResult: parent.captureRawToolResult }
@@ -8343,13 +8635,42 @@ export class Orchestrator {
       traceCollector?.recordWorkingMode(resolvedMode.verdict.skillId, turnWorkingMode.name);
     }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
-    let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    let turnExec: TurnExecution;
+    try {
+      turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    } catch (err) {
+      if (!(err instanceof PrimaryModelUnavailableError)) throw err;
+      // #1877 — the turn fails visibly, as a `system` notice, before any
+      // model call; it never runs silently on another provider.
+      const notice = this.modelUnavailableNotice(input, err.reason);
+      yield {
+        type: 'done',
+        answer: notice.text,
+        toolCalls: 0,
+        iterations: 0,
+        speaker: SYSTEM_SPEAKER,
+        systemNotice: notice,
+      };
+      return;
+    }
     Orchestrator.publishTurnExecution(turnExec);
     // #650 — streaming mirror of the buffered stamp above. Both paths, or the
     // field is present on some traces and absent on others for no visible
     // reason, which is worse for a provenance record than not having it.
     traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
-    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id, turnExec.startedOnFallback === true);
+    // #1877 — a turn that starts on the fallback because the primary cannot
+    // be served shows the same chip as a hop after a failed call.
+    if (turnExec.startedOnFallback === true) {
+      yield {
+        type: 'turn_routing',
+        bucket: resolved.routing?.bucket ?? 'complex',
+        classifierModel: resolved.routing?.classifierModel ?? '',
+        model: turnExec.model,
+        reason: 'provider_fallback',
+        provider: turnExec.provider.id,
+      };
+    }
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.
@@ -9517,15 +9838,30 @@ export class Orchestrator {
   }
 
   /**
-   * #1559 — is the spreadsheet export tool offered on THIS turn? Same gates
-   * as the tool list (`buildToolsList`) and the prompt docs: registered,
-   * its plugin ready, and offered by its per-turn predicate. Only then may a
-   * truncated render or the system prompt offer the full list as a file.
+   * #1559 — is the spreadsheet export tool offered on THIS turn? Only then
+   * may a truncated render or the system prompt offer the full list as a file.
    */
   private isFileExportOfferedThisTurn(): boolean {
-    const entry = this.nativeTools.get(FILE_EXPORT_TOOL_NAME);
+    return this.isNativeToolOfferedThisTurn(FILE_EXPORT_TOOL_NAME);
+  }
+
+  /** #1972 — may this agent build an Excel or Word file on THIS turn? */
+  private hasOfficeFileToolThisTurn(): boolean {
+    return OFFICE_FILE_TOOL_NAMES.some((name) => this.isNativeToolOfferedThisTurn(name));
+  }
+
+  /**
+   * Same gates as the tool list (`buildToolsList`) and the prompt docs:
+   * registered, its plugin ready, granted to this agent (#1598, #1972), and
+   * offered by its per-turn predicate.
+   */
+  private isNativeToolOfferedThisTurn(name: string): boolean {
+    const entry = this.nativeTools.get(name);
     return (
-      entry !== undefined && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)
+      entry !== undefined &&
+      this.isToolAvailable(entry.agentId) &&
+      this.isToolGranted(name, entry.agentId, entry.orchestratorScope) &&
+      isOfferedThisTurn(entry)
     );
   }
 
@@ -9549,6 +9885,27 @@ export class Orchestrator {
       turnContext.current()?.renderProvenance?.notes.push(result.renderProvenance);
     }
     return result;
+  }
+
+  /**
+   * #1544 — whether a tool's handler gets the model's input as written
+   * (placeholders kept) instead of the user's restored values: intern-exempt
+   * tools that run on model input, and a domain tool that asks a sub-agent
+   * model (its input is a question for a model). A top-level MCP grant is
+   * registered as a domain tool too but calls its server directly
+   * (`mcpGrantToDomainTool`), and `consult` hands its input to a colleague
+   * agent that cannot resolve this turn's placeholders (the broker checks
+   * first that the colleague may receive them) — both get restored values.
+   * Shared by the in-process and the CLI loopback dispatch.
+   */
+  private toolKeepsSurrogates(name: string): boolean {
+    if (runsOnModelInput(name)) return true;
+    const domainTool = this.domainToolsByName.get(name);
+    return (
+      domainTool !== undefined &&
+      domainTool.mcpServerId === undefined &&
+      domainTool !== this.consultTool
+    );
   }
 
   private async dispatchToolDeadlined(
@@ -9656,15 +10013,8 @@ export class Orchestrator {
     // A top-level MCP grant is registered as a domain tool too, but calls its
     // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
     // server id runs a sub-agent model.
-    const domainTool = this.domainToolsByName.get(name);
-    // `consult` is the exception: its input goes to a colleague agent, which
-    // cannot resolve this turn's placeholders, so it gets the restored values
-    // (the broker checks first that the colleague may receive them).
-    const asksSubAgentModel =
-      domainTool !== undefined && domainTool.mcpServerId === undefined && domainTool !== this.consultTool;
-    const handlerInput =
-      asksSubAgentModel || isInternExemptTool(name)
-        ? input
+    const handlerInput = this.toolKeepsSurrogates(name)
+      ? input
       : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<NativeToolOutput> => {
       if (
@@ -9844,7 +10194,10 @@ export class Orchestrator {
       // exemption covers the normal result only: an exempt tool's `Error:`
       // text can quote what it failed on (a memory file, an attachment's
       // rows), so it takes the same redaction as below.
-      if (isInternExemptTool(name)) {
+      const exempt = isInternExemptCall(name, input);
+      const ownUpload =
+        !exempt && isPromptMaskedUploadCall(name, input, turnContext.current()?.turnUploadKeys);
+      if (exempt || ownUpload) {
         if (
           isGuardedControlFlowResult(result, mcpAuthPromptMint) &&
           result !== kernelRefusal.text
@@ -9857,6 +10210,9 @@ export class Orchestrator {
             authPromptMint: mcpAuthPromptMint,
           });
         }
+        // ADR-0198 — text of the user's own upload (a transcript): readable,
+        // with its PII spans masked like the attachment tail of a prompt.
+        if (ownUpload) return maskOwnUploadText(privacy, name, result);
         // #1544 — the handler ran on the user's values; what it echoes goes
         // back to the model as the placeholders it wrote.
         return remaskEchoedValues(privacy, result);
@@ -10375,6 +10731,7 @@ export class Orchestrator {
       memoryPrompt,
       this.answerVerbosity,
       this.isFileExportOfferedThisTurn(),
+      this.hasOfficeFileToolThisTurn(),
       this.answerLanguage,
     );
   }
@@ -10758,7 +11115,19 @@ export class Orchestrator {
             : c.url
               ? await this.attachmentReader.readByUrl(c.url)
               : undefined;
-          if (!fetched) continue;
+          if (!fetched) {
+            // #1978 — an image keeps its own visible note path; a file gets
+            // a block, so the model knows the pre-read failed and why.
+            if (c.isImage) {
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: image ${candidateLabel(c)} could not be loaded`,
+              );
+              rejectedImageReasons.push('the image could not be loaded');
+            } else {
+              textBlocks.push(notIngestedBlock(candidateLabel(c), 'the file was not found in storage'));
+            }
+            continue;
+          }
           const contentType = fetched.contentType ?? c.contentType;
           if (c.isImage) {
             const guard = checkVisionEmbeddable(
@@ -10845,7 +11214,12 @@ export class Orchestrator {
             contentType,
             attachmentFileName,
           );
-          if (!result.ok) continue;
+          if (!result.ok) {
+            textBlocks.push(
+              notIngestedBlock(label, PLAIN_EXTRACT_FAILURE[result.kind], result.reason),
+            );
+            continue;
+          }
           // #976 — the honest counterpart to `[dataset-imported]`'s privacy
           // fact. This IS the inlined-text path (PDF/DOCX/TXT/MD have no
           // structured equivalent), so say so rather than letting the model
@@ -10863,10 +11237,12 @@ export class Orchestrator {
               `\n[/attachment-content]`,
           );
         } catch (err) {
-          console.warn(
-            `[harness-orchestrator] ingestAttachments: skipped one attachment — ${
-              err instanceof Error ? err.message : String(err)
-            }`,
+          textBlocks.push(
+            notIngestedBlock(
+              candidateLabel(c),
+              'the file could not be read',
+              err instanceof Error ? err.message : String(err),
+            ),
           );
         }
       }
@@ -10928,17 +11304,11 @@ export class Orchestrator {
     storageKey?: string;
   }): Promise<string> {
     const { label, format } = args;
-    const refuse = (reason: string): string => {
-      console.warn(
-        `[harness-orchestrator] ingestAttachments: ${format} dataset import unavailable for ${label} — ${reason}`,
+    const refuse = (reason: string): string =>
+      notIngestedBlock(
+        label,
+        `this ${format.toUpperCase()} file could not be imported as a queryable dataset: ${reason}`,
       );
-      return (
-        `\n\n[attachment-not-ingested: ${label}]\n` +
-        `This ${format.toUpperCase()} file could not be imported as a queryable dataset (${reason}). ` +
-        `Its contents were NOT read. Tell the user the file could not be processed — ` +
-        `do not guess at or invent its contents.\n[/attachment-not-ingested]`
-      );
-    };
 
     if (!this.knowledgeGraph) return refuse('no knowledge graph available');
     const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
@@ -10958,9 +11328,12 @@ export class Orchestrator {
         ...(args.storageKey ? { sourceStorageKey: args.storageKey } : {}),
       });
     } catch (err) {
-      return refuse(
-        `import error: ${err instanceof Error ? err.message : String(err)}`,
+      console.warn(
+        `[harness-orchestrator] ingestAttachments: ${format} import threw for ${label} — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
+      return refuse('the import failed');
     }
     if (!imported.ok) return refuse(imported.reason);
 
@@ -11047,9 +11420,16 @@ export class Orchestrator {
           `per-person keys that are the same across all of this user's uploads; use ` +
           `them as the \`by\`/join key in \`v4_distinct\`/\`v4_join\` to de-duplicate or ` +
           `match across files, and never display them.`
-        : ` No link-key columns were generated for this file (the install has no ` +
-          `dataset link-key secret), so cross-file de-duplication on text columns is ` +
-          `not available — state that plainly if asked.`);
+        : scannedCells === 0
+          ? // #1844 — link keys exist only for text columns; a file of only
+            // numbers, dates and booleans needs none, and blaming a missing
+            // secret sent the user after a configuration that was fine.
+            ` This file has no text columns, so it carries no link-key columns — its ` +
+            `number, date and boolean columns are already usable as \`by\`/join keys ` +
+            `in \`v4_distinct\`/\`v4_join\`.`
+          : ` No link-key columns were generated for this file (the install has no ` +
+            `dataset link-key secret), so cross-file de-duplication on text columns is ` +
+            `not available — state that plainly if asked.`);
 
     return (
       `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +
@@ -11463,7 +11843,8 @@ export class Orchestrator {
     if (this.turnHasChatRoster()) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
     if (this.suggestFollowUpsTool) tools.push(suggestFollowUpsToolSpec);
-    if (this.readAttachmentTool) tools.push(readAttachmentToolSpec);
+    // #1976 — only on a turn that can carry an upload.
+    if (this.readAttachmentTool && turnMayCarryUploads()) tools.push(readAttachmentToolSpec);
     if (this.findFreeSlotsTool) tools.push(findFreeSlotsToolSpec);
     if (this.bookMeetingTool) tools.push(bookMeetingToolSpec);
     // Plugin-contributed native tools (registered via ctx.tools.register).
@@ -11623,6 +12004,33 @@ export class Orchestrator {
  * table) — the signature of the "announced but didn't build" failure. Noun list
  * is restricted to unambiguous file words so it does not fire on inline tables.
  */
+/**
+ * #1978 — the block for an attachment auto-ingest could not read. Every drop
+ * leaves one, with a plain reason the model may pass on, plus a server
+ * warning carrying the technical `detail` (never in the block).
+ */
+function notIngestedBlock(label: string, plainReason: string, detail?: string): string {
+  console.warn(
+    `[harness-orchestrator] ingestAttachments: not ingested ${label} — ${plainReason}` +
+      (detail !== undefined ? ` (${detail})` : ''),
+  );
+  return (
+    `\n\n[attachment-not-ingested: ${label}]\n` +
+    `This file was not read: ${plainReason}. ` +
+    `Tell the user the file could not be processed and why, in plain words — ` +
+    `do not guess at or invent its contents.\n[/attachment-not-ingested]`
+  );
+}
+
+/** #1978 — the name a candidate is reported under. */
+function candidateLabel(c: {
+  readonly fileName?: string | undefined;
+  readonly storageKey?: string;
+  readonly url?: string;
+}): string {
+  return c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
+}
+
 const FILE_ANNOUNCE_RE =
   /\b(baue|erstelle|erzeuge|generiere|exportiere)\b[^.!?\n]{0,100}\b(excel|xlsx|datei|word|docx|arbeitsmappe|workbook)\b/i;
 

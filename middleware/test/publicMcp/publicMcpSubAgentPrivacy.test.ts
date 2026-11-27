@@ -261,9 +261,9 @@ describe('public MCP endpoint — a domain tool sub-agent runs under the call pr
 
   it("masking inside the sub-agent does not count as masking the endpoint's own result", async (t) => {
     // The sub-agent masks its inner rows, then answers with `Error:` text, which
-    // the gate withholds instead of masking. `masked()` must still be false for
-    // that outer result: the endpoint refuses it, as it refuses any result that
-    // did not cross the boundary itself.
+    // the gate withholds instead of masking. `masked()` stays false for that
+    // outer result, so its text is not served: the caller gets the generic
+    // tool-error answer (#1937), never the sub-agent's words.
     const sub = recordingProvider([toolCall('hr_list'), text('Error: the HR system rejected the follow-up.')]);
     const tool = hrDomainTool(sub.provider, [['hr_list', () => Promise.resolve(ROWS)]]);
 
@@ -271,7 +271,9 @@ describe('public MCP endpoint — a domain tool sub-agent runs under the call pr
     if (!payload) return;
 
     assert.equal(JSON.stringify(sub.seen).includes(EMAIL), false, 'the inner rows were masked');
-    assert.match(rpcErrorMessage(payload) ?? '', /privacy masking did not run/);
+    assert.equal(payload['error'], undefined, 'a tool error is not a JSON-RPC error');
+    assert.match(callResultText(payload) ?? '', /^Tool `ask_odoo_hr` reported an error\./);
+    assert.doesNotMatch(JSON.stringify(payload), /HR system rejected/);
   });
 
   it('control — the sub-agent answer itself is masked before it reaches the caller', async (t) => {

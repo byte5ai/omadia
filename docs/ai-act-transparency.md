@@ -68,7 +68,7 @@ zusätzlich zur Textzeile eine maschinenlesbare Markierung.
 
 | Artefakt | Markierung | Codestelle |
 |---|---|---|
-| `.docx` | Custom Properties `AIGenerated` / `Generator` / `ProvenanceStandard`, dazu `description`, `keywords`, `category` | `packages/harness-plugin-office/src/provenance.ts` (#645) |
+| `.docx` | Custom Properties `AIGenerated` / `Generator` / `ProvenanceStandard`, dazu `description`, `keywords` (kein `category`) | `packages/harness-plugin-office/src/provenance.ts` (#645) |
 | `.xlsx` | nur Core Properties `description`, `keywords`, `category` | dito |
 | PNG-Diagramme | `iTXt`-Chunk mit Schlüssel `Provenance`, Wert `{"AIGenerated":true,"Generator":"Omadia","ProvenanceStandard":"EU AI Act Art. 50"}` | `packages/harness-diagrams/src/pngTextChunk.ts` (#646) |
 | Public Chat API | Response-Header `X-AI-Generated: true` und `provenance: { aiGenerated: true }` am NDJSON-`done`-Event | `packages/harness-channel-sdk/src/provenance.ts` (#647) |

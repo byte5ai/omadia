@@ -611,6 +611,23 @@ fine — `ctx.services.get(...)` mehrfach pro `activate()` ist OK.
 > das eigene System dort deklarieren. Ein fremdes System wirft
 > `KgEntityNamespaceError`; ohne Deklaration wirft jeder Entity- und
 > Fact-Write (ADR-0169).
+>
+> **`memoryStore@1` (ADR-0256)**: Lesen darf ein Plugin `core` und die
+> `_*`-Bäume, ändern nichts davon. Eigene Top-Level-Bäume unter `/memories`
+> deklariert es im Manifest, `permissions.memory.trees: ["pairings"]`; nur
+> die darf es lesen und ändern. Das erste Plugin, das einen deklarierten Baum
+> benutzt, besitzt ihn; jedes andere bekommt `MemoryPathError`. Private
+> Bäume (`orchestrators`, `agents`, `contexts`, `sessions`, `chat-sessions`,
+> `ui-prefs`), `core` und `_*`-Namen sind nicht deklarierbar.
+>
+> **`graphPool` (ADR-0255)**: Der geliehene Pool (nur mit `permissions.sql`
+> und Operator-Grant) gilt für die eigenen Tabellen. Ein Statement, das eine
+> Kernel-Tabelle nennt (`graph_nodes`, `memory_files`, `users`, …), wirft
+> `SqlTableRefusedError`, ebenso `$$`-Bodies, `DO`, `CREATE FUNCTION` und
+> Funktionen, die SQL-Text ausführen. Recall- und Kurationsdienste
+> (`contextRetriever`, `sessionBriefing`, die `bulk*`-Dienste,
+> `graphLifecycle`, …) sind kernel-only; `entityRefBus` erlaubt nur
+> `publish` (ADR-0257).
 
 > **Preview vs. Install**: Im Preview-Iframe ist `ctx.routes.register` ein
 > No-op-Stub — der Aufruf läuft durch ohne zu crashen, aber die Routes werden

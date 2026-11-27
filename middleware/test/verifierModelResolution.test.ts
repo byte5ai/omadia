@@ -31,6 +31,8 @@ function harness(config: Record<string, string>): Harness {
     secrets: { get: async () => 'sk-test' },
     services: {
       get: (name: string) => (name === 'knowledgeGraph' ? {} : undefined),
+      // No kernel pool: the verifier reads its own scope (legacy host path).
+      getOptional: () => undefined,
       provide: (name: string) => {
         provided.push(name);
         return () => {};
@@ -82,5 +84,43 @@ describe('#1079 — verifier model resolution', () => {
       ),
       h.logs.join('\n'),
     );
+  });
+});
+
+describe('#2240 — the verifier builds its provider from the kernel pool', () => {
+  function withPool(config: Record<string, string>, serves: readonly string[]) {
+    const asked: string[] = [];
+    const h = harness(config);
+    const services = h.ctx.services as unknown as Record<string, unknown>;
+    services['getOptional'] = (name: string) =>
+      name === 'llmProviderPool'
+        ? {
+            get: async (id: string) => {
+              asked.push(id);
+              return serves.includes(id)
+                ? { id, capabilities: {}, complete: async () => ({}) }
+                : undefined;
+            },
+          }
+        : undefined;
+    // The plugin's own scope holds nothing: the pool is the only source.
+    (h.ctx as unknown as { secrets: { get: () => Promise<undefined> } }).secrets = {
+      get: async () => undefined,
+    };
+    return { h, asked };
+  }
+
+  it('publishes verifier@1 on a provider only the kernel pool can build', async () => {
+    const { h, asked } = withPool({ verifier_enabled: 'true', llm_provider: 'anthropic' }, ['anthropic']);
+    await activate(h.ctx);
+    assert.deepEqual(asked, ['anthropic']);
+    assert.deepEqual(h.provided, ['verifier']);
+  });
+
+  it('refuses claude-cli even when the pool could build it', async () => {
+    const { h, asked } = withPool({ verifier_enabled: 'true', llm_provider: 'claude-cli' }, ['claude-cli']);
+    await activate(h.ctx);
+    assert.deepEqual(asked, []);
+    assert.deepEqual(h.provided, []);
   });
 });

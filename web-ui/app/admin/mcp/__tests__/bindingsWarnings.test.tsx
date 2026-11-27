@@ -68,7 +68,7 @@ describe('BindingsPane — #571 dead-binding warnings', () => {
 
     // Rendered from the locale catalog, not the server's English `message`.
     await waitFor(() =>
-      expect(screen.getByText(/No API key with this id exists yet/i)).toBeTruthy(),
+      expect(screen.getByText(/No API key with this id exists\./i)).toBeTruthy(),
     );
     // The server's raw message is deliberately NOT shown.
     expect(screen.queryByText('server english fallback')).toBeNull();
@@ -98,7 +98,7 @@ describe('BindingsPane — #571 dead-binding warnings', () => {
     await openBindingsTab();
 
     await waitFor(() => expect(screen.getByText('healthy')).toBeTruthy());
-    expect(screen.queryByText(/No API key with this id exists yet/i)).toBeNull();
+    expect(screen.queryByText(/No API key with this id exists\./i)).toBeNull();
     expect(screen.queryByText(/no longer registered/i)).toBeNull();
   });
 });
@@ -119,5 +119,36 @@ describe('BindingsPane — #1091 last-changed timestamp', () => {
     const meta = await screen.findByText(/last changed/i);
     expect(meta.textContent).toContain('4:17:47');
     expect(meta.textContent).not.toContain('14:17:47');
+  });
+});
+
+/** #1949 — a binding whose key cannot authenticate is not shown as "Active",
+ *  and the warning names the real reason instead of a typo. */
+describe('BindingsPane — #1949 dead keys', () => {
+  it('shows "Key inactive" and the revoked reason for a revoked key', async () => {
+    mockListBindings.mockResolvedValue({
+      bindings: [
+        binding({ keyId: 'revoked-key', warnings: [{ code: 'key_revoked', message: 'x' }] }),
+      ],
+    });
+
+    await openBindingsTab();
+
+    await waitFor(() => expect(screen.getByText(/was revoked/i)).toBeTruthy());
+    expect(screen.getByText('Key inactive')).toBeTruthy();
+    expect(screen.queryByText('Active')).toBeNull();
+    expect(screen.queryByText(/typo/i)).toBeNull();
+  });
+
+  it('shows the expired reason for an expired key', async () => {
+    mockListBindings.mockResolvedValue({
+      bindings: [
+        binding({ keyId: 'old-key', warnings: [{ code: 'key_expired', message: 'x' }] }),
+      ],
+    });
+
+    await openBindingsTab();
+
+    await waitFor(() => expect(screen.getByText(/has expired/i)).toBeTruthy());
   });
 });

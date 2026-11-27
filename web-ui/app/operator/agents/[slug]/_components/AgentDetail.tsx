@@ -111,6 +111,9 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<PluginCatalogEntryDto[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  // #1954 — bumped after a grant write in the MCP editor so the grant list
+  // on the same tab reloads.
+  const [grantsVersion, setGrantsVersion] = useState(0);
   /**
    * Remount key for PluginsDnd, bumped ONLY by the editor's own save path.
    *
@@ -357,8 +360,11 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
           plugins: () => pluginsPanel,
           tools: () => (
             <>
-              <AgentToolGrants slug={props.agent.slug} />
-              <AgentMcpServers slug={props.agent.slug} />
+              <AgentToolGrants slug={props.agent.slug} refreshKey={grantsVersion} />
+              <AgentMcpServers
+                slug={props.agent.slug}
+                onGrantsChanged={() => setGrantsVersion((v) => v + 1)}
+              />
             </>
           ),
           memory: () => <AgentContextMemory slug={props.agent.slug} />,

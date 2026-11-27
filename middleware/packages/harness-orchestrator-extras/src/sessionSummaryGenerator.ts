@@ -21,6 +21,7 @@
 
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
+import { renderUserLine } from './recordingTranscriptRender.js';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
 
@@ -119,7 +120,7 @@ export function createHaikuSessionSummaryGenerator(
       const transcript = turns
         .map(
           (t) =>
-            `[${t.time}]\nUser: ${truncate(t.userMessage, 600)}\nAssistant: ${truncate(t.assistantAnswer, 1200)}`,
+            `[${t.time}]\n${renderUserLine(t.userMessage, 600, 'User')}\nAssistant: ${truncate(t.assistantAnswer, 1200)}`,
         )
         .join('\n\n');
 

@@ -20,20 +20,40 @@
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createWriteStream } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, '..');
 
+// A failure ends the script with ONE line on stderr and a non-zero exit code,
+// never an uncaught exception: Node would print a stack trace with the
+// absolute staging path, and the Builder's tsc parser would fold its
+// indented frames into the last TypeScript error (#1739).
+function fail(message) {
+  // Node's own error messages may carry the absolute package path.
+  console.error(`✗ build-zip: ${message.split(pkgRoot).join('.')}`);
+  process.exit(1);
+}
+
 function readJson(p) {
-  return JSON.parse(readFileSync(p, 'utf8'));
+  let text;
+  try {
+    text = readFileSync(p, 'utf8');
+  } catch {
+    fail(`cannot read ${relative(pkgRoot, p)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    fail(`${relative(pkgRoot, p)} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
   if (res.status !== 0) {
-    throw new Error(`${cmd} ${args.join(' ')} failed with code ${res.status}`);
+    fail(`${cmd} ${args.join(' ')} failed with code ${res.status}`);
   }
 }
 
@@ -44,12 +64,12 @@ run('npx', ['tsc', '--project', './tsconfig.json'], pkgRoot);
 // --- 2) Metadata --------------------------------------------------------
 const pkg = readJson(join(pkgRoot, 'package.json'));
 if (!pkg.name || !pkg.version) {
-  throw new Error('package.json: name + version required');
+  fail('package.json: name + version required');
 }
 const entryRel = pkg.main ?? 'dist/index.js';
 const entryAbs = join(pkgRoot, entryRel);
 if (!existsSync(entryAbs) || !statSync(entryAbs).isFile()) {
-  throw new Error(`entry not found after build: ${entryRel}`);
+  fail(`entry not found after build: ${entryRel}`);
 }
 
 // --- 3) Stage runtime artefacts ----------------------------------------
@@ -82,7 +102,11 @@ const INCLUDE = [
 for (const entry of INCLUDE) {
   const src = join(pkgRoot, entry);
   if (!existsSync(src)) continue;
-  cpSync(src, join(stageDir, entry), { recursive: true });
+  try {
+    cpSync(src, join(stageDir, entry), { recursive: true });
+  } catch (err) {
+    fail(`cannot stage ${entry}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // --- 4) Zip --------------------------------------------------------------
@@ -95,7 +119,7 @@ const zipRes = spawnSync('zip', ['-r', '-q', zipPath, stageName], {
   stdio: 'inherit',
 });
 if (zipRes.status !== 0) {
-  throw new Error('zip CLI failed — auf Windows: 7z a oder Compress-Archive verwenden');
+  fail('zip CLI failed — auf Windows: 7z a oder Compress-Archive verwenden');
 }
 
 console.log(`✓ built ${zipPath}`);

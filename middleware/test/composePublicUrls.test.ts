@@ -103,3 +103,11 @@ describe('#1317 — compose stack sets the public URLs', () => {
     }
   });
 });
+
+describe('#1914 — the compose stack ships with stdio MCP servers off', () => {
+  it('sets MCP_STDIO_ENABLED=false in the defaults file, overridable from middleware/.env', () => {
+    assert.equal(loadDefaults().get('MCP_STDIO_ENABLED'), 'false');
+    const pinned = Object.keys(loadServices()['middleware']?.environment ?? {});
+    assert.equal(pinned.includes('MCP_STDIO_ENABLED'), false, 'environment: would beat middleware/.env');
+  });
+});

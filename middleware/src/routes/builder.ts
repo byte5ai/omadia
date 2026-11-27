@@ -269,7 +269,7 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
         const { renderManifestPreview } = await import(
           '../plugins/builder/manifestPreview.js'
         );
-        const yaml = await renderManifestPreview(draft.spec);
+        const yaml = await renderManifestPreview(draft.spec, draft.slots);
         res.json({ manifest: yaml });
       } catch (err) {
         sendError(res, err, 'builder.manifest_preview_failed');
@@ -470,6 +470,31 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
       // Spec 2042 §5.10 — a discarded draft's preview closes, and its draft
       // agent goes with it (`PreviewCache.onClosed`).
       await deps.preview?.previewCache.evict(email, id);
+      // #1790 — its test credentials leave the vault with it. A restored
+      // draft asks for them again; they are test values, not the plugin's.
+      await deps.preview?.previewSecretBuffer.drop(email, id);
+      res.status(204).end();
+    } catch (err) {
+      sendError(res, err, 'builder.delete_failed');
+    }
+  });
+
+  // ── DELETE /drafts/:id/permanent ────────────────────────────────────────
+  // #1790 — removes a draft from the deleted list for good. Only a draft that
+  // is already soft-deleted; an active one answers 404.
+  router.delete('/drafts/:id/permanent', async (req: Request, res: Response) => {
+    try {
+      const email = requireEmail(req);
+      const id = requireId(req);
+      const ok = await deps.store.hardDeleteDeleted(email, id);
+      if (!ok) {
+        res.status(404).json({
+          code: 'builder.draft_not_found',
+          message: `kein gelöschter Draft mit id '${id}'`,
+        });
+        return;
+      }
+      await deps.preview?.previewSecretBuffer.drop(email, id);
       res.status(204).end();
     } catch (err) {
       sendError(res, err, 'builder.delete_failed');

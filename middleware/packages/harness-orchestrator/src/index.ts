@@ -240,7 +240,10 @@ export type {
 } from './registry/agentToAgent.js';
 export {
   DEFAULT_MODEL_POLICY,
+  describeModelPolicyRuntime,
   isModelRef,
+  MODEL_POLICY_TOOL_INCOMPATIBLE,
+  ModelPolicyRefusedError,
   parseModelPolicy,
   parseModelRef,
   resolveModelPolicyRuntime,
@@ -248,6 +251,8 @@ export {
   validateModelPolicy,
 } from './registry/modelPolicy.js';
 export type {
+  ModelPolicyReadout,
+  ModelPolicyReadoutContext,
   ModelPolicyValidation,
   ModelPolicyValidationContext,
   ResolvedModelPolicy,
@@ -340,7 +345,12 @@ export {
   // W4 — attempts per `callTool`. The timeout hierarchy reasons about the
   // retry-inclusive worst case, so the real number has to be readable.
   MCP_CALL_MAX_ATTEMPTS,
+  mcpOutcomeUnknownError,
+  mcpAuthUnattendedError,
+  mcpInputUnattendedError,
+  auditCaller,
 } from './mcp/mcpClient.js';
+export { captureMcpStructured } from './mcp/mcpStructuredCapture.js';
 export type {
   DeprecatedMcpTransport,
   McpAuthProvider,
@@ -349,6 +359,9 @@ export type {
   McpCallLogEntry,
   McpCallObserver,
   McpCallOutcome,
+  McpCallOptions,
+  McpCallResult,
+  McpCallStatus,
   McpInputRequiredSidecar,
   McpManagerOptions,
   McpServerConfig,
@@ -482,6 +495,8 @@ export {
   MODEL_REFUSAL_NOTICE,
   localizeRefusalNotice,
   finalAnswerText,
+  // #2241 — the prompt-mask refusal delivered as answer text.
+  isPromptMaskBlockedNotice,
 } from './orchestrator.js';
 // #1500 — answer text across tool-loop iterations, preamble dropped.
 export { AnswerTextAccumulator } from './answerTextAccumulator.js';
@@ -621,7 +636,15 @@ export type { PrivacyTurnHandle, PromptMaskOptions } from './privacyHandle.js';
 // Verifier privacy hand-over: the continuation a held turn hands to the
 // answer-verifier wrapper (see privacyEgress.ts).
 export type { PrivacyEgressContinuation } from './privacyEgress.js';
-export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
+export {
+  INTERN_EXEMPT_OPERATIONS,
+  INTERN_EXEMPT_TOOLS,
+  PROMPT_MASKED_UPLOAD_TOOLS,
+  isInternExemptCall,
+  isInternExemptTool,
+  isPromptMaskedUploadCall,
+  runsOnModelInput,
+} from './privacyInternPolicy.js';
 // Tool errors on their way to a model: the one helper every dispatch seam
 // routes a thrown exception or a returned `Error:` text through. The MCP
 // connect prompt passes on per-dispatch provenance (`McpAuthPromptMint`).
@@ -693,6 +716,13 @@ export type {
   CliUsage,
 } from './cliChatAgent.js';
 export { resolveCliSpawnTimeoutMs, CLI_SPAWN_TIMEOUT_ENV_KEY } from './cliChatAgent.js';
+/** #2241 — a CLI privacy refusal delivered as answer text. */
+export { isCliPrivacyRefusal } from './cliChatAgent.js';
+export type {
+  CliTurnPrivacy,
+  CliReleasedAnswer,
+  CliPrivacyReceiptFields,
+} from './cliTurnPrivacy.js';
 /** #1085 — the binary name the kernel's `resolveCliBin` is asked to resolve. */
 export { DEFAULT_CLI_BINARY } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
@@ -1113,3 +1143,15 @@ export * from './discretion/toolFlow.js';
 export * from './discretion/labelledProcessMemory.js';
 // #1881 — a deleted agent's memory moves with its discretion labels.
 export { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
+
+// #1983 / #1987 — stored form of transcript entries (marker + chunking).
+export {
+  RECORDING_TRANSCRIPT_MARKER,
+  TRANSCRIPT_CHUNK_CHARS,
+  chunkTranscriptText,
+  markRecordingText,
+  replayUserLine,
+} from './recordingTranscript.js';
+
+// #1976 — is this turn one that can carry an upload (channel turn)?
+export { turnMayCarryUploads } from './attachmentToolAvailability.js';

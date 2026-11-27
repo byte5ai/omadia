@@ -66,6 +66,9 @@ function ImportBundleModal({
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [dragHover, setDragHover] = useState(false);
+  // #1787/#1811 — an import that replaced or kept an installed plugin
+  // version says so before the dialog moves on.
+  const [done, setDone] = useState<ImportBundleSuccess | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const onSelectFile = useCallback((picked: File | null) => {
@@ -90,7 +93,8 @@ function ImportBundleModal({
     setErrorCode(null);
     try {
       const result = await importProfileBundle(file, { overwrite });
-      onImported(result);
+      if (pluginNotices(result).length > 0) setDone(result);
+      else onImported(result);
     } catch (err) {
       if (err instanceof ApiError) {
         try {
@@ -99,7 +103,10 @@ function ImportBundleModal({
             message?: string;
             diverged_assets?: string[];
           };
-          if (body.code === 'bundle.import_conflict') {
+          if (body.code === 'quota.exceeded') {
+            setErrorCode(body.code);
+            setError(t('errors.quotaExceeded'));
+          } else if (body.code === 'bundle.import_conflict') {
             setErrorCode(body.code);
             const list = body.diverged_assets?.join(', ') ?? '';
             setError(t('errors.conflict', { assets: list }));
@@ -215,6 +222,24 @@ function ImportBundleModal({
           </label>
         ) : null}
 
+        {done ? (
+          <div className="mt-3 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/6 p-3 text-xs text-[color:var(--fg)]">
+            <ul className="flex flex-col gap-1">
+              {pluginNotices(done).map((p) => (
+                <li key={p.id}>
+                  {p.replaced_version !== undefined
+                    ? t('notice.replaced', {
+                        id: p.id,
+                        from: p.replaced_version,
+                        to: p.version,
+                      })
+                    : t('notice.kept', { id: p.id, version: p.version })}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         {error ? (
           <div className="mt-3 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-3 text-xs text-[color:var(--danger)]">
             <p>{error}</p>
@@ -230,17 +255,32 @@ function ImportBundleModal({
           <Button variant="secondary" onClick={onClose}>
             {t('modal.cancel')}
           </Button>
-          <Button
-            variant="primary"
-            onClick={() => void onSubmit()}
-            disabled={!file || busy}
-            busy={busy}
-            busyLabel={t('modal.importing')}
-          >
-            {t('modal.import')}
-          </Button>
+          {done ? (
+            <Button variant="primary" onClick={() => onImported(done)}>
+              {t('notice.continue')}
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              onClick={() => void onSubmit()}
+              disabled={!file || busy}
+              busy={busy}
+              busyLabel={t('modal.importing')}
+            >
+              {t('modal.import')}
+            </Button>
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+/** Plugins whose installed version the import replaced or kept. */
+function pluginNotices(
+  result: ImportBundleSuccess,
+): ImportBundleSuccess['plugins_installed'] {
+  return result.plugins_installed.filter(
+    (p) => p.replaced_version !== undefined || p.kept_installed === true,
   );
 }

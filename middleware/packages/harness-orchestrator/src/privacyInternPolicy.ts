@@ -33,6 +33,10 @@
  *   - `find_free_slots` / `book_meeting` — calendar data.
  *   - every domain/plugin data tool (`dynamics_*`, `odoo_*`, `enrich_company`,
  *     web search, …).
+ *   - `query_dataset` `query_rows` — dataset cells. Only its metadata
+ *     operations are exempt ({@link INTERN_EXEMPT_OPERATIONS}).
+ *   - `transcribe_recording` — prompt-masked, not exempt
+ *     ({@link PROMPT_MASKED_UPLOAD_TOOLS}).
  */
 export const INTERN_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   // Agent working memory (Anthropic `memory_20250818`).
@@ -53,14 +57,109 @@ export const INTERN_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   // serves only keys a channel adapter stated as uploads in THIS conversation,
   // never Office/Diagrams output or another chat's file.
   'read_attachment',
+  // #1967 — files the agent produced itself. The result is the artifact's
+  // own metadata (`{kind, url, cacheHit, title}` for a diagram; file name,
+  // media type, size, row count, renamed sheets and url for an office file),
+  // never a cell value or an external payload. Interning it made the shield
+  // render the signed URL as an "original data" table next to the image.
+  'render_diagram',
+  'create_xlsx',
+  'create_docx',
+]);
+
+/**
+ * Exempt tools whose handler still runs on the user's restored values
+ * (#1544), like every guarded tool: what they produce goes to the user as a
+ * file or an image, so it must carry the real names, not the placeholders
+ * the model wrote. Every other exempt tool runs on the model's input as
+ * written (memory, stored processes, attachments keep placeholders).
+ */
+const RESTORED_INPUT_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
+  'render_diagram',
+  'create_xlsx',
+  'create_docx',
+]);
+
+/**
+ * ADR-0197 — exemptions per tool OPERATION. A tool that both lists metadata
+ * and reads rows is exempt only for the metadata operations; the row reads
+ * stay interned. `field` names the input property that carries the
+ * operation. An input without a matching operation is not exempt.
+ */
+export const INTERN_EXEMPT_OPERATIONS: ReadonlyMap<
+  string,
+  { readonly field: string; readonly operations: ReadonlySet<string> }
+> = new Map([
+  // #1866 — the user's own dataset names, file names and column names/types.
+  // `get_schema` returns no sample value (`QueryDatasetTool`); `query_rows`
+  // reads cells and stays interned.
+  [
+    'query_dataset',
+    { field: 'query', operations: new Set(['list_datasets', 'get_schema']) },
+  ],
 ]);
 
 /**
  * True when a tool's raw result must be handed to the model in clear, i.e.
  * the Privacy Shield must NOT intern it. See {@link INTERN_EXEMPT_TOOLS}.
+ * Tool-level only; a dispatch seam that has the call's input asks
+ * {@link isInternExemptCall}, which also knows per-operation exemptions.
  */
 export function isInternExemptTool(toolName: string): boolean {
   return INTERN_EXEMPT_TOOLS.has(toolName);
+}
+
+/**
+ * True when this call's result reaches the model in clear: the tool is
+ * exempt as a whole, or the operation its input names is exempt
+ * ({@link INTERN_EXEMPT_OPERATIONS}).
+ */
+export function isInternExemptCall(toolName: string, input: unknown): boolean {
+  if (INTERN_EXEMPT_TOOLS.has(toolName)) return true;
+  const rule = INTERN_EXEMPT_OPERATIONS.get(toolName);
+  if (rule === undefined || typeof input !== 'object' || input === null) return false;
+  const operation = (input as Record<string, unknown>)[rule.field];
+  return typeof operation === 'string' && rule.operations.has(operation);
+}
+
+/**
+ * True when the tool's handler gets the input exactly as the model wrote it
+ * (placeholders kept) instead of the user's restored values. Only exempt
+ * tools whose output stays inside the agent's own state qualify; see
+ * {@link RESTORED_INPUT_EXEMPT_TOOLS}.
+ */
+export function runsOnModelInput(toolName: string): boolean {
+  return INTERN_EXEMPT_TOOLS.has(toolName) && !RESTORED_INPUT_EXEMPT_TOOLS.has(toolName);
+}
+
+/**
+ * ADR-0198 — tools whose result is text of the user's own upload and reaches
+ * the model through prompt masking (PII spans replaced by the turn's
+ * surrogates, the rest readable) instead of being interned to a digest.
+ * Maps the tool to the input field that names the upload's storage key.
+ */
+export const PROMPT_MASKED_UPLOAD_TOOLS: ReadonlyMap<string, string> = new Map([
+  // #1985 — a transcript of a recording the user uploaded in this turn.
+  ['transcribe_recording', 'storage_key'],
+]);
+
+/**
+ * True when this call's result is prompt-masked rather than interned: the
+ * tool is in {@link PROMPT_MASKED_UPLOAD_TOOLS} AND the storage key it read
+ * is one of the uploads of the current turn (`turnUploadKeys`, from the
+ * adapter-stated `storedAttachments`, ADR-0178). A key from anywhere else — an earlier
+ * chat, another user's file — stays interned (#1960).
+ */
+export function isPromptMaskedUploadCall(
+  toolName: string,
+  input: unknown,
+  turnUploadKeys: ReadonlySet<string> | undefined,
+): boolean {
+  const field = PROMPT_MASKED_UPLOAD_TOOLS.get(toolName);
+  if (field === undefined || turnUploadKeys === undefined) return false;
+  if (typeof input !== 'object' || input === null) return false;
+  const key = (input as Record<string, unknown>)[field];
+  return typeof key === 'string' && turnUploadKeys.has(key);
 }
 
 /**

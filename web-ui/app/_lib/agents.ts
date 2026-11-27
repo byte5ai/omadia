@@ -571,6 +571,10 @@ export interface ModelPolicyDto {
   activeProvider: string | null;
   /** An explicit primary on another provider that the host cannot run there. */
   deferredProvider?: string;
+  /** #1877 — the primary's provider cannot be used now (no key, removed). */
+  primaryUnavailable?: string;
+  /** #1871 — a stored primary/fallback on a provider that cannot run tool turns. */
+  toolIncompatible?: string;
   vision: { primary?: boolean | null; fallback?: boolean | null };
 }
 
@@ -586,6 +590,8 @@ export interface SetModelPolicyResponse {
   policy: ModelPolicy;
   vision: { primary?: boolean; fallback?: boolean };
   deferredProvider?: string;
+  primaryUnavailable?: string;
+  toolIncompatible?: string;
 }
 
 /**
@@ -918,6 +924,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   // #1033 — the model-policy routes 503 with this while the catalogue is
   // not wired (no DATABASE_URL / orchestrator not active).
   'model_policy_unavailable',
+  // #1871 — the policy names a provider that cannot run an agent's tool
+  // turns (the subscription CLI).
+  'model_policy_tool_incompatible',
   // #914 — the agent identity routes. Listed here rather than in a second
   // catalogue so one page needs one mapping: the identity section renders
   // `detailErrors.<code>` exactly like every other operator-agents surface.

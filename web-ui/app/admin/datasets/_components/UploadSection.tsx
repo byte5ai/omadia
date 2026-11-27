@@ -6,6 +6,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { uploadDataset, type DatasetUploadResponse } from '../../../_lib/api';
+import { ImportReceipt } from './ImportReceipt';
 import {
   Field,
   inputCls,
@@ -46,6 +47,11 @@ export function UploadSection({
     if (!file) return;
     setError(null);
     setReceipt(null);
+    // #1846 — refuse an over-limit file before sending 25+ MB for nothing.
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setError(t('errors.tooLarge', { maxMb: MAX_UPLOAD_MB }));
+      return;
+    }
     setUploading(true);
     try {
       const result = await uploadDataset(file, name);
@@ -108,29 +114,7 @@ export function UploadSection({
         </p>
       </section>
 
-      {receipt !== null && (
-        <section className="mb-8 rounded-lg border border-[color:var(--success)]/50 bg-[color:var(--success)]/8 p-4 text-sm">
-          <p className="font-semibold text-[color:var(--success)]">
-            {t('receipt.imported', {
-              rows: format.number(receipt.dataset.rowCount),
-            })}
-          </p>
-          <p className="mt-1 text-[color:var(--fg-muted)]">
-            {t('receipt.privacyScan', {
-              scanned: format.number(receipt.privacyScan.scannedCells),
-              masked: format.number(receipt.privacyScan.maskedCells),
-            })}
-          </p>
-          {receipt.truncation.truncatedCellCount > 0 && (
-            <p className="mt-1 text-[color:var(--warning)]">
-              {t('receipt.truncated', {
-                cells: format.number(receipt.truncation.truncatedCellCount),
-                columns: receipt.truncation.truncatedColumns.join(', '),
-              })}
-            </p>
-          )}
-        </section>
-      )}
+      {receipt !== null && <ImportReceipt receipt={receipt} />}
 
       {error !== null && (
         <p className="mb-6 text-sm text-[color:var(--danger)]">{error}</p>

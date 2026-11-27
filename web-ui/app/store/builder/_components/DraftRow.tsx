@@ -9,6 +9,7 @@ import { ArrowRight, Check, Pencil, Trash2, Undo2, X } from 'lucide-react';
 import { ApiError } from '../../../_lib/api';
 import {
   deleteBuilderDraft,
+  purgeBuilderDraft,
   restoreBuilderDraft,
   updateBuilderDraft,
 } from '../../../_lib/api';
@@ -78,6 +79,19 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
     startTransition(async () => {
       try {
         await deleteBuilderDraft(draft.id);
+        router.refresh();
+      } catch (err) {
+        setError(humanizeError(err));
+      }
+    });
+  }, [draft.id, draft.name, router, t]);
+
+  const onPurge = useCallback(() => {
+    if (!confirm(t('confirmPurge', { name: draft.name }))) return;
+    setError(null);
+    startTransition(async () => {
+      try {
+        await purgeBuilderDraft(draft.id);
         router.refresh();
       } catch (err) {
         setError(humanizeError(err));
@@ -215,6 +229,18 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
           >
             <Undo2 className="size-3.5" aria-hidden />
             {t('restore')}
+          </Button>
+        ) : null}
+        {deleted ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onPurge}
+            disabled={pending}
+            className="text-[11px] font-semibold text-[color:var(--fg-muted)] hover:text-[color:var(--danger)]"
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+            {t('purge')}
           </Button>
         ) : (
           <>

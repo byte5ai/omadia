@@ -626,7 +626,7 @@ export const ConfigSchema = z.object({
 
   // Diagram rendering (Kroki + Tigris/SeaweedFS). When all required fields are
   // present, the orchestrator exposes `render_diagram` and the middleware
-  // mounts the HMAC-signed image-proxy at /diagrams/<key>. Missing values
+  // mounts the HMAC-signed image-proxy at /diagrams/dl/<key>. Missing values
   // disable the feature cleanly — the rest of the middleware is unaffected.
   KROKI_BASE_URL: optionalNonEmpty(z.string().url()),
   DIAGRAM_URL_SECRET: optionalNonEmpty(z.string().min(32)),
@@ -636,7 +636,9 @@ export const ConfigSchema = z.object({
   // first upload.
   DATASET_LINK_KEY_SECRET: optionalNonEmpty(z.string().min(16)),
   DIAGRAM_PUBLIC_BASE_URL: optionalNonEmpty(z.string().url()),
-  DIAGRAM_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(900),
+  // #1975 — 3600 s, the same default the Store install takes from the plugin
+  // manifests and ADR-0137 states.
+  DIAGRAM_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(3600),
   // Source-spec cap. Must accommodate base64-inlined brand assets (a 150 kB
   // PNG becomes ~200 kB base64), plus the normal Vega-Lite / Graphviz body.
   // Kroki's own POST-body limit is ~10 MB, so 1 MB is defensively low.
