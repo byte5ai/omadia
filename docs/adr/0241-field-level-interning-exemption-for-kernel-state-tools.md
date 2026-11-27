@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0297](0297-agent-triggers-run-in-the-persons-zone-and-confirm-readably.md) (the agent's trigger tools join `INTERN_FIELD_EXEMPT_TOOLS`)
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (wave 5, W22-23; owner question of #1768 decided after

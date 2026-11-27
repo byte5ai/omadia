@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — agent triggers in the person's zone, readable trigger confirmations, routine run-now (#2339, ADR-0297) (2026-11-27)
+
+Live test W37: a `wake_at` with a `post` template said `aktuelle Uhrzeit: 10:47` at 11:47 in
+Berlin, because a trigger without an own zone rendered `{{now}}` in UTC. An agent trigger now
+takes the person's zone from the turn, else `PROACTIVE_TIMEZONE` (`TriggerEnvelope.timezone`);
+a `wake_every` cron without `timezone` runs in it too. The tool answer names the zone and, for
+`wake_at`, `atLocal`. The trigger tools' answers no longer go to the model as a privacy-shield
+digest: they get ADR-0241's field-level exemption (id, times, state and cost in clear; purpose,
+last outcome, pause reason and target label withheld), so the agent can tell the person when it
+fires. `manage_routine` gains `run_now`: the trigger route's checks (owner, active, no run in
+flight, agent, chat agent) answered at once, then the routine's own prompt runs in the
+background, detached from the asking turn. No migration.
+
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of
