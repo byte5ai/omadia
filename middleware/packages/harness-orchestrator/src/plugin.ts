@@ -697,8 +697,13 @@ export async function activate(
     PROCESS_MEMORY_SERVICE_NAME,
   );
 
-  // Optional services — graceful degrade when absent
-  const embeddingClient =
+  // Optional services — graceful degrade when absent.
+  // #1815 / ADR-0194 — the embedding client is resolved on every use, never
+  // captured here: the active `embeddingClient@1` provider can be
+  // reactivated, switched or uninstalled while this plugin stays up, and a
+  // captured reference would be the withdrawn one (the kernel refuses calls
+  // through it) until the next restart.
+  const resolveEmbeddingClient = (): EmbeddingClient | undefined =>
     ctx.services.get<EmbeddingClient>('embeddingClient');
   const contextRetriever =
     ctx.services.get<ContextRetriever>('contextRetriever');
@@ -1301,7 +1306,7 @@ export async function activate(
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),
     ...(excerptExtractor ? { excerptExtractor } : {}),
-    ...(embeddingClient ? { embeddingClient } : {}),
+    embeddingClient: resolveEmbeddingClient,
     ...(microsoft365 ? { microsoft365 } : {}),
     ...(verifierBundle ? { verifierBundle } : {}),
     ...(nudgeStateStore ? { nudgeStateStore } : {}),
@@ -1531,7 +1536,7 @@ export async function activate(
   }
 
   ctx.log(
-    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, palaiaExcerpt=${excerptExtractor ? 'on' : 'off'}, autoPromote=${autoPromote ? `on@${autoPromoteThreshold.toFixed(2)}` : 'off'}, durableAutoPromote=${autoPromoteDurableMinSignificance !== undefined ? `on@${autoPromoteDurableMinSignificance.toFixed(2)}` : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
+    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, palaiaExcerpt=${excerptExtractor ? 'on' : 'off'}, autoPromote=${autoPromote ? `on@${autoPromoteThreshold.toFixed(2)}` : 'off'}, durableAutoPromote=${autoPromoteDurableMinSignificance !== undefined ? `on@${autoPromoteDurableMinSignificance.toFixed(2)}` : 'off'}, embeddingClient=live, now ${resolveEmbeddingClient() ? 'on' : 'off'}, responseGuard=late-bound)`,
   );
 
   return {

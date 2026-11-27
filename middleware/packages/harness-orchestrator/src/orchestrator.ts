@@ -67,7 +67,7 @@ import {
   type ScreenOutcome,
 } from './securityScreener.js';
 import { recordScreenOutcome } from './securityScreenMetrics.js';
-import type { EmbeddingClient } from '@omadia/embeddings';
+import type { EmbeddingClientSource } from '@omadia/embeddings';
 import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
@@ -909,7 +909,7 @@ export interface OrchestratorOptions {
    * `search_turns_semantic` operation is available (embedding-based turn
    * recall). Without a client, the tool still works for FTS + entity lookups.
    */
-  embeddingClient?: EmbeddingClient;
+  embeddingClient?: EmbeddingClientSource;
   /**
    * Optional. When set, every successful turn triggers a fire-and-forget
    * Haiku-based fact extraction; the resulting `Fact` nodes land in the

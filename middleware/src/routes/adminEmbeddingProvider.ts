@@ -9,14 +9,16 @@ import { z } from 'zod';
 import type { EmbeddingGateStatus } from '../health/kgHealth.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import {
+  readDedupThresholdProvenance,
+  reconcileRecommendedDedupThreshold,
+} from './embeddingDedupThreshold.js';
+import {
   AUTO_MIGRATE_CONFIG_KEY,
-  DEDUP_THRESHOLD_CONFIG_KEY,
   EMBEDDING_CLIENT_CAPABILITY,
   GRAPH_TENANT_ID_CONFIG_KEY,
   KG_NEON_ID,
   describeProviderConfig,
   isKeylessProvider,
-  recommendedDedupThreshold,
   type EmbeddingProviderCatalog,
 } from './embeddingProviderCatalog.js';
 
@@ -330,12 +332,11 @@ async function readRecordedModel(
   };
 }
 
-/** Installed plugins whose manifest publishes `embeddingClient@1`. */
-function installedProviderIds(deps: AdminEmbeddingProviderDeps): string[] {
+/** Catalog plugins whose manifest publishes `embeddingClient@1`. */
+function catalogProviderIds(deps: AdminEmbeddingProviderDeps): string[] {
   const wanted = parseCapabilityRef(EMBEDDING_CLIENT_CAPABILITY);
   const out: string[] = [];
   for (const entry of deps.catalog.list()) {
-    if (!deps.installedRegistry.has(entry.plugin.id)) continue;
     const publishes = entry.plugin.provides.some((rawProv) => {
       const ref = tryParseCapability(rawProv);
       return ref !== undefined && ref.name === wanted.name && ref.major === wanted.major;
@@ -343,6 +344,30 @@ function installedProviderIds(deps: AdminEmbeddingProviderDeps): string[] {
     if (publishes) out.push(entry.plugin.id);
   }
   return out.sort();
+}
+
+/** Installed plugins whose manifest publishes `embeddingClient@1`. */
+function installedProviderIds(deps: AdminEmbeddingProviderDeps): string[] {
+  return catalogProviderIds(deps).filter((id) => deps.installedRegistry.has(id));
+}
+
+/**
+ * #1814 — providers the store offers that are not installed yet. "Switch
+ * provider" only lists installed ones, and a second provider cannot be
+ * installed while one is active, so the page names these together with the
+ * steps (uninstall the current one, install, reactivate) instead of sending
+ * the operator to a store that refuses the install.
+ */
+function installableProviders(
+  deps: AdminEmbeddingProviderDeps,
+): Array<{ pluginId: string; label: string; keyless: boolean }> {
+  return catalogProviderIds(deps)
+    .filter((id) => !deps.installedRegistry.has(id))
+    .map((id) => ({
+      pluginId: id,
+      label: deps.catalog.get(id)?.plugin.name ?? id,
+      keyless: isKeylessProvider(id),
+    }));
 }
 
 /** A malformed `provides:` entry is a manifest bug, not a reason to hide every
@@ -460,6 +485,11 @@ export type CapabilityGapReason =
   | 'missing-credentials'
   /** The keyless adapter is active and its weights are incomplete. */
   | 'missing-weights'
+  /** #1857 — the keyless adapter is the only embedding provider installed and
+   *  its weights are complete, but it activated before they were on disk. It
+   *  decides whether to publish in `activate()`, so the one missing step is
+   *  "Reactivate provider". No sibling exists that could hold the service. */
+  | 'weights-ready-reactivate'
   /** Weights are present, yet nothing was published — the adapter stood down
    *  because a sibling already held the service, or its activation failed. */
   | 'not-published';
@@ -484,6 +514,7 @@ function describeCapabilityGap(
   deps: AdminEmbeddingProviderDeps,
   activeProviderIdValue: string | null,
   localModel: ReturnType<LocalEmbeddingModelFetcher['status']> | null,
+  installedProviderCount: number,
 ): CapabilityGapReason | null {
   if (deps.getEmbeddingClient() !== undefined) return null;
   if (activeProviderIdValue === null) return 'no-active-provider';
@@ -492,7 +523,13 @@ function describeCapabilityGap(
     // paths, so its absence here means the adapter never activated — not that
     // its weights are fine.
     if (localModel === null) return 'not-published';
-    return localModel.missingFiles.length > 0 ? 'missing-weights' : 'not-published';
+    if (localModel.missingFiles.length > 0) return 'missing-weights';
+    // #1857 — a sibling can only hold the service when a second provider is
+    // installed. With the keyless adapter alone, complete weights and no
+    // client mean it activated before the download finished: reactivating it
+    // is the whole fix, and blaming a second adapter sends the operator to
+    // uninstall one that does not exist.
+    return installedProviderCount <= 1 ? 'weights-ready-reactivate' : 'not-published';
   }
   return 'missing-credentials';
 }
@@ -513,77 +550,6 @@ function describeWidthCollision(
     columnsEmpty:
       corpus.storedVectorTotal === null ? null : corpus.storedVectorTotal === 0,
   };
-}
-
-/** What the reactivation did about the provider-relative dedup threshold. */
-export interface DedupThresholdOutcome {
-  readonly applied: boolean;
-  readonly value: number | null;
-  readonly previous: string | null;
-  readonly reason:
-    | 'applied'
-    /** The operator already put a value in the store — never overwritten. */
-    | 'operator-set'
-    /** This adapter makes no recommendation; the KG default stands. */
-    | 'no-recommendation'
-    /** No knowledge-graph installed, so there is nothing to configure. */
-    | 'no-knowledge-graph';
-}
-
-/**
- * Beta round 5 — carry the active adapter's recommended
- * `process_dedup_threshold` into the knowledge-graph's config.
- *
- * PROVENANCE IS THE WHOLE POINT. A value the operator typed is a decision and
- * is never touched; the *absence* of a key is the KG's compiled-in 0.90, which
- * is not a decision about this model at all — it is a default that predates
- * the model being installable. So this writes only into that absence.
- *
- * WHY IT DOES NOT TAKE EFFECT IMMEDIATELY. `process_dedup_threshold` is read
- * once, in the knowledge-graph plugin's `activate()`, and re-activating that
- * plugin calls `graphPool.end()` on the pool ~40 subsystems share (see the
- * module header). Persisting the value and saying "on the next restart" is
- * therefore the honest outcome; silently reactivating the graph to make one
- * number live would be a far worse trade.
- */
-async function applyRecommendedDedupThreshold(
-  deps: AdminEmbeddingProviderDeps,
-  providerId: string,
-): Promise<DedupThresholdOutcome> {
-  const recommended = recommendedDedupThreshold(providerId);
-  if (recommended === null) {
-    return { applied: false, value: null, previous: null, reason: 'no-recommendation' };
-  }
-  const entry = deps.installedRegistry.get(KG_NEON_ID);
-  if (!entry) {
-    return {
-      applied: false,
-      value: recommended,
-      previous: null,
-      reason: 'no-knowledge-graph',
-    };
-  }
-  const config = entry.config ?? {};
-  const stored = config[DEDUP_THRESHOLD_CONFIG_KEY];
-  // An empty string is the Store UI's way of spelling "not set" — treating it
-  // as an operator decision would leave every install that once opened the
-  // form stuck on the wrong scale.
-  const storedText = typeof stored === 'string' ? stored.trim() : stored;
-  const isSet =
-    storedText !== undefined && storedText !== null && storedText !== '';
-  if (isSet) {
-    return {
-      applied: false,
-      value: recommended,
-      previous: String(storedText),
-      reason: 'operator-set',
-    };
-  }
-  await deps.installedRegistry.register({
-    ...entry,
-    config: { ...config, [DEDUP_THRESHOLD_CONFIG_KEY]: String(recommended) },
-  });
-  return { applied: true, value: recommended, previous: null, reason: 'applied' };
 }
 
 export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderDeps): Router {
@@ -644,6 +610,7 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     const gateStatus = deps.getGateStatus() ?? null;
     return {
       providers,
+      installableProviders: installableProviders(deps),
       activeProviderId: activeId,
       activeModel: activeMetadata,
       // The registry's CURRENT client vs. the model the last gate verdict was
@@ -662,6 +629,7 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
         deps,
         activeId,
         deps.getLocalModelFetcher?.()?.status() ?? null,
+        providerIds.length,
       ),
       // The width collision as its own fact — it does not stop the capability
       // from being published, it stops the WRITES.
@@ -672,6 +640,9 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       storedVectorTotal: corpus.storedVectorTotal,
       gate: gateStatus,
       autoMigrateVectorColumns: autoMigrateEnabled(deps.installedRegistry),
+      // #1818 — where the KG's dedup threshold came from (default, omadia's
+      // recommendation for a named provider, or the operator).
+      dedupThresholdProvenance: readDedupThresholdProvenance(deps.installedRegistry),
       knowledgeGraphInstalled: deps.installedRegistry.has(KG_NEON_ID),
       graphAvailable: pool !== undefined,
       // The tenant every number above was priced against. Reported so a
@@ -914,9 +885,17 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     }
 
     // Only once the provider is genuinely serving: a threshold tuned for a
-    // vector space nothing writes into would be noise.
+    // vector space nothing writes into would be noise. #1818 — written with
+    // its provenance, so a later switch or uninstall can replace or remove
+    // omadia's own value while an operator value stays.
+    //
+    // WHY IT DOES NOT TAKE EFFECT IMMEDIATELY. `process_dedup_threshold` is
+    // read once, in the knowledge-graph plugin's `activate()`, and
+    // re-activating that plugin ends the pool ~40 subsystems share (module
+    // header). Persisting and saying "on the next restart" is the honest
+    // outcome.
     const dedupThreshold = capabilityPublished
-      ? await applyRecommendedDedupThreshold(deps, pluginId)
+      ? await reconcileRecommendedDedupThreshold(deps.installedRegistry, pluginId)
       : null;
 
     res.json({
@@ -1063,9 +1042,18 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       return;
     }
 
+    // #1818 — the threshold follows the model on a switch too (ADR-0080):
+    // the target's recommendation replaces omadia's previous one, a target
+    // without one removes it, and an operator value stays.
+    const dedupThreshold = await reconcileRecommendedDedupThreshold(
+      deps.installedRegistry,
+      pluginId,
+    );
+
     res.json({
       ok: true,
       switchedTo: pluginId,
+      dedupThreshold,
       // Say whether the gate actually re-ran. A switch against a deployment
       // with no Postgres knowledge-graph is a legitimate success, but it is a
       // different success from one whose vector columns were just re-gated.

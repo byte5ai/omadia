@@ -781,6 +781,58 @@ describe('memoryStore provider selection', () => {
     assert.equal(reg.get(MEMORY_ID), undefined);
   });
 
+  it('#1834: a UI switch to inmemory survives every later boot, not just one', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    // Operator saved "inmemory" on the running Postgres provider's entry.
+    await seedActive(reg, MEMORY_PG_ID, { memory_backend: 'inmemory' });
+    const cfg = memCfg({ databaseUrl: 'postgres://x' });
+    await bootstrapMemoryFromEnv(memDeps(reg, cfg));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'first boot swaps');
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+    assert.equal(
+      reg.get(MEMORY_ID)?.config?.['memory_backend'],
+      'inmemory',
+      'the choice is carried over onto the provider the boot installed',
+    );
+    // Second boot, nothing changed: the choice still wins over DATABASE_URL.
+    await bootstrapMemoryFromEnv(memDeps(reg, cfg));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'second boot keeps it');
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+  });
+
+  it('#1834: a UI switch to postgres survives later boots against an inmemory env', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID, { memory_backend: 'postgres' });
+    const cfg = memCfg({ backend: 'inmemory', databaseUrl: 'postgres://x' });
+    await bootstrapMemoryFromEnv(memDeps(reg, cfg));
+    await bootstrapMemoryFromEnv(memDeps(reg, cfg));
+    assert.equal(reg.get(MEMORY_PG_ID)?.status, 'active');
+    assert.equal(reg.get(MEMORY_PG_ID)?.config?.['memory_backend'], 'postgres');
+    assert.equal(reg.get(MEMORY_ID), undefined);
+  });
+
+  it('#1834: a saved postgres choice is kept across a DATABASE_URL-less fallback boot', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_PG_ID, { memory_backend: 'postgres' });
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({})));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'falls back without a DB');
+    assert.equal(
+      reg.get(MEMORY_ID)?.config?.['memory_backend'],
+      'postgres',
+      'the operator choice is not lost by the fallback',
+    );
+    await bootstrapMemoryFromEnv(
+      memDeps(reg, memCfg({ databaseUrl: 'postgres://x' })),
+    );
+    assert.equal(reg.get(MEMORY_PG_ID)?.status, 'active', 'back once DB is set');
+  });
+
+  it('no saved choice → no memory_backend key is written', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({})));
+    assert.equal(reg.get(MEMORY_ID)?.config?.['memory_backend'], undefined);
+  });
+
   it('catch-all never auto-installs the opt-in memory-postgres', async () => {
     const reg = new InMemoryInstalledRegistry();
     await seedActive(reg, MEMORY_ID);

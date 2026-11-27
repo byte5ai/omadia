@@ -21,7 +21,10 @@
  * Failure semantics: never throws. Errors logged on stderr.
  */
 
-import type { EmbeddingClient } from '@omadia/embeddings';
+import {
+  currentEmbeddingClient,
+  type EmbeddingClientSource,
+} from './liveEmbeddingClient.js';
 import type {
   GraphNode,
   KnowledgeGraph,
@@ -34,7 +37,8 @@ export interface MergeCandidateDetectorDeps {
   graph: KnowledgeGraph;
   /** Optional. Without an embedder the detector can't find candidates;
    *  `detectFor` / `detectForExcerpt` return 0/0. */
-  embeddingClient?: EmbeddingClient;
+  /** Resolved per call (#1815) — see `liveEmbeddingClient.ts`. */
+  embeddingClient?: EmbeddingClientSource;
   /** Cosine similarity floor for MK-level flagging. Default 0.95. */
   minSimilarity?: number;
   /** Slice 12 — Cosine similarity floor for Excerpt-level flagging.
@@ -92,7 +96,8 @@ export function createMergeCandidateDetector(
   async function detectFor(
     memorableKnowledgeNodeId: string,
   ): Promise<{ candidatesScanned: number; mergeCandidatesCreated: number }> {
-    if (!deps.embeddingClient) {
+    const embeddingClient = currentEmbeddingClient(deps.embeddingClient);
+    if (!embeddingClient) {
       return { candidatesScanned: 0, mergeCandidatesCreated: 0 };
     }
     let source: GraphNode | null;
@@ -123,7 +128,7 @@ export function createMergeCandidateDetector(
 
     let queryVector: number[];
     try {
-      queryVector = await deps.embeddingClient.embed(sourceText);
+      queryVector = await embeddingClient.embed(sourceText);
     } catch (err) {
       log(
         `[merge-detector] embed failed for ${memorableKnowledgeNodeId}: ${err instanceof Error ? err.message : String(err)} — skip`,
@@ -229,7 +234,8 @@ export function createMergeCandidateDetector(
     candidatesScanned: number;
     excerptMergeCandidatesCreated: number;
   }> {
-    if (!deps.embeddingClient) {
+    const embeddingClient = currentEmbeddingClient(deps.embeddingClient);
+    if (!embeddingClient) {
       return { candidatesScanned: 0, excerptMergeCandidatesCreated: 0 };
     }
 
@@ -266,7 +272,7 @@ export function createMergeCandidateDetector(
 
     let queryVector: number[];
     try {
-      queryVector = await deps.embeddingClient.embed(sourceText);
+      queryVector = await embeddingClient.embed(sourceText);
     } catch (err) {
       log(
         `[merge-detector-excerpt] embed failed for ${excerptExternalId}: ${err instanceof Error ? err.message : String(err)} — skip`,

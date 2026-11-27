@@ -377,7 +377,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                 : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
             ].join(' ')}
           >
-            {s === 'all' ? t('statusAll') : s}
+            {t(`statusFilter.${s}`)}
           </button>
         ))}
         <Button
@@ -587,7 +587,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                   : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
               ].join(' ')}
             >
-              {s === 'all' ? t('statusAll') : s}
+              {t(`statusFilter.${s}`)}
             </button>
           ))}
           <Button

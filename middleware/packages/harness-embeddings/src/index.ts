@@ -27,6 +27,9 @@ export type {
 } from '@omadia/plugin-api';
 export { EmbeddingError, withConcurrencyLimit } from '@omadia/plugin-api';
 
+export type { EmbeddingClientSource } from './liveEmbeddingClient.js';
+export { currentEmbeddingClient } from './liveEmbeddingClient.js';
+
 export type {
   EmbeddingClientOptions,
   OllamaDimensionsResolution,

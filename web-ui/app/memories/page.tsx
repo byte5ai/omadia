@@ -6,11 +6,17 @@ import { useFormatter, useTranslations } from 'next-intl';
 import Link from 'next/link';
 
 import { Button } from '@/app/_components/ui/Button';
+import { serverErrorMessage } from '@/app/_lib/apiErrorMessage';
 import {
   listMemories,
   type MemorableKind,
   type MemorableKnowledgeNode,
 } from '../_lib/api';
+
+interface ListError {
+  readonly action: 'load' | 'loadMore';
+  readonly detail: string | null;
+}
 
 const KIND_FILTERS: Array<MemorableKind | 'all'> = [
   'all',
@@ -34,8 +40,8 @@ const KIND_BADGE: Record<MemorableKind, string> = {
 /**
  * Slice 3 polish — list of MemorableKnowledge nodes the session user
  * is INVOLVED in AND an ACL-owner of. Backend at /api/v1/memory enforces
- * the strict-ACL gate; this page just renders the result and adds a
- * kind-filter on top.
+ * the strict-ACL gate; this page renders the result page by page ("load
+ * more", #1853) and adds a kind-filter on top.
  *
  * The legacy /memory route (file-browser over the virtual-FS memories)
  * stays untouched — different concept, different data.
@@ -46,7 +52,12 @@ export default function MemoriesPage(): React.ReactElement {
   const [items, setItems] = useState<MemorableKnowledgeNode[]>([]);
   const [filter, setFilter] = useState<MemorableKind | 'all'>('all');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // A localized headline per failed action; the server's own message (if it
+  // sent one) only as a detail behind it, never the client's transport line.
+  const [error, setError] = useState<ListError | null>(null);
+  // #1853: the list is paged; `nextCursor` names the next page, null = done.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -55,13 +66,36 @@ export default function MemoriesPage(): React.ReactElement {
       const opts = filter === 'all' ? {} : { kind: filter };
       const res = await listMemories(opts);
       setItems(res.items);
+      setNextCursor(res.nextCursor ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError({ action: 'load', detail: serverErrorMessage(err) });
       setItems([]);
+      setNextCursor(null);
     } finally {
       setLoading(false);
     }
   }, [filter]);
+
+  const loadMore = useCallback(async (): Promise<void> => {
+    if (nextCursor === null) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const res = await listMemories({
+        ...(filter === 'all' ? {} : { kind: filter }),
+        cursor: nextCursor,
+      });
+      setItems((prev) => {
+        const seen = new Set(prev.map((mk) => mk.id));
+        return [...prev, ...res.items.filter((mk) => !seen.has(mk.id))];
+      });
+      setNextCursor(res.nextCursor ?? null);
+    } catch (err) {
+      setError({ action: 'loadMore', detail: serverErrorMessage(err) });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [filter, nextCursor]);
 
   useEffect(() => {
     queueMicrotask(() => void load());
@@ -72,7 +106,7 @@ export default function MemoriesPage(): React.ReactElement {
       <header className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-6 py-4">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-lg font-medium">Memories</h1>
+            <h1 className="text-lg font-medium">{t('list.title')}</h1>
             <p className="text-xs text-[color:var(--fg-muted)]">
               {t('list.subtitle')}
             </p>
@@ -117,7 +151,12 @@ export default function MemoriesPage(): React.ReactElement {
         )}
         {error !== null && (
           <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-            {t('list.errorPrefix', { error })}
+            {error.action === 'load' ? t('list.loadFailed') : t('list.loadMoreFailed')}
+            {error.detail !== null && (
+              <span className="ml-1 text-[color:var(--fg-muted)]">
+                {t('list.errorDetail', { detail: error.detail })}
+              </span>
+            )}
           </div>
         )}
         {!loading && error === null && items.length === 0 && (
@@ -171,19 +210,36 @@ export default function MemoriesPage(): React.ReactElement {
                       <>
                         <span aria-hidden>·</span>
                         <span>
-                          significance {mk.props.significance.toFixed(2)}
+                          {t('list.significance', {
+                            value: mk.props.significance.toFixed(2),
+                          })}
                         </span>
                       </>
                     )}
                     <span aria-hidden>·</span>
                     <span className="font-mono">
-                      created_by {mk.props.created_by}
+                      {t('list.createdBy', { by: mk.props.created_by })}
                     </span>
                   </div>
                 </Link>
               </li>
             ))}
           </ul>
+        )}
+        {!loading && items.length > 0 && nextCursor !== null && (
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <span className="text-xs text-[color:var(--fg-muted)]">
+              {t('list.shownCount', { count: items.length })}
+            </span>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void loadMore()}
+              disabled={loadingMore}
+            >
+              {loadingMore ? t('list.loadingMore') : t('list.loadMore')}
+            </Button>
+          </div>
         )}
       </section>
     </main>

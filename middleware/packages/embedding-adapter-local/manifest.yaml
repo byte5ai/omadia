@@ -7,8 +7,8 @@ identity:
   kind: "model"
   domain: "core.embeddings"
   description:
-    en: "Turns text into vectors on this machine, with no API key and no separate server, so semantic search, memory and duplicate detection also work on the subscription path. Use it instead of the Ollama or OpenAI compatible adapter, only one of the three can be active. The model is downloaded once, about 144 MB, and then runs offline."
-    de: "Rechnet Texte auf diesem Rechner in Zahlenvektoren um, ohne API-Schlüssel und ohne eigenen Server, damit semantische Suche, Gedächtnis und Duplikaterkennung auch auf dem Abo-Weg funktionieren. Nutze es alternativ zum Ollama- oder OpenAI-kompatiblen Adapter, aktiv sein darf immer nur eines der drei. Das Modell wird einmal geladen, etwa 144 MB, und läuft danach ohne Internet."
+    en: "Turns text into vectors on this machine, with no API key and no separate server, so semantic search, memory and duplicate detection also work on the subscription path. Use it instead of the Ollama or OpenAI compatible adapter, only one of the three can be active. The model is downloaded once, about 135 MB, and then runs offline."
+    de: "Rechnet Texte auf diesem Rechner in Zahlenvektoren um, ohne API-Schlüssel und ohne eigenen Server, damit semantische Suche, Gedächtnis und Duplikaterkennung auch auf dem Abo-Weg funktionieren. Nutze es alternativ zum Ollama- oder OpenAI-kompatiblen Adapter, aktiv sein darf immer nur eines der drei. Das Modell wird einmal geladen, etwa 135 MB, und läuft danach ohne Internet."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -65,39 +65,41 @@ setup:
       machine's CPU, with a quantized multilingual sentence transformer
       (`paraphrase-multilingual-MiniLM-L12-v2`, 384 dimensions).
 
+      **Only one embedding provider.** The Ollama adapter (`@omadia/embeddings`),
+      the OpenAI-compatible adapter and this plugin all provide the same
+      capability `embeddingClient@1`, and only one may be installed and active.
+      Uninstall the current one in the store first, then install this plugin.
+
       **Fetch the weights once.** The weights are deliberately *not* included
-      in the package — they would add about 144 MB to every desktop installer,
-      for a plugin many installations never activate. Instead, run once:
+      in the package — they would add about 135 MB to every desktop installer,
+      for a plugin many installations never activate. After the install, open
+      Admin → Embedding provider and click **Load model now**. When the
+      download is complete, click **Reactivate provider**: the plugin reads
+      the weights when it activates, so it publishes its client only then.
+      (In a source checkout, `npm run fetch-model --workspace
+      @omadia/embedding-adapter-local` does the same download.) While the
+      weights are missing, the plugin activates and logs which file is
+      missing, but publishes no capability, so consumers keep running cleanly
+      without embeddings.
 
-      ```
-      npm run fetch-model --workspace @omadia/embedding-adapter-local
-      ```
-
-      After that everything runs offline. While the weights are missing, the
-      plugin activates and logs which file is missing — but publishes no
-      capability, so consumers keep running cleanly without embeddings.
-
-      **The dedup threshold is set automatically.** Since OM-98, "Reactivate
-      provider" under Admin → Embedding Provider writes the value below into
-      the knowledge graph itself — but only if nothing is set there yet. A
-      value you set yourself stays untouched. It takes effect on the next
-      start of the knowledge graph plugin.
+      **The dedup threshold is set automatically.** "Reactivate provider" and
+      "Switch provider" write this model's recommended
+      `process_dedup_threshold` (**0.45**) into the knowledge graph and
+      remember that omadia set it. A value you set yourself stays untouched.
+      When this plugin is uninstalled or another provider takes over, omadia
+      removes or replaces its own value. It takes effect on the next start of
+      the knowledge graph plugin.
 
       **Why 0.45:** This model's cosine scale is not the one the knowledge
       graph is tuned for. German paraphrases land at 0.58–0.73 here,
       unrelated sentences below 0.24 — so the default
       `process_dedup_threshold=0.90` would **never** match, and silently so.
-      Set it to **0.45** in the knowledge graph plugin.
-
-      **Only one of three.** The Ollama adapter, the OpenAI-compatible adapter
-      and this plugin all provide the same capability `embeddingClient@1`.
-      Only one may be active at a time; uninstall the others first or clear
-      their access fields.
 
       **Changing dimensions.** 384 dimensions. If that matches the vector
       width already stored, switching only triggers a recompute; if it does
       not, the knowledge graph blocks vector writes until the column is
-      migrated (see `docs/CHANGELOG.md`, #440).
+      migrated. With empty columns, "Reactivate provider" rebuilds them at the
+      new width.
     de: |
       **Der schlüssellose Weg.** Dieses Plugin braucht weder einen API-Schlüssel
       noch einen laufenden Ollama-Server. Es rechnet die Vektoren selbst, auf
@@ -105,40 +107,43 @@ setup:
       Sentence-Transformer (`paraphrase-multilingual-MiniLM-L12-v2`, 384
       Dimensionen).
 
+      **Nur ein Embedding-Anbieter.** Ollama-Adapter (`@omadia/embeddings`),
+      OpenAI-kompatibler Adapter und dieses Plugin liefern dieselbe Capability
+      `embeddingClient@1`; installiert und aktiv sein darf immer nur einer.
+      Deinstalliere zuerst den aktuellen im Store und installiere dann dieses
+      Plugin.
+
       **Einmal Gewichte holen.** Die Gewichte sind bewusst *nicht* im Paket
-      enthalten — sie wären rund 144 MB in jedem Desktop-Installer, für ein
-      Plugin, das viele Installationen nie aktivieren. Stattdessen einmalig:
+      enthalten — sie wären rund 135 MB in jedem Desktop-Installer, für ein
+      Plugin, das viele Installationen nie aktivieren. Öffne nach der
+      Installation Admin → Embedding-Anbieter und klicke **Modell jetzt
+      laden**. Ist der Download fertig, klicke **Anbieter neu aktivieren**:
+      Das Plugin liest die Gewichte beim Aktivieren und veröffentlicht seinen
+      Client erst dann. (In einem Quellcode-Checkout erledigt `npm run
+      fetch-model --workspace @omadia/embedding-adapter-local` denselben
+      Download.) Solange die Gewichte fehlen, aktiviert sich das Plugin und
+      sagt im Log, welche Datei fehlt — veröffentlicht aber keine Capability,
+      damit Konsumenten sauber ohne Embeddings weiterlaufen.
 
-      ```
-      npm run fetch-model --workspace @omadia/embedding-adapter-local
-      ```
-
-      Danach läuft alles offline. Solange die Gewichte fehlen, aktiviert sich
-      das Plugin und sagt im Log, welche Datei fehlt — veröffentlicht aber
-      keine Capability, damit Konsumenten sauber ohne Embeddings weiterlaufen.
-
-      **Dedup-Schwelle wird automatisch gesetzt.** Seit OM-98 trägt
-      "Anbieter neu aktivieren" unter Admin → Embedding-Provider den unten
-      genannten Wert selbst in den Wissensgraphen ein — aber nur, wenn dort
-      noch nichts steht. Ein selbst gesetzter Wert bleibt unangetastet. Wirksam
-      wird er beim nächsten Start des Wissensgraph-Plugins.
+      **Dedup-Schwelle wird automatisch gesetzt.** "Anbieter neu aktivieren"
+      und "Provider wechseln" tragen die empfohlene `process_dedup_threshold`
+      dieses Modells (**0.45**) in den Wissensgraphen ein und merken sich, dass
+      omadia sie gesetzt hat. Ein selbst gesetzter Wert bleibt unangetastet.
+      Wird dieses Plugin deinstalliert oder übernimmt ein anderer Anbieter,
+      entfernt oder ersetzt omadia seinen eigenen Wert. Wirksam wird er beim
+      nächsten Start des Wissensgraph-Plugins.
 
       **Warum 0.45:** Die Cosinus-Skala dieses Modells
       ist nicht die, auf die der Wissensgraph voreingestellt ist. Deutsche
       Paraphrasen landen hier bei 0,58–0,73, unzusammenhängende Sätze unter
       0,24 — der Standardwert `process_dedup_threshold=0.90` würde also
-      **nie** greifen, und zwar stillschweigend. Setze ihn im
-      Wissensgraph-Plugin auf **0.45**.
-
-      **Nur eines von drei.** Ollama-Adapter, OpenAI-kompatibler Adapter und
-      dieses Plugin liefern dieselbe Capability `embeddingClient@1`. Aktiv sein
-      darf immer nur eines; die anderen vorher deinstallieren oder ihre
-      Zugangsfelder leeren.
+      **nie** greifen, und zwar stillschweigend.
 
       **Dimensionswechsel.** 384 Dimensionen. Passt das zur bereits
       gespeicherten Vektorbreite, wird nach dem Umschalten nur nachgerechnet;
       passt es nicht, blockiert der Wissensgraph Vektor-Writes, bis die Spalte
-      migriert ist (siehe `docs/CHANGELOG.md`, #440).
+      migriert ist. Bei leeren Spalten baut "Anbieter neu aktivieren" sie in
+      der neuen Breite neu auf.
 
 permissions:
   memory:
