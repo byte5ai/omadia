@@ -2646,8 +2646,14 @@ requests, and only there, the shield acts on four kinds of text:
   prefetched `/memories` index are masked through the reading turn's map
   (`maskUserPrompt`, origin `context`; blocked ⇒ withheld). A stored text that
   carries a surrogate the reading turn minted (a note from before the fix) is
-  withheld with a notice. Residuals: an old note's pool person name the reading
-  turn did not mint is not recognisable; and because notes now hold real values,
+  withheld with a notice; since #2296 so is one with a reserved-shape surrogate
+  (`PLATZHALTER-*`, a pool name at `example.net`) of any earlier turn — per entry
+  (a listing line, a `query_processes` hit; ADR-0296) — and the stored-process
+  tools (`write_process`/`edit_process` restore, `query_processes`/
+  `run_stored_process` re-mask) follow the same rule. Process ids are opaque
+  (`process:<uuid>`, ADR-0295), so restored titles never reach the model
+  through an id. Residuals: an old note's
+  pool person name the reading turn did not mint is not recognisable; and because notes now hold real values,
   a value the reading turn's mask does not detect (a C1 name seen in the prompt
   context but not in the note, or a turn degraded to C0 after a C1 outage)
   reaches the model in clear — the same residual as recalled turns. Every tool result text a model gets, digests,

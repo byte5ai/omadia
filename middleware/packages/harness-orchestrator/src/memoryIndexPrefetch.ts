@@ -19,7 +19,7 @@ const MEMORY_ROOT = '/memories';
 
 /** The handler's directory-listing header (`formatDirectoryListing`); every
  *  error or file read takes a different shape. */
-const LISTING_PREFIX = "Here're the files and directories";
+export const LISTING_PREFIX = "Here're the files and directories";
 
 /** What the handler answers for a tree that has no `/memories` yet — the
  *  common case for a fresh chat context. An index all the same: an empty one. */

@@ -830,6 +830,14 @@ export interface UnresolvedSurrogateCountOptions {
    *  placeholder with none) as a hit. Default `true`, fail closed for the
    *  answer verifier; `false` for a notice to the user. */
   readonly unreadableLiterals?: boolean;
+  /**
+   * #2296 (1.112.0) — also count surrogates of the reserved shapes the shield
+   * mints and no real value can have (`PLATZHALTER-<TYPE>-<n>`, a pool name
+   * at `example.net`), whichever turn minted them, even when this turn
+   * masked nothing. For stored text read back into a turn (memory notes,
+   * stored processes). Default `false`.
+   */
+  readonly reservedShapes?: boolean;
 }
 
 export interface PrivacyGuardService {

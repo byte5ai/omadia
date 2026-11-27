@@ -748,7 +748,7 @@ export class LocalSubAgent {
         }
         return {
           output: isMemoryNoteTool(toolName)
-            ? await maskMemoryNoteResult(privacy, result)
+            ? await maskMemoryNoteResult(privacy, result, toolName)
             : remaskEchoedValues(privacy, result),
           ...carried,
         };

@@ -565,6 +565,16 @@ export async function activate(
     resolveEmbeddingClient,
     gateEpoch: () => gate.epoch(),
   });
+  // #2296 / ADR-0295 — ids an older build wrote after migration 0040 (a
+  // rolling deploy) are re-keyed on boot. Never blocks activation.
+  void processMemoryStore
+    .rekeyLegacyIds()
+    .then((n) => {
+      if (n > 0) ctx.log(`[harness-knowledge-graph-neon] re-keyed ${String(n)} process id(s) to the opaque form (ADR-0295)`);
+    })
+    .catch((err: unknown) => {
+      console.error(`[harness-knowledge-graph-neon] process id re-key failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   const disposeProcessMemory = ctx.services.provide(
     PROCESS_MEMORY_SERVICE,
     processMemoryStore,

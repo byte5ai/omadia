@@ -270,7 +270,7 @@ import {
 import {
   isMemoryNoteTool,
   maskMemoryNoteResult,
-  maskMemoryNoteText,
+  maskStoredTextPerEntry,
   restoreMemoryNoteInput,
 } from './memoryNoteSurrogates.js';
 import {
@@ -6040,7 +6040,9 @@ export class Orchestrator {
     // #1841 / ADR-0191 — the listing names stored notes: masked through this
     // turn's map like a `memory` result. Withheld ⇒ no index; the model keeps
     // the ordinary read convention, whose results are masked the same way.
-    const listing = await maskMemoryNoteText(turnContext.current()?.privacyHandle, index.listing);
+    // #2296 / ADR-0296 — per entry: a note with an earlier turn's placeholder
+    // leaves the index, the others stay.
+    const listing = await maskStoredTextPerEntry(turnContext.current()?.privacyHandle, index.listing);
     if (!listing.ok) {
       console.log('[orchestrator] memory-index skipped reason=privacy-withheld');
       return undefined;
@@ -10460,7 +10462,7 @@ export class Orchestrator {
         // result is masked through THIS turn's map (ADR-0191).
         return capExempt(
           isMemoryNoteTool(name)
-            ? await maskMemoryNoteResult(privacy, result)
+            ? await maskMemoryNoteResult(privacy, result, name)
             : remaskEchoedValues(privacy, result),
         );
       }

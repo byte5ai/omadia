@@ -227,6 +227,24 @@ fires. `manage_routine` gains `run_now`: the trigger route's checks (owner, acti
 flight, agent, chat agent) answered at once, then the routine's own prompt runs in the
 background, detached from the asking turn. No migration.
 
+### Fixed — stored processes follow the memory-note privacy rule; opaque process ids (#2296, ADR-0295, ADR-0296) (2026-11-27)
+
+- With `mask_user_prompt` on, `write_process` / `edit_process` input is restored to the user's
+  values before it is stored, and `query_processes` / `run_stored_process` results are re-masked
+  through the reading turn's map — the ADR-0191 rule the `memory` tool already follows. A write
+  whose placeholder cannot be mapped is refused.
+- **Process ids are opaque** (`process:<uuid>`, `newProcessId()`, plugin-api **1.112.0**): the old
+  `process:<scope>:<slug(title)>` would carry restored real values into an id the model reads.
+  **Neon migration 0040_process_opaque_ids** rewrites existing ids (history follows) and keeps the
+  old one in `processes.legacy_id`; `get`/`edit`/`history` resolve either form, and discretion
+  labels are read under both ids. `buildProcessId` is deprecated.
+- Stored text with a reserved-shape placeholder of an earlier turn (`PLATZHALTER-*`, a pool name
+  at `example.net`) is withheld **per entry**: a `/memories` listing line by line, a
+  `query_processes` result hit by hit; one note or process is one entry
+  (`maskStoredTextPerEntry`, `countUnresolvedSurrogates` option `reservedShapes`). Pool *person
+  names* in old notes stay undetectable (ADR-0191 residual). `@omadia/plugin-privacy-guard`
+  0.16.5.
+
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of

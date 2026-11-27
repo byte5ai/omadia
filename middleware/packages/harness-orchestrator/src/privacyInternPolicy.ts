@@ -72,7 +72,9 @@ export const INTERN_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
  * (#1544), like every guarded tool: what they produce goes to the user as a
  * file or an image, so it must carry the real names, not the placeholders
  * the model wrote. Every other exempt tool runs on the model's input as
- * written (memory, stored processes, attachments keep placeholders).
+ * written (attachments keep placeholders); `memory` and the stored-process
+ * tools restore their input in their own seam instead (ADR-0191, #2296,
+ * `memoryNoteSurrogates.ts`).
  */
 const RESTORED_INPUT_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   'render_diagram',
