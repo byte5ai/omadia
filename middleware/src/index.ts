@@ -210,6 +210,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { createChatUploadsRouter, WEB_CHAT_UPLOAD_PRODUCER } from './routes/chatUploads.js';
 import { createChannelDeliveryContext } from './plugins/routines/routineDeliveryContext.js';
 import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
@@ -1695,10 +1696,8 @@ async function main(): Promise<void> {
   let attachmentBindingStoreRef: AttachmentBindingStore | undefined = config.DATABASE_URL
     ? undefined
     : new InMemoryAttachmentBindingStore();
-  serviceRegistry.provide(
-    'attachmentBindings',
-    createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
-  );
+  const attachmentBindings = createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef);
+  serviceRegistry.provide('attachmentBindings', attachmentBindings);
   // ADR-0187 (#1986) — generated files recorded under the turn's person and
   // chat (migration 0119), released with chat deletion and memory purges.
   // Provided before plugins activate (Office and Diagrams read it then); the
@@ -2661,6 +2660,12 @@ async function main(): Promise<void> {
     // late-resolve the attachment store via ctx.services.get('tigrisStore')
     // instead of constructor-injected Deps.
     serviceRegistry.provide('tigrisStore', attachmentStore.store);
+    // #2336 (ADR-0310) — web-chat uploads are deleted with their chat or person.
+    const uploadStore = attachmentStore.store;
+    if (uploadStore.delete) {
+      const deleteUpload = uploadStore.delete.bind(uploadStore);
+      generatedObjects.registerDeleter(WEB_CHAT_UPLOAD_PRODUCER, (key) => deleteUpload(key));
+    }
   }
   console.log(attachmentStore.message);
 
@@ -4403,6 +4408,18 @@ async function main(): Promise<void> {
   // callers could trigger LLM inference (cost) and reach the tool surface
   // (KG-lookups, RAG, Memory-Reads). createChatRouter does not register
   // any public-by-design routes — every route is inference-tied.
+  // #2336 (ADR-0310) — web-chat file uploads, bound to the chat at upload.
+  app.use(
+    '/api',
+    requireAuth,
+    createChatUploadsRouter({
+      store: () => attachmentStore.store,
+      bindings: attachmentBindings,
+      recordUpload: (key, owner) => generatedObjects.recordFor(WEB_CHAT_UPLOAD_PRODUCER, key, owner),
+      getChatSessionStore,
+      legacyChatOwner,
+    }),
+  );
   app.use(
     '/api',
     requireAuth,

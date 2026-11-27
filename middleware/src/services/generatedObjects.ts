@@ -185,6 +185,12 @@ export interface GeneratedObjectsRegistry extends GeneratedObjectsService {
   /** Objects a release with `filter` would delete or un-reference. */
   count(filter: GeneratedObjectFilter): Promise<{ objects: number; shared: number }>;
   release(filter: GeneratedObjectFilter): Promise<GeneratedObjectRelease>;
+  /**
+   * #2336 (ADR-0310) — file a key under an explicit person and chat, for a
+   * kernel route that stores a file outside a turn (a web-chat upload).
+   * Throws when the store fails, so the caller can undo the write.
+   */
+  recordFor(producer: string, storageKey: string, turn: GeneratedObjectTurn): Promise<void>;
 }
 
 export interface GeneratedObjectsRegistryDeps {
@@ -232,6 +238,17 @@ export function createGeneratedObjectsRegistry(deps: GeneratedObjectsRegistryDep
       } catch (err) {
         log(`[generated-objects] record failed producer=${producer}: ${err instanceof Error ? err.message : String(err)}`);
       }
+    },
+
+    async recordFor(producer, storageKey, turn) {
+      const store = deps.store();
+      if (!store) return;
+      await store.insert({
+        storageKey,
+        producer,
+        ownerOmadiaUserId: turn.ownerOmadiaUserId ?? '',
+        scope: turn.scope ?? '',
+      });
     },
 
     registerDeleter(producer, deleter) {

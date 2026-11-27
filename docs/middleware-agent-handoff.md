@@ -1960,6 +1960,30 @@ kein Secret im Trail, 404 statt No-op-Audit, Payload-Scope, Posture),
 Re-Rotation und zwei gleichzeitige Rotationen —, Redaktion behält `runId`,
 `pending` wird nie gelöscht) sowie
 `web-ui/app/admin/webhooks/_components/__tests__/` (Banner + Opt-in).
+### Web-Chat-Uploads (#2336, #1985, ADR-0310)
+
+Der Web-Chat nimmt Dateien an wie Teams und Telegram. Der Kernel spielt dabei selbst den
+Kanal-Adapter aus ADR-0178:
+
+- `POST /api/chat/uploads` (Session-Gate, multipart `sessionId` + `file`, `src/routes/chatUploads.ts`):
+  Konto nötig (401), eigener Chat (`mayUseChatSession`, sonst 404), Typ nach Endung
+  (Aufnahmen, PDF, DOCX, TXT/MD, CSV/XLSX, Bilder; sonst 415), max. 25 MiB (413), ohne
+  Objektspeicher 503. Schlüssel `web-chat/<sessionId>/<uuid>/<Dateiname>`; die Route bindet ihn
+  sofort an den Chat (`attachmentBindings`) und trägt ihn als Producer `web-chat-upload` unter
+  Konto + Chat ins `generated_objects`-Ledger ein (ADR-0187). Antwort `201 { upload }`.
+- `POST /api/chat` und `/api/chat/stream` nehmen `attachments: [{ storageKey, sizeBytes? }]`
+  (max. 10, nur mit `sessionId`, ohne Debug-`scope`). `turnUploadsFor` akzeptiert nur Schlüssel
+  dieses Chats mit Bindung an diesen Chat, sonst `400 chat_upload.unknown_attachment` vor dem
+  Stream. Name und Typ setzt der Kernel aus dem Schlüssel; daraus wird `storedAttachments`
+  plus der lesbare `[attachments-info]`-Block für das Modell. Damit laufen Ingest, Maskierung,
+  `read_attachment` und die ADR-0198-Regel für Transkripte wie bei Kanal-Uploads.
+- `turnMayCarryUploads` bietet `read_attachment`/`transcribe_recording` jedem Turn mit
+  `turnUploadKeys` an, also auch einem Web-Turn mit Dateien.
+- Chat löschen bzw. Person purgen löscht die Datei über den registrierten Deleter.
+- Web-UI: Büroklammer, Drag & Drop und Einfügen im Composer (`ComposerAttachments`), Upload
+  sofort, Liste mit Fortschritt/Fehler; die gesendete Nachricht zeigt die Dateien
+  (`Message.uploads`, vom Server mit gespeichert, ohne Storage-Key).
+
 ### Dataset-Routen + `query_dataset`-Tool (#430)
 
 Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
