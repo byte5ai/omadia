@@ -11,13 +11,26 @@
  * Per sentence, an announcement is a build phrase that reaches a file word
  * (German present `ich erstelle … die Excel`, German future `ich werde … die
  * Excel-Datei erstellen`, English `I'll create the Excel file`) with:
- *  - a cue for THIS file or THIS moment inside that span: an article, an
- *    addressee or a "now" word (`die Excel`, `dir eine Datei`, `jetzt`);
+ *  - a cue for THIS file or THIS moment inside that span: a "now" word
+ *    (`jetzt`, `gleich`, `now`), an article (`die Excel`, `eine Datei`), or an
+ *    addressee (`dir`) for ONE file — `dir Excel-Dateien`, `dir Excel- oder
+ *    Word-Dateien` names a kind of file and reads as a capability (#2351);
  *  - no capability or condition marker before the file word (`kann`,
  *    `bei Bedarf`, `auf Wunsch`, `zuständig`, `z. B.`, `wenn`, `falls`, …): a
- *    clause after it ("…, das kann einen Moment dauern") does not cancel it;
+ *    clause after it ("…, das kann einen Moment dauern") does not cancel it.
+ *    With a "now" word in the span only a condition still cancels it: `Ich
+ *    helfe dir gern und erstelle jetzt die Excel` announces (#2351). A polite
+ *    offer (`if you want`, `wenn du möchtest`) is no condition;
  *  - no example marker anywhere in it (`z. B.`, `unter anderem`, …);
  *  - no question.
+ * English `word` is a file word only before `-` or a file noun (`Word
+ * document`), never in "a word of caution".
+ *
+ * #2351 — a sentence that CLAIMS a file is there (`Hier ist die Excel-Datei`,
+ * `Anbei die Datei`, `Here is the Excel file`) counts too: the orchestrator
+ * asks only when no file was built, so the user would read about a file
+ * that does not exist.
+ *
  * Accepted trade-off: a build sentence without any cue ("Ich erstelle Excel-
  * und Word-Dateien.") reads as a capability, not as an announcement.
  */
@@ -25,7 +38,9 @@
 /** Letter-aware word boundaries (JS `\b` treats ä, ö, ü, ß as non-word). */
 const W = (body: string): string => `(?<![\\p{L}\\p{N}])(?:${body})(?![\\p{L}\\p{N}])`;
 
-const FILE_WORD = 'excel|xlsx|dateien|datei|word|docx|arbeitsmappe|workbook|spreadsheet|file';
+/** `word` only as `Word-…` or `Word document/file`, never the plain noun. */
+const WORD_AS_FILE = 'word(?=-|\\s+(?:datei|dokument|file|document|docx?)(?![\\p{L}]))';
+const FILE_WORD = `excel|xlsx|dateien|datei|${WORD_AS_FILE}|docx|arbeitsmappe|workbook|spreadsheet|file`;
 
 /** The build phrase up to its file word; group 1 is the span between them. */
 const BUILD_SPANS: readonly RegExp[] = [
@@ -43,15 +58,37 @@ const BUILD_SPANS: readonly RegExp[] = [
   ),
 ];
 
-/** An article, an addressee or a "now" word: this file, for this user, now. */
-const SPECIFIC_CUE = new RegExp(
-  W('jetzt|gleich|nun|sofort|direkt|dir|dich|euch|ihnen|die|das|den|der|eine|einen|ein|now|the|a|an|you|your'),
-  'iu',
-);
+/** A "now" word: the build happens in this turn. */
+const NOW_CUE = new RegExp(W('jetzt|gleich|nun|sofort|direkt|now|right away'), 'iu');
+/** An article: this one file. */
+const ARTICLE_CUE = new RegExp(W('die|das|den|der|eine|einen|ein|the|a|an|your'), 'iu');
+/** An addressee: for this user — a cue only for a single file. */
+const ADDRESSEE_CUE = new RegExp(W('dir|dich|euch|ihnen|you'), 'iu');
 
+/** Before the file word: the sentence states a condition. */
+const CONDITION_MARKER = new RegExp(W('bei bedarf|auf wunsch|wenn|falls|sobald|if|on request'), 'iu');
 /** Before the file word: the sentence states an ability or a condition. */
 const CAPABILITY_MARKER = new RegExp(
   W('kann|kannst|können|könnte|bei bedarf|auf wunsch|zuständig|wenn|falls|sobald|bin für|helfe|can|could|if|on request'),
+  'iu',
+);
+/** A polite offer, not a condition on the build. */
+const POLITE_OFFER = new RegExp(
+  W('if you (?:want|like|wish|prefer)|wenn du (?:willst|möchtest|magst)|wenn sie (?:wollen|möchten)|wenn ihr (?:wollt|möchtet)'),
+  'giu',
+);
+
+/** From the file word on: a plural or a list of file kinds (`Excel- oder Word-Dateien`). */
+const SEVERAL_FILES = new RegExp(
+  `^[^\\n]{0,12}?(?:${W('dateien|dokumente|files|documents|workbooks|spreadsheets')}|^\\p{L}+-?\\s*${W('und|oder|and|or')}|^\\p{L}+\\s*/)`,
+  'iu',
+);
+
+/** "Here is the file": a claim that a file exists. */
+const CLAIM_SPAN = new RegExp(
+  `${W("hier ist|hier sind|anbei|im anhang|here is|here's|here are|attached is|attached")}([^\\n,;:]{0,40}?)${W(
+    '(?:excel|word)-?\\s?(?:datei|dokument|tabelle|arbeitsmappe|file|document|workbook)|xlsx|docx|datei(?!-)|dateien|arbeitsmappe|workbook|spreadsheet|file',
+  )}`,
   'iu',
 );
 
@@ -75,16 +112,29 @@ function sentences(answer: string): string[] {
   return text.split(/(?<=[.!?])(?<!\d\.)\s+|\n+/u).filter((s) => s.trim().length > 0);
 }
 
+function claimsFile(sentence: string): boolean {
+  const match = CLAIM_SPAN.exec(sentence);
+  return match !== null && ARTICLE_CUE.test(match[1] ?? '') && !CAPABILITY_MARKER.test(match[1] ?? '');
+}
+
 function announcesInSentence(sentence: string): boolean {
   if (sentence.trim().endsWith('?') || EXAMPLE_MARKER.test(sentence)) return false;
+  if (claimsFile(sentence)) return true;
   for (const pattern of BUILD_SPANS) {
     const match = pattern.exec(sentence);
     if (!match) continue;
+    const span = match[1] ?? '';
     // Only what comes before and up to the file word decides: a trailing
     // clause ("…, das kann einen Moment dauern") keeps the announcement.
-    const head = sentence.slice(0, match.index + match[0].length);
-    if (CAPABILITY_MARKER.test(head)) continue;
-    if (SPECIFIC_CUE.test(match[1] ?? '')) return true;
+    const head = sentence.slice(0, match.index + match[0].length).replace(POLITE_OFFER, ' ');
+    const now = NOW_CUE.test(span);
+    const cancelled = now
+      ? CONDITION_MARKER.test(head) || CAPABILITY_MARKER.test(span)
+      : CAPABILITY_MARKER.test(head);
+    if (cancelled) continue;
+    if (now || ARTICLE_CUE.test(span)) return true;
+    const fileWordAt = match.index + match[0].length - (match[0].match(/[\p{L}]+$/u)?.[0].length ?? 0);
+    if (ADDRESSEE_CUE.test(span) && !SEVERAL_FILES.test(sentence.slice(fileWordAt))) return true;
   }
   return false;
 }

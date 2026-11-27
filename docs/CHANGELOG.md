@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — file-announcement detector edge cases (#2351) (2026-11-27)
+
+- `announcesFileBuild` (`fileAnnouncement.ts`) no longer forces a file retry for `Ich erstelle dir
+  gerne Excel- oder Word-Dateien` (an addressee with a plural or a list of file kinds reads as a
+  capability) or for `a word of caution` (English `word` counts only as `Word-…` / `Word
+  document`). It now catches `Ich helfe dir gern und erstelle jetzt die Excel-Datei` (a "now" word
+  outranks an ability marker, but not a condition) and `If you want I'll create the file` (a polite
+  offer is no condition). A claim without a built file (`Hier ist die Excel-Datei`, `Anbei die
+  Datei`, `Here is the Excel file`) also counts, so the user does not read about a file that does
+  not exist.
+
 ### Fixed — a withheld streamed answer sends no tool outputs (#2342, ADR-0316) (2026-11-27)
 
 - While a turn's answer may still be withheld by the people-egress check (the turn has discretion
