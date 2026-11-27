@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the MCP OAuth callback page follows the browser's language (#1959) (2026-11-27)
+
+- `GET /api/v1/operator/mcp-oauth/callback` renders its page in German or English from
+  `Accept-Language` (English otherwise), German in the "du" form like the rest of the MCP pages
+  (`src/routes/mcpOAuthCallbackPage.ts`). A provider error or service detail follows the
+  localized message, escaped. Closes the last open point of #1959 (the rest landed in #2259).
+
 ### Fixed — MCP delegation UI tells the truth; the shared service token names who stored it (#1906, #2308, ADR-0206, ADR-0208) (2026-11-27)
 
 - #1906 (rest): the agent page's "Change in MCP server settings" link opens `/admin/mcp?server=<id>`
