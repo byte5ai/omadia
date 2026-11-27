@@ -2802,9 +2802,13 @@ none.
 Content derived from such a turn follows it (#1536). Under a shield the
 memory, excerpt and durable recall legs skip a MemorableKnowledge stamped
 `unprotected` (`MemorableKnowledgeIngest.unprotected`) or linked by
-`DERIVED_FROM` to an `unprotected` Turn; the edge check also covers
-auto-promoted memories stored before the stamp existed (raw MCP results and
-rule promotions stored before it carry neither and stay recallable). The stamp is written where no edge can carry
+`DERIVED_FROM` to an `unprotected` Turn. `createMemorableKnowledge` stamps a
+memory itself when one of its `derivedFromTurnIds` is `unprotected`, and graph
+migration `0039_memorable_knowledge_unprotected_from_turn` stamped the existing
+ones (#2278): the edge goes when the Turn is deleted (user purge, history
+purge), and a memory marked by the edge alone then reached shielded turns.
+Raw MCP results and rule promotions stored before the stamp existed carry
+neither and stay recallable. The stamp is also written where no edge can carry
 it: a bypassed MCP result ingested into the graph (epic #459), and a `_rules/`
 file the durable-rules hook promotes from a turn without a shield or with a
 bypassed tool (no turn context reads as unprotected). As with turns, an
@@ -7410,10 +7414,13 @@ leave a record of who did it.
   known channel identity (a Telegram user without an account); the response
   names the resolved id (`resolvedUser`, warning `user_selector_resolved`), and
   a uuid nobody has gets `user_unknown` instead of a silent "nothing to
-  delete". Turns are matched by the identity's `<kind>:<id>` too. A remembered
-  fact the person owns alone is deleted with its excerpts; one shared with
-  other owners only loses the person (a `memory_acl_audit` `shrink` row with
-  the operator as actor). With a resolved person the purge also deletes their
+  delete". Turns and remembered facts are matched by every id of the person:
+  the omadia user id, each channel identity's `<kind>:<id>` and its AAD object
+  id (a Teams turn stores it, and Teams auto-promotion owns a memory by it,
+  #2279). A remembered fact the person owns alone, under any of those ids, is
+  deleted with its excerpts; one shared with other owners only loses all of
+  the person's ids (a `memory_acl_audit` `shrink` row with the operator as
+  actor). With a resolved person the purge also deletes their
   datasets, the processes they created (`processes.created_by_omadia_user_id`,
   migration 0038; processes stored before it have no creator and are not
   selected) and their `User` / `ChannelIdentity` nodes (name, e-mail) — last,

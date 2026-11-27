@@ -426,6 +426,29 @@ function mkProtectedSql(alias: string, tenantParam: string): string {
 }
 
 /**
+ * #1843 / #2279 — SQL: every id a person's rows may carry, one `id` column.
+ * The omadia user id, plus for each of their channel identities the AAD
+ * object id (a Teams turn stores it as `user_id`, Teams auto-promotion as
+ * memory owner) and the identity's `<kind>:<id>` (a Telegram, Slack, … turn
+ * stores it as `user_id`). `tenant` and `user` are placeholders; no rows when
+ * `user` is NULL. The conversation purge and the memory purge both use it, so
+ * the two halves of a user purge agree on who the person is.
+ */
+function personIdsSql(tenant: string, user: string): string {
+  return `SELECT ${user}::text AS id WHERE ${user}::text IS NOT NULL
+          UNION
+          SELECT x.id
+            FROM graph_nodes ci
+            JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+            JOIN graph_nodes u ON u.id = e.to_node
+            CROSS JOIN LATERAL (VALUES (ci.properties->>'aadObjectId'), (ci.external_id)) AS x(id)
+           WHERE ${user}::text IS NOT NULL
+             AND ci.tenant_id = ${tenant} AND ci.type = 'ChannelIdentity'
+             AND u.type = 'User' AND u.external_id = 'user:' || ${user}
+             AND x.id IS NOT NULL`;
+}
+
+/**
  * Postgres-backed knowledge graph (Neon serverless).
  *
  * Identity model: every node has a stable `external_id` (session:<scope>,
@@ -2632,6 +2655,32 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     try {
       await client.query('BEGIN');
 
+      // DERIVED_FROM targets — Turn nodes only, resolved before the MK is
+      // written so their shield flag can be stamped on it (#2278).
+      const derivedTurns: { id: string; unprotected: boolean }[] = [];
+      for (const turnExtId of input.derivedFromTurnIds ?? []) {
+        const row = await client.query<{ id: string; unprotected: boolean }>(
+          `SELECT id,
+                  COALESCE((properties->>'unprotected')::boolean, FALSE) AS unprotected
+           FROM graph_nodes
+           WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'
+           LIMIT 1`,
+          [this.tenantId, turnExtId],
+        );
+        const hit = row.rows[0];
+        if (!hit) {
+          skippedDerivedFrom++;
+          continue;
+        }
+        derivedTurns.push(hit);
+      }
+      // #2278 — a MK derived from an unprotected Turn is stamped itself. The
+      // DERIVED_FROM edge alone marked it before, and the edge goes when the
+      // Turn is deleted (user purge, history purge): the MK then reached
+      // shielded turns with values no shield masked.
+      const unprotected =
+        input.unprotected === true || derivedTurns.some((t) => t.unprotected);
+
       const initialOwners = input.aclOwners ?? [];
       const props = validateNodeProps('MemorableKnowledge', {
         kind: input.kind,
@@ -2644,7 +2693,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // default-isolate by origin (team/public visibility still shares).
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
         // #1536 — holds values no shield masked; recall under a shield skips it.
-        ...(input.unprotected === true ? { unprotected: true } : {}),
+        ...(unprotected ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -2711,23 +2760,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         });
       }
 
-      // DERIVED_FROM edges — Turn nodes only.
-      for (const turnExtId of input.derivedFromTurnIds ?? []) {
-        const row = await client.query<{ id: string }>(
-          `SELECT id FROM graph_nodes
-           WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'
-           LIMIT 1`,
-          [this.tenantId, turnExtId],
-        );
-        const hit = row.rows[0];
-        if (!hit) {
-          skippedDerivedFrom++;
-          continue;
-        }
+      for (const turn of derivedTurns) {
         await this.upsertEdge(client, {
           type: 'DERIVED_FROM',
           fromUuid: mkUuid,
-          toUuid: hit.id,
+          toUuid: turn.id,
         });
       }
 
@@ -3232,8 +3269,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       where += ` AND properties->>'origin_agent' = $${params.length}`;
     }
     if (filter.aclOwner !== undefined) {
-      params.push(JSON.stringify([filter.aclOwner]));
-      where += ` AND properties->'acl_owners' @> $${params.length}::jsonb`;
+      // #2279 — any id of the person: Teams auto-promotion owns a memory by
+      // the AAD object id, not the omadia user id.
+      params.push(filter.aclOwner);
+      where += ` AND properties->'acl_owners' ?| ARRAY(${personIdsSql('$1', `$${params.length}`)})`;
     }
     return { where, params };
   }
@@ -3254,7 +3293,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     params.push(filter.aclOwner);
     const otherOwner = `EXISTS (
       SELECT 1 FROM jsonb_array_elements_text(COALESCE(properties->'acl_owners', '[]'::jsonb)) o
-       WHERE o <> $${String(params.length)})`;
+       WHERE o NOT IN (${personIdsSql('$1', `$${String(params.length)}`)}))`;
     return {
       deleteWhere: `${where} AND NOT ${otherOwner}`,
       deownWhere: `${where} AND ${otherOwner}`,
@@ -3347,7 +3386,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
-  /** #1842 — drop `filter.aclOwner` from every shared entry, one audit row each. */
+  /** #1842 — drop `filter.aclOwner` (every id of the person, #2279) from
+   *  every shared entry, one audit row each. */
   private async deownForPurge(
     client: PoolClient,
     deownWhere: string,
@@ -3356,13 +3396,18 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   ): Promise<number> {
     const owner = filter.aclOwner;
     if (owner === undefined) return 0;
+    const personIds = new Set(
+      (
+        await client.query<{ id: string }>(personIdsSql('$1', '$2'), [this.tenantId, owner])
+      ).rows.map((r) => r.id),
+    );
     const rows = await client.query<{ id: string; external_id: string; owners: unknown }>(
       `SELECT id, external_id, properties->'acl_owners' AS owners FROM graph_nodes WHERE ${deownWhere}`,
       params,
     );
     for (const row of rows.rows) {
       const before = Array.isArray(row.owners) ? (row.owners as string[]) : [];
-      const after = before.filter((id) => id !== owner);
+      const after = before.filter((id) => !personIds.has(id));
       // ADR-0181 — like removeOwner: the entry leaves the person's list too.
       await client.query(
         `DELETE FROM graph_edges
@@ -3470,25 +3515,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
          OR left(${alias}.scope, length($2)) = $2
          OR ($2 = 'default::' AND ${alias}.scope NOT LIKE '%::%'))`;
     const cte = `
-      WITH identities AS (
-        SELECT ci.external_id, ci.properties
-          FROM graph_nodes ci
-          JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
-          JOIN graph_nodes u ON u.id = e.to_node
-         WHERE $3::text IS NOT NULL
-           AND ci.tenant_id = $1 AND ci.type = 'ChannelIdentity'
-           AND u.type = 'User' AND u.external_id = 'user:' || $3
-      ),
-      -- #1843 — a channel turn (Telegram, Slack, …) stores the identity's
-      -- "<kind>:<id>" as user_id; a Teams turn the AAD id.
-      user_ids AS (
-        SELECT $3::text AS id WHERE $3::text IS NOT NULL
-        UNION
-        SELECT properties->>'aadObjectId' FROM identities
-         WHERE properties->>'aadObjectId' IS NOT NULL
-        UNION
-        SELECT external_id FROM identities
-      ),
+      WITH user_ids AS (${personIdsSql('$1', '$3')}),
       roots AS (
         SELECT n.id, n.type, n.external_id FROM graph_nodes n
          WHERE n.tenant_id = $1

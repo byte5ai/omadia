@@ -14,6 +14,7 @@
 import { memoryContextKey } from '@omadia/channel-sdk';
 import {
   ChatSessionStore,
+  MembersIndex,
   contextTierRoot,
   membersTierKey,
   membersTierRoot,
@@ -303,6 +304,13 @@ export async function seedWorld(
   for (const s of world.byStore.scratch) {
     const path = scratchPath(s, users);
     const memory = stores[s.tenant].memory;
+    if (s.tier === 'members') {
+      // The binder records who a members tier belongs to before writing it;
+      // the purge finds a person's trees through this index (ADR-0186).
+      await new MembersIndex(memory, AGENTS[s.agent as 'atlas']).register(
+        s.owners!.map((u) => users[s.tenant][u]),
+      );
+    }
     if (s.tier === 'chat-session') {
       // A web chat tab, stored the way the web UI's store writes it.
       const at = TIME_BASE + clock++ * 1000;

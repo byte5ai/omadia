@@ -120,6 +120,49 @@ describe('memory purge, axis "User", as an erasure', () => {
     }
   });
 
+  it('#2279 — memory a Teams turn promoted under the AAD object id goes with the person', async () => {
+    const h = await makeHarness();
+    try {
+      const aad = 'aad0aad0-2279-4222-8333-000000002279';
+      const { omadiaUserId: person } = await h.kg.resolveOrCreateChannelIdentity({
+        channelKind: 'teams',
+        channelUserId: '29:teams-bea',
+        aadObjectId: aad,
+        displayName: 'Bea Beispiel',
+      });
+      // Teams auto-promotion owns a memory by the raw channel id (the AAD id).
+      const alone = await h.kg.createMemorableKnowledge({
+        kind: 'insight',
+        summary: 'Bea alone, from Teams',
+        aclOwners: [aad],
+        createdBy: 'test',
+        palaiaExcerpts: { texts: ['teams excerpt'], source: 'hint' },
+      });
+      const shared = await h.kg.createMemorableKnowledge({
+        kind: 'decision',
+        summary: 'Teams room: Dolphin starts in January.',
+        aclOwners: [ALICE, aad],
+        createdBy: 'test',
+      });
+      const before = await preview(h, { axis: 'user', selector: person });
+      assert.equal(before.status, 200, JSON.stringify(before.body));
+      assert.equal(before.body['kgCount'], 1, 'the entry owned by the AAD id alone');
+      assert.equal(before.body['kgDeownedCount'], 1);
+      assert.equal(before.body['kgExcerptCount'], 1);
+
+      const r = await previewAndPurge(h, { axis: 'user', selector: person });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal(r.body['kgDeleted'], 1);
+      assert.equal(r.body['kgDeowned'], 1);
+      assert.equal(r.body['kgExcerptsDeleted'], 1);
+      assert.equal(await h.kg.getMemorableKnowledge(alone.memorableKnowledgeNodeId), null);
+      const kept = await h.kg.getMemorableKnowledge(shared.memorableKnowledgeNodeId, ALICE);
+      assert.deepEqual(kept?.props['acl_owners'], [ALICE], 'Alice keeps it, the AAD id is gone');
+    } finally {
+      await h.close();
+    }
+  });
+
   it('#1843 — a channel-only user is found by the "<channel>~<id>" selector', async () => {
     const h = await makeHarness();
     try {

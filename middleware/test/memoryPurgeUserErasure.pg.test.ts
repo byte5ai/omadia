@@ -99,6 +99,63 @@ describe('#1842/#1843 · user erasure on Neon (real PG)', () => {
     assert.equal((await kg.countUserIdentity(alice.omadiaUserId)).count, 2, 'Alice untouched');
   });
 
+  it('#2279 — reaches memory owned by the AAD object id of a Teams identity', async (t) => {
+    if (!pool) return t.skip('no test database');
+    await runGraphMigrations(pool);
+    await wipe(pool);
+    const kg = new NeonKnowledgeGraph({ pool, tenantId: TENANT });
+    const aad = 'aad0aad0-2279-4222-8333-000000002279';
+    const bea = await kg.resolveOrCreateChannelIdentity({
+      channelKind: 'teams',
+      channelUserId: '29:teams-bea',
+      aadObjectId: aad,
+      displayName: 'Bea',
+    });
+    const alice = await kg.resolveOrCreateChannelIdentity({ channelKind: 'web', channelUserId: 'acc-alice' });
+    // Teams auto-promotion owns a memory by the raw channel id (the AAD id).
+    const alone = await kg.createMemorableKnowledge({
+      kind: 'insight',
+      summary: 'Bea alone, from Teams',
+      aclOwners: [aad],
+      createdBy: 'test',
+      palaiaExcerpts: { texts: ['one'], source: 'hint' },
+    });
+    const both = await kg.createMemorableKnowledge({
+      kind: 'insight',
+      summary: 'Bea in both forms',
+      aclOwners: [bea.omadiaUserId, aad],
+      createdBy: 'test',
+    });
+    const shared = await kg.createMemorableKnowledge({
+      kind: 'decision',
+      summary: 'Teams room: Dolphin starts in January.',
+      aclOwners: [alice.omadiaUserId, aad, bea.omadiaUserId],
+      createdBy: 'test',
+    });
+    const aliceOwn = await kg.createMemorableKnowledge({
+      kind: 'insight',
+      summary: 'Alice alone',
+      aclOwners: [alice.omadiaUserId],
+      createdBy: 'test',
+    });
+    const filter = { tenantId: TENANT, aclOwner: bea.omadiaUserId, actorOmadiaUserId: OPERATOR };
+    assert.deepEqual(await kg.countMemorableKnowledge(filter), { count: 2, deowned: 1, excerpts: 1 });
+    assert.deepEqual(await kg.purgeMemorableKnowledge(filter), {
+      deletedNodes: 2,
+      deownedNodes: 1,
+      deletedExcerpts: 1,
+    });
+    assert.equal(await kg.getMemorableKnowledge(alone.memorableKnowledgeNodeId), null);
+    assert.equal(await kg.getMemorableKnowledge(both.memorableKnowledgeNodeId), null);
+    const kept = await kg.getMemorableKnowledge(shared.memorableKnowledgeNodeId, alice.omadiaUserId);
+    assert.deepEqual(kept?.props['acl_owners'], [alice.omadiaUserId], 'both of Bea’s ids are gone');
+    assert.notEqual(
+      await kg.getMemorableKnowledge(aliceOwn.memorableKnowledgeNodeId, alice.omadiaUserId),
+      null,
+      'Alice’s own entry is untouched',
+    );
+  });
+
   it('records who created a process and purges exactly those, history included', async (t) => {
     if (!pool) return t.skip('no test database');
     await runGraphMigrations(pool);
