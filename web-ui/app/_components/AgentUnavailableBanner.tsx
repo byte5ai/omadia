@@ -27,8 +27,10 @@ export interface AgentUnavailableBannerProps {
   unavailableSlug: string;
   onRecovered: () => void;
   onDeleted: () => void;
-  /** OM-76 — default `agent_unavailable` keeps the original two-action UI. */
-  reason?: 'agent_unavailable' | 'no_agents_active';
+  /** OM-76 — default `agent_unavailable` keeps the original two-action UI.
+   *  #2314 — `agent_deleted`: the pinned agent was deleted and its slug now
+   *  names another agent; same actions, a body that says so. */
+  reason?: 'agent_unavailable' | 'agent_deleted' | 'no_agents_active';
 }
 
 export function AgentUnavailableBanner(
@@ -98,7 +100,9 @@ export function AgentUnavailableBanner(
     <div className="mx-auto mt-4 max-w-4xl rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
       <p className="font-medium">{t('unavailableTitle')}</p>
       <p className="mt-1 text-[color:var(--warning)]">
-        {t('unavailableBody', { slug: props.unavailableSlug })}
+        {props.reason === 'agent_deleted'
+          ? t('unavailableReplacedBody', { slug: props.unavailableSlug })
+          : t('unavailableBody', { slug: props.unavailableSlug })}
       </p>
       {error && (
         <p className="mt-2 text-[color:var(--danger)]">{error}</p>

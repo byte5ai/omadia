@@ -2188,6 +2188,19 @@ before dispatch, and the wired dispatcher runs no handler without one
 drives a real `LocalSubAgent` through the production wiring and asserts on
 what its provider receives.
 
+**File producers on the public endpoint (#2305, ADR-0271).** Intern-exempt tools stay
+unservable (`isPubliclyServableTool`), with one exception: `PUBLIC_RESULT_CHECKED_TOOLS`
+(`render_diagram`, `create_xlsx`, `create_docx`), whose result is the produced file's metadata
+and link. Each such result is read by the shield's free-text detectors
+(`PublicMcpPrivacyGate.checkResult` → `redactToolErrorText`) inside `validateResult`, before it
+is served or retained by the idempotency store. Only a clean verdict sets `resultChecked()`: no
+span, detector not degraded. A span, `withheld`, a degraded C1, a provider without the
+contract, or a throw leaves it unset, and `assertMaskingCrossed` refuses the call like an
+unmasked result (`masked() || resultChecked()` is the bar). Residual: the check covers what the
+endpoint returns, not the bytes behind the signed link, which are the caller's own input. Each
+public request finalizes its privacy turn once its work settles, so interned datasets and C1
+caches of public requests are not kept.
+
 The kernel's own refusals from `dispatchToolInner` (tool unavailable, not
 granted, unknown tool) name only the tool and its plugin; they are exempted by
 per-dispatch provenance, never by their shape, so a provider that cannot
@@ -4733,9 +4746,14 @@ under LLM access deletes copies and `superseded:` copies in those two scopes, an
 provider plugin's uninstall purge removes its `superseded:` copies. A provider API key sent to the verifier's or extras' scope through the
 per-plugin editor is refused (`400 runtime.provider_key_in_kernel_scope`) instead
 of being stored where nothing reads it. Residual: an install that ran extras on a
-dedicated Anthropic key now runs it on the key under LLM access; the OAuth token
-fan-out and the back-compat `/setup` key seed still write copies into the module
-scopes (never read by the modules).
+dedicated Anthropic key now runs it on the key under LLM access.
+
+**OAuth tokens and the `/setup` seed (#2313, ADR-0275).** The OAuth device flow and the
+token store's refresh write provider OAuth tokens into the kernel scope only; the `/setup`
+key seed writes the Anthropic key there once. On boot, an OAuth copy the old fan-out left
+in a module scope replaces the kernel's when its `oauth_updated_at` stamp is newer (a
+rotated refresh token is the only valid one), then the module copy is deleted. Logs carry
+scope and provider only.
 
 ### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
 

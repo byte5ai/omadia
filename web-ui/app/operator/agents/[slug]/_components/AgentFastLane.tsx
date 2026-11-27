@@ -54,9 +54,14 @@ export function AgentFastLane(props: AgentFastLaneProps): React.ReactElement {
 
   const toggle = (enabled: boolean): void => {
     setBusy(true);
-    void setAgentFastLane(props.slug, enabled)
+    // #2315 — the revision this toggle was read at; a stale one is a 409, and
+    // the re-read shows what the other save stored.
+    void setAgentFastLane(props.slug, enabled, state?.revision)
       .then(refresh)
-      .catch((err: unknown) => setError(localizeError(err)))
+      .catch(async (err: unknown) => {
+        if (parseOperatorAgentErrorCode(err) === 'config_revision_conflict') await refresh();
+        setError(localizeError(err));
+      })
       .finally(() => setBusy(false));
   };
 

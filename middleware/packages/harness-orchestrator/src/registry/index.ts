@@ -851,6 +851,7 @@ export class OrchestratorRegistry {
     if (!entry) return undefined;
     return {
       agentSlug: entry.agent.slug,
+      agentId: entry.agent.id,
       pluginIds: entry.plugins.filter((p) => p.enabled).map((p) => p.pluginId),
       // Tool enumeration is shared at the kernel level until per-Agent
       // plugin activation lands — the empty array means "no per-session

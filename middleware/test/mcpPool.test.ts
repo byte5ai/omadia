@@ -46,7 +46,7 @@ const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio
 function stdioServer(
   id: string,
   marker: string,
-  mode: 'ok' | 'unauthorized' = 'ok',
+  mode: 'ok' | 'unauthorized' | 'hang' = 'ok',
 ): McpServerConfig {
   return {
     id,
@@ -239,6 +239,40 @@ describe('McpManager connection pooling (#563)', { concurrency: 1 }, () => {
       assert.equal((await readStarts(logDenied)).length, 2, 'the failing server must reconnect');
     } finally {
       await manager.closeAll();
+      await cleanup();
+    }
+  });
+
+  it('retires a stdio child whose call timed out and spawns a fresh one (#2307)', async () => {
+    const { marker, cleanup } = await bench();
+    const log = marker('hang');
+    const restore = [
+      ['OMADIA_MCP_CALL_TIMEOUT_MS', '300'],
+      ['OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS', '300'],
+    ].map(([name, value]) => {
+      const previous = process.env[name!];
+      process.env[name!] = value;
+      return () => {
+        if (previous === undefined) delete process.env[name!];
+        else process.env[name!] = previous;
+      };
+    });
+    const manager = new McpManager();
+    const server = stdioServer('2307aaaa-hang', log, 'hang');
+    try {
+      const first = await manager.callTool(server, 'ping', {});
+      assert.match(first, /^Error: outcome unknown/, 'a write that timed out is not re-sent');
+      assert.equal(manager.poolSize, 0, 'the wedged child left the pool');
+      const [wedged] = await readPids(log);
+      assert.ok(wedged !== undefined);
+      // Nothing else ran on it, so it is closed right away, not after the grace.
+      await waitFor('the wedged child to exit', () => isDead(wedged), 5_000);
+
+      await manager.callTool(server, 'ping', {});
+      assert.equal((await readStarts(log)).length, 2, 'the next call spawned a fresh child');
+    } finally {
+      await manager.closeAll();
+      for (const undo of restore) undo();
       await cleanup();
     }
   });

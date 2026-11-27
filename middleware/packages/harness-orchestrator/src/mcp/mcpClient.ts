@@ -49,6 +49,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CallToolResultSchema,
+  ErrorCode,
   McpError,
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
@@ -66,6 +67,7 @@ import type { ToolDispatchCallerContext } from '../toolDispatchService.js';
 import { currentIdempotencyScope, sendsEachCallOnce } from '../toolIdempotency.js';
 import { recordMcpAuthPrompt } from './mcpAuthPromptMint.js';
 import { recordMcpStructured } from './mcpStructuredCapture.js';
+import { binaryBlockPlaceholder, recordMcpImages } from './mcpBinaryContent.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
   extractMcpInputPrompt,
@@ -984,6 +986,30 @@ function restoreLegacyInputRequired(res: unknown, era: string | undefined): unkn
 interface PoolEntry {
   readonly promise: Promise<Pooled>;
   lastUsedAt: number;
+  /** #2307 — `tools/call` requests currently running on this entry. */
+  inFlight: number;
+  /** #2307 — taken out of the pool after a stdio timeout; the child is closed
+   *  once `inFlight` reaches 0 (or the grace timer fires). */
+  retired: boolean;
+}
+
+/**
+ * #2307 — a stdio child that let a request time out is treated as wedged: a
+ * stdio server is one process, usually working one request at a time, so the
+ * next caller would queue behind the same hang. The entry leaves the pool at
+ * once (the next call spawns a fresh child); the old child keeps serving the
+ * requests already running on it and is closed when they settle, or after this
+ * grace at the latest, so a child that never answers cannot leak.
+ */
+const MCP_STDIO_RETIRE_GRACE_MS = 30_000;
+
+/** #2307 — the SDK's own request timeout (`ErrorCode.RequestTimeout`,
+ *  -32001). A JSON-RPC error the server itself sent ("upstream DB timeout")
+ *  comes from a working child and does not count; only a non-protocol error
+ *  falls back to the message. */
+function isRequestTimeout(err: unknown): boolean {
+  if (err instanceof McpError) return err.code === Number(ErrorCode.RequestTimeout);
+  return /timed?\s*out/i.test(msg(err));
 }
 
 const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
@@ -1119,6 +1145,8 @@ export function resolveMcpCallTimeouts(): {
 
 export class McpManager {
   private readonly entries = new Map<string, PoolEntry>();
+  /** #2307 — stdio entries taken out of the pool, not yet closed. */
+  private readonly retiredEntries = new Set<PoolEntry>();
   /** Issue #547 (W1-3) — declared `outputSchema` per `${serverId} ${tool}`.
    *  `callTool` only receives a name, so the schema learned at discovery (or
    *  rehydrated from the persisted descriptor by the adapters below) is cached
@@ -1622,10 +1650,18 @@ export class McpManager {
     for (let attempt = 1; attempt <= MCP_CALL_MAX_ATTEMPTS; attempt += 1) {
       const attemptStartedAt = Date.now();
       const pooledPromise = this.getOrConnect(cfg, token);
+      // #2307 — counted so a retired stdio child is closed only once the
+      // requests already running on it have settled.
+      const entry = this.entries.get(key);
+      const usedEntry = entry?.promise === pooledPromise ? entry : undefined;
+      // Counted before the connect settles, so a parallel retire cannot close
+      // the child while this call still waits for it.
+      if (usedEntry) usedEntry.inFlight += 1;
       let pooled: Pooled;
       try {
         pooled = await pooledPromise;
       } catch (err) {
+        if (usedEntry) this.releaseEntry(usedEntry);
         // Refused by the connect guard (#1341 / #1342): nothing was dialled, a
         // retry would be refused again, and the auth-prompt fallback in
         // `handleFailure` would contact the refused host for OAuth metadata.
@@ -1733,6 +1769,9 @@ export class McpManager {
           // payload, not from the model-facing text (ADR-0021 side channel).
           recordMcpStructured(structured);
         }
+        // #1920 / ADR-0272 — eligible images for the dispatch's capture; the
+        // orchestrator attaches them only where no shield masks the server.
+        recordMcpImages(res);
         return { text: rendered, status: 'ok' };
       } catch (err) {
         const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
@@ -1745,6 +1784,10 @@ export class McpManager {
         // token-scoped entry of the server with it.
         if (sessionExpired || pooled.client.isClosed()) {
           await this.dropEntryIfCurrent(key, pooledPromise);
+        } else if (cfg.transport === 'stdio' && isRequestTimeout(err)) {
+          // #2307 — a stdio child that timed out is wedged; the next call
+          // gets a fresh one. Requests still running on it are not cut off.
+          this.retireEntryIfCurrent(key, pooledPromise);
         }
         const hasAttemptLeft =
           attempt < MCP_CALL_MAX_ATTEMPTS && remainingBudgetMs() !== null;
@@ -1815,6 +1858,8 @@ export class McpManager {
           actingIdentity,
         );
         return { text: unknown, status: 'outcome_unknown' };
+      } finally {
+        if (usedEntry) this.releaseEntry(usedEntry);
       }
     }
     // Every attempt failed before a request was sent (connect), or the last
@@ -1968,7 +2013,10 @@ export class McpManager {
   async closeAll(): Promise<void> {
     this.toolListPurgeGen += 1;
     this.toolLists.clear();
-    await Promise.all([...this.entries.keys()].map((key) => this.dropEntry(key)));
+    await Promise.all([
+      ...[...this.entries.keys()].map((key) => this.dropEntry(key)),
+      ...[...this.retiredEntries].map((entry) => this.closePooled(entry)),
+    ]);
   }
 
   /** Remove one entry and tear its connection down. The removal is synchronous
@@ -1979,6 +2027,48 @@ export class McpManager {
     const entry = this.entries.get(key);
     this.entries.delete(key);
     if (!entry) return Promise.resolve();
+    return this.closePooled(entry);
+  }
+
+  /**
+   * #1905 — drop `key` only while it still holds the connection this call
+   * used. A parallel call may already have dropped it and reconnected; that
+   * fresh connection serves other callers and must survive. Exact key only:
+   * never `close()`, whose bare-id form matches every token of the server.
+   */
+  private async dropEntryIfCurrent(key: string, used: Promise<Pooled>): Promise<void> {
+    if (this.entries.get(key)?.promise !== used) return;
+    await this.dropEntry(key);
+  }
+
+  /**
+   * #2307 — take `key` out of the pool while it still holds the connection
+   * this call used, without closing it yet: other requests may be running on
+   * the same stdio child. `releaseEntry` closes it when the last one settles;
+   * the grace timer bounds a child that never answers.
+   */
+  private retireEntryIfCurrent(key: string, used: Promise<Pooled>): void {
+    const entry = this.entries.get(key);
+    if (entry?.promise !== used) return;
+    this.entries.delete(key);
+    entry.retired = true;
+    this.retiredEntries.add(entry);
+    const timer = setTimeout(() => {
+      void this.closePooled(entry);
+    }, MCP_STDIO_RETIRE_GRACE_MS);
+    // Never keep the process (or `node --test`) alive for a retired child.
+    timer.unref();
+  }
+
+  /** #2307 — one request on `entry` settled. */
+  private releaseEntry(entry: PoolEntry): void {
+    entry.inFlight = Math.max(0, entry.inFlight - 1);
+    if (entry.retired && entry.inFlight === 0) void this.closePooled(entry);
+  }
+
+  /** Close an entry's connection, best-effort; closing twice is harmless. */
+  private closePooled(entry: PoolEntry): Promise<void> {
+    this.retiredEntries.delete(entry);
     return entry.promise.then(
       async (pooled) => {
         try {
@@ -1993,17 +2083,6 @@ export class McpManager {
     );
   }
 
-  /**
-   * #1905 — drop `key` only while it still holds the connection this call
-   * used. A parallel call may already have dropped it and reconnected; that
-   * fresh connection serves other callers and must survive. Exact key only:
-   * never `close()`, whose bare-id form matches every token of the server.
-   */
-  private async dropEntryIfCurrent(key: string, used: Promise<Pooled>): Promise<void> {
-    if (this.entries.get(key)?.promise !== used) return;
-    await this.dropEntry(key);
-  }
-
   /** Close every entry idle for longer than the configured TTL. Lazy by
    *  design (see the class doc): called from `getOrConnect`, never from a
    *  timer. Deleting the current key while iterating a Map is safe. */
@@ -2012,7 +2091,8 @@ export class McpManager {
     if (!(ttl > 0)) return;
     const cutoff = Date.now() - ttl;
     for (const [key, entry] of this.entries) {
-      if (entry.lastUsedAt <= cutoff) void this.dropEntry(key);
+      // A call still running on it keeps it (#2307 counts them).
+      if (entry.lastUsedAt <= cutoff && entry.inFlight === 0) void this.dropEntry(key);
     }
   }
 
@@ -2030,7 +2110,7 @@ export class McpManager {
       if (this.entries.get(key)?.promise === promise) this.entries.delete(key);
       throw err;
     });
-    this.entries.set(key, { promise, lastUsedAt: Date.now() });
+    this.entries.set(key, { promise, lastUsedAt: Date.now(), inFlight: 0, retired: false });
     return promise;
   }
 
@@ -2344,34 +2424,6 @@ export function renderToolResult(res: any): string {
     return JSON.stringify(res.structuredContent);
   }
   return JSON.stringify(res ?? {});
-}
-
-/** Bytes a base64 string decodes to (padding-aware, no decode). */
-function base64Bytes(data: string): number {
-  const clean = data.replace(/\s/g, '');
-  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
-  return Math.max(0, Math.floor((clean.length * 3) / 4) - padding);
-}
-
-/**
- * #1920 — the placeholder for a binary MCP content block, or undefined for a
- * block that is not binary. Covers `image` and `audio` blocks and a
- * `resource` whose content is a `blob`.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function binaryBlockPlaceholder(block: any): string | undefined {
-  const kind: string | undefined =
-    block?.type === 'image' || block?.type === 'audio'
-      ? block.type
-      : block?.type === 'resource' && typeof block.resource?.blob === 'string'
-        ? 'binary resource'
-        : undefined;
-  if (kind === undefined) return undefined;
-  const data: unknown = kind === 'binary resource' ? block.resource.blob : block.data;
-  const mime: unknown = kind === 'binary resource' ? block.resource.mimeType : block.mimeType;
-  const size = typeof data === 'string' ? `${String(base64Bytes(data))} bytes` : 'unknown size';
-  const type = typeof mime === 'string' && mime.length > 0 ? mime.slice(0, 100) : 'unknown type';
-  return `[${kind}: ${type}, ${size} — not shown to the model]`;
 }
 
 /**

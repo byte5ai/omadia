@@ -73,6 +73,18 @@ export interface CreateRoutineInput {
   agentId?: string | null;
   /** #1907 — see Routine.mcpUserKey. */
   mcpUserKey?: string | null;
+  /**
+   * #2316 (ADR-0279) — the session scope of the conversation the routine was
+   * created in; channel turns there see its recent deliveries. Write-only.
+   */
+  originScope?: string | null;
+}
+
+/** #2316 — one delivered run, as conversation context of a channel chat. */
+export interface ChannelDelivery {
+  routineName: string;
+  deliveredAt: number;
+  content: string;
 }
 
 export interface RecordRunInput {
@@ -222,13 +234,48 @@ export class RoutineStore {
       });
   }
 
+  /**
+   * #2316 (ADR-0279) — the delivered runs (status `ok`, with an answer) of
+   * routines created in the conversation `originScope`, newest first, started
+   * after `since`, of the routines bound to `agentSlug` only: another agent
+   * in the same chat does not get output produced under this agent's grants.
+   * Whoever owns the routine: a delivery was posted into that conversation
+   * for all its members to read.
+   */
+  async recentDeliveriesForScope(
+    originScope: string,
+    agentSlug: string,
+    since: Date,
+    limit: number,
+  ): Promise<ChannelDelivery[]> {
+    const { rows } = await this.pool.query<{ name: string; delivered_at: Date; answer: string }>(
+      `SELECT r.name, COALESCE(rr.finished_at, rr.started_at) AS delivered_at, rr.answer
+         FROM routine_runs rr
+         JOIN routines r ON r.id = rr.routine_id
+        WHERE r.origin_scope = $1
+          AND r.agent_slug = $2
+          AND rr.status = 'ok'
+          AND rr.answer IS NOT NULL AND btrim(rr.answer) <> ''
+          AND rr.started_at >= $3
+        ORDER BY rr.started_at DESC
+        LIMIT $4`,
+      [originScope, agentSlug, since, limit],
+    );
+    return rows.map((row) => ({
+      routineName: row.name,
+      deliveredAt: row.delivered_at.getTime(),
+      content: row.answer,
+    }));
+  }
+
   async create(input: CreateRoutineInput): Promise<Routine> {
     try {
       const result = await this.pool.query<RoutineRow>(
         `INSERT INTO routines
            (tenant, user_id, name, cron, prompt, channel,
-            conversation_ref, timeout_ms, output_template, agent_slug, timezone, agent_id, mcp_user_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11, $12, $13)
+            conversation_ref, timeout_ms, output_template, agent_slug, timezone, agent_id, mcp_user_key,
+            origin_scope)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11, $12, $13, $14)
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.tenant,
@@ -246,6 +293,7 @@ export class RoutineStore {
           input.timezone ?? null,
           input.agentId ?? null,
           input.mcpUserKey ?? null,
+          input.originScope ?? null,
         ],
       );
       const row = result.rows[0];

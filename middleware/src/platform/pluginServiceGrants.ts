@@ -364,11 +364,14 @@ export const KERNEL_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
  *    for any memory node id the caller names;
  *  - `nudgeProviders`: the queued providers of other plugins, handed to the
  *    orchestrator's registry;
- *  - `graphLifecycle`: graph-wide purges and re-embeds.
+ *  - `graphLifecycle`: graph-wide purges and re-embeds;
+ *  - `conversationContext` (#2316, ADR-0279): the routine deliveries of any
+ *    conversation the caller names by session scope.
  *
  * Audit 2026-11-26: no Hub plugin at `origin/main` declares one of them; the
  * orchestrator (an implementer) consumes `contextRetriever`,
- * `sessionBriefing`, `palaiaExcerpt` and `nudgeProviders`. `entityRefBus`
+ * `sessionBriefing`, `palaiaExcerpt`, `nudgeProviders` and (#2316)
+ * `conversationContext`. `entityRefBus`
  * stays plugin-facing in a bounded form (publish only, `boundedGraphServices.ts`).
  */
 export const BOUNDARY_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
@@ -383,6 +386,7 @@ export const BOUNDARY_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
   'mergeCandidateDetector',
   'nudgeProviders',
   'graphLifecycle',
+  'conversationContext',
 ]);
 
 /**

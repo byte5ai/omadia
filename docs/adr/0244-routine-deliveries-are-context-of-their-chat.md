@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0278](0278-routine-deliveries-travel-as-conversation-context.md) (the block travels as `conversationContextHint`: no fast-path loss, dropped when it cannot be masked) and by [ADR-0279](0279-channel-chats-see-their-routine-deliveries.md) (channel chats get their deliveries too)
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (wave 5, W22-23)

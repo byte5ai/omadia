@@ -255,6 +255,13 @@ export type McpDelegation = 'per_user' | 'service';
  *  `rejected` — the MCP server refused a call that carried the token. */
 export type McpOAuthTokenInvalidReason = 'refresh_failed' | 'rejected';
 
+/** #2308 — who stored an MCP OAuth token on Connect (the flow's audit actor). */
+export interface McpOAuthTokenStoredBy {
+  readonly id: string | null;
+  readonly email: string | null;
+  readonly at: Date;
+}
+
 /**
  * How omadia acquired the OAuth client it uses at an authorization server
  * (migration 0032, W2-4). All three modes are first-class and PERMANENT:
@@ -1565,6 +1572,8 @@ export class AgentGraphStore {
         issuer: string | null;
         /** Set once the token is known not to work (#1923), null otherwise. */
         invalidReason: McpOAuthTokenInvalidReason | null;
+        /** #2308 — who stored it on Connect; null on older rows. */
+        storedBy: McpOAuthTokenStoredBy | null;
       }
     | undefined
   > {
@@ -1577,6 +1586,9 @@ export class AgentGraphStore {
       scopes: string | null;
       issuer?: string | null;
       invalid_reason?: string | null;
+      stored_by_id?: string | null;
+      stored_by_email?: string | null;
+      stored_at?: Date | null;
     }>('SELECT * FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [serverId, userKey]);
     const r = rows[0];
     return r
@@ -1592,6 +1604,14 @@ export class AgentGraphStore {
             r.invalid_reason === 'refresh_failed' || r.invalid_reason === 'rejected'
               ? r.invalid_reason
               : null,
+          storedBy:
+            r.stored_at === undefined || r.stored_at === null
+              ? null
+              : {
+                  id: r.stored_by_id ?? null,
+                  email: r.stored_by_email ?? null,
+                  at: r.stored_at,
+                },
         }
       : undefined;
   }
@@ -1606,13 +1626,18 @@ export class AgentGraphStore {
     /** Issuer that minted the token (W0-1) — lets a rotated issuer invalidate
      *  the stored token instead of replaying it against a different AS. */
     issuer?: string | null;
+    /** #2308 — set on a completed Connect (who started it). Absent on a
+     *  refresh, which keeps the stored attribution. */
+    storedBy?: { readonly id: string | null; readonly email: string | null };
   }): Promise<void> {
     // A token that was just issued is a working one: the upsert clears whatever
     // mark the previous token collected (#1923).
+    const connect = input.storedBy !== undefined;
     await this.pool.query(
       `INSERT INTO mcp_oauth_tokens
-         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, issuer, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, issuer,
+          stored_by_id, stored_by_email, stored_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, CASE WHEN $10::boolean THEN now() ELSE NULL END, now())
        ON CONFLICT (server_id, user_key) DO UPDATE SET
          access_token_ref = EXCLUDED.access_token_ref,
          refresh_token_ref = EXCLUDED.refresh_token_ref,
@@ -1621,6 +1646,9 @@ export class AgentGraphStore {
          issuer = EXCLUDED.issuer,
          invalid_reason = NULL,
          invalid_at = NULL,
+         stored_by_id = CASE WHEN $10::boolean THEN EXCLUDED.stored_by_id ELSE mcp_oauth_tokens.stored_by_id END,
+         stored_by_email = CASE WHEN $10::boolean THEN EXCLUDED.stored_by_email ELSE mcp_oauth_tokens.stored_by_email END,
+         stored_at = CASE WHEN $10::boolean THEN EXCLUDED.stored_at ELSE mcp_oauth_tokens.stored_at END,
          updated_at = now()`,
       [
         input.serverId,
@@ -1630,6 +1658,9 @@ export class AgentGraphStore {
         input.expiresAt,
         input.scopes,
         input.issuer ?? null,
+        input.storedBy?.id ?? null,
+        input.storedBy?.email ?? null,
+        connect,
       ],
     );
   }

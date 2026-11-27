@@ -44,6 +44,15 @@ export const API_PREFIX = '/api/public/v1';
  *  only the dashboard listing is lost). */
 const CHANNEL_DIRECTORY_SERVICE = 'channelDirectoryRegistry';
 
+/** #2310 — kernel service that drops the public MCP binding of a deleted key
+ *  (`src/mcp/publicMcpKeyBindingCascade.ts`). Optional like the registry: an
+ *  older kernel leaves the binding, which then reads `key_id_unknown`. */
+const PUBLIC_MCP_KEY_BINDINGS_SERVICE = 'publicMcpKeyBindings';
+
+interface PublicMcpKeyBindingsLike {
+  forgetDeletedKey(keyId: string): Promise<string>;
+}
+
 /** The registry surface this plugin uses — the kernel's
  *  `ChannelDirectoryRegistry` lives in core src and is not importable from a
  *  plugin, so we depend on its shape, not its class. */
@@ -91,6 +100,12 @@ export async function activate(
     createAdminKeysRouter(apiKeys, ctx.operatorAuth, {
       usageLog: auditLog,
       log: (...args) => ctx.log(...args),
+      onKeyDeleted: async (id) => {
+        const bindings = ctx.services?.getOptional?.<PublicMcpKeyBindingsLike>(
+          PUBLIC_MCP_KEY_BINDINGS_SERVICE,
+        );
+        await bindings?.forgetDeletedKey(id);
+      },
     }),
   );
 

@@ -14,6 +14,7 @@ import {
 } from '@omadia/channel-sdk';
 import { KernelAgentSelectionService } from './management/agentSelection.js';
 import type { FacilitatorRuntimeLookup } from './facilitatorAgent.js';
+import type { ConversationContextLookup } from './conversationContextAgent.js';
 import type {
   SecurityPostureSetup,
   SecurityScreenMode,
@@ -283,6 +284,8 @@ export function kernelHumanNames(
 }
 /** #2043 — kernel-published lookup, see `OrchestratorDeps.isEngineDrivenConversation`. */
 export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
+/** #2316 (ADR-0279) — kernel-published, see `OrchestratorDeps.conversationContext`. */
+export const CONVERSATION_CONTEXT_SERVICE = 'conversationContext';
 
 /** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
 export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
@@ -1274,6 +1277,10 @@ export async function activate(
     // inside its database block, possibly after this plugin activated).
     chatPeerAgents: async () =>
       (await ctx.services.getOptional<ChatPeerAgentsProvider>(CHAT_PEER_AGENTS_SERVICE)?.()) ?? [],
+    // #2316 (ADR-0279) — resolved PER TURN (provided with the routines store,
+    // after this plugin may have activated). Absent: no block.
+    conversationContext: async (sessionScope, agentSlug) =>
+      ctx.services.getOptional<ConversationContextLookup>(CONVERSATION_CONTEXT_SERVICE)?.(sessionScope, agentSlug),
     // #2043 — resolved PER TURN for the same reason. Absent (older kernel):
     // no conversation is engine-driven and no engine is usable.
     isEngineDrivenConversation: (agentSlug, channelType, conversationId) =>

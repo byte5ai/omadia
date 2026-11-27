@@ -227,6 +227,13 @@ import {
 } from './toolsOffTurn.js';
 import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
 import { capToolResultText } from './toolResultCap.js';
+import {
+  captureMcpImages,
+  newModelImageBudget,
+  stripModelImages,
+  withModelImages,
+  type McpModelImage,
+} from './mcp/mcpBinaryContent.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import {
   createPrivacyTurnHandle,
@@ -2129,6 +2136,28 @@ ${priorContext}`,
 }
 
 /**
+ * #2317 (ADR-0278) — the conversation's data block (routine deliveries) as it
+ * crosses the wire: masked like the caller's hint, but a block that cannot be
+ * masked is DROPPED from this turn instead of failing it. Dropping is the
+ * closed direction: the unmasked text never reaches the model, and the turn
+ * the user asked still runs. Logged without the text.
+ */
+export async function wireConversationContextHint(
+  privacy: PrivacyTurnHandle | undefined,
+  hint: string | undefined,
+): Promise<string | undefined> {
+  if (hint === undefined || hint.trim().length === 0) return undefined;
+  try {
+    return await maskPromptForWire(privacy, hint, 'context');
+  } catch (err) {
+    console.warn(
+      `[orchestrator] conversation context left out of this turn: it could not be masked (${err instanceof Error ? err.name : 'error'})`,
+    );
+    return undefined;
+  }
+}
+
+/**
  * The per-turn system hint as it crosses the wire (#361): the caller's
  * `extraSystemHint` masked through the turn's prompt map like the user's
  * message — once, through this turn's map — then composed with the kernel's
@@ -2152,12 +2181,14 @@ async function wireExtraSystemHint(
   memoryIndexBlock?: string,
 ): Promise<string | undefined> {
   const callerHint = input.extraSystemHint;
-  const wireHint =
+  const maskedCallerHint =
     callerHint !== undefined && callerHint.trim().length > 0
       ? // #1541 — the hint quotes claims of the restored answer: tool data,
         // not the user's words.
         await maskPromptForWire(privacy, callerHint, 'context')
       : undefined;
+  const contextHint = await wireConversationContextHint(privacy, input.conversationContextHint);
+  const wireHint = [maskedCallerHint, contextHint].filter((h): h is string => h !== undefined).join('\n\n') || undefined;
   // `fixedSystemHint` is NOT masked: it is a compile-time constant from a
   // trusted in-process wrapper (see its doc on `ChatTurnInput`) — kernel-grade
   // prose with no user data, so it joins the static blocks, not the caller's.
@@ -2844,6 +2875,12 @@ interface ToolDispatchMeta {
    *  (`NativeToolResult.postcondition`). The run trace carries them to the
    *  verifier, which raises a `tool_postcondition` claim. */
   postcondition?: { readonly issues: readonly string[] };
+  /** #1920 / ADR-0272 — set by the dispatch when an MCP tool's result went to
+   *  the model unmasked (operator bypass in force, or no privacy guard). */
+  unmaskedMcpResult?: boolean;
+  /** #1920 / ADR-0272 — images the tool loop attaches to this call's
+   *  `tool_result`. Only set together with `unmaskedMcpResult`. */
+  modelImages?: readonly McpModelImage[];
 }
 
 /** The call's input asks the memory tool to read (`view`), not to write. */
@@ -7784,7 +7821,14 @@ export class Orchestrator {
         // tool-result user message (keeping a single well-formed user turn);
         // a `stop` latches finalize so the next pass answers tools-disabled.
         const loopDecision = loopGuard.record(toolUses, toolResults);
-        const userContent: ContentBlock[] = [...toolResults];
+        // #1920 / ADR-0272 — images ride the wire copy only; every scan above
+        // and below reads the text. Earlier iterations' images go back to text
+        // and this request's share one budget.
+        stripModelImages(messages);
+        const imageBudget = newModelImageBudget();
+        const userContent: ContentBlock[] = toolResults.map((block: ContentBlock, i: number) =>
+          withModelImages(block, metas[i]?.modelImages, imageBudget),
+        );
         if (loopDecision.action === 'nudge' && loopDecision.nudge) {
           userContent.push({ type: 'text', text: loopDecision.nudge });
           console.error(`[orchestrator] loop guard nudge: ${loopDecision.reason}`);
@@ -9343,7 +9387,12 @@ export class Orchestrator {
           slots.map((s: ParallelSlot) => s.use),
           toolResults,
         );
-        const userContent: ContentBlock[] = [...toolResults];
+        // #1920 / ADR-0272 — mirror of chatInContextInner.
+        stripModelImages(messages);
+        const imageBudget = newModelImageBudget();
+        const userContent: ContentBlock[] = toolResults.map((block: ContentBlock, i: number) =>
+          withModelImages(block, slots[i]?.meta.modelImages, imageBudget),
+        );
         if (loopDecision.action === 'nudge' && loopDecision.nudge) {
           userContent.push({ type: 'text', text: loopDecision.nudge });
           const anchorId = slots[0]?.use.id;
@@ -9825,7 +9874,21 @@ export class Orchestrator {
     // the user's prompt: a tool may have been run on it.
     const privacy = turnContext.current()?.privacyHandle;
     try {
-      const out = await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta);
+      const { value: out, images } = await captureMcpImages(() =>
+        this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta),
+      );
+      // #1920 / ADR-0272 — an MCP image reaches the model only where no
+      // shield masks the server's results; under a guard it stays a
+      // placeholder, since the shield cannot check its contents.
+      if (
+        meta !== undefined &&
+        meta.unmaskedMcpResult === true &&
+        images.length > 0 &&
+        !out.startsWith('Error:') &&
+        this.toolResultImagesSupported()
+      ) {
+        meta.modelImages = images;
+      }
       // Spec 2042 §5.11 — what the call brought in joins the turn's labels.
       await labelToolRead(this.discretion, this.toolSystemOf(name));
       return remaskEchoedValues(privacy, out);
@@ -9997,6 +10060,26 @@ export class Orchestrator {
       domainTool.mcpServerId === undefined &&
       domainTool !== this.consultTool
     );
+  }
+
+  /** #1920 / ADR-0272 — the model can see images and the provider's wire
+   *  carries them inside a `tool_result`. */
+  private toolResultImagesSupported(): boolean {
+    // The provider this turn actually runs on (routed primary or the fallback
+    // after a hop), not the agent's base provider: an OpenAI-family wire
+    // refuses image parts in a tool result and would fail the whole turn.
+    // Unknown execution ⇒ no images (fail closed).
+    const provider = turnContext.current()?.orchestratorExecution?.value?.provider;
+    if (provider === undefined) return false;
+    const vision = this.visionSupported ?? provider.capabilities.vision;
+    return vision && provider.capabilities.toolResultImages === true;
+  }
+
+  /** #1920 / ADR-0272 — this MCP tool's result goes to the model unmasked. */
+  private markUnmaskedMcpResult(name: string, meta: ToolDispatchMeta | undefined): void {
+    if (meta !== undefined && this.domainToolsByName.get(name)?.mcpServerId !== undefined) {
+      meta.unmaskedMcpResult = true;
+    }
   }
 
   private async dispatchToolDeadlined(
@@ -10314,13 +10397,19 @@ export class Orchestrator {
         }
         // ADR-0198 — text of the user's own upload (a transcript): readable,
         // with its PII spans masked like the attachment tail of a prompt.
-        if (ownUpload) return maskOwnUploadText(privacy, name, result);
+        // #2309 — an exempt result is not interned, so nothing else bounds
+        // it: the same cap as a bypassed one (ADR-0207). Exempt tools are
+        // kernel tools; their `_pending*` directives stay whole.
+        const capExempt = (text: string): string => capToolResultText(text, { keepDirectives: true });
+        if (ownUpload) return capExempt(await maskOwnUploadText(privacy, name, result));
         // #1544 — the handler ran on the user's values; what it echoes goes
         // back to the model as the placeholders it wrote. #1841 — a `memory`
         // result is masked through THIS turn's map (ADR-0191).
-        return isMemoryNoteTool(name)
-          ? maskMemoryNoteResult(privacy, result)
-          : remaskEchoedValues(privacy, result);
+        return capExempt(
+          isMemoryNoteTool(name)
+            ? await maskMemoryNoteResult(privacy, result)
+            : remaskEchoedValues(privacy, result),
+        );
       }
       // #1768 / ADR 0241 — a field-exempt tool's operational state in clear,
       // its user-entered free text withheld. Its `Error:` text took the
@@ -10328,7 +10417,9 @@ export class Orchestrator {
       const fieldExempt = isGuardedControlFlowResult(result, mcpAuthPromptMint)
         ? undefined
         : fieldExemptModelCopy(name, result);
-      if (fieldExempt !== undefined) return remaskEchoedValues(privacy, fieldExempt);
+      if (fieldExempt !== undefined) {
+        return capToolResultText(remaskEchoedValues(privacy, fieldExempt), { keepDirectives: true });
+      }
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default
@@ -10434,6 +10525,7 @@ export class Orchestrator {
         // #1544 — bypass passes the tool's DATA raw; the user's own masked
         // values it was handed (and may echo) stay masked. #1920 — bounded
         // like a masked result (ADR-0207).
+        this.markUnmaskedMcpResult(name, meta);
         return capToolResultText(remaskEchoedValues(privacy, result), {
           keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
         });
@@ -10530,6 +10622,7 @@ export class Orchestrator {
       }
     }
     // #1920 — no privacy guard: nothing else bounds the result (ADR-0207).
+    this.markUnmaskedMcpResult(name, meta);
     return capToolResultText(result, {
       keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
     });

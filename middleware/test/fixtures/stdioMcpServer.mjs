@@ -13,6 +13,8 @@
  *   - `MCP_FIXTURE_MODE=unauthorized` — `tools/call` returns a JSON-RPC error
  *     whose message reads as a 401 (so the manager's `looksUnauthorized`
  *     matches and `looksTransient` does not, i.e. no retry).
+ *   - `MCP_FIXTURE_MODE=hang`         — `tools/call` never answers (a wedged
+ *     server, #2307).
  *
  * Exits when stdin closes, which is what the SDK's stdio transport does on
  * `client.close()`.
@@ -84,6 +86,7 @@ function handle(request) {
     return;
   }
   if (method === 'tools/call') {
+    if (mode === 'hang') return;
     if (mode === 'unauthorized') {
       send({
         jsonrpc: '2.0',
