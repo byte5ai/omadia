@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — stored chats lose old MCP input-card values without a new save (#2311) (2026-11-27)
+
+- The chat store's one-time sweep on the first `list()` (the one that purges server-mirrored
+  transcripts) now also rewrites every stored web chat whose user messages still hold an MCP
+  input-reply envelope from before #1953, replacing it with the field-names-only label, under the
+  session lock. `scrubMcpInputEnvelopes` moved into `@omadia/orchestrator` and is shared with the
+  PUT route.
+
 ### Fixed — deleting an API key drops its public MCP binding (#2310, ADR-0273) (2026-11-27)
 
 - New kernel service `publicMcpKeyBindings` (`forgetDeletedKey(keyId)`) removes a binding only

@@ -38,3 +38,39 @@ describe('scrubMcpInputEnvelopes (#1953)', () => {
     assert.equal(scrubMcpInputEnvelopes(session), session);
   });
 });
+
+describe('stored chats lose their input-card values on the first list (#2311)', () => {
+  it('rewrites a stored envelope once and leaves other chats alone', async () => {
+    const { InMemoryMemoryStore } = await import('@omadia/memory');
+    const { ChatSessionStore } = await import('@omadia/orchestrator');
+    const memory = new InMemoryMemoryStore();
+    const store = new ChatSessionStore(memory);
+    const envelope = formatMcpInputReply({
+      correlationId: 'corr-2',
+      inputResponses: { apiKey: 'sk-stored-secret' },
+    });
+    const withEnvelope = {
+      id: '00000000-0000-4000-8000-000000002311',
+      title: 'Old chat',
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [{ id: 'm1', role: 'user' as const, content: envelope, startedAt: 1 }],
+    };
+    const plain = {
+      id: '00000000-0000-4000-8000-000000002312',
+      title: 'Plain',
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [{ id: 'm1', role: 'user' as const, content: 'hello', startedAt: 1 }],
+    };
+    await store.save(withEnvelope);
+    await store.save(plain);
+
+    await store.list();
+
+    const rewritten = await store.get(withEnvelope.id);
+    assert.doesNotMatch(rewritten?.messages[0]?.content ?? '', /sk-stored-secret|__mcp_input_reply__/);
+    assert.match(rewritten?.messages[0]?.content ?? '', /apiKey/);
+    assert.deepEqual(await store.get(plain.id), plain);
+  });
+});

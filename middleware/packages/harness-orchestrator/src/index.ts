@@ -832,6 +832,7 @@ export {
   isServerMirroredSession,
   isWebChatSessionId,
   isValidSessionId,
+  scrubMcpInputEnvelopes,
 } from './chatSessionStore.js';
 export type {
   ChatSubAgentEvent,
