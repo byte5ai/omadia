@@ -69,6 +69,7 @@ import type { ToolDispatchCallerContext } from '../toolDispatchService.js';
 import { currentIdempotencyScope, sendsEachCallOnce } from '../toolIdempotency.js';
 import { recordMcpAuthPrompt } from './mcpAuthPromptMint.js';
 import { recordMcpStructured } from './mcpStructuredCapture.js';
+import { binaryBlockPlaceholder, recordMcpImages } from './mcpBinaryContent.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
   extractMcpInputPrompt,
@@ -1766,6 +1767,9 @@ export class McpManager {
           // payload, not from the model-facing text (ADR-0021 side channel).
           recordMcpStructured(structured);
         }
+        // #1920 / ADR-0272 — eligible images for the dispatch's capture; the
+        // orchestrator attaches them only where no shield masks the server.
+        recordMcpImages(res);
         return { text: rendered, status: 'ok' };
       } catch (err) {
         const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
@@ -2421,34 +2425,6 @@ export function renderToolResult(res: any): string {
     return JSON.stringify(res.structuredContent);
   }
   return JSON.stringify(res ?? {});
-}
-
-/** Bytes a base64 string decodes to (padding-aware, no decode). */
-function base64Bytes(data: string): number {
-  const clean = data.replace(/\s/g, '');
-  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
-  return Math.max(0, Math.floor((clean.length * 3) / 4) - padding);
-}
-
-/**
- * #1920 — the placeholder for a binary MCP content block, or undefined for a
- * block that is not binary. Covers `image` and `audio` blocks and a
- * `resource` whose content is a `blob`.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function binaryBlockPlaceholder(block: any): string | undefined {
-  const kind: string | undefined =
-    block?.type === 'image' || block?.type === 'audio'
-      ? block.type
-      : block?.type === 'resource' && typeof block.resource?.blob === 'string'
-        ? 'binary resource'
-        : undefined;
-  if (kind === undefined) return undefined;
-  const data: unknown = kind === 'binary resource' ? block.resource.blob : block.data;
-  const mime: unknown = kind === 'binary resource' ? block.resource.mimeType : block.mimeType;
-  const size = typeof data === 'string' ? `${String(base64Bytes(data))} bytes` : 'unknown size';
-  const type = typeof mime === 'string' && mime.length > 0 ? mime.slice(0, 100) : 'unknown type';
-  return `[${kind}: ${type}, ${size} — not shown to the model]`;
 }
 
 /**

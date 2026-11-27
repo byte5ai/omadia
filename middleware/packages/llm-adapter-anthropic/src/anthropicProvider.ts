@@ -815,6 +815,8 @@ export function createAnthropicProvider(
       // message, so sidecar tools (suggest_follow_ups) fire inline — no
       // post-turn card-router pass needed.
       interleavedToolUse: true,
+      // #1920 — `tool_result` content may hold image blocks.
+      toolResultImages: true,
     },
 
     async complete(req: LlmRequest): Promise<LlmResponse> {

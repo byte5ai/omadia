@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Added — MCP images reach the model on bypassed or unguarded servers (#1920, ADR-0272) (2026-11-27)
+
+- A successful MCP call's images (PNG/JPEG/GIF/WebP, ≤ 3.75 MB decoded, ≤ 4 per call) are
+  recorded into a per-dispatch capture (`mcpBinaryContent.ts`) and attached to the `tool_result`
+  as provider image blocks when the server's result went to the model unmasked (operator bypass
+  in force, or no privacy guard) and the provider declares the new optional capability
+  `toolResultImages` (`@omadia/llm-provider-api`; set by the Anthropic adapter). Under a guard
+  that masks the server, and on OpenAI-family providers, the image stays the ADR-0207 placeholder.
+  The placeholder of an attached image reads `— attached as an image]`.
+- Review follow-ups for #1920 / #2307 (2026-11-27): images are attached only when the provider
+  this turn runs on carries them (routed primary or fallback, not the agent's base provider),
+  within one budget per request (≤ 4 images, ≤ 8 MB decoded). Images of earlier iterations go back
+  to text before the next request. An image whose placeholder the cap cut is not attached. A stdio
+  child is retired only on the SDK's own `RequestTimeout`, not on a server error that mentions
+  "timeout". A call waiting for the connection counts as in flight, and idle eviction skips
+  entries with a running call.
+
 ### Fixed — the 200 000-character tool-result cap holds on every path (#2309, ADR-0207) (2026-11-27)
 
 - `capToolResultText` now also bounds intern-exempt and field-exempt kernel tool results under a
