@@ -15,6 +15,8 @@ import {
   type BulkPromoteRunResult,
 } from '../../_lib/api';
 
+import { RetiredTurns } from './_components/RetiredTurns';
+
 const COST_CONFIRM_THRESHOLD = 50;
 
 /**
@@ -275,6 +277,7 @@ export default function BulkPromotePage(): React.ReactElement {
           </div>
         </section>
       )}
+      <RetiredTurns />
     </main>
   );
 }

@@ -295,7 +295,7 @@ that date.
 | 0255 | [A granted `graphPool` covers only the plugin's own tables](0255-granted-graphpool-covers-only-the-plugins-own-tables.md) | Proposed | 2026-11-26 |
 | 0256 | [Through `memoryStore@1` a plugin changes only the top-level trees it declares and owns](0256-memorystore-plugins-change-only-declared-owned-trees.md) | Proposed | 2026-11-26 |
 | 0257 | [Recall and curation services resolve only for the boundary implementers; `entityRefBus` is publish-only for plugins](0257-recall-and-curation-services-are-boundary-only.md) | Proposed | 2026-11-26 |
-| 0263 | [Bulk promotion checks discretion from the stored turn labels](0263-bulk-promotion-checks-discretion-from-stored-turn-labels.md) | Proposed | 2026-11-27 |
+| 0263 | [Bulk promotion checks discretion from the stored turn labels; operators may un-retire a turn](0263-bulk-promotion-checks-discretion-from-stored-turn-labels.md) | Proposed | 2026-11-27 |
 
 ### The agent model (0012–0022)
 

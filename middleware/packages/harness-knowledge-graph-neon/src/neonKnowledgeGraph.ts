@@ -5164,8 +5164,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       );
       this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
 
-      const excerptRow = await client.query<{ id: string }>(
-        `SELECT ex.id
+      const excerptRow = await client.query<{ id: string; external_id: string }>(
+        `SELECT ex.id, ex.external_id
            FROM graph_nodes mk
            JOIN graph_edges e ON e.to_node = mk.id AND e.type = 'EXCERPT_OF'
            JOIN graph_nodes ex ON ex.id = e.from_node AND ex.type = 'PalaiaExcerpt'
@@ -5188,6 +5188,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       await client.query(
         `DELETE FROM graph_nodes WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, hit.id],
+      );
+      // #2295 — an open duplicate pair naming the deleted excerpt has nothing
+      // left to decide; close it like the pairs of a deleted memory. A
+      // resolution that deleted this excerpt overwrites its own pair after.
+      await client.query(
+        `UPDATE graph_nodes
+            SET properties = properties || jsonb_build_object(
+                  'status', 'dismissed',
+                  'resolved_at', $3::text,
+                  'resolved_by', $4::text,
+                  'closed_reason', 'excerpt_deleted')
+          WHERE tenant_id = $1
+            AND type = 'ExcerptMergeCandidate'
+            AND properties->>'status' = 'open'
+            AND properties->'excerpt_pair' @> jsonb_build_array($2::text)`,
+        [this.tenantId, hit.external_id, new Date().toISOString(), resolvedByOf(actor)],
       );
 
       await this.writeAclAudit(client, {

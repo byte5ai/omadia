@@ -389,7 +389,18 @@ durationMs: number;
 export interface BulkPromotionService {
 preview(threshold: number): Promise<BulkPromotePreview>;
 run(options?: BulkPromoteRunOptions): Promise<BulkPromoteRunResult>;
+listRetired?(options?: {
+limit?: number;
+}): Promise<RetiredTurn[]>;
+unretire?(turnId: string): Promise<UnretireOutcome>;
 }
+export interface RetiredTurn {
+readonly turnId: string;
+readonly reason: string;
+readonly retiredAt: string;
+readonly agentSlug?: string;
+}
+export type UnretireOutcome = 'unretired' | 'not_found' | 'no_person_owner';
 export declare const BULK_PROMOTION_SERVICE_NAME = "bulkPromotion";
 export declare const BULK_PROMOTION_CAPABILITY = "bulkPromotion@1";
 

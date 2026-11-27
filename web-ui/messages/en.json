@@ -6443,7 +6443,24 @@
     "scorePhaseTitle": "Phase 1 · SCORE",
     "promotePhaseTitle": "Phase 2 · PROMOTE",
     "skipped": "skipped",
-    "skippedHint": "Left alone on purpose, not failed: an entry from this turn was deleted, discarded or merged away, no person owns the turn (Public API), the excerpt was missing, or the answer was agent narration. Retired and ownerless turns are not offered again."
+    "skippedHint": "Left alone on purpose, not failed: an entry from this turn was deleted, discarded or merged away, no person owns the turn (Public API), the excerpt was missing, or the answer was agent narration. Retired and ownerless turns are not offered again.",
+    "retired": {
+      "title": "Turns left out of promotion",
+      "intro": "A turn is left out once an entry made from it was deleted, discarded or merged away, or when it cannot become memory (no person owns it, agent narration). Allow a turn again to let the next bulk run consider it. Turns no person owns stay left out.",
+      "loading": "Loading…",
+      "empty": "No turns are left out.",
+      "reason": "{reason, select, memory_deleted {Entry deleted} no_person_owner {No person owns it} hygiene {Agent narration} discretion {Another conversation’s knowledge} other {{reason}}}",
+      "allow": "Allow again",
+      "allowing": "Allowing",
+      "allowAria": "Allow turn {turnId} to be promoted again",
+      "errors": {
+        "bulk_unretire_not_found": "This turn is no longer left out.",
+        "bulk_unretire_no_person_owner": "No person owns this turn, so it cannot become memory.",
+        "bulk_unretire_unsupported": "This installation cannot list or allow left-out turns.",
+        "audit_write_failed": "The change could not be recorded in the audit log, so nothing changed.",
+        "failed": "The left-out turns could not be loaded or changed."
+      }
+    }
   },
   "adminUpdate": {
     "title": "Update",

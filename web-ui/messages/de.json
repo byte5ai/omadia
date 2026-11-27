@@ -6443,7 +6443,24 @@
     "scorePhaseTitle": "Schritt 1 · Bewerten",
     "promotePhaseTitle": "Schritt 2 · Übernehmen",
     "skipped": "übersprungen",
-    "skippedHint": "Bewusst ausgelassen, nicht fehlgeschlagen: ein Eintrag aus diesem Turn wurde gelöscht, verworfen oder zusammengeführt, dem Turn gehört keine Person (Public API), der Auszug fehlte oder die Antwort war Agenten-Erzählung. Ausgemusterte und besitzerlose Turns werden nicht erneut angeboten."
+    "skippedHint": "Bewusst ausgelassen, nicht fehlgeschlagen: ein Eintrag aus diesem Turn wurde gelöscht, verworfen oder zusammengeführt, dem Turn gehört keine Person (Public API), der Auszug fehlte oder die Antwort war Agenten-Erzählung. Ausgemusterte und besitzerlose Turns werden nicht erneut angeboten.",
+    "retired": {
+      "title": "Von der Übernahme ausgeschlossene Turns",
+      "intro": "Ein Turn wird ausgeschlossen, sobald ein Eintrag daraus gelöscht, verworfen oder zusammengeführt wurde, oder wenn er kein Wissen werden kann (keine Person besitzt ihn, Agent-Erzählung). Gib einen Turn wieder frei, damit der nächste Bulk-Lauf ihn berücksichtigt. Turns ohne Personen-Besitzer bleiben ausgeschlossen.",
+      "loading": "Wird geladen…",
+      "empty": "Keine Turns ausgeschlossen.",
+      "reason": "{reason, select, memory_deleted {Eintrag gelöscht} no_person_owner {Keine Person besitzt ihn} hygiene {Agent-Erzählung} discretion {Wissen aus einem anderen Gespräch} other {{reason}}}",
+      "allow": "Wieder freigeben",
+      "allowing": "Wird freigegeben",
+      "allowAria": "Turn {turnId} wieder für die Übernahme freigeben",
+      "errors": {
+        "bulk_unretire_not_found": "Dieser Turn ist nicht mehr ausgeschlossen.",
+        "bulk_unretire_no_person_owner": "Keine Person besitzt diesen Turn, daher kann er kein Wissen werden.",
+        "bulk_unretire_unsupported": "Diese Installation kann ausgeschlossene Turns nicht anzeigen oder freigeben.",
+        "audit_write_failed": "Die Änderung konnte nicht im Audit-Log festgehalten werden, daher wurde nichts geändert.",
+        "failed": "Die ausgeschlossenen Turns konnten nicht geladen oder geändert werden."
+      }
+    }
   },
   "adminUpdate": {
     "title": "Update",

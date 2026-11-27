@@ -242,6 +242,8 @@ export type AuditAction =
   // entry without an owner. Written before the delete; `target` is
   // `memory:<mk id>`, `before` the optional reason.
   | 'memory.ownerless_delete'
+  // #2295 — a turn retired from promotion made promotable again.
+  | 'memory.promotion_unretire'
   | 'api_key.create'
   | 'api_key.revoke'
   | 'api_key.delete'

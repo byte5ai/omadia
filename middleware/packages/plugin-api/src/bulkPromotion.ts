@@ -91,7 +91,31 @@ export interface BulkPromoteRunResult {
 export interface BulkPromotionService {
   preview(threshold: number): Promise<BulkPromotePreview>;
   run(options?: BulkPromoteRunOptions): Promise<BulkPromoteRunResult>;
+  /**
+   * #2295 (1.108.0) — turns retired from promotion (ADR-0190), newest first,
+   * for the operator. Ids and reasons only, never turn text. Optional.
+   */
+  listRetired?(options?: { limit?: number }): Promise<RetiredTurn[]>;
+  /**
+   * #2295 (1.108.0) — let a retired turn be promoted again (operator act).
+   * `not_found` when no retired turn has this id; `no_person_owner` when the
+   * turn has no person to own an entry (ADR-0190, #1864: it would only be
+   * retired again). Optional.
+   */
+  unretire?(turnId: string): Promise<UnretireOutcome>;
 }
+
+/** #2295 — one turn retired from promotion. */
+export interface RetiredTurn {
+  readonly turnId: string;
+  /** `memory_deleted` | `no_person_owner` | `hygiene` | another stored reason. */
+  readonly reason: string;
+  readonly retiredAt: string;
+  /** The producing agent, from the turn's qualified scope. */
+  readonly agentSlug?: string;
+}
+
+export type UnretireOutcome = 'unretired' | 'not_found' | 'no_person_owner';
 
 export const BULK_PROMOTION_SERVICE_NAME = 'bulkPromotion';
 export const BULK_PROMOTION_CAPABILITY = 'bulkPromotion@1';

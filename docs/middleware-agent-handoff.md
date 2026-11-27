@@ -5500,6 +5500,11 @@ Grenzen: `docs/security-architecture.md` §7c.
   (`withBulkPromotionGate`, `discretion/bulkPromotionGate.ts`): jeder Kandidat wird gegen die
   gespeicherten Turn-Labels mit der Live-Flow-Regel geprüft (`mayPromote`, plugin-api 1.108.0);
   verweigert = `skipped` + Audit `target: bulk-promotion`, Fehler = verweigert.
+- **Zurückholen (#2295).** `GET /api/v1/admin/bulk-promote/retired` listet ausgeschlossene
+  Turns (ID, Grund, Zeit, Agent), `POST …/unretire { turnId }` entfernt `promotionRetired`
+  (Admin-Audit `memory.promotion_unretire` vorab; Turns ohne Personen-Owner → 409). UI:
+  Admin › Bulk Promotion. `deleteExcerpt` schließt offene Excerpt-Paare
+  (`closed_reason: excerpt_deleted`).
 - **Auto-Merge** (`kg_auto_merge_enabled`, Default an; `kg_auto_merge_threshold`
   Default 0.98, Flag-Floor 0.90): löst nur Paare mit gleichem Text (Kind/Summary/
   Rationale ohne Groß-/Kleinschreibung, Leerraum, Satzzeichen) und entfernt nur

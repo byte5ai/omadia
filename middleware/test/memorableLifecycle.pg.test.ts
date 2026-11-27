@@ -264,4 +264,69 @@ describe('ADR-0190 memorable lifecycle (real PG)', { skip: !pool }, () => {
     assert.equal(rows[0]?.properties['kind'], 'decision');
     assert.equal(rows[0]?.properties['summary'], 'Rechnungen laufen ab Dezember über Lexware.');
   });
+
+  it('#2295 — lists retired turns and un-retires one a person owns', async () => {
+    const kg = await ready;
+    assert.ok(kg && pool);
+    await clean(pool);
+    const mine = await turn(kg, pool, {
+      scope: 'palaia::talk-d',
+      userId: OWNER,
+      time: '2026-11-11T10:00:00.000Z',
+      text: 'Projekt Yak startet im Januar.',
+      significance: 0.9,
+    });
+    const keyTurn = await turn(kg, pool, {
+      scope: 'api::key-2',
+      userId: 'key:0d8f0b0e-2222-4111-8111-111111111111',
+      time: '2026-11-11T11:00:00.000Z',
+      text: 'Release moved.',
+      significance: 0.9,
+    });
+    for (const [id, reason] of [[mine, 'memory_deleted'], [keyTurn, 'no_person_owner']] as const) {
+      await pool.query(
+        `UPDATE graph_nodes
+            SET properties = properties || jsonb_build_object('${PROMOTION_RETIRED_PROP}',
+                  jsonb_build_object('reason', $3::text, 'at', '2026-11-12T00:00:00.000Z'))
+          WHERE tenant_id = $1 AND external_id = $2`,
+        [TENANT, id, reason],
+      );
+    }
+    const service = createBulkPromotionService({ pool, tenantId: TENANT, kg, log: () => {} });
+    const listed = await service.listRetired?.({ limit: 10 });
+    assert.deepEqual(new Set(listed?.map((r) => r.turnId)), new Set([mine, keyTurn]));
+    assert.equal(listed?.find((r) => r.turnId === mine)?.agentSlug, 'palaia');
+
+    assert.equal(await service.unretire?.(keyTurn), 'no_person_owner');
+    assert.equal(await service.unretire?.('turn:nope'), 'not_found');
+    assert.equal(await service.unretire?.(mine), 'unretired');
+    assert.equal((await propsOf(pool, mine))?.[PROMOTION_RETIRED_PROP], undefined);
+    assert.equal((await service.preview(0.7)).eligibleForPromoteCount, 1, 'the turn is a candidate again');
+  });
+
+  it('#2295 — deleting an excerpt dismisses its open duplicate pair', async () => {
+    const kg = await ready;
+    assert.ok(kg && pool);
+    await clean(pool);
+    const created = await kg.createMemorableKnowledge({
+      kind: 'reference',
+      summary: 'Ibis RAM',
+      createdBy: `web:${OWNER}`,
+      involvedOmadiaUserIds: [OWNER],
+      aclOwners: [OWNER],
+      palaiaExcerpts: { texts: ['Ibis has 64 GB', 'Ibis has 64GB of RAM', 'Ibis runs Debian'], source: 'hint' },
+    });
+    const mk = created.memorableKnowledgeNodeId;
+    const [x0, x1, x2] = await kg.listExcerptsForMemory(mk);
+    assert.ok(x0 && x1 && x2);
+    const pair = await kg.createExcerptMergeCandidate({ excerptAExternalId: x0.id, excerptBExternalId: x1.id, cosineSim: 0.98 });
+    const other = await kg.createExcerptMergeCandidate({ excerptAExternalId: x1.id, excerptBExternalId: x2.id, cosineSim: 0.97 });
+    assert.ok(pair && other);
+    await kg.deleteExcerpt(mk, x0.props.position, { actorOmadiaUserId: OWNER });
+    const props = await propsOf(pool, pair.id);
+    assert.equal(props?.['status'], 'dismissed');
+    assert.equal(props?.['closed_reason'], 'excerpt_deleted');
+    assert.equal(props?.['resolved_by'], OWNER);
+    assert.equal((await propsOf(pool, other.id))?.['status'], 'open');
+  });
 });

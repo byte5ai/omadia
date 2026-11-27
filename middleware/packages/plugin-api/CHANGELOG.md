@@ -17,6 +17,9 @@ Additive. (Numbered after 1.107.0 of the sibling W31 PR; the lander renumbers if
 - **`BulkPromoteRunOptions.mayPromote`** and **`BulkPromoteCandidate`** (#2294): a per-turn
   discretion gate the kernel supplies by decorating the published `bulkPromotion@1` service. A
   refused turn is counted as `skipped`; a throw refuses.
+- **`BulkPromotionService.listRetired?` / `unretire?`**, `RetiredTurn`, `UnretireOutcome`
+  (#2295): list turns retired from promotion (ids and reasons, no text) and let an operator
+  allow one again; a turn no person owns stays retired (`no_person_owner`).
 
 ## 1.106.0 — 2026-11-26
 

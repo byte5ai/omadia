@@ -1,4 +1,4 @@
-# 0263 — Bulk promotion checks discretion from the stored turn labels
+# 0263 — Bulk promotion checks discretion from the stored turn labels; operators may un-retire a turn
 
 ## Status
 
@@ -35,8 +35,9 @@ Chosen option: **A**.
 
 - **Contract.** `BulkPromoteRunOptions.mayPromote?(candidate)` (plugin-api 1.108.0) with
   `BulkPromoteCandidate { turnId, owners?, agentSlug? }`. The provider asks it for every promote
-  candidate before any LLM call; `false` or a throw counts the turn as `skipped` and leaves it
-  unretired, so a later decision can still allow it.
+  candidate before any LLM call; `false` or a throw counts the turn as `skipped` and retires it
+  (`promotionRetired.reason = discretion`). Unretired, the same high-significance turns would
+  head every later run and use up its promote limit.
 - **Kernel.** `serviceRegistry.decorateOnProvide('bulkPromotion', withBulkPromotionGate)`
   (`discretion/bulkPromotionGate.ts`) puts the gate on every run, whoever provides the service.
   The gate reads the label set the turn record persisted (`labelsOf('turn', …)`) and runs
@@ -46,6 +47,13 @@ Chosen option: **A**.
   exactly one context label it is read as the own one and passes into its own tier, as live;
   with two or more, the readers must cover every context.
 - **Unlabelled turns** (written outside a labelled turn) pass, as they do live.
+- **Un-retire (#2295).** ADR-0190 retires a turn for good. An operator may now lift a retirement
+  with reason `memory_deleted` or `discretion` (`GET /api/v1/admin/bulk-promote/retired`,
+  `POST …/unretire`, admin audit `memory.promotion_unretire` written first). `no_person_owner`
+  stays retired (409; ADR-0190, #1864); `hygiene` is not offered (the next run retires it again).
+  Lifting `memory_deleted` lets bulk promotion rebuild knowledge its owner deleted: a deliberate,
+  audited operator act. A lifted `discretion` turn passes the gate again on the next run, so it
+  is promoted only when its readers now allow it.
 
 ### Consequences
 
@@ -54,8 +62,12 @@ Chosen option: **A**.
 - 🔴 **Bad (accepted risk):** A turn whose own conversation label was never stored (no context
   key at write time) but that read exactly one foreign conversation is treated as its own
   conversation and passes into agent memory.
-- 🔴 **Bad:** A failed label lookup skips the whole batch's affected turns (fail closed); the
-  operator re-runs.
+- 🔴 **Bad:** A failed label lookup retires the affected turns (fail closed); the operator lifts
+  them from the retired list.
+- 🔴 **Bad:** Any operator session can lift a `memory_deleted` retirement; only the audit row
+  records who did it.
+- 🔴 **Bad (accepted risk):** a plugin granted `bulkPromotion@1` can `replace()` the service with
+  an undecorated wrapper; `replace` applies no decorators (same as for `processMemory`).
 
 ## Pros and Cons of the Options
 
@@ -75,4 +87,4 @@ Chosen option: **A**.
 
 ## More Information
 
-Issue #2294; ADR-0190, ADR-0181, ADR-0183; spec 2042 §5.11.
+Issues #2294, #2295; ADR-0190, ADR-0181, ADR-0183; spec 2042 §5.11.

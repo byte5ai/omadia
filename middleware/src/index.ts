@@ -4500,7 +4500,10 @@ async function main(): Promise<void> {
     app.use(
       '/api/v1/admin/bulk-promote',
       requireAuth,
-      createBulkPromotionRouter({ service: bulkPromotionService }),
+      createBulkPromotionRouter({
+        service: bulkPromotionService,
+        ...(graphPool ? { adminAudit: new AdminAuditLog(graphPool) } : {}),
+      }),
     );
     console.log(
       '[middleware] bulk-promotion endpoint ready at /api/v1/admin/bulk-promote',

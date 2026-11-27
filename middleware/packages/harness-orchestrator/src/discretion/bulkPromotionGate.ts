@@ -71,5 +71,7 @@ export function withBulkPromotionGate(
   return {
     preview: (threshold) => inner.preview(threshold),
     run: (options: BulkPromoteRunOptions = {}) => inner.run({ ...options, mayPromote: gate }),
+    ...(inner.listRetired ? { listRetired: inner.listRetired.bind(inner) } : {}),
+    ...(inner.unretire ? { unretire: inner.unretire.bind(inner) } : {}),
   };
 }
