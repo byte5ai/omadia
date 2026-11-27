@@ -387,6 +387,7 @@ import {
 } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
 import { createChannelIdentityLinks } from './channels/channelIdentityLinks.js';
+import { channelResolverFor, chatAgentBundleFor, createOriginTypeCheck } from './channels/turnOriginGuard.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
@@ -726,7 +727,7 @@ import type {
   DefaultChannelKeyProvider,
   MeetingSourceProvider,
 } from '@omadia/channel-sdk';
-import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey, RoleSourceRegistry, type GrantStore } from '@omadia/channel-sdk';
+import { CHANNEL_RESOLVER_SERVICE, CHAT_AGENT_SERVICE, InMemoryDisclosureSeenStore, normalizeAgentIdentityKey, RoleSourceRegistry, type GrantStore } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -1790,6 +1791,24 @@ async function main(): Promise<void> {
   // stored turn, whoever provides `bulkPromotion`.
   serviceRegistry.decorateOnProvide<BulkPromotionService>('bulkPromotion', (inner) =>
     withBulkPromotionGate(inner, discretionStore),
+  );
+  // #2324 / ADR-0302 — a plugin may state a turn origin only for a channel
+  // type it holds. `chatAgent@1` and the `chatAgent` of every
+  // `channelResolver@1` answer are handed out per calling plugin and drop a
+  // foreign origin before the turn runs; the kernel's own reads stay
+  // unwrapped. `channelTypesOfPlugin` is bound further down and only read at
+  // turn time.
+  const mayStateTurnOrigin = createOriginTypeCheck((pluginId) => channelTypesOfPlugin(pluginId));
+  const logOriginGuard = (m: string): void => console.warn(m);
+  serviceRegistry.decorateOnProvide<{ readonly agent: ChatAgent }>(CHAT_AGENT_SERVICE, (bundle) =>
+    perCallerService((caller) => chatAgentBundleFor(bundle, caller, mayStateTurnOrigin, logOriginGuard)) as unknown as {
+      readonly agent: ChatAgent;
+    },
+  );
+  serviceRegistry.decorateOnProvide<{ resolve(...args: never[]): unknown }>(CHANNEL_RESOLVER_SERVICE, (resolver) =>
+    perCallerService((caller) => channelResolverFor(resolver, caller, mayStateTurnOrigin, logOriginGuard)) as unknown as {
+      resolve(...args: never[]): unknown;
+    },
   );
   serviceRegistry.provide('consultation', consultationBroker);
   // The offering snapshot is read once the pool exists (after plugin

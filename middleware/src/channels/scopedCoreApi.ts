@@ -30,13 +30,16 @@ import type {
   AgentIdentityProvider,
   ChannelIdentityLinks,
   ChannelReadinessProvider,
+  ChatStreamEvent,
   ConversationMembershipEvent,
   ConversationMessageEvent,
   CoreApi,
   DefaultChannelKeyProvider,
+  IncomingTurn,
   MeetingSourceProvider,
   SessionEvent,
 } from '@omadia/channel-sdk';
+import { CHANNEL_TYPE_BY_USER_KIND } from './turnOriginGuard.js';
 import type { SessionCapabilitySnapshot } from '@omadia/plugin-api';
 
 /** Which channel plugin acts for which channel type. First claim wins; a
@@ -95,6 +98,35 @@ export function scopeCoreApiToChannel(
   };
 
   const scoped: CoreApi = { ...core };
+
+  // #2324 / ADR-0302 — a turn is this channel's own: its id is stamped (the
+  // dispatcher reads it for the manifest block and the reserved `api` origin),
+  // an origin of another channel's type is dropped, and a sender of another
+  // channel's kind is refused before any identity is minted from it.
+  if (typeof core.handleTurnStream === 'function') {
+    const handleTurnStream = core.handleTurnStream.bind(core);
+    scoped.handleTurnStream = (turn: IncomingTurn): AsyncIterable<ChatStreamEvent> => {
+      const userKindType = turn?.userRef ? CHANNEL_TYPE_BY_USER_KIND[turn.userRef.kind] : undefined;
+      if (userKindType !== undefined && foreign('start a turn as a sender', userKindType)) {
+        // eslint-disable-next-line require-yield -- a refused turn yields nothing; the throw is its only event
+        return (async function* (): AsyncIterable<ChatStreamEvent> {
+          throw new Error(
+            `channel '${channelId}' cannot start a turn for a '${turn.userRef.kind}' sender: channel type '${userKindType}' belongs to another channel`,
+          );
+        })();
+      }
+      const origin = turn?.metadata?.['origin'] as { channelType?: unknown } | undefined;
+      const originType = origin !== null && typeof origin === 'object' ? origin.channelType : undefined;
+      const reserved = typeof originType === 'string' && ['http', 'api'].includes(originType.trim().toLowerCase());
+      const dropOrigin = originType !== undefined && !reserved && foreign('state a turn origin', originType);
+      let metadata = turn?.metadata;
+      if (dropOrigin && metadata) {
+        const { origin: _dropped, ...rest } = metadata;
+        metadata = rest;
+      }
+      return handleTurnStream({ ...turn, channelId, ...(metadata ? { metadata } : {}) });
+    };
+  }
 
   if (core.emitConversationMessage) {
     const emit = core.emitConversationMessage;
