@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fix — CLI sub-agents forward MCP connect requests to the calling turn (#2377) (2026-11-27)
+
+Residual of #2374. A CLI sub-agent (`createCliSubAgent`) runs its own `CliChatAgent` turn with its
+own `mcpConnectRequests` map and drained the requests onto its answer, where `ask()` dropped them,
+so the parent turn showed no Connect card when only the sub-agent needed the connection.
+`runSpawn` now hands `answer.mcpConnectRequired` to the calling turn's map through
+`recordPendingMcpConnects` (`mcp/mcpAuthPromptMint.ts`), the helper `notePendingMcpConnect` now
+writes through too. A withheld sub-agent answer carries none, so none are forwarded. New test
+`test/cliBridge/cliMcpConnectForward2377.test.ts` covers the `CliChatAgent` side (`chat()` names the
+minted server, keeps the caller's map untouched, a withheld answer names none) and the forwarding.
+
 ### Docs — ADR cross-references 0295→0118 and 0298→0316 (2026-11-27)
 
 ADR-0118 already named ADR-0295 as superseding it in part, but 0295 did not name 0118; ADR-0298

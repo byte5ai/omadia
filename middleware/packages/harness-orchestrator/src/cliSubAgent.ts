@@ -3,6 +3,7 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import { CliChatAgent } from './cliChatAgent.js';
 import type { CliChatAgentDeps } from './cliChatAgent.js';
 import { OMADIA_MCP_TOOL_PREFIX } from './cliSpawnGate.js';
+import { recordPendingMcpConnects } from './mcp/mcpAuthPromptMint.js';
 import { CliObserverBridge } from './cliSubAgentObserverBridge.js';
 import { NativeToolRegistry } from './nativeToolRegistry.js';
 import { ToolDispatchService } from './toolDispatchService.js';
@@ -76,6 +77,9 @@ export function createCliSubAgent(options: CliSubAgentOptions): Askable {
     const hooks = bridge.beginSpawn();
     const answer = await agent.chat({ userMessage }, hooks);
     bridge.endSpawn();
+    // #2377 — the sub-agent's turn drained its own connect requests onto its
+    // answer; hand them to the calling turn, or its Connect card never shows.
+    recordPendingMcpConnects(answer.mcpConnectRequired);
     return answer.text;
   };
 
