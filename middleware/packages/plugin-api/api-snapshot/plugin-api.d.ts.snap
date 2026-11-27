@@ -2105,6 +2105,8 @@ aggregate?: DatasetAggregate;
 limit: number;
 offset: number;
 }
+export declare const DATASET_DATE_VALUE_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]+)?)?Z?)?$";
+export declare function datasetDateTime(value: unknown): number | undefined;
 export declare function validateDatasetQueryOptions(columns: readonly DatasetColumnSchema[], opts: DatasetQueryOptions | undefined): NormalizedDatasetQuery;
 export declare const ENCRYPTED_DATASET_CELL_PREFIX = "enc1:";
 export declare function isEncryptedDatasetCell(value: unknown): boolean;

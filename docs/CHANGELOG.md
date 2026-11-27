@@ -54,6 +54,17 @@ changelog.
   run trace lists it — the answer verifier counts it as evidence. A data-free kernel note follows
   the result; the subscription CLI path gets only that note.
 
+### Fixed — `query_rows` accepts date range filters (#2302, ADR-0267) (2026-11-27)
+
+- `query_dataset` `query_rows` no longer refuses `gt`/`gte`/`lt`/`lte` on `date` columns (a v1
+  limit from before #1845 stored dates as ISO). Cells and bounds compare as wall-clock
+  timestamps (date-only = midnight) in both backends (Neon: guarded `::timestamp` cast,
+  in-memory: `datasetDateTime`, plugin-api **1.107.0**). The tool reads a string bound with the
+  import's parser (`normaliseDateFilterValue`: ISO, `d.m.yyyy`, `d/m/yyyy`, optional time); an
+  unreadable bound is `invalid_date_value` naming the accepted formats. Columns with encrypted
+  cells stay refused for every filter (`encrypted_column`, a range would be a bisection oracle);
+  non-ISO cells of datasets imported before #1845 never match a range.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

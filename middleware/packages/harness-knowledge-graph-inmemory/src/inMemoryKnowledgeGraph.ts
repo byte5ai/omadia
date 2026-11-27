@@ -37,6 +37,7 @@ import {
   type DatasetSummary,
   validateDatasetQueryOptions,
   assertNoEncryptedQueryColumns,
+  datasetDateTime,
   datasetQueryValueColumns,
   isEncryptedDatasetCell,
   type EntityRef,
@@ -170,6 +171,20 @@ function isOperatorAuthored(node: GraphNode): boolean {
   return node.manuallyAuthored === true && !String(node.props['created_by'] ?? '').startsWith('auto:');
 }
 
+/** #2302 (ADR-0267) — a range filter on a `date` column, compared as dates
+ *  (`datasetDateTime`: wall-clock, date-only = midnight), the same as the
+ *  Neon backend's guarded `::timestamp` cast. A cell that is not a stored ISO
+ *  date (a column imported before #1845) never matches. */
+function compareDateRange(value: unknown, filter: DatasetFilter): boolean {
+  const a = datasetDateTime(value);
+  const b = datasetDateTime(filter.value);
+  if (a === undefined || b === undefined) return false;
+  if (filter.op === 'gt') return a > b;
+  if (filter.op === 'gte') return a >= b;
+  if (filter.op === 'lt') return a < b;
+  return a <= b;
+}
+
 /** #430 — one `dataset_rows` row's evaluation of a single `DatasetFilter`.
  *  Mirrors the SQL semantics `NeonKnowledgeGraph` builds over the JSONB
  *  column: numeric comparisons coerce both sides to `Number`, `contains`
@@ -212,6 +227,7 @@ function matchesDatasetFilter(
     case 'gte':
     case 'lt':
     case 'lte': {
+      if (columnType === 'date') return compareDateRange(value, filter);
       const a =
         typeof value === 'number'
           ? value

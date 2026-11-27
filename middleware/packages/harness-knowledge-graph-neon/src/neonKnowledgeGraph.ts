@@ -39,6 +39,7 @@ import {
   type DatasetSummary,
   validateDatasetQueryOptions,
   assertNoEncryptedQueryColumns,
+  DATASET_DATE_VALUE_PATTERN,
   datasetQueryValueColumns,
   ENCRYPTED_DATASET_CELL_PREFIX,
   type EntityCapturedTurnsHit,
@@ -330,6 +331,29 @@ interface DatasetRow {
  * (numeric ops on non-number columns, `contains` on non-string columns),
  * so every branch here is reachable only for a compatible pairing.
  */
+/**
+ * #2302 (ADR-0267) — a range filter on a `date` column, compared as
+ * `timestamp` (wall-clock; the cast drops a trailing `Z`, matching
+ * `datasetDateTime` in the in-memory backend). The cast only runs on a cell
+ * in `DATASET_DATE_VALUE_PATTERN`; any other cell (a `date` column imported
+ * before #1845 kept its raw spelling) is NULL and never matches, instead of
+ * failing the whole query on a cast error. `validateDatasetQueryOptions`
+ * already checked the bound.
+ */
+function dateRangeClause(
+  colParamIdx: number,
+  opSql: string,
+  value: DatasetFilter['value'],
+  params: unknown[],
+): string {
+  const cell = `data->>$${String(colParamIdx)}`;
+  params.push(DATASET_DATE_VALUE_PATTERN);
+  const patternIdx = params.length;
+  params.push(String(value));
+  const valueIdx = params.length;
+  return `(CASE WHEN ${cell} ~ $${String(patternIdx)}::text THEN (${cell})::timestamp END) ${opSql} $${String(valueIdx)}::timestamp`;
+}
+
 function buildDatasetFilterClause(
   filter: DatasetFilter,
   columnType: DatasetColumnSchema['type'],
@@ -351,8 +375,9 @@ function buildDatasetFilterClause(
     case 'gte':
     case 'lt':
     case 'lte': {
-      params.push(Number(filter.value));
       const opSql = { gt: '>', gte: '>=', lt: '<', lte: '<=' }[filter.op];
+      if (columnType === 'date') return dateRangeClause(colParamIdx, opSql, filter.value, params);
+      params.push(Number(filter.value));
       return `${lhs} ${opSql} $${String(params.length)}::numeric`;
     }
     case 'contains': {

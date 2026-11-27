@@ -8,6 +8,23 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.107.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`DATASET_DATE_VALUE_PATTERN`** / **`datasetDateTime(value)`** (#2302, ADR-0267): the
+  stored ISO form of a `date` dataset cell and its comparable wall-clock milliseconds
+  (date-only = midnight, a trailing `Z` read as wall clock, impossible dates `undefined`).
+
+### Changed
+
+- `validateDatasetQueryOptions` accepts `gt`/`gte`/`lt`/`lte` on `date` columns; the bound
+  must be a `datasetDateTime` value, else `DatasetQueryValidationError` code
+  `invalid_date_value`. Ranges on `string`/`boolean` columns stay `op_type_mismatch`;
+  encrypted columns stay `encrypted_column`.
+
 ## 1.106.0 — 2026-11-26
 
 Additive.
