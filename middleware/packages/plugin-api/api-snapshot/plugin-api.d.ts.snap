@@ -1699,13 +1699,15 @@ provider: string;
 providerUserId: string;
 };
 linkedUserId?: string;
+linkedDirectoryPersonId?: string;
 }
 export interface ChannelIdentityLinkInput {
 channelKind: ChannelKind;
 channelUserId: string;
 target: {
 omadiaUserId: string;
-userId: string;
+userId?: string;
+directoryPersonId?: string;
 linkedBy?: string;
 } | null;
 displayName?: string;
@@ -1715,7 +1717,7 @@ channelIdentityNodeId: string;
 omadiaUserId: string;
 previousOmadiaUserId?: string;
 }
-export declare const CHANNEL_IDENTITY_LINK_PROPS: readonly ["linkedUserId", "linkedBy", "linkedAt"];
+export declare const CHANNEL_IDENTITY_LINK_PROPS: readonly ["linkedUserId", "linkedDirectoryPersonId", "linkedBy", "linkedAt"];
 export declare function authSubjectProps(ingest: Pick<ChannelIdentityIngest, 'authSubject'>): Record<string, string>;
 export type MemorableKind = 'decision' | 'insight' | 'preference' | 'reference';
 export interface MemorableKnowledgeIngest {

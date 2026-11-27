@@ -124,6 +124,7 @@ export const ROUTES: Readonly<Record<string, Classification>> = {
   'src/index.ts USE /api/v1/admin/skills createSkillPromotionRouter': none('skill ownership promotion'),
   'src/index.ts USE /api/v1/admin/transcription-provider createAdminTranscriptionProviderRouter': none('transcription provider settings'),
   'src/index.ts USE /api/v1/admin/update createAdminUpdateRouter': none('self-update'),
+  'src/index.ts USE /api/v1/admin/directory createAdminDirectoryRouter': none('directory people, links and connections (ADR-0300)'),
   'src/index.ts USE /api/v1/admin/users createAdminUsersRouter': none('account management'),
   'src/index.ts USE /api/v1/admin/vault-status createVaultStatusRouter': none('vault status'),
   'src/index.ts USE /api/v1/agents createAgentDirectoryRouter': none('agent directory'),

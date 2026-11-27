@@ -109,6 +109,8 @@ export const KERNEL_SQL_RELATIONS: ReadonlySet<string> = new Set([
   'dev_repo_plugin_grants',
   'dev_repos',
   'dev_webhook_deliveries',
+  'directory_people',
+  'directory_sync_state',
   'discretion_flow_audit',
   'discretion_labels',
   'drafts',
