@@ -43,7 +43,6 @@ async function hasProtectedTurn(kg: NeighborGraph, node: GraphNode): Promise<boo
   return turns.length > 0 && !turns.some(isStampedUnprotected);
 }
 
-/** Not stamped, and linked to no `unprotected` Turn (a missing link is fine). */
 /**
  * #2333 — a Plan a plugin may read under a Privacy Shield: the current turn's
  * own plan (it runs under this shield; its Turn node lands only after the
@@ -62,6 +61,7 @@ export async function isPlanReadableUnderShield(
   return hasProtectedTurn(kg, plan);
 }
 
+/** Not stamped, and linked to no `unprotected` Turn (a missing link is fine). */
 async function isProtectedMemory(kg: NeighborGraph, node: GraphNode): Promise<boolean> {
   if (isStampedUnprotected(node)) return false;
   const neighbors = await kg.getNeighbors(node.id);

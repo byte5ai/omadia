@@ -11914,6 +11914,14 @@ export class Orchestrator {
   }
 
   /**
+   * #2342 — whether this turn's answer may still be withheld by the people-
+   * egress check (`guardStreamedDone`), so its tool outputs wait for it.
+   */
+  public answerMayBeWithheld(): boolean {
+    return currentDiscretion() !== undefined && !isConsultationRunOf(this.agentId);
+  }
+
+  /**
    * #2085 / #2079 / criterion 18 — the streamed `done` goes to the people of
    * the conversation only when every reader may know what the turn read
    * (field rights included). Otherwise it is refused as on the buffered path
@@ -11923,14 +11931,6 @@ export class Orchestrator {
    * back the text deltas already streamed (`text_retract`) before the
    * `done`, so a client that shows the preview never keeps the answer.
    */
-  /**
-   * #2342 — whether this turn's answer may still be withheld by the people-
-   * egress check (`guardStreamedDone`), so its tool outputs wait for it.
-   */
-  public answerMayBeWithheld(): boolean {
-    return currentDiscretion() !== undefined && !isConsultationRunOf(this.agentId);
-  }
-
   private async guardStreamedDone(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     locale: string | undefined,

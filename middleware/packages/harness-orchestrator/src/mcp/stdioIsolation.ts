@@ -69,13 +69,13 @@ export const MCP_STDIO_CHILD_SHIM = [
   'umask 077',
   ': "${npm_config_cache:=$HOME/.npm-cache/$0}"',
   'export npm_config_cache',
-  'exec 3<&0',
-  'if command -v setsid >/dev/null 2>&1; then setsid "$@" <&3 3<&- & else "$@" <&3 3<&- & fi',
-  'child=$!',
-  'exec 3<&- </dev/null',
-  'parent=$PPID',
+  // The trap stands before the fork (a background child resets it), so a
+  // SIGTERM in between cannot end the shim and leave the server behind.
+  'child=',
   'stop() {',
   "  trap '' TERM INT HUP",
+  '  child=${child:-$!}',
+  '  [ -n "$child" ] || exit 143',
   '  kill -s TERM -- "-$child" 2>/dev/null || kill -s TERM "$child" 2>/dev/null',
   '  n=0',
   `  while [ "$n" -lt ${String(MCP_STDIO_STOP_GRACE_S)} ] && kill -0 "$child" 2>/dev/null; do sleep 1; n=$((n + 1)); done`,
@@ -83,9 +83,16 @@ export const MCP_STDIO_CHILD_SHIM = [
   '  exit 143',
   '}',
   'trap stop TERM INT HUP',
+  'exec 3<&0',
+  'if command -v setsid >/dev/null 2>&1; then setsid "$@" <&3 3<&- & else "$@" <&3 3<&- & fi',
+  'child=$!',
+  'exec 3<&- </dev/null',
+  'parent=$PPID',
+  // The watcher holds none of the server's pipes: its `sleep` must not delay
+  // the EOF the SDK reads when the server exits.
   'if [ -d "/proc/$parent" ]; then',
   '  (while [ -d "/proc/$parent" ] && kill -0 "$child" 2>/dev/null; do sleep 1; done',
-  '   [ -d "/proc/$parent" ] || kill -s TERM "$$") &',
+  '   [ -d "/proc/$parent" ] || kill -s TERM "$$") >/dev/null 2>&1 &',
   'fi',
   'wait "$child"',
 ].join('\n');

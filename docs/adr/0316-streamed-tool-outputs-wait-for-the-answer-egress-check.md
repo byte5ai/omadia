@@ -56,8 +56,14 @@ cannot be kept.
 - 🟢 **Good:** No client change is needed. Older web UIs and API callers get the safe behaviour.
 - 🔴 **Bad:** In rooms with discretion state, the trace shows outputs only at the end of the
   turn, not while it runs.
+- 🔴 **Bad (accepted residual):** `tool_use` / `sub_tool_use` inputs still stream live. A model
+  that copies a value it read (a signed link) into its next call's arguments puts that value in
+  the trace before the check. Tool inputs are model text, not tool output. Holding them would also
+  hide which tool is running.
 - ⚪ **Neutral:** A client that renders a `tool_result` per event, not per id, shows two rows.
-  None in the repo does.
+  None in the repo does. Public-API and SSE consumers now see two `tool_result` events with the
+  same `id` in such turns; the later one is authoritative (documented on the event type in
+  `harness-channel-sdk/src/chatAgent.ts`).
 
 ## Pros and Cons of the Options
 

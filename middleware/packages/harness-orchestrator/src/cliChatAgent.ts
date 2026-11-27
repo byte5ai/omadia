@@ -1590,13 +1590,13 @@ export class CliChatAgent implements ChatAgent {
     }
   }
 
-  /** #2194 — {@link CliChatAgentDeps.guardAnswer} in the turn's context. */
   /** #2342 — whether {@link guardTurnAnswer} may still withhold this turn's answer. */
   private answerMayBeWithheld(turnContext: CapturedTurnContext): boolean {
     const check = this.deps.answerMayBeWithheld;
     return check !== undefined && turnContext.runInTurnContext(check);
   }
 
+  /** #2194 — {@link CliChatAgentDeps.guardAnswer} in the turn's context. */
   private async guardTurnAnswer(
     answer: string,
     input: ChatTurnInput,

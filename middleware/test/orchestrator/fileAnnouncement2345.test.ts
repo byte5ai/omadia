@@ -112,6 +112,19 @@ describe('file-build announcement (#2345)', () => {
       'Here is the Excel file with all rows.',
       "Here's your spreadsheet.",
     ]);
-    no(['Hier ist die Übersicht.', 'Hier ist die Datei-Übersicht der Abteilung.', 'Ist hier die Excel-Datei gemeint?']);
+    no([
+      'Hier ist die Übersicht.',
+      'Hier ist die Datei-Übersicht der Abteilung.',
+      'Ist hier die Excel-Datei gemeint?',
+      // Talking about a file is no claim that one was built (review of #2351).
+      'Here is a summary of the file you uploaded.',
+      'Hier ist eine Zusammenfassung der Excel-Datei.',
+      'Hier sind die wichtigsten Punkte aus der Datei:',
+      'Anbei die Kennzahlen aus der Arbeitsmappe.',
+      'Here are the totals from the spreadsheet: 42.',
+      "Here's what I found in the file: nothing.",
+      'Im Anhang der Mail war die Datei leider leer.',
+    ]);
+    yes(['Hier ist die fertige Excel-Datei.']);
   });
 });

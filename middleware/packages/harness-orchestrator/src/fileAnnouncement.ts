@@ -112,9 +112,20 @@ function sentences(answer: string): string[] {
   return text.split(/(?<=[.!?])(?<!\d\.)\s+|\n+/u).filter((s) => s.trim().length > 0);
 }
 
+/**
+ * Between "Hier ist" and the file word only its article and at most one
+ * adjective (`die fertige Excel-Datei`, `your updated file`): "eine
+ * Zusammenfassung der Datei" or "the totals from the spreadsheet" talk about
+ * a file, they do not hand one over.
+ */
+const CLAIM_ARTICLE_ONLY = new RegExp(
+  `^\\s*${W('die|das|der|den|dein|deine|ihre|eine|ein|the|a|an|your')}\\s+(?:\\p{L}+\\s+)?$`,
+  'iu',
+);
+
 function claimsFile(sentence: string): boolean {
   const match = CLAIM_SPAN.exec(sentence);
-  return match !== null && ARTICLE_CUE.test(match[1] ?? '') && !CAPABILITY_MARKER.test(match[1] ?? '');
+  return match !== null && CLAIM_ARTICLE_ONLY.test(match[1] ?? '');
 }
 
 function announcesInSentence(sentence: string): boolean {

@@ -314,6 +314,7 @@ describe('#2333 · bounded plans under a Privacy Shield', () => {
       getPlanSteps: async () => [node('planstep:x', 'PlanStep')],
       getNeighbors: async (id) => neighbours[id] ?? [],
       setPlanStepStatus: async () => undefined,
+      ingestPlan: async () => ({ planExternalId: 'plan:x' }),
     };
     return kg as KnowledgeGraph;
   }
@@ -333,6 +334,11 @@ describe('#2333 · bounded plans under a Privacy Shield', () => {
     assert.deepEqual(await shielded(() => bounded.getPlanSteps('plan:t-open')), []);
     assert.equal((await shielded(() => bounded.getPlan('plan:t-now')))?.id, 'plan:t-now');
     assert.equal((await plain(() => bounded.getPlan('plan:t-open')))?.id, 'plan:t-open');
+    // Re-ingesting an unreadable plan would link it to a protected turn and unlock it.
+    await assert.rejects(
+      () => shielded(() => bounded.ingestPlan({ planId: 't-gone', scope: SCOPE, turnExternalId: 't-ok' } as never)),
+      (err: unknown) => err instanceof GraphServiceRefusedError && err.reason === 'out-of-scope',
+    );
     await assert.rejects(
       () => shielded(() => bounded.setPlanStepStatus('planstep:open-1', 'done')),
       (err: unknown) => err instanceof GraphServiceRefusedError && err.reason === 'out-of-scope',

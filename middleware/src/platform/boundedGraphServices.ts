@@ -49,6 +49,7 @@ import {
   type EntityIngest,
   type FactIngest,
   type GraphNode,
+  planNodeId,
   type KnowledgeGraph,
   type MemoryEntry,
   type MemoryStore,
@@ -598,6 +599,10 @@ function boundedPlans(
   return {
     async ingestPlan(input: Parameters<KnowledgeGraph['ingestPlan']>[0]) {
       if (input.scope !== ownScope('ingestPlan')) throw outOfScope('ingestPlan');
+      // #2333 — under a shield, re-ingesting a plan the turn may not read
+      // would link it to a protected Turn and unlock it.
+      const existing = await kg.getPlan(planNodeId(input.planId));
+      if (existing && !(await planReadable(kg, existing))) throw outOfScope('ingestPlan');
       return kg.ingestPlan(input);
     },
     async upsertPlanStep(input: Parameters<KnowledgeGraph['upsertPlanStep']>[0]) {
