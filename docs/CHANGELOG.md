@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Tests — memory-ACL world gets User and Fact items; re-ingest after promotion (#2340) (2026-11-27)
+
+- The memory-ACL test world (`test/memoryAccess/world.ts`) seeds one `User` node per person (canary
+  in the profile's display name) and one `Fact` extracted from two turns of different visibility.
+  The oracle allows a User node only to that person, and a fact only to viewers who may read every
+  source turn. A control per sweep mode proves allowed ones are actually reached. Mutations GV09
+  and GV10 (`graphNodeAccess.ts`) are now killed.
+- `recallDerivedUnprotected1536Contract.ts` (in-memory + Neon) promotes a memory from a protected
+  turn, re-ingests the turn as `unprotected`, and checks that a shielded search no longer returns
+  the memory or its excerpts. Mutations IM14 and NE09 (the `DERIVED_FROM` check) are now killed.
+  `docs/testing/memory-acl-mutation-record.md`: no surviving mutant.
+- The known-leak todos for #2333/#2334 are gone (fixed above); `PG_TEST_FLOOR` 872 → 874.
+
 ### Fixed — the boot-time process re-key no longer fails on a re-written slug id (#2358) (2026-11-27)
 
 - `NeonProcessMemoryStore.rekeyLegacyIds` (ADR-0295) gives `legacy_id` only to a row whose old id no

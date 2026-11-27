@@ -303,6 +303,28 @@ export interface TopicItem {
   readonly members: readonly MkItem[];
 }
 
+/**
+ * #2340 — a person's User node (the identity cluster root). Its profile, the
+ * display name written by identity resolution, carries the canary.
+ */
+export interface UserItem {
+  readonly store: 'user';
+  readonly canary: string;
+  readonly tenant: TenantKey;
+  readonly user: UserKey;
+}
+
+/**
+ * #2340 — a fact extracted from two turns (`DERIVED_FROM` each). Its object
+ * carries the canary.
+ */
+export interface FactItem {
+  readonly store: 'fact';
+  readonly canary: string;
+  readonly tenant: TenantKey;
+  readonly sources: readonly TurnItem[];
+}
+
 export type Item =
   | MkItem
   | ExcerptItem
@@ -312,7 +334,9 @@ export type Item =
   | ScratchItem
   | DatasetItem
   | ProcessItem
-  | TopicItem;
+  | TopicItem
+  | UserItem
+  | FactItem;
 
 export type Store = Item['store'];
 
@@ -564,6 +588,25 @@ export function buildWorld(): World {
       tenant,
       members: [alicePrivate, bobTeam],
     });
+  }
+
+  // #2340 — appended last, so the canaries above keep their numbers.
+  for (const tenant of ['main', 'other'] as const) {
+    for (const user of USER_KEYS) items.push({ store: 'user', canary: canary('user'), tenant, user });
+    // A fact from two turns of different reach: Alice's DM and room1 (Alice
+    // and Bob), both protected and recallable. Bob reads only the room turn.
+    const source = (context: ContextKey): TurnItem =>
+      turns.find(
+        (t) =>
+          t.tenant === tenant &&
+          t.agent === 'atlas' &&
+          t.context === context &&
+          t.sender === 'alice' &&
+          t.owners === 'present' &&
+          !t.unprotected &&
+          !t.tailOnly,
+      )!;
+    items.push({ store: 'fact', canary: canary('fact'), tenant, sources: [source('dm'), source('room1')] });
   }
 
   const byStore = {} as Record<Store, Item[]>;

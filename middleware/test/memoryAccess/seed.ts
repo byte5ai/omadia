@@ -160,17 +160,21 @@ export async function seedWorld(
 
   // People first: one user cluster per person and store, through the same
   // identity resolution a Teams message runs.
+  // The display name carries the person's User canary (#2340): it lands on
+  // the User node's profile.
   const users = {} as Record<TenantKey, Record<UserKey, string>>;
   for (const tenant of ['main', 'other'] as const) {
     users[tenant] = {} as Record<UserKey, string>;
     for (const u of USER_KEYS) {
+      const profile = world.byStore.user.find((p) => p.tenant === tenant && p.user === u);
       const res = await stores[tenant].graph.resolveOrCreateChannelIdentity({
         channelKind: 'teams',
         channelUserId: USERS[u],
         aadObjectId: USERS[u],
-        displayName: u,
+        displayName: profile ? `${u} ${profile.canary}` : u,
       });
       users[tenant][u] = res.omadiaUserId;
+      if (profile) location.set(profile.canary, res.userNodeId);
     }
   }
   const ids = (tenant: TenantKey, owners: readonly UserKey[]): string[] =>
@@ -233,6 +237,24 @@ export async function seedWorld(
     location.set(t.canary, res.turnId);
     if (entity) location.set(entity, res.turnId);
     await embed(t.tenant, res.turnId, axis(turnAxis(t)));
+  }
+
+  // #2340 — one fact, extracted from each of its source turns: one
+  // DERIVED_FROM edge per turn.
+  for (const f of world.byStore.fact) {
+    const factId = `fact:ma-${f.canary.toLowerCase()}`;
+    for (const t of f.sources) {
+      await stores[f.tenant].graph.ingestFacts([
+        {
+          factId,
+          sourceTurnId: turnIds.get(t)!,
+          subject: 'Projekt Lilium',
+          predicate: 'notiert',
+          object: `Fakt ${f.canary}`,
+        },
+      ]);
+    }
+    location.set(f.canary, factId);
   }
 
   const unprotectedTurn = (tenant: TenantKey): string =>
@@ -408,5 +430,15 @@ export async function readBack(seeded: Seeded, item: Item): Promise<string | und
       return JSON.stringify((await processes?.get(at)) ?? null);
     case 'topic':
       return JSON.stringify(await graph.getTopic(at));
+    case 'user':
+    case 'fact': {
+      // Both hang off a turn: the sender's (BELONGS_TO) or a source turn.
+      const turn =
+        item.store === 'fact'
+          ? item.sources[0]!
+          : seeded.world.byStore.turn.find((t) => t.tenant === item.tenant && t.sender === item.user)!;
+      const neighbors = await graph.getNeighbors(seeded.location.get(turn.canary)!);
+      return JSON.stringify(neighbors.filter((n) => n.id === at));
+    }
   }
 }

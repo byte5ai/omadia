@@ -63,6 +63,8 @@ describe('memory-access world', () => {
       'dataset',
       'process',
       'topic',
+      'user',
+      'fact',
     ];
     for (const s of stores) {
       const items = world.byStore[s];
@@ -232,6 +234,21 @@ describe('memory-access oracle', () => {
         s.context === 'room2',
     )!;
     assert.equal(expected(room1Alice, 'enforce', room2Tier).allowed, false, 'Kanal ↮ Kanal');
+
+    // #2340 — a User node only to its person; a fact only with every source turn.
+    const aliceUser = world.byStore.user.find((u) => u.tenant === 'main' && u.user === 'alice')!;
+    assert.equal(expected(alice, 'off', aliceUser).allowed, true, 'own User node');
+    assert.equal(expected(bob, 'off', aliceUser).allowed, false, "another person's User node");
+    const fact = world.byStore.fact.find((f) => f.tenant === 'main')!;
+    const dmAlice = viewer({ context: 'dm' });
+    const room1Bob = viewer({ user: 'bob', context: 'room1' });
+    assert.equal(expected(dmAlice, 'off', fact).allowed, true, 'Alice reads both source turns');
+    assert.equal(
+      expected(room1Bob, 'off', fact).allowed,
+      false,
+      'Bob reads the room turn, not the DM turn',
+    );
+    assert.equal(expected(dmAlice, 'enforce-strict', fact).allowed, false, 'strict: the room turn is not own');
   });
 
   it('lists the divergences the contract suite must confirm or clear', () => {

@@ -16,6 +16,8 @@ export const VIEWER = '15361536-0000-4000-8000-000000001536';
  *  search sees it, so the shared seed's counts stay as they are. */
 const SECOND_VIEWER = '22782278-0000-4000-8000-000000002278';
 const PURGED_USER = 'purged-user-2278';
+/** #2340 — owner of the memory whose source turn turns unprotected later. */
+const LATE_VIEWER = '23402340-0000-4000-8000-000000002340';
 export const VECTOR = Array.from({ length: 768 }, (_, i) => (i % 7) / 7 + 0.01);
 
 function turn(scope: string, minute: number, unprotected: boolean | undefined): TurnIngest {
@@ -156,6 +158,52 @@ export function runContract(label: string, setup: () => Promise<Seeded | undefin
       );
       assert.deepEqual(await s.kg.searchMemorableKnowledgeByEmbedding(opts(true)), []);
       assert.deepEqual(await s.kg.searchExcerptsByEmbedding(opts(true)), []);
+    });
+
+    // #2340 — since #2278 a memory is stamped from its source turns when it is
+    // written, so the stamp hides every memory derived from an already
+    // unprotected turn. The DERIVED_FROM check still decides one order: the
+    // turn is re-ingested as unprotected after the memory was promoted.
+    it('a memory stays skipped when its source turn is marked unprotected after promotion (#2340)', async (t) => {
+      const s = await setup();
+      if (!s) return t.skip('no test database');
+      const source = turn('s-late-2340', 5, false);
+      const first = await s.kg.ingestTurn(source);
+      const res = await s.kg.createMemorableKnowledge({
+        kind: 'reference',
+        summary: 'Marc Demo leitet Lilium (2340)',
+        createdBy: `web:${LATE_VIEWER}`,
+        aclOwners: [LATE_VIEWER],
+        palaiaExcerpts: { texts: ['Marc Demo leitet Lilium (Auszug 2340)'], source: 'llm' },
+        derivedFromTurnIds: [first.turnId],
+      });
+      const mkId = res.memorableKnowledgeNodeId;
+      await s.embed(mkId);
+      for (const ex of await s.kg.listExcerptsForMemory(mkId)) await s.embed(ex.id);
+      const opts = (excludeUnprotected: boolean) => ({
+        queryEmbedding: VECTOR,
+        viewerOmadiaUserId: LATE_VIEWER,
+        minSimilarity: 0,
+        limit: 10,
+        excludeUnprotected,
+      });
+      const memories = async (excludeUnprotected: boolean): Promise<string[]> =>
+        (await s.kg.searchMemorableKnowledgeByEmbedding(opts(excludeUnprotected))).map((h) => h.mk.id);
+      const excerpts = async (excludeUnprotected: boolean): Promise<string[]> =>
+        (await s.kg.searchExcerptsByEmbedding(opts(excludeUnprotected))).map((h) => h.parentMkId);
+      // Control: promoted from a protected turn, the memory is not stamped.
+      assert.deepEqual(await memories(true), [mkId]);
+      assert.deepEqual(await excerpts(true), [mkId]);
+
+      // The same turn again, now unprotected (a live re-ingest sets the flag).
+      const again = await s.kg.ingestTurn({ ...source, unprotected: true });
+      assert.equal(again.turnId, first.turnId, 'the re-ingest updates the same turn');
+      const stored = await s.kg.getMemorableKnowledge(mkId);
+      assert.notEqual(stored?.props['unprotected'], true, 'the memory itself stays unstamped');
+
+      assert.deepEqual(await memories(false), [mkId], 'without a shield recall is unchanged');
+      assert.deepEqual(await memories(true), [], 'the DERIVED_FROM check hides it');
+      assert.deepEqual(await excerpts(true), [], 'its excerpts follow');
     });
 
     it('plan recall under a shield keeps only plans of a known, protected turn', async (t) => {

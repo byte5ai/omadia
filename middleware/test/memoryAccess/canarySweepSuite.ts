@@ -170,6 +170,22 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
         assert.deepEqual(silent.map((s) => viewerId(s.viewer)), [], 'every turn recalls something it may see');
       });
 
+      // #2340 — the User and Fact items are only a test if they are reached:
+      // wherever the oracle allows one to a viewer of this mode, some turn gets it.
+      it(`${mode}: CONTROL — User and Fact canaries reach a viewer they are allowed to`, (t) => {
+        if (!seeded) return t.skip('no test database');
+        for (const store of ['user', 'fact'] as const) {
+          const allowedSomewhere = inMode().some((sweep) =>
+            seeded!.world.byStore[store].some((item) => expected(sweep.viewer, mode, item, settings).allowed),
+          );
+          if (!allowedSomewhere) continue;
+          const reached = inMode().some((sweep) =>
+            sweep.sightings.some((s) => s.item.store === store && verdictOf(sweep, s).allowed),
+          );
+          assert.ok(reached, `no allowed ${store} canary reached any turn`);
+        }
+      });
+
       if (backend === 'neon') {
         it(`${mode}: process writes stay inside the turn's boundary (#2223)`, (t) => {
           if (!seeded) return t.skip('no test database');
