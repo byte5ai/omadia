@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a capability list no longer forces a file-build retry (#2345) (2026-11-27)
+
+- The forced file-build retry (`fileAnnouncedButNotBuilt`) read any sentence with a build verb and
+  a file word as an announcement. A FAQ agent that answered "Wofür bist du zuständig?" with a list
+  of what it can do ("… erstelle bei Bedarf Excel- und Word-Dateien") got the retry nudge and then
+  "corrected" an announcement it never made. The detector (`fileAnnouncement.ts`) now checks per
+  sentence and needs a cue for this file or this moment (an article, an addressee, "jetzt" and the
+  like). A capability or condition marker before the file word ("kann", "bei Bedarf", "auf Wunsch",
+  "zuständig", "wenn", "falls", …), an example marker anywhere ("z. B.", "unter anderem") or a
+  question means no announcement; a clause after the file word ("…, das kann einen Moment
+  dauern") does not cancel one. Abbreviations and numbers no longer split a sentence, word
+  boundaries are umlaut-aware, and `ich werde … erstellen` and English announcements ("I'll
+  create the Excel file") count now. Accepted trade-off: a build sentence without any cue
+  ("Ich erstelle Excel- und Word-Dateien.") reads as a capability. Still not detected: a file
+  claimed without a build verb ("Hier ist die Excel-Datei").
+
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of
