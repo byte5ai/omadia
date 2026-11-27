@@ -47,7 +47,7 @@ changelog.
   turn, re-ingests the turn as `unprotected`, and checks that a shielded search no longer returns
   the memory or its excerpts. Mutations IM14 and NE09 (the `DERIVED_FROM` check) are now killed.
   `docs/testing/memory-acl-mutation-record.md`: no surviving mutant.
-- The known-leak todos for #2333/#2334 are gone (fixed above); `PG_TEST_FLOOR` 872 → 874.
+- The known-leak todos for #2333/#2334 are gone (fixed above); `PG_TEST_FLOOR` → 882 (main's measured 880 at landing + 2).
 
 ### Fixed — the boot-time process re-key no longer fails on a re-written slug id (#2358) (2026-11-27)
 
