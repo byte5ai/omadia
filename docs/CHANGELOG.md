@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Security — `/api/dev` is loopback-only under `NODE_ENV=production` (#2275, ADR-0260) (2026-11-27)
+
+- With `DEV_ENDPOINTS_ENABLED=true` the dev graph and the memory browser read every account's
+  memory. Under `NODE_ENV=production` (baked into the shipped image) the `/api/dev` prefix is now
+  bound to loopback whatever `DEV_ENDPOINTS_LOOPBACK_ONLY` says (`resolveDevLoopbackOnly`,
+  `routes/graphRouterMounts.ts`); remote sessions get `403 dev.loopback_only`. The compose dev
+  stack (`NODE_ENV=development`) keeps the opt-in behaviour.
+- Tests: `test/devEndpoints/` covers the production case for graph + memory browser.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

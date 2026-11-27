@@ -217,6 +217,7 @@ import {
   PLUGIN_DOMAINS_ADMIN_PATH,
   mountDevGraph,
   mountDevLoopbackGuard,
+  resolveDevLoopbackOnly,
   mountKnowledgeGraphAdmin,
 } from './routes/graphRouterMounts.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
@@ -8012,7 +8013,13 @@ async function main(): Promise<void> {
   // #1350 — the loopback guard covers the whole `/api/dev` prefix, including
   // the plugin routes `pluginRouteRegistry.mountAll(app)` mounts further down
   // (the `@omadia/memory` browser). It must stay ahead of both mounts.
-  mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });
+  // #2275 (ADR-0260): under NODE_ENV=production the prefix is loopback-only
+  // regardless of DEV_ENDPOINTS_LOOPBACK_ONLY.
+  const devLoopbackOnly = resolveDevLoopbackOnly({
+    loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY,
+    nodeEnv: process.env['NODE_ENV'],
+  });
+  mountDevLoopbackGuard(app, { loopbackOnly: devLoopbackOnly });
   if (
     mountDevGraph(app, requireAuth, {
       graph: knowledgeGraph,
@@ -8021,7 +8028,7 @@ async function main(): Promise<void> {
   ) {
     console.log(
       `[middleware] DEV endpoints enabled at ${DEV_GRAPH_PATH} (auth: required${
-        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
+        devLoopbackOnly ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
       })`,
     );
   }

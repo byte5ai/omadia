@@ -119,6 +119,25 @@ export interface DevLoopbackGuardDeps {
 }
 
 /**
+ * #2275 (ADR-0260) — the effective loopback setting for `/api/dev`.
+ *
+ * Under `NODE_ENV=production` the whole prefix is loopback-only whatever
+ * `DEV_ENDPOINTS_LOOPBACK_ONLY` says: the dev graph and the memory browser
+ * read every account's memory without a viewer, so a copied `.env` with
+ * `DEV_ENDPOINTS_ENABLED=true` must not publish that to every logged-in
+ * session of a deployed instance. The shipped image bakes
+ * `NODE_ENV=production`; the compose dev stack overrides it to `development`,
+ * where the Next.js proxy reaches `/api/dev` from a container address and the
+ * opt-in setting keeps applying.
+ */
+export function resolveDevLoopbackOnly(opts: {
+  readonly loopbackOnly: boolean;
+  readonly nodeEnv: string | undefined;
+}): boolean {
+  return opts.loopbackOnly || opts.nodeEnv === 'production';
+}
+
+/**
  * Issue #1350 — bind the WHOLE `/api/dev` prefix to loopback when
  * `DEV_ENDPOINTS_LOOPBACK_ONLY` is set.
  *

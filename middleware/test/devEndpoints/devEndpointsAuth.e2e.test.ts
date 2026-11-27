@@ -28,6 +28,7 @@ import {
   KG_LIFECYCLE_ADMIN_PATH,
   KG_PRIORITIES_ADMIN_PATH,
   PLUGIN_DOMAINS_ADMIN_PATH,
+  resolveDevLoopbackOnly,
 } from '../../src/routes/graphRouterMounts.js';
 import {
   DEV_MEMORY_PATH,
@@ -380,5 +381,76 @@ describe('#1350 — DEV_ENDPOINTS_LOOPBACK_ONLY covers every /api/dev route', ()
       const res = await h.request(`${DEV_MEMORY_PATH}/list?path=/memories`);
       assert.equal(res.status, 401);
     });
+  });
+});
+
+/**
+ * #2275 (ADR-0260) — with `NODE_ENV=production` a copied
+ * `DEV_ENDPOINTS_ENABLED=true` must not publish every account's memory to
+ * every logged-in session: the prefix is loopback-only even when
+ * `DEV_ENDPOINTS_LOOPBACK_ONLY` is unset.
+ */
+describe('#2275 — /api/dev is loopback-only under NODE_ENV=production', () => {
+  const BRIDGE_PEER = '172.18.0.1';
+  const PATHS = [
+    `${DEV_GRAPH_PATH}/stats`,
+    `${DEV_MEMORY_PATH}/list?path=/memories`,
+    `${DEV_MEMORY_PATH}/file?path=/memories/chat-sessions/s1.json`,
+  ];
+
+  async function withProdHarness(
+    t: { skip: (msg: string) => void },
+    remoteAddress: string | undefined,
+    body: (h: DevEndpointsHarness) => Promise<void>,
+  ): Promise<void> {
+    let h: DevEndpointsHarness;
+    try {
+      h = await startDevEndpointsHarness({
+        withDevMemoryPluginRoute: true,
+        loopbackOnly: false,
+        nodeEnv: 'production',
+        ...(remoteAddress !== undefined ? { remoteAddress } : {}),
+      });
+    } catch (err) {
+      if (isSandboxListenDenied(err)) {
+        t.skip('sandbox denies loopback listeners');
+        return;
+      }
+      throw err;
+    }
+    try {
+      await body(h);
+    } finally {
+      await h.close();
+    }
+  }
+
+  for (const path of PATHS) {
+    it(`refuses a non-loopback operator session on ${path} with 403`, async (t) => {
+      await withProdHarness(t, BRIDGE_PEER, async (h) => {
+        const res = await h.request(path, { authenticated: true });
+        assert.equal(res.status, 403);
+        const body = (await res.json()) as { code?: string };
+        assert.equal(body.code, 'dev.loopback_only');
+      });
+    });
+  }
+
+  it('still serves a loopback operator session', async (t) => {
+    await withProdHarness(t, undefined, async (h) => {
+      const res = await h.request(`${DEV_GRAPH_PATH}/stats`, { authenticated: true });
+      assert.equal(res.status, 200);
+    });
+  });
+});
+
+describe('#2275 — resolveDevLoopbackOnly', () => {
+  it('forces loopback under production', () => {
+    assert.equal(resolveDevLoopbackOnly({ loopbackOnly: false, nodeEnv: 'production' }), true);
+  });
+  it('keeps the opt-in setting outside production', () => {
+    assert.equal(resolveDevLoopbackOnly({ loopbackOnly: false, nodeEnv: 'development' }), false);
+    assert.equal(resolveDevLoopbackOnly({ loopbackOnly: false, nodeEnv: undefined }), false);
+    assert.equal(resolveDevLoopbackOnly({ loopbackOnly: true, nodeEnv: 'development' }), true);
   });
 });

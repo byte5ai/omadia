@@ -5976,7 +5976,7 @@ TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-P
 ADMIN_TOKEN                         # mount /api/admin (mutating memory; read-only
                                     # counters: /security/screening #749, /run-trace #1082)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
-DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
+DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669); unter NODE_ENV=production immer an (#2275)
 # Teams
 MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD, MICROSOFT_APP_TYPE=MultiTenant,
 MICROSOFT_APP_TENANT_ID
@@ -8854,7 +8854,8 @@ Erledigt durch #669: Statt eines `DEV_TOKEN` laufen alle `/api/dev/*`-Routen
 hinter dem `/api`-Session-Gate (Operator-Login). `DEV_ENDPOINTS_LOOPBACK_ONLY=true`
 bindet seit #1350 das ganze `/api/dev`-Präfix an Loopback, auch die
 Plugin-Route `/api/dev/memory`. Die Flag bleibt Dev-Scaffolding und auf
-deployten Umgebungen aus. Siehe `docs/security-architecture.md`.
+deployten Umgebungen aus. Unter `NODE_ENV=production` ist das Präfix seit
+#2275 (ADR-0260) immer Loopback-only. Siehe `docs/security-architecture.md`.
 
 ### Phase 10 — Ollama-basierte Entity-Extraction aus Prose
 
