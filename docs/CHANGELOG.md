@@ -80,12 +80,13 @@ changelog.
 
 ### Fixed — a withheld streamed answer sends no tool outputs (#2342, ADR-0316) (2026-11-27)
 
-- While a turn's answer may still be withheld by the people-egress check (the turn has discretion
-  state and is not a consultation run), `tool_result` streams with `output: ''` and
-  `sub_tool_result` is held (`ToolOutputHold`). The full events follow just before `done` when the
-  answer goes out. A withheld answer drops them, so signed download links and raw read results
-  never reach the client's trace. This covers the in-process stream and the subscription CLI
-  (`CliChatAgentDeps.answerMayBeWithheld`). Kernel consumers still get the real output.
+- At each streamed `tool_result` / `sub_tool_result` the people-egress check is asked with the
+  labels collected so far (`Orchestrator.egressRefusesNow`, `ToolOutputHold`). If it would let the
+  answer through, the event streams live as before. If it would refuse, the event is held. For the
+  then-withheld answer it goes out once with `output: ''`, and held sub-results are dropped. Signed
+  download links and raw read results never reach the client's trace. Every call keeps exactly one
+  `tool_result`. This covers the in-process stream and the subscription CLI
+  (`CliChatAgentDeps.egressRefusesNow`). Kernel consumers still get the real output.
 
 ### Fixed — a plugin's plan and process reads honour the Privacy Shield (#2333, #2334, ADR-0315) (2026-11-27)
 

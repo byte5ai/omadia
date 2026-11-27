@@ -343,7 +343,7 @@ function cliAgentFor(
       ? {
           discretionTurnFields: (input: ChatTurnInput) => orchestrator.cliDiscretionTurnFields(input),
           guardAnswer: (answer: string, input: ChatTurnInput) => orchestrator.guardCliAnswer(answer, input),
-          answerMayBeWithheld: () => orchestrator.answerMayBeWithheld(),
+          egressRefusesNow: () => orchestrator.egressRefusesNow(),
         }
       : {}),
     spawnFn: (() => {
@@ -393,7 +393,7 @@ describe('a CLI turn runs with the in-process discretion state (#2194)', () => {
     assert.equal(done.answer.includes('Aufhebungsvertrag'), false, 'the answer is withheld');
   });
 
-  it('#2342 · a withheld CLI answer never sends its tool outputs; an allowed one sends them before done', async () => {
+  it('#2342 · a withheld CLI answer never sends its tool outputs; an allowed one streams them once', async () => {
     cliLines = CLI_TOOL_LINES;
     try {
       const withheld = await streamCli(planFromHr, ['hr-mgr', 's1']);
@@ -403,10 +403,9 @@ describe('a CLI turn runs with the in-process discretion state (#2194)', () => {
 
       const allowed = await streamCli(planFromHr, ['hr-mgr', 'p']);
       const results = allowed.events.filter((e) => e.type === 'tool_result');
-      assert.equal(results.length, 2, 'the output-less live row, then the full result');
-      const full = results[1]!;
+      assert.equal(results.length, 1, 'one result per call');
+      const full = results[0]!;
       assert.ok(full.type === 'tool_result' && full.output.includes('w42-cli-signed'));
-      assert.ok(allowed.events.indexOf(full) < allowed.events.findIndex((e) => e.type === 'done'));
     } finally {
       cliLines = CLI_LINES;
     }

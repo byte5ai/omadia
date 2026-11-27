@@ -1136,10 +1136,9 @@ export type ChatStreamEvent =
       foreign?: true;
     }
   /**
-   * #2342 / ADR-0316 — while the turn's answer may still be withheld by the
-   * people-egress check, a result streams with `output: ''` and the full
-   * event (same `id`) follows just before `done`; a withheld answer never
-   * sends it. Map results by `id`, the later one wins.
+   * #2342 / ADR-0316 — one per call. A result whose output the people-egress
+   * check would refuse at that point is held to just before `done`; for a
+   * withheld answer it arrives with `output: ''`.
    */
   | {
       type: 'tool_result';

@@ -207,12 +207,12 @@ describe('the answer egress (criterion 18)', () => {
       for await (const event of orchestrator.chatStream(input)) events.push(event as never);
     });
     const results = events.filter((e) => e.type === 'tool_result');
-    assert.ok(results.length >= 1, 'the trace still shows the call finished');
+    assert.equal(results.length, 1, 'one result per call: the row shows the call finished');
     assert.equal(JSON.stringify(results).includes('w42-signed'), false, 'no tool output reaches the client');
     assert.match(events.find((e) => e.type === 'done')?.answer ?? '', /nicht alle hier|not everyone here/);
   });
 
-  it('#2342 · an answer everyone may know brings its tool outputs before the done', async () => {
+  it('#2342 · an answer everyone may know streams its tool output live, once', async () => {
     const wide = unionLabels([{ kind: 'context', key: 'telegram:dm-ab', readers: readersOf(['a', 'b', 'c']) }]);
     const { orchestrator } = build(wide, { streamChunks: true, withTool: true });
     const { input, participants } = groupTurn(['a', 'b', 'c']);
@@ -221,13 +221,12 @@ describe('the answer egress (criterion 18)', () => {
       for await (const event of orchestrator.chatStream(input)) events.push(event as never);
     });
     const results = events.filter((e) => e.type === 'tool_result');
-    const live = results[0]!;
-    const full = results.at(-1)!;
-    assert.equal(live.output, '', 'the live row carries no output while the answer may be withheld');
-    assert.equal(full.id, live.id, 'the full result fills the same row');
-    assert.match(full.output ?? '', /w42-signed/);
-    const doneAt = events.findIndex((e) => e.type === 'done');
-    assert.ok(events.lastIndexOf(full as never) < doneAt, 'the outputs come before the done');
+    assert.equal(results.length, 1, 'one result per call');
+    assert.match(results[0]!.output ?? '', /w42-signed/);
+    // Live: the result comes before the answer's text, not held to the end.
+    const resultAt = events.indexOf(results[0] as never);
+    const firstText = events.findIndex((e) => e.type === 'text_delta');
+    assert.ok(resultAt < firstText, 'the output streams as the tool finishes');
   });
 
   it('a streamed answer everyone may know is not retracted', async () => {

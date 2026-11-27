@@ -28,55 +28,67 @@ results. How does a withheld turn keep its tool outputs from the client?
 
 ## Considered Options
 
-- **A — Hold the outputs:** while the answer may still be withheld, `tool_result` streams with
-  `output: ''` and `sub_tool_result` is held. When the answer goes out, the full events are sent
-  just before `done`. When it is withheld, they are dropped.
+- **A — Hold every output:** while the turn has discretion state, stream `tool_result` without its
+  output and send the full event just before `done`.
 - **B — Retract event:** stream as before, and emit a new `tool_trace_retract` event before a
   withheld `done`.
+- **C — Hold what the check would refuse now:** at each `tool_result` / `sub_tool_result`, ask
+  the people-egress check with the labels collected so far. If it would let the answer through,
+  stream the event live. If it would refuse, hold the event.
 
 ## Decision Outcome
 
-Chosen option: **A**, because it fails closed for every client. An output that is never sent
-cannot be kept.
+Chosen option: **C**, because it fails closed for every client and leaves ordinary turns
+unchanged. The check depends only on the turn's labels, and labels only grow. A tool's read
+labels the turn inside its dispatch, before its `tool_result` is yielded. So an output that passes
+the check when it arrives carries nothing the readers may not know, whatever the turn reads
+later. An output that fails it means the answer will be withheld too.
 
-- "May still be withheld" means the turn has discretion state and is not a consultation run
-  (`Orchestrator.answerMayBeWithheld()`, wired into `CliChatAgent` as `answerMayBeWithheld`).
-  A turn without discretion state streams outputs live, as before.
-- The hold is `ToolOutputHold` (`packages/harness-orchestrator/src/toolOutputHold.ts`). Both
-  streaming paths use it: the orchestrator's stream wrapper and the CLI agent's event loop.
-- The released `tool_result` repeats the live row's `id`. A client that maps results by id (the
-  web UI) fills in the row it already shows. No new event type. The channel-sdk contract only
-  gains the documented meaning of an empty output.
+- `ToolOutputHold` (`packages/harness-orchestrator/src/toolOutputHold.ts`) asks
+  `Orchestrator.egressRefusesNow()` (in the CLI agent: the `egressRefusesNow` dep). The check
+  answers `true` when it fails.
+- A held `tool_result` is settled before `done`:
+  - **Answer withheld:** it goes out once without its output (`output: ''`), so the row shows the
+    call finished. Held `sub_tool_result`s are dropped.
+  - **Answer goes out after all:** the full events are sent.
+- Every call yields exactly one `tool_result`, and the channel-sdk contract is unchanged.
+- Both streaming paths use the hold: the orchestrator's stream wrapper and the CLI agent's event
+  loop.
 - Kernel consumers (plan step hooks, run trace, nudges) still see the real output. Only the
   client-facing stream is held.
 
 ### Consequences
 
 - 🟢 **Good:** A withheld answer leaves no tool output in any client's trace.
-- 🟢 **Good:** No client change is needed. Older web UIs and API callers get the safe behaviour.
-- 🔴 **Bad:** In rooms with discretion state, the trace shows outputs only at the end of the
-  turn, not while it runs.
+- 🟢 **Good:** Turns the check lets through stream exactly as before: live, one result per call.
+  No client changes.
+- 🔴 **Bad:** One egress decision per tool result. It is cheap when the turn has no labels; the
+  readers resolve once per turn.
 - 🔴 **Bad (accepted residual):** `tool_use` / `sub_tool_use` inputs still stream live. A model
   that copies a value it read (a signed link) into its next call's arguments puts that value in
   the trace before the check. Tool inputs are model text, not tool output. Holding them would also
   hide which tool is running.
-- ⚪ **Neutral:** A client that renders a `tool_result` per event, not per id, shows two rows.
-  None in the repo does. Public-API and SSE consumers now see two `tool_result` events with the
-  same `id` in such turns; the later one is authoritative (documented on the event type in
-  `harness-channel-sdk/src/chatAgent.ts`).
 
 ## Pros and Cons of the Options
 
-### A — Hold the outputs
+### A — Hold every output
 
-- 🟢 Fails closed and needs no new wire event.
-- 🔴 Live outputs are delayed in rooms with discretion state.
+- 🟢 Simple.
+- 🔴 Discretion state exists in almost every turn (web chat included), so every trace changes. It
+  sends two `tool_result`s per call, and outputs no longer stream live (it broke the
+  parallel-dispatch and tool-gate contracts in CI).
 
 ### B — Retract event
 
 - 🟢 Keeps live outputs.
 - 🔴 An output already sent stays with any client that ignores the event. It needs a
   channel-sdk version bump and a change in every client.
+
+### C — Hold what the check would refuse now
+
+- 🟢 Fails closed and leaves ordinary turns unchanged.
+- 🔴 Relies on labels growing monotonically and being set inside the dispatch, both of which the
+  discretion code already holds to.
 
 ## More Information
 

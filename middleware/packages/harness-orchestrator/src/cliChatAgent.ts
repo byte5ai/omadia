@@ -1141,12 +1141,12 @@ export interface CliChatAgentDeps {
   // Must not reject: a check that fails withholds (the orchestrator's guard
   // decides that itself, it knows the withheld line's language).
   /**
-   * #2342 / ADR-0316 — whether `guardAnswer` may still withhold this turn's
-   * answer; while it may, tool outputs stream without their text and follow
-   * just before `done`. Run in the turn's captured context. Wired to
-   * `orchestrator.answerMayBeWithheld()`; unset, outputs stream as they come.
+   * #2342 / ADR-0316 — whether `guardAnswer` would refuse this turn's answer
+   * with the labels collected so far; while it would, tool outputs are held
+   * (`ToolOutputHold`). Run in the turn's captured context; must not reject.
+   * Wired to `orchestrator.egressRefusesNow()`; unset, outputs stream live.
    */
-  readonly answerMayBeWithheld?: () => boolean;
+  readonly egressRefusesNow?: () => Promise<boolean>;
   /**
    * #1535 — the environment the org policy `OMADIA_PRIVACY_FORCE_GUARDED` is
    * read from. Defaults to `process.env`; a seam for tests.
@@ -1590,10 +1590,10 @@ export class CliChatAgent implements ChatAgent {
     }
   }
 
-  /** #2342 — whether {@link guardTurnAnswer} may still withhold this turn's answer. */
-  private answerMayBeWithheld(turnContext: CapturedTurnContext): boolean {
-    const check = this.deps.answerMayBeWithheld;
-    return check !== undefined && turnContext.runInTurnContext(check);
+  /** #2342 — whether {@link guardTurnAnswer} would refuse this turn's answer now. */
+  private async egressRefusesNow(turnContext: CapturedTurnContext): Promise<boolean> {
+    const check = this.deps.egressRefusesNow;
+    return check !== undefined && (await turnContext.runInTurnContext(check));
   }
 
   /** #2194 — {@link CliChatAgentDeps.guardAnswer} in the turn's context. */
@@ -2524,7 +2524,7 @@ export class CliChatAgent implements ChatAgent {
       child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled, replayMasked));
 
       // #2342 / ADR-0316 — tool outputs wait for the answer's egress check.
-      const toolOutputs = new ToolOutputHold(() => this.answerMayBeWithheld(turnContext));
+      const toolOutputs = new ToolOutputHold(() => this.egressRefusesNow(turnContext));
       while (true) {
         while (lineQueue.length > 0) {
           const line = lineQueue.shift();
@@ -2553,7 +2553,7 @@ export class CliChatAgent implements ChatAgent {
               if (event.type === 'text_delta') continue;
             }
             if (event.type === 'text_delta') streamedChars += event.text.length;
-            const shown = toolOutputs.pass(event);
+            const shown = await toolOutputs.pass(event);
             if (shown !== undefined) yield shown;
           }
           // #1581 — the CLI reports what it actually loaded before the first
@@ -2720,9 +2720,8 @@ export class CliChatAgent implements ChatAgent {
           privacyFinalized = true;
           receipt = await turnContext.runInTurnContext(() => privacy.finalize(input.userMessage));
         }
-        if (guarded.withheld) toolOutputs.drop();
-        else {
-          yield* toolOutputs.release();
+        yield* toolOutputs.settle(guarded.withheld);
+        if (!guarded.withheld) {
           for (const event of record.events ?? []) {
             yield event;
           }
