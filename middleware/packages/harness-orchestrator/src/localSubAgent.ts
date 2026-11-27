@@ -46,7 +46,7 @@ import {
   replayMissNotice,
   runHandlerAtMostOnce,
 } from './toolReplayLedger.js';
-import { buildDateHeader, turnContext } from './turnContext.js';
+import { turnContext } from './turnContext.js';
 import { personalFieldsWithheld } from './discretion/fieldRights.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
@@ -248,7 +248,7 @@ export class LocalSubAgent {
         // the conversation prefix, its cache and the thinking blocks bound
         // to it stay valid. Each note is added once: a provider that ignores
         // `tool_choice: none` can keep the loop running after it.
-        const trailer = buildDateHeader(turnContext.currentTurnDate());
+        const trailer = turnContext.currentDateHeader();
         if (forceTextOnly) {
           const note =
             repeatFailureDetected && !isLastIteration
@@ -274,7 +274,8 @@ export class LocalSubAgent {
         const params = {
           max_tokens: this.maxTokens,
           // Two-block system: stable prompt (cache-eligible) + the turn's
-          // frozen date from turnContext. Falls back to a fresh date when
+          // frozen date and time from turnContext (never cached, #2376).
+          // Falls back to a fresh date when
           // called outside any turn (tests / ad-hoc invocations).
           system: [
             {

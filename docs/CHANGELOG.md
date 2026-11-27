@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Fix — chat turns know the clock time, frozen at turn start (#2376) (2026-11-27)
+
+A web chat turn answered "What time is it?" with "I don't have the current clock time": the date
+header (`buildDateHeader`, `harness-orchestrator/src/turnContext.ts`) named only the date, while
+routine runs got `Current time: …` in their own hint. The CLI path (subscription `claude`) got no
+date at all. Now `turnClock()` freezes `turnDate` and the new `turnStartedAt` (ISO, UTC) from one
+reading at turn start (orchestrator `chat`/`chatStream`, Builder and Builder-preview turns, and
+`CliChatAgent` at capture unless a calling turn already froze one), sub-scopes that copy the context carry it (`runWithChatParticipants`, skill-bound tool
+calls, plugin `ctx.mcp`), and `turnContext.currentDateHeader()` builds the header: `Current date and
+time: Friday, 2026-11-27, 14:05 (Europe/Berlin, GMT+01:00), taken at the start of this turn.` The
+header is English now (model-facing text, ADR-0220 scope), still its own uncached system block
+(ADR-0077; no cached block holds the time) and rides the CLI's stdin prompt as a leading `System
+Hint:`, not its `--system-prompt`. A scope with a frozen date but no start instant gets the
+date-only header, never its date next to a live clock. The zone stays the instance-wide `Europe/Berlin` and is named.
+ADR-0340 (supersedes the "date only" statement of ADR-0242 in part). Tests:
+`test/orchestrator/turnClock2376.test.ts`, #2376 cases in `test/cliBridge/cliChatAgent.test.ts`.
+
 ### Fix — CLI sub-agents forward MCP connect requests to the calling turn (#2377) (2026-11-27)
 
 Residual of #2374. A CLI sub-agent (`createCliSubAgent`) runs its own `CliChatAgent` turn with its

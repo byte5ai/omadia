@@ -874,6 +874,8 @@ export type {
 export {
   turnContext,
   today,
+  turnClock,
+  TURN_TIME_ZONE,
   buildDateHeader,
   // Teardown failures are reported, never thrown — see `runGeneratorInContext`.
   onTurnTeardownError,

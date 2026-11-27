@@ -8,7 +8,7 @@ import { resolveClaudeCliBin } from '../../platform/cliBinary.js';
 import {
   LocalSubAgent,
   createCliSubAgent,
-  today,
+  turnClock,
   turnContext,
   type AskObserver,
   type AskOptions,
@@ -454,7 +454,7 @@ export class BuilderAgent {
     // callers (the builder chat route and AutoFix) come through here.
     // `runGenerator`, not `enter`: this is a generator (see turnContext.enter).
     return turnContext.runGenerator(
-      { turnId, turnDate: today(), sessionScope: `builder:${opts.draftId}` },
+      { turnId, ...turnClock(), sessionScope: `builder:${opts.draftId}` },
       () => this.runTurnInScope(opts, turnId),
     );
   }
