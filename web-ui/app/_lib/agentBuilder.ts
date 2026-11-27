@@ -1166,6 +1166,9 @@ export interface McpAuthStatus {
   discoveryError?: string;
   /** #1933 — `service` delegation: one authorization shared by every caller. */
   sharedAuthorization?: boolean;
+  /** #2308 — under `service`: who stored the shared authorization, and when
+   *  (ISO). Absent for tokens stored before the attribution existed. */
+  sharedAuthorizationStoredBy?: { email: string | null; at: string };
 }
 
 /** Switch a server's delegation mode (W0-1). #1933 — switching to `service`

@@ -2465,7 +2465,7 @@
         "modeService": "Service",
         "modePerUser": "Pro Nutzer",
         "scopeHint": "Server-weite Einstellung — sie gilt für jeden Agenten, der diesen Server nutzt, nicht nur für diesen.",
-        "perUserFailClosed": "Pro-Nutzer-Aufrufe laufen unter der Identität des jeweiligen Nutzers und schlagen fail-closed fehl, wenn keine auflösbar ist.",
+        "perUserFailClosed": "Bei einem OAuth-geschützten Server läuft jeder Aufruf unter der Autorisierung des jeweiligen Nutzers; ohne zugeordnete Identität wird nichts gesendet. Ein Server ohne OAuth hat keine Zugangsdaten pro Nutzer und wird mit seiner gemeinsamen Konfiguration aufgerufen.",
         "serverSettingsLink": "In den MCP-Server-Einstellungen ändern"
       },
       "errors": {
@@ -5734,6 +5734,8 @@
       "delegationSwitchToPerUser": "Identität pro Nutzer verlangen",
       "delegationSwitchToService": "Gemeinsame Service-Identität nutzen",
       "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet.",
+      "delegationPerUserWhyShared": "Dieser Server nutzt kein OAuth und hat deshalb keine Zugangsdaten pro Nutzer. Jeder Aufruf geht mit der gemeinsamen Konfiguration des Servers hinaus (offen oder mit dem hinterlegten Schlüssel), auch ohne zugeordnete Nutzeridentität.",
+      "delegationIdentityMissingShared": "Diese Sitzung hat keine zugeordnete Nutzeridentität. Weil der Server kein OAuth nutzt, wird der Aufruf trotzdem mit seiner gemeinsamen Konfiguration gesendet.",
       "modeCimd": "Metadaten-Dokument",
       "modeDcr": "Automatisch registriert",
       "modeManual": "Registrierte App",
@@ -5746,6 +5748,8 @@
       "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
       "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen.",
       "connectedShared": "🔓 Autorisiert (gemeinsame Service-Autorisierung)",
+      "sharedStoredBy": "Hinterlegt von {who} am {when}",
+      "sharedStoredByUnknown": "einem nicht zugeordneten Konto",
       "discoveryUnavailable": "Die OAuth-Metadaten des Anbieters sind gerade nicht lesbar. Bitte später erneut versuchen.",
       "discoveryError": "Die OAuth-Konfiguration des Anbieters ist nicht nutzbar: {reason}",
       "cancel": "Abbrechen",

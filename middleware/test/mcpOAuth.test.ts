@@ -575,6 +575,8 @@ describe('W0-1 D1 — RFC 9207 iss validation at the OAuth callback', () => {
     assert.equal(tokenWrites.length, 1, 'a valid callback stores exactly one token');
     // AC3: the token is bound to the issuer that minted it.
     assert.equal(tokenWrites[0]?.['issuer'], 'https://as.example');
+    // #2308 — the token row names who stored it.
+    assert.deepEqual(tokenWrites[0]?.['storedBy'], actor);
   });
 
   it('tolerates a single trailing slash difference in the issuer (RFC 9207 §2.4)', async () => {

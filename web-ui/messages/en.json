@@ -2465,7 +2465,7 @@
         "modeService": "Service",
         "modePerUser": "Per user",
         "scopeHint": "Server-wide setting — it applies to every agent using this server, not just this one.",
-        "perUserFailClosed": "Per-user calls act under each user's own identity and fail closed when none can be resolved.",
+        "perUserFailClosed": "On an OAuth-protected server every call runs under the calling user's own authorization; without a mapped identity nothing is sent. A server without OAuth has no per-user credentials and is called with its shared configuration.",
         "serverSettingsLink": "Change in MCP server settings"
       },
       "errors": {
@@ -5734,6 +5734,8 @@
       "delegationSwitchToPerUser": "Require per-user identity",
       "delegationSwitchToService": "Use a shared service identity",
       "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server.",
+      "delegationPerUserWhyShared": "This server does not use OAuth, so it has no per-user credentials. Every call goes out with the server's shared configuration (open or with the stored key), also without a mapped user identity.",
+      "delegationIdentityMissingShared": "This session has no mapped user identity. Because the server does not use OAuth, the call is still sent with its shared configuration.",
       "modeCimd": "Metadata document",
       "modeDcr": "Auto-registered",
       "modeManual": "Registered app",
@@ -5746,6 +5748,8 @@
       "manualStillSupported": "Nothing is broken: register a one-time OAuth app for this issuer below and connect as usual.",
       "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form.",
       "connectedShared": "🔓 Authorized (shared service authorization)",
+      "sharedStoredBy": "Stored by {who} on {when}",
+      "sharedStoredByUnknown": "an unattributed account",
       "discoveryUnavailable": "The provider's OAuth metadata can't be read right now. Try again later.",
       "discoveryError": "The OAuth provider configuration can't be used: {reason}",
       "cancel": "Cancel",

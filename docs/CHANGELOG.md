@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP delegation UI tells the truth; the shared service token names who stored it (#1906, #2308, ADR-0206, ADR-0208) (2026-11-27)
+
+- #1906 (rest): the agent page's "Change in MCP server settings" link opens `/admin/mcp?server=<id>`
+  with that server's row expanded. The per-user texts follow ADR-0206: only an OAuth-protected
+  server refuses a call without identity; a server without OAuth is called with its shared
+  configuration (new keys `delegationPerUserWhyShared`, `delegationIdentityMissingShared`, en+de).
+- #2308: **Migration** core **0120_mcp_oauth_token_stored_by** — `mcp_oauth_tokens.stored_by_id`,
+  `stored_by_email`, `stored_at`, written on a completed Connect from the flow's audit actor (0115)
+  and kept across refreshes. `GET /mcp-servers/:id/auth-status` returns
+  `sharedAuthorizationStoredBy { email, at }` under `service` delegation; the MCP page shows
+  "Stored by … on …" next to the shared authorization.
+
 ### Changed — public MCP serves render_diagram, create_xlsx and create_docx again (#2305, ADR-0271) (2026-11-27)
 
 - Owner decision 2026-11-27. The three intern-exempt file producers are publicly servable again;

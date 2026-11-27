@@ -236,6 +236,8 @@ export interface AgentBuilderRouterOptions {
     ): Promise<{
       connected: boolean;
       invalid: 'expired' | 'refresh_failed' | 'rejected' | null;
+      /** #2308 — who stored the token on Connect. */
+      storedBy?: { email: string | null; at: Date } | null;
     }>;
     /** #1923 — the MCP server refused a call that carried `rejectedToken`,
      *  this user's token at the time the call read it. */
@@ -2465,7 +2467,7 @@ export function createAgentBuilderRouter(
       // expired without a refresh token, or been refused since.
       const token =
         userKey === null
-          ? { connected: false, invalid: null }
+          ? { connected: false, invalid: null, storedBy: null }
           : await options.mcpOAuth.tokenState(server.id, userKey);
       const client = desc.issuer ? await l.graph.getMcpOAuthClient(desc.issuer) : undefined;
       res.json({
@@ -2497,6 +2499,15 @@ export function createAgentBuilderRouter(
         // #1933 — under `service` every caller shares one authorization; the
         // UI must not call it "yours".
         sharedAuthorization: server.delegation === 'service',
+        // #2308 — under `service`, whose authorization every caller shares.
+        ...(server.delegation === 'service' && token.storedBy
+          ? {
+              sharedAuthorizationStoredBy: {
+                email: token.storedBy.email,
+                at: token.storedBy.at.toISOString(),
+              },
+            }
+          : {}),
         redirectUri: options.mcpOAuth.redirectUri,
       });
     } catch (err) {
