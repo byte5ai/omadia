@@ -1220,6 +1220,7 @@ export function buildOrchestratorForAgent(
               }
             : {}),
           guardAnswer: (answer, input) => orchestrator.guardCliAnswer(answer, input),
+          answerMayBeWithheld: () => orchestrator.answerMayBeWithheld(),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat
           // session, not the ContextRetriever tail: that one reads Session

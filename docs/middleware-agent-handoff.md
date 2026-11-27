@@ -11828,8 +11828,9 @@ Leserkreis, Offenlegungsstufe).
     (private Adresse oder Name, `.flycast`/`.internal`/Compose-Name, oder Setup-Feld
     `kroki_internal`; `kroki.io` nie), sonst wie `write`, denn Quelle und Chart-Daten gehen
     an Kroki.
-    Offen: eine zurückgehaltene gestreamte Antwort lässt die Tool-Ausgaben (samt
-    signiertem Link) im Tool-Trace des Clients (#2342);
+    Solange die Antwort noch zurückgehalten werden kann, streamt ein Turn seine
+    Tool-Ausgaben erst direkt vor `done` (`ToolOutputHold`, live nur `output: ''`);
+    eine zurückgehaltene Antwort schickt sie nie (#2342, ADR-0316);
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
     Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile

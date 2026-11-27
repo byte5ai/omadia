@@ -310,6 +310,7 @@ import { peopleEgressDecision } from './discretion/turnLabels.js';
 import { fieldClassesForTurn, personalFieldsWithheld } from './discretion/fieldRights.js';
 import { FIELD_WITHHELD_NOTICE, renderedAnswerForAudience } from './privacyAudience.js';
 import { answerWithheldText } from './discretion/disclosure.js';
+import { ToolOutputHold } from './toolOutputHold.js';
 import { withoutAnswer } from './identityGuard/answerRecordGate.js';
 import { labelSummary } from './discretion/labels.js';
 import {
@@ -8460,6 +8461,8 @@ export class Orchestrator {
       // #2198 — the `kg_insert` pulse shows the memorable promoted from this
       // turn's answer: it waits for the answer's egress check.
       const heldUntilDone: ChatStreamEvent[] = [];
+      // #2342 — tool outputs wait for the same check (ADR-0316).
+      const toolOutputs = new ToolOutputHold(() => this.answerMayBeWithheld());
       for await (const event of guardedInner) {
         if (event.type === 'turn_annotation') {
           if (event.channel === 'kg_insert') {
@@ -8600,7 +8603,8 @@ export class Orchestrator {
               );
           const guardedDone = await this.guardStreamedDone(doneEvent, this.turnLocale(input));
           // #2198 — what derives from the answer goes out with it, or not at all.
-          if (!guardedDone.withheld) yield* [...heldUntilDone, ...afterTurnEvents];
+          if (guardedDone.withheld) toolOutputs.drop();
+          else yield* [...toolOutputs.release(), ...heldUntilDone, ...afterTurnEvents];
           if (guardedDone.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
           yield this.discloseDoneEvent(guardedDone.done, input, bound?.ledger);
           continue;
@@ -8616,12 +8620,14 @@ export class Orchestrator {
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
           const guarded = await this.guardStreamedDone(event, this.turnLocale(input));
           // #2198 — what derives from the answer goes out with it, or not at all.
-          if (!guarded.withheld) yield* [...heldUntilDone, ...afterTurnEvents];
+          if (guarded.withheld) toolOutputs.drop();
+          else yield* [...toolOutputs.release(), ...heldUntilDone, ...afterTurnEvents];
           if (guarded.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
           yield this.discloseDoneEvent(guarded.done, input, bound?.ledger);
           continue;
         }
-        yield event;
+        const shown = toolOutputs.pass(event);
+        if (shown !== undefined) yield shown;
       }
     } finally {
       if (steeringLive) steeringBus.endTurn(sessionId);
@@ -11917,6 +11923,14 @@ export class Orchestrator {
    * back the text deltas already streamed (`text_retract`) before the
    * `done`, so a client that shows the preview never keeps the answer.
    */
+  /**
+   * #2342 — whether this turn's answer may still be withheld by the people-
+   * egress check (`guardStreamedDone`), so its tool outputs wait for it.
+   */
+  public answerMayBeWithheld(): boolean {
+    return currentDiscretion() !== undefined && !isConsultationRunOf(this.agentId);
+  }
+
   private async guardStreamedDone(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     locale: string | undefined,
