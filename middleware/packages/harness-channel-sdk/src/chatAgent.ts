@@ -723,6 +723,27 @@ export interface ChatTurnInput {
    */
   planHint?: 'plan' | 'direct';
   /**
+   * #2300 / ADR-0265 — the read call the same TRUSTED fast-path wrapper
+   * already ran before it missed (the output did not make a finished
+   * answer). The orchestrator replays it as the turn's first tool round —
+   * `tool_use` plus `tool_result`, through its ordinary dispatch path (Privacy
+   * Shield, replay ledger, run trace) — so the agent does not run it again
+   * and the answer verifier counts it as evidence. `output` is raw tool
+   * output: it must never be put into a system block. An agent that cannot
+   * replay a tool round ignores the output. Never set it from channel input.
+   */
+  fastLaneCall?: {
+    readonly tool: string;
+    readonly input: unknown;
+    readonly output: string;
+    /** The fast lane's miss reason (`tool-error`, `empty-result`, …). */
+    readonly reason: string;
+    /** Records the output held, when the fast lane counted them. */
+    readonly rows?: number;
+    /** The output was cut to the hand-off limit. */
+    readonly truncated?: boolean;
+  };
+  /**
    * Structured UI action from an Omadia UI canvas client (button click,
    * choice pick, row action) — the typed field promised in protocol 1.0 §5.1
    * (until now the action rode `IncomingTurn.metadata.action` and was dropped

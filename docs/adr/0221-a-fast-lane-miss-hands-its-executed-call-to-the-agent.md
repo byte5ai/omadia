@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Superseded by [ADR-0265](0265-a-fast-lane-miss-replays-its-executed-call-as-a-tool-round.md) (2026-11-27, owner decision #2300: the call replays as a tool round, the verifier counts it)
 
 - **Date:** 2026-11-26
 - **Deciders:** Wave 5 cluster W15-17, under the owner's autonomy grant for wave 5; tracked by

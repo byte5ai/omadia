@@ -15,7 +15,7 @@ import type { ChatTriageOutcome, ChatTriageRequest } from '@omadia/fast-path';
 import type { CaptureDisclosure, DataPayload, DataPlanGuard } from '@omadia/plugin-api';
 
 import { isValidSessionId } from './chatSessionStore.js';
-import { fastLaneHandoffHint } from './fastLaneHandoff.js';
+import { fastLaneCallOf } from './fastLaneHandoff.js';
 import type { SessionLogEntry } from './sessionLogger.js';
 import type { SummaryBoundaryGuard } from './summaryBoundaryGuard.js';
 
@@ -132,7 +132,8 @@ export function passThroughReason(input: ChatTurnInput): string | undefined {
     input.toolsOff === true ||
     input.answerVerbosity !== undefined ||
     input.routeHint !== undefined ||
-    input.planHint !== undefined
+    input.planHint !== undefined ||
+    input.fastLaneCall !== undefined
   ) {
     return 'system';
   }
@@ -223,15 +224,6 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
     }
   }
 
-  /** A guard check that throws counts as guarded: the handoff then carries no output. */
-  function safePrivacyGuarded(): boolean {
-    try {
-      return deps.privacyGuarded();
-    } catch {
-      return true;
-    }
-  }
-
   async function decide(input: ChatTurnInput): Promise<Decision> {
     if (passThroughReason(input) !== undefined) return { kind: 'agent', input };
     const fp = deps.fastPath();
@@ -270,27 +262,22 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
       return { kind: 'agent', input };
     }
     if (outcome.kind === 'agent') {
-      // #1930 / ADR-0221 — a call that already ran goes to the agent as a
-      // per-turn hint, so it is not run twice.
-      const handoff = outcome.executed
-        ? fastLaneHandoffHint(outcome.executed, outcome.reason, safePrivacyGuarded())
+      // #2300 / ADR-0265 — a call that already ran goes to the agent as its
+      // first tool round (the orchestrator replays it through its dispatch
+      // path), so it is not run twice and the verifier sees it.
+      const fastLaneCall = outcome.executed
+        ? fastLaneCallOf(outcome.executed, outcome.reason)
         : undefined;
       return {
         kind: 'agent',
         // a miss without any hint passes the very same input object on
         input:
-          outcome.route || outcome.planHint || handoff
+          outcome.route || outcome.planHint || fastLaneCall
             ? {
                 ...input,
                 ...(outcome.route ? { routeHint: outcome.route } : {}),
                 ...(outcome.planHint ? { planHint: outcome.planHint } : {}),
-                ...(handoff
-                  ? {
-                      extraSystemHint: input.extraSystemHint?.trim()
-                        ? `${input.extraSystemHint}\n\n${handoff}`
-                        : handoff,
-                    }
-                  : {}),
+                ...(fastLaneCall ? { fastLaneCall } : {}),
               }
             : input,
         ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, false) } : {}),

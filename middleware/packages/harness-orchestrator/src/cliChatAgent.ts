@@ -56,6 +56,7 @@ import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
 import { TOOLS_OFF_DIRECTIVE, UNATTENDED_DIRECTIVE, UNATTENDED_DROPPED_TOOLS, isToolsOffTurn, isUnattendedTurn } from './toolsOffTurn.js';
+import { fastLaneCliHint } from './fastLaneHandoff.js';
 import {
   OMADIA_MCP_SERVER_NAME,
   OMADIA_MCP_TOOL_PREFIX,
@@ -1777,6 +1778,11 @@ export class CliChatAgent implements ChatAgent {
 
     if (typeof input.extraSystemHint === 'string' && input.extraSystemHint.trim().length > 0) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(input.extraSystemHint)}`);
+    }
+    // #2300 / ADR-0265 — the CLI cannot take a replayed tool round: a
+    // data-free note only, the fast lane's raw output stays out of the prompt.
+    if (input.fastLaneCall !== undefined) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(fastLaneCliHint(input.fastLaneCall))}`);
     }
 
     for (const turn of priorTurns) {

@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — a fast-lane miss replays its executed call as a tool round (#2300, ADR-0265) (2026-11-27)
+
+- Owner decision 2026-11-27, supersedes ADR-0221: the call the fast lane already ran reaches the
+  agent as its first tool round (`tool_use` + `tool_result`) instead of a per-turn system hint.
+  The carrier is `ChatTurnInput.fastLaneCall` (`@omadia/channel-sdk` **0.3.19**); the orchestrator
+  produces the result through `dispatchTool` with the handler skipped, so the Privacy Shield
+  interns it (no duplicate query under a shield any more), the replay ledger records it and the
+  run trace lists it — the answer verifier counts it as evidence. A data-free kernel note follows
+  the result; the subscription CLI path gets only that note.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

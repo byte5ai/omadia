@@ -7934,11 +7934,11 @@ has no user or whitelist management, so it is not a way out of an
   loopback peers (`req.ip`); with `TRUSTED_PROXY_ADDRESSES` containing `loopback` these reads count
   as proxied; any channel plugin can read any plugin's granted paths regardless of its own network
   allowlist.
-- **Fast-lane hand-off** (ADR-0221). After a miss whose query ran, the raw tool output (max 12 000
-  characters) reaches the agent as part of the per-turn system hint, masked through the turn's
-  privacy map like any `extraSystemHint`. Under a Privacy Shield the output is never included.
-  The block is tagged `<fast_lane_tool_output>` and declared data, not instruction; this is a prompt
-  rule, not an enforced boundary (accepted prompt-injection residual).
+- **Fast-lane hand-off** (ADR-0265, supersedes ADR-0221). After a miss whose query ran, the call
+  (max 12 000 characters of output) is replayed as the agent's first tool round: a `tool_use` with
+  the input masked through the turn's prompt map and a `tool_result` produced by `dispatchTool`
+  with the handler skipped, so the Privacy Shield interns it like any result of that tool and the
+  output never enters a system block. The subscription CLI gets only a data-free note.
 
 ## 11. Reviewer checklist
 

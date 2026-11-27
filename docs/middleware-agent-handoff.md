@@ -7011,10 +7011,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
   `triggerPolicy.ts` auf `zonedCron.ts` umstellen (doppelte Zeitzonen-/Gap-Prüfung).
 
-- **Fast-Lane-Übergabe als Verifier-Evidenz (ADR-0221, W15-17).** Der Answer-Verifier zählt den
-  `fastLaneHandoffHint` nicht als Beleg; Aussagen nur daraus können im `enforce`-Modus als
-  unbelegt gelten und einen Retry mit erneuter Abfrage auslösen. Den ausgeführten Aufruf in die
-  Evidenz des Verifiers geben.
 - **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
   `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
   `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
@@ -12021,13 +12017,15 @@ Ersetzt den Platzhalter aus #2007.
   Kennzeichnungs-Override und Audience.
 - **Fast-Lane-Übergabe** (`@omadia/fast-path` 0.7.0, ADR-0221 ergänzt ADR-0074):
   ein Miss nach gelaufener Abfrage trägt `ChatTriageOutcome.executed`;
-  `fastLaneHandoffHint` gibt Aufruf und (ohne Privacy Shield) Ausgabe als
-  `extraSystemHint` an den Agenten, als Daten markiert. Router kennt
+  seit #2300 (ADR-0265, löst ADR-0221 ab) trägt `ChatTurnInput.fastLaneCall`
+  den Aufruf; der Orchestrator spielt ihn als erste Tool-Runde ein
+  (`fastLaneToolRound`: `tool_use` + `tool_result` über `dispatchTool` mit
+  `prefetchedOutput`, also Shield/Ledger/Trace wie ein eigener Aufruf; der
+  Verifier zählt ihn). Kein Rohoutput mehr im System-Hint; der CLI-Pfad bekommt
+  nur einen datenfreien Hinweis. Router kennt
   `agent_no_tool`, bei nur einem Tool gilt Konfidenz 0,8. Eine geplante Spalte,
   die kein Datensatz füllt, ist eine falsche Map (`unmappable`).
 - **Setup-PATCH validiert `enum`** (#1998): wie der Install-Pfad; leerer Wert
   löscht ein optionales Enum, ein Pflicht-Enum kann nicht geleert werden.
 - **Web-Chat:** keine Nudge-Karte mehr (#1900, ADR-0021); der Session-Mirror
   speichert Antworten ohne `<!-- orchestrator:… -->`-Notizen (#1956).
-- **Offen (§13):** der Answer-Verifier zählt den Fast-Lane-Hint nicht als
-  Evidenz (ADR-0221, Folge-Punkt).
