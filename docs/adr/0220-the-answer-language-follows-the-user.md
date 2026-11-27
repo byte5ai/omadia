@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** Wave 5 cluster W15-17, decided after the recheck's recommendation under the

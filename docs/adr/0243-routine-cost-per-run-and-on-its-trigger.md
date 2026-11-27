@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (wave 5, W22-23; owner question of #1776 decided after

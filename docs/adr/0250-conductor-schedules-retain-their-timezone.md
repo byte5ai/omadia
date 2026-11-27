@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers, Wave 5 Conductor (#1714)

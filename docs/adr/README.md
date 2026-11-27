@@ -236,65 +236,65 @@ that date.
 | 0167 | [A plugin's entity writes stay in its declared entity systems](0167-plugin-entity-writes-stay-in-declared-entity-systems.md) | Accepted — refined by [0169](0169-undeclared-plugins-write-no-entities-or-facts.md) | 2026-11-25 |
 | 0168 | [MCP OAuth token lifecycle: invalidation marks and revoke-on-disconnect](0168-mcp-oauth-token-lifecycle-invalidation-marks-and-revoke-on-disconnect.md) | Accepted | 2026-11-26 |
 | 0169 | [A plugin that declares no entity systems writes no entities or facts](0169-undeclared-plugins-write-no-entities-or-facts.md) | Accepted | 2026-11-26 |
-| 0175 | [An MCP OAuth flow completes only in the session of the user who started it; authorize URLs never reach model text](0175-mcp-oauth-callback-completes-only-for-the-starter.md) | Proposed | 2026-11-26 |
-| 0176 | [A signed download link is bound to the route that issued it](0176-signed-download-links-are-bound-to-their-route.md) | Proposed | 2026-11-26 |
-| 0177 | [Files and diagrams a tool produces are delivered only with the turn that produced them](0177-tool-outputs-are-delivered-per-turn.md) | Proposed | 2026-11-26 |
-| 0178 | [Stored attachments come only from channel adapters, as structured data, and are bound to their conversation at upload](0178-attachments-come-only-from-channel-adapters-and-bind-at-upload.md) | Proposed | 2026-11-26 |
-| 0180 | [A web chat belongs to the account that created it; legacy chats go to the only account or to nobody](0180-web-chats-belong-to-the-creating-account.md) | Proposed | 2026-11-26 |
-| 0181 | [A new memory belongs to its saver; sharing goes only through add-owner, to real users](0181-a-new-memory-belongs-to-its-saver.md) | Proposed | 2026-11-26 |
-| 0182 | [Web chat, web routines and Public API turns carry an origin built from the account or API key](0182-web-and-api-turns-carry-an-account-or-key-origin.md) | Proposed | 2026-11-26 |
-| 0183 | [Memorable knowledge is private unless shared on purpose](0183-memorable-knowledge-is-private-unless-shared-on-purpose.md) | Proposed | 2026-11-26 |
-| 0184 | [Owner-less legacy web chats are given to one account by an audited operator tool](0184-owner-less-legacy-chats-are-assigned-by-an-operator-tool.md) | Proposed | 2026-11-26 |
-| 0185 | [Memory without an owner follows its source; an operator deletes it one by one](0185-system-memory-without-owner-follows-its-source.md) | Proposed | 2026-11-26 |
-| 0186 | [The user purge erases one person: resolved selector, shared memory de-owned, their data and identity deleted](0186-user-purge-erases-one-person.md) | Proposed | 2026-11-26 |
-| 0187 | [Generated files are recorded with person and chat and deleted with them, refcounted](0187-generated-files-are-recorded-and-deleted-with-their-owner.md) | Proposed | 2026-11-26 |
-| 0190 | [Memorable knowledge lifecycle: retired turns, one promotion path, safe auto-merge](0190-memorable-knowledge-promotion-and-merge-lifecycle.md) | Proposed | 2026-11-26 |
-| 0191 | [Memory notes are restored on write and re-masked on read](0191-memory-notes-restored-on-write-and-re-masked-on-read.md) | Proposed | 2026-11-26 |
-| 0192 | [The saved memory-backend choice wins over the environment on every boot](0192-saved-memory-backend-choice-wins-on-every-boot.md) | Proposed | 2026-11-26 |
-| 0193 | [Environment variables seed boot-managed plugin config only when set; a stored operator value wins](0193-env-vars-seed-boot-managed-plugin-config-only-when-set.md) | Proposed | 2026-11-26 |
-| 0194 | [Embedding and model consumers follow provider changes live](0194-embedding-and-model-consumers-follow-provider-changes-live.md) | Proposed | 2026-11-26 |
-| 0195 | [The subscription-CLI path runs under the Privacy Shield instead of being refused](0195-cli-path-runs-under-the-privacy-shield.md) | Proposed | 2026-11-26 |
-| 0196 | [CLI sub-agents of operator tools run outside the Privacy Shield; the conductor builder maps a privacy refusal to "unavailable"](0196-operator-tool-cli-sub-agents-run-outside-the-shield.md) | Proposed | 2026-11-26 |
-| 0197 | [Intern exemptions may be granted per tool operation](0197-intern-exemptions-may-be-granted-per-tool-operation.md) | Proposed | 2026-11-26 |
-| 0198 | [A transcript of the user's own upload is prompt-masked, not interned](0198-transcripts-of-own-uploads-are-prompt-masked-not-interned.md) | Proposed | 2026-11-26 |
-| 0200 | [Model adapters send only to declared hosts; a custom endpoint is an allow-list entry](0200-model-adapters-send-only-to-declared-hosts.md) | Proposed | 2026-11-26 |
-| 0205 | [MCP calls are re-sent only when safe, and a failed request ends only itself](0205-mcp-calls-are-resent-only-when-safe-and-failures-end-only-their-request.md) | Proposed | 2026-11-26 |
-| 0206 | [Unattended MCP callers get typed outcomes and start no interaction](0206-unattended-mcp-callers-get-typed-outcomes-and-start-no-interaction.md) | Proposed | 2026-11-26 |
-| 0207 | [Binary MCP content never reaches a model as text, and one tool-result cap holds with or without the shield](0207-binary-mcp-content-and-one-tool-result-cap.md) | Proposed | 2026-11-26 |
-| 0208 | [Switching an MCP server to service delegation is confirmed and audited; reading OAuth status registers nothing](0208-mcp-service-delegation-is-confirmed-audited-and-status-reads-register-nothing.md) | Proposed | 2026-11-26 |
-| 0210 | [Static MCP headers and API keys are Vault-backed templates, never row values](0210-mcp-static-headers-are-vault-backed-templates.md) | Proposed | 2026-11-26 |
-| 0211 | [stdio MCP servers share the middleware's trust domain; the Compose stack ships them off](0211-stdio-mcp-servers-share-the-middleware-trust-domain.md) | Proposed | 2026-11-26 |
-| 0212 | [The public MCP endpoint answers a tool error as a tool error, without its text](0212-public-mcp-answers-a-tool-error-as-a-tool-error.md) | Proposed | 2026-11-26 |
-| 0213 | [Replacing a public MCP key binding needs explicit consent; dead keys are named](0213-public-mcp-binding-replace-needs-explicit-consent.md) | Proposed | 2026-11-26 |
-| 0215 | [System modules use the kernel provider pool; provider API keys live in one vault scope](0215-system-modules-use-the-kernel-provider-pool.md) | Proposed | 2026-11-26 |
-| 0216 | [Operator config writes carry an expected revision; a stale write returns 409](0216-operator-config-writes-carry-an-expected-revision.md) | Proposed | 2026-11-26 |
-| 0217 | [Character sliders are target levels measured against a per-model-family baseline that the editor shows](0217-character-sliders-are-target-levels-against-a-per-model-baseline.md) | Proposed | 2026-11-26 |
-| 0218 | [Slug-keyed agent state moves under the tombstone on delete, so a reused slug starts empty](0218-slug-keyed-agent-state-moves-under-the-tombstone-on-delete.md) | Proposed | 2026-11-26 |
-| 0220 | [The answer language follows the user, with an operator fallback](0220-the-answer-language-follows-the-user.md) | Proposed | 2026-11-26 |
-| 0221 | [A fast-lane miss hands its executed call to the agent](0221-a-fast-lane-miss-hands-its-executed-call-to-the-agent.md) | Proposed | 2026-11-26 |
-| 0222 | [Channels read outgoing attachment bytes in-process](0222-channels-read-outgoing-attachment-bytes-in-process.md) | Proposed | 2026-11-26 |
+| 0175 | [An MCP OAuth flow completes only in the session of the user who started it; authorize URLs never reach model text](0175-mcp-oauth-callback-completes-only-for-the-starter.md) | Accepted | 2026-11-26 |
+| 0176 | [A signed download link is bound to the route that issued it](0176-signed-download-links-are-bound-to-their-route.md) | Accepted | 2026-11-26 |
+| 0177 | [Files and diagrams a tool produces are delivered only with the turn that produced them](0177-tool-outputs-are-delivered-per-turn.md) | Accepted | 2026-11-26 |
+| 0178 | [Stored attachments come only from channel adapters, as structured data, and are bound to their conversation at upload](0178-attachments-come-only-from-channel-adapters-and-bind-at-upload.md) | Accepted | 2026-11-26 |
+| 0180 | [A web chat belongs to the account that created it; legacy chats go to the only account or to nobody](0180-web-chats-belong-to-the-creating-account.md) | Accepted | 2026-11-26 |
+| 0181 | [A new memory belongs to its saver; sharing goes only through add-owner, to real users](0181-a-new-memory-belongs-to-its-saver.md) | Accepted | 2026-11-26 |
+| 0182 | [Web chat, web routines and Public API turns carry an origin built from the account or API key](0182-web-and-api-turns-carry-an-account-or-key-origin.md) | Accepted | 2026-11-26 |
+| 0183 | [Memorable knowledge is private unless shared on purpose](0183-memorable-knowledge-is-private-unless-shared-on-purpose.md) | Accepted | 2026-11-26 |
+| 0184 | [Owner-less legacy web chats are given to one account by an audited operator tool](0184-owner-less-legacy-chats-are-assigned-by-an-operator-tool.md) | Accepted | 2026-11-26 |
+| 0185 | [Memory without an owner follows its source; an operator deletes it one by one](0185-system-memory-without-owner-follows-its-source.md) | Accepted | 2026-11-26 |
+| 0186 | [The user purge erases one person: resolved selector, shared memory de-owned, their data and identity deleted](0186-user-purge-erases-one-person.md) | Accepted | 2026-11-26 |
+| 0187 | [Generated files are recorded with person and chat and deleted with them, refcounted](0187-generated-files-are-recorded-and-deleted-with-their-owner.md) | Accepted | 2026-11-26 |
+| 0190 | [Memorable knowledge lifecycle: retired turns, one promotion path, safe auto-merge](0190-memorable-knowledge-promotion-and-merge-lifecycle.md) | Accepted | 2026-11-26 |
+| 0191 | [Memory notes are restored on write and re-masked on read](0191-memory-notes-restored-on-write-and-re-masked-on-read.md) | Accepted | 2026-11-26 |
+| 0192 | [The saved memory-backend choice wins over the environment on every boot](0192-saved-memory-backend-choice-wins-on-every-boot.md) | Accepted | 2026-11-26 |
+| 0193 | [Environment variables seed boot-managed plugin config only when set; a stored operator value wins](0193-env-vars-seed-boot-managed-plugin-config-only-when-set.md) | Accepted | 2026-11-26 |
+| 0194 | [Embedding and model consumers follow provider changes live](0194-embedding-and-model-consumers-follow-provider-changes-live.md) | Accepted | 2026-11-26 |
+| 0195 | [The subscription-CLI path runs under the Privacy Shield instead of being refused](0195-cli-path-runs-under-the-privacy-shield.md) | Accepted | 2026-11-26 |
+| 0196 | [CLI sub-agents of operator tools run outside the Privacy Shield; the conductor builder maps a privacy refusal to "unavailable"](0196-operator-tool-cli-sub-agents-run-outside-the-shield.md) | Accepted | 2026-11-26 |
+| 0197 | [Intern exemptions may be granted per tool operation](0197-intern-exemptions-may-be-granted-per-tool-operation.md) | Accepted | 2026-11-26 |
+| 0198 | [A transcript of the user's own upload is prompt-masked, not interned](0198-transcripts-of-own-uploads-are-prompt-masked-not-interned.md) | Accepted | 2026-11-26 |
+| 0200 | [Model adapters send only to declared hosts; a custom endpoint is an allow-list entry](0200-model-adapters-send-only-to-declared-hosts.md) | Accepted | 2026-11-26 |
+| 0205 | [MCP calls are re-sent only when safe, and a failed request ends only itself](0205-mcp-calls-are-resent-only-when-safe-and-failures-end-only-their-request.md) | Accepted | 2026-11-26 |
+| 0206 | [Unattended MCP callers get typed outcomes and start no interaction](0206-unattended-mcp-callers-get-typed-outcomes-and-start-no-interaction.md) | Accepted | 2026-11-26 |
+| 0207 | [Binary MCP content never reaches a model as text, and one tool-result cap holds with or without the shield](0207-binary-mcp-content-and-one-tool-result-cap.md) | Accepted | 2026-11-26 |
+| 0208 | [Switching an MCP server to service delegation is confirmed and audited; reading OAuth status registers nothing](0208-mcp-service-delegation-is-confirmed-audited-and-status-reads-register-nothing.md) | Accepted | 2026-11-26 |
+| 0210 | [Static MCP headers and API keys are Vault-backed templates, never row values](0210-mcp-static-headers-are-vault-backed-templates.md) | Accepted | 2026-11-26 |
+| 0211 | [stdio MCP servers share the middleware's trust domain; the Compose stack ships them off](0211-stdio-mcp-servers-share-the-middleware-trust-domain.md) | Accepted | 2026-11-26 |
+| 0212 | [The public MCP endpoint answers a tool error as a tool error, without its text](0212-public-mcp-answers-a-tool-error-as-a-tool-error.md) | Accepted | 2026-11-26 |
+| 0213 | [Replacing a public MCP key binding needs explicit consent; dead keys are named](0213-public-mcp-binding-replace-needs-explicit-consent.md) | Accepted | 2026-11-26 |
+| 0215 | [System modules use the kernel provider pool; provider API keys live in one vault scope](0215-system-modules-use-the-kernel-provider-pool.md) | Accepted | 2026-11-26 |
+| 0216 | [Operator config writes carry an expected revision; a stale write returns 409](0216-operator-config-writes-carry-an-expected-revision.md) | Accepted | 2026-11-26 |
+| 0217 | [Character sliders are target levels measured against a per-model-family baseline that the editor shows](0217-character-sliders-are-target-levels-against-a-per-model-baseline.md) | Accepted | 2026-11-26 |
+| 0218 | [Slug-keyed agent state moves under the tombstone on delete, so a reused slug starts empty](0218-slug-keyed-agent-state-moves-under-the-tombstone-on-delete.md) | Accepted | 2026-11-26 |
+| 0220 | [The answer language follows the user, with an operator fallback](0220-the-answer-language-follows-the-user.md) | Accepted | 2026-11-26 |
+| 0221 | [A fast-lane miss hands its executed call to the agent](0221-a-fast-lane-miss-hands-its-executed-call-to-the-agent.md) | Accepted | 2026-11-26 |
+| 0222 | [Channels read outgoing attachment bytes in-process](0222-channels-read-outgoing-attachment-bytes-in-process.md) | Accepted | 2026-11-26 |
 | 0225 | [A channel account is linked to an omadia user only through the kernel, on an operator-issued pairing](0225-channel-account-links-to-an-omadia-user-only-through-the-kernel.md) | Proposed | 2026-11-26 |
-| 0230 | [Builder build status has one emitter, stable codes, and a missing test credential is not a failed build](0230-builder-build-status-one-emitter-stable-codes.md) | Proposed | 2026-11-26 |
-| 0232 | [The runtime smoke passes only when a handler ran, on its own stub instance, and never calls a tool declared as writing](0232-runtime-smoke-runs-handlers-on-stub-credentials.md) | Proposed | 2026-11-26 |
-| 0235 | [Builder choices accept free answers and expire after five minutes](0235-builder-choice-free-answer-and-timeout.md) | Proposed | 2026-11-26 |
-| 0236 | [Declined preview turns are marked in the transcript](0236-builder-preview-declined-turns.md) | Proposed | 2026-11-26 |
-| 0237 | [Builder publish reviews the generated manifest and reports activation](0237-builder-publish-reviews-manifest-and-reports-activation.md) | Proposed | 2026-11-26 |
-| 0238 | [Agent Canvas deletes configuration with confirmation and grants individual MCP tools](0238-agent-canvas-writes-configuration-explicitly.md) | Proposed | 2026-11-26 |
-| 0239 | [Builder generates bilingual setup text while preserving draft values](0239-builder-generates-localized-setup-text.md) | Proposed | 2026-11-26 |
-| 0240 | [Recurring schedules run in a named time zone](0240-schedules-run-in-a-named-time-zone.md) | Proposed | 2026-11-26 |
-| 0241 | [Field-level interning exemption for kernel tools that mix state and user text](0241-field-level-interning-exemption-for-kernel-state-tools.md) | Proposed | 2026-11-26 |
-| 0242 | [Routine runs and trigger firings are unattended turns](0242-unattended-turns-for-routines-and-triggers.md) | Proposed | 2026-11-26 |
-| 0243 | [Routine cost is shown per run and on the routine's trigger](0243-routine-cost-per-run-and-on-its-trigger.md) | Proposed | 2026-11-26 |
-| 0244 | [Routine deliveries are context of the chat they land in](0244-routine-deliveries-are-context-of-their-chat.md) | Proposed | 2026-11-26 |
-| 0245 | [Coalesce consecutive manual Builder edits in draft history](0245-coalesce-manual-builder-history.md) | Proposed | 2026-11-26 |
-| 0246 | [Attribute an MCP OAuth connection to the signed-in initiator](0246-attribute-mcp-oauth-connect-to-initiator.md) | Proposed | 2026-11-26 |
-| 0250 | [Conductor schedules retain their own time zone](0250-conductor-schedules-retain-their-timezone.md) | Proposed | 2026-11-26 |
-| 0251 | [Conductor cron slots expire after their minute](0251-conductor-cron-missed-slots-expire.md) | Proposed | 2026-11-26 |
-| 0252 | [Conductor templates map people at instantiation](0252-conductor-templates-map-people.md) | Proposed | 2026-11-26 |
-| 0253 | [Conductor template review requires a second available operator](0253-conductor-template-review-separation.md) | Proposed | 2026-11-26 |
-| 0255 | [A granted `graphPool` covers only the plugin's own tables](0255-granted-graphpool-covers-only-the-plugins-own-tables.md) | Proposed | 2026-11-26 |
-| 0256 | [Through `memoryStore@1` a plugin changes only the top-level trees it declares and owns](0256-memorystore-plugins-change-only-declared-owned-trees.md) | Proposed | 2026-11-26 |
-| 0257 | [Recall and curation services resolve only for the boundary implementers; `entityRefBus` is publish-only for plugins](0257-recall-and-curation-services-are-boundary-only.md) | Proposed | 2026-11-26 |
+| 0230 | [Builder build status has one emitter, stable codes, and a missing test credential is not a failed build](0230-builder-build-status-one-emitter-stable-codes.md) | Accepted | 2026-11-26 |
+| 0232 | [The runtime smoke passes only when a handler ran, on its own stub instance, and never calls a tool declared as writing](0232-runtime-smoke-runs-handlers-on-stub-credentials.md) | Accepted | 2026-11-26 |
+| 0235 | [Builder choices accept free answers and expire after five minutes](0235-builder-choice-free-answer-and-timeout.md) | Accepted | 2026-11-26 |
+| 0236 | [Declined preview turns are marked in the transcript](0236-builder-preview-declined-turns.md) | Accepted | 2026-11-26 |
+| 0237 | [Builder publish reviews the generated manifest and reports activation](0237-builder-publish-reviews-manifest-and-reports-activation.md) | Accepted | 2026-11-26 |
+| 0238 | [Agent Canvas deletes configuration with confirmation and grants individual MCP tools](0238-agent-canvas-writes-configuration-explicitly.md) | Accepted | 2026-11-26 |
+| 0239 | [Builder generates bilingual setup text while preserving draft values](0239-builder-generates-localized-setup-text.md) | Accepted | 2026-11-26 |
+| 0240 | [Recurring schedules run in a named time zone](0240-schedules-run-in-a-named-time-zone.md) | Accepted | 2026-11-26 |
+| 0241 | [Field-level interning exemption for kernel tools that mix state and user text](0241-field-level-interning-exemption-for-kernel-state-tools.md) | Accepted | 2026-11-26 |
+| 0242 | [Routine runs and trigger firings are unattended turns](0242-unattended-turns-for-routines-and-triggers.md) | Accepted | 2026-11-26 |
+| 0243 | [Routine cost is shown per run and on the routine's trigger](0243-routine-cost-per-run-and-on-its-trigger.md) | Accepted | 2026-11-26 |
+| 0244 | [Routine deliveries are context of the chat they land in](0244-routine-deliveries-are-context-of-their-chat.md) | Accepted | 2026-11-26 |
+| 0245 | [Coalesce consecutive manual Builder edits in draft history](0245-coalesce-manual-builder-history.md) | Accepted | 2026-11-26 |
+| 0246 | [Attribute an MCP OAuth connection to the signed-in initiator](0246-attribute-mcp-oauth-connect-to-initiator.md) | Accepted | 2026-11-26 |
+| 0250 | [Conductor schedules retain their own time zone](0250-conductor-schedules-retain-their-timezone.md) | Accepted | 2026-11-26 |
+| 0251 | [Conductor cron slots expire after their minute](0251-conductor-cron-missed-slots-expire.md) | Accepted | 2026-11-26 |
+| 0252 | [Conductor templates map people at instantiation](0252-conductor-templates-map-people.md) | Accepted | 2026-11-26 |
+| 0253 | [Conductor template review requires a second available operator](0253-conductor-template-review-separation.md) | Accepted | 2026-11-26 |
+| 0255 | [A granted `graphPool` covers only the plugin's own tables](0255-granted-graphpool-covers-only-the-plugins-own-tables.md) | Accepted | 2026-11-26 |
+| 0256 | [Through `memoryStore@1` a plugin changes only the top-level trees it declares and owns](0256-memorystore-plugins-change-only-declared-owned-trees.md) | Accepted | 2026-11-26 |
+| 0257 | [Recall and curation services resolve only for the boundary implementers; `entityRefBus` is publish-only for plugins](0257-recall-and-curation-services-are-boundary-only.md) | Accepted | 2026-11-26 |
 
 ### The agent model (0012–0022)
 
