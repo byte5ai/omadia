@@ -4498,8 +4498,9 @@ async function main(): Promise<void> {
       legacyOwner: legacyChatOwner,
       releaseGenerated: (scope, ownerOmadiaUserId) =>
         generatedObjects.release({ scope, ...(ownerOmadiaUserId ? { ownerOmadiaUserId } : {}) }),
-      // #1753 — and removes its markdown transcripts and graph history.
-      purgeTranscripts: (scope) => purgeConversationRecords(
+      // #1753 — and removes its markdown transcripts and the deleting
+      // person's graph history of it (ADR-0323).
+      purgeTranscripts: (scope, ownerOmadiaUserId) => purgeConversationRecords(
           {
             store: memoryStore,
             // Per call: orchestrator-extras may replace the graph service (ADR-0323).
@@ -4507,6 +4508,7 @@ async function main(): Promise<void> {
             tenantId: graphTenantId,
           },
           scope,
+          { userId: ownerOmadiaUserId },
         ),
       // #1757 — deleting a chat pauses the routines that deliver into it.
       routines: () => {

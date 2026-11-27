@@ -28,7 +28,7 @@ export async function purgeConversationGraph(
   graph: Pick<KnowledgeGraph, 'purgeConversationHistory'> | undefined,
   tenantId: string,
   scope: string,
-  opts: { readonly injectiveOnly?: boolean } = {},
+  opts: { readonly injectiveOnly?: boolean; readonly userId?: string } = {},
 ): Promise<number | undefined> {
   const conversationScopes = opts.injectiveOnly ? [scopeGraphKey(scope)] : graphScopeKeysFor(scope);
   if (conversationScopes.length === 0) return 0;
@@ -36,7 +36,11 @@ export async function purgeConversationGraph(
     console.warn(`[conversation-purge] the knowledge graph cannot purge; history of '${scope}' stays`);
     return undefined;
   }
-  const { deletedNodes } = await graph.purgeConversationHistory({ tenantId, conversationScopes });
+  const { deletedNodes } = await graph.purgeConversationHistory({
+    tenantId,
+    conversationScopes,
+    ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+  });
   if (deletedNodes > 0) {
     console.log(`[conversation-purge] removed ${String(deletedNodes)} graph node(s) of '${scope}'`);
   }
@@ -60,6 +64,13 @@ export async function purgeConversationRecords(
     readonly tenantId: string;
   },
   scope: string,
+  /**
+   * The deleting person's omadia user id, for a scope the client named (a web
+   * chat id): only that person's turns go. A client-chosen id can share a
+   * graph key with a conversation that is not theirs; a routine's scope is
+   * minted by the server and needs no owner.
+   */
+  owner?: { readonly userId: string | undefined },
 ): Promise<void> {
   const caseFolds = scope !== scope.toLowerCase();
   if (caseFolds) {
@@ -67,8 +78,15 @@ export async function purgeConversationRecords(
   } else {
     await purgeSessionTranscripts(deps.store, scope);
   }
+  if (owner && owner.userId === undefined) {
+    console.warn(`[conversation-purge] '${scope}': no omadia user id for the deleting account; graph history kept`);
+    return;
+  }
   try {
-    await purgeConversationGraph(deps.graph(), deps.tenantId, scope, caseFolds ? { injectiveOnly: true } : {});
+    await purgeConversationGraph(deps.graph(), deps.tenantId, scope, {
+      ...(caseFolds ? { injectiveOnly: true } : {}),
+      ...(owner?.userId !== undefined ? { userId: owner.userId } : {}),
+    });
   } catch (err) {
     console.error(
       `[conversation-purge] graph history of '${scope}' not removed: ${err instanceof Error ? err.message : String(err)}`,

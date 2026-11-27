@@ -51,6 +51,12 @@ Chosen option: **A**.
   without the purge is logged, never thrown; a failing purge is logged by the caller and does not
   undo the deletion.
 - `MemorableKnowledge` is not touched: promoted knowledge has its own owners and lifecycle.
+- **Owner bound for chats.** A web chat id is chosen by the client. The route admits only the
+  web chat shapes (`isWebChatSessionId`: UUID or `id-<base36>-<base36>`), and the graph purge of a
+  chat also carries the deleting person's omadia user id as `userId`: only their turns of that key
+  go (web turns store that id), so a key that collides with another conversation never removes
+  someone else's history. Without an omadia user id on the session the graph is left alone. A
+  routine's scope (`routine:<id>`) is minted by the server and is purged without an owner.
 - **Case-folding guard.** Transcript directories and the sanitized key fold case, chat ids are
   stored case-sensitively. A scope with upper-case letters is purged only by its injective key and
   keeps its transcript directory, so a chat id that is the upper-case form of another chat's id
@@ -65,6 +71,8 @@ Chosen option: **A**.
 - 🔴 **Bad:** irreversible, without a preview: the chat or routine deletion is the confirmation.
   The `chat.delete` audit row (ADR-0100) records the deletion, not a node count.
 - 🔴 **Bad:** memorable knowledge promoted from the conversation stays.
+- 🔴 **Bad:** in a web chat, turns stored without the owner's omadia user id (older turns, a
+  session without that claim) stay in the graph.
 - 🔴 **Bad:** the match cannot use an index on `scope`; the selection scans the tenant's
   conversation nodes inside the delete request.
 - ⚪ **Neutral:** a channel chat has no delete; this applies to web chats and routines only.

@@ -113,4 +113,30 @@ describe('#1753 — purge on delete', () => {
       'routine:r9',
     );
   });
+
+  it('a chat delete takes only the deleting person’s turns of that key (client-chosen id)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const chatId = '3f2a0000-0000-4000-8000-0000000000aa';
+    const OWNER = '7f1b8a52-0000-4000-8000-0000000000a1';
+    const OTHER = '7f1b8a52-0000-4000-8000-0000000000b2';
+    await seedConversationTurn(kg, { scope: graphScopeFor('hr', chatId), time: '2026-10-01T10:00:00Z', userId: OWNER, tag: 'mine' });
+    // Another conversation whose graph key collides with the chat id.
+    await seedConversationTurn(kg, { scope: graphScopeFor('hr', chatId), time: '2026-10-01T11:00:00Z', userId: OTHER, tag: 'theirs' });
+    const deps = { store: new InMemoryMemoryStore(), graph: () => kg, tenantId: TENANT };
+    await purgeConversationRecords(deps, chatId, { userId: OWNER });
+    const left = await kg.countConversationHistory({ tenantId: TENANT, conversationScopes: [chatId] });
+    assert.ok(left.count > 0, 'the other person’s turns stay');
+    assert.equal(
+      (await kg.countConversationHistory({ tenantId: TENANT, conversationScopes: [chatId], userId: OWNER })).count,
+      0,
+      'the owner’s turns are gone',
+    );
+    const before = left.count;
+    await purgeConversationRecords(deps, chatId, { userId: undefined });
+    assert.equal(
+      (await kg.countConversationHistory({ tenantId: TENANT, conversationScopes: [chatId] })).count,
+      before,
+      'without an omadia user id nothing is purged from the graph',
+    );
+  });
 });

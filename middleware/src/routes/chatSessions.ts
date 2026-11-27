@@ -230,7 +230,7 @@ interface ChatSessionDeps {
    */
   releaseGenerated?: (scope: string, ownerOmadiaUserId: string | undefined) => Promise<unknown>;
   /** #1753 — remove the markdown transcripts of the chat's scope when it is deleted. */
-  purgeTranscripts?: (sessionScope: string) => Promise<void>;
+  purgeTranscripts?: (sessionScope: string, ownerOmadiaUserId: string | undefined) => Promise<void>;
   /** #1757 — the routines that deliver into a chat; absent = no routines feature. */
   routines?: () => ChatRoutinesPort | undefined;
   /**
@@ -457,7 +457,9 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       // the orchestrator is told to look there for earlier conversations.
       let transcriptsPurged = false;
       if (deps.purgeTranscripts) {
-        await deps.purgeTranscripts(id).then(
+        // ADR-0323 — the graph side keeps to the deleting person's turns: the
+        // id was chosen by a client and may share a key with another chat.
+        await deps.purgeTranscripts(id, req.session?.omadia_user_id).then(
           () => {
             transcriptsPurged = true;
           },

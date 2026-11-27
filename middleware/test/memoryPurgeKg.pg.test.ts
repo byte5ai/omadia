@@ -221,6 +221,23 @@ describe('purgeMemorableKnowledge (KG primitive)', () => {
       );
     });
 
+    it('conversationScopes + userId: only that person’s turns of the conversation', async (t) => {
+      if (!reachable || !pool) {
+        t.skip('pgvector Postgres not configured (set WS3_PG_URL or MEMORY_PG_TEST_URL)');
+        return;
+      }
+      const graph = await freshGraph(pool);
+      await seedConversationTurn(graph, { scope: 'a::chat-2', time: '2026-10-02T10:00:00Z', userId: ALICE, tag: 'c2a' });
+      await seedConversationTurn(graph, { scope: 'a::chat-2', time: '2026-10-02T10:01:00Z', userId: BOB, tag: 'c2b' });
+      const res = await graph.purgeConversationHistory({ tenantId: TENANT, conversationScopes: ['chat-2'], userId: ALICE });
+      assert.ok(res.deletedNodes > 0);
+      const turns = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM graph_nodes WHERE tenant_id = $1 AND type = 'Turn' AND scope = 'a::chat-2'`,
+        [TENANT],
+      );
+      assert.equal(turns.rows[0]?.n, 1, "Bob's turn stays");
+    });
+
     it('default agent includes the legacy unqualified scopes', async (t) => {
       if (!reachable || !pool) {
         t.skip('pgvector Postgres not configured (set WS3_PG_URL or MEMORY_PG_TEST_URL)');

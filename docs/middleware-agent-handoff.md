@@ -12094,6 +12094,8 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   erst die Markdown-Transkripte, dann `KnowledgeGraph.purgeConversationHistory({ tenantId,
   conversationScopes: graphScopeKeysFor(scope) })` — Turns, Runs, Tool-Calls, Pläne, nur daraus
   abgeleitete Facts und die Session, unter jedem Agenten (`<slug>::<key>` und unqualifiziert).
+  Beim Chat-Löschen zusätzlich `userId` = `omadia_user_id` des Löschenden (Chat-IDs wählt der
+  Client; ein kollidierender Key trifft so nie fremde Turns); ohne diese Id bleibt der Graph.
   `MemorableKnowledge` bleibt. Ein Graph ohne Purge wird geloggt, kein Fehler.
 - **OAuth-Tokens und /setup-Seed nur im Kernel-Scope (#2313, ADR-0275):** Device-Flow
   (`storeProviderOAuthTokens`), Token-Store-`persist`/`load` und `/setup`-Seed schreiben/lesen nur
