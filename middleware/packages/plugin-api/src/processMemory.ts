@@ -15,9 +15,11 @@
  *    returns `{ ok: false, reason: 'duplicate', conflictingId }`.
  * 3. **Versioning via history table**: `edit` snapshots the old state
  *    BEFORE UPDATE; `version` monotonically increases per id.
- * 4. **`id` is deterministic**: `process:<scope>:<slugify(title)>` —
- *    stable across edits (title changes do not change the ID; only the
- *    embedding/title column).
+ * 4. **`id` is opaque**: `process:<uuid>` (#2296, ADR-0295), minted once
+ *    on write and stable across edits. It carries nothing of the title or
+ *    the scope: the title holds the user's real values, and the id reaches
+ *    the model. Ids of the old form `process:<scope>:<slug>` were rewritten
+ *    and still resolve (`ProcessRecord.legacyId`).
  * 5. **Embedding mandatory for dedup**: providers WITHOUT an EmbeddingClient
  *    reject `write` with `{ ok: false, reason: 'embedding-unavailable' }`.
  *    No silent bypass.
@@ -39,8 +41,14 @@ export const PROCESS_DEDUP_DEFAULT_THRESHOLD = 0.9;
 
 /** Persisted process record (one version). */
 export interface ProcessRecord {
-  /** `process:<scope>:<slug>` — deterministically derived from title. Stable across edits. */
+  /** `process:<uuid>` — opaque, minted on write, stable across edits (#2296). */
   readonly id: string;
+  /**
+   * #2296 — the old `process:<scope>:<slug>` id of a process written before
+   * ADR-0295. Lookups by it still resolve; label stores keep what they kept
+   * under it. Absent for processes written since.
+   */
+  readonly legacyId?: string;
   /** Session/project scope in which the process was created. */
   readonly scope: string;
   /** Naming convention `[Domain]: [What it does]`. */
@@ -102,7 +110,7 @@ export type WriteProcessResult =
   | { ok: false; reason: 'embedding-unavailable'; message: string };
 
 export interface EditProcessInput {
-  /** Existing `process:<scope>:<slug>` ID — must exist in `processes` for the tenant. */
+  /** Existing process id (`process:<uuid>`, or a legacy `process:<scope>:<slug>`). */
   readonly id: string;
   /** If set: regex-validation; if empty/undefined: the old title remains. */
   readonly title?: string;
@@ -224,10 +232,17 @@ export function slugifyProcessTitle(title: string): string {
 }
 
 /**
- * Complementary to `slugifyProcessTitle` — builds the deterministic
- * process ID. Consumers (tools, tests, ProcessMemoryService providers)
- * MUST use this function so IDs are consistent cross-package.
+ * The id form before #2296: `process:<scope>:<slug(title)>`.
+ *
+ * @deprecated since 1.112.0 (#2296, ADR-0295) — the slug carries the title's
+ * real values into an id the model reads. New processes get
+ * {@link newProcessId}; this stays only to recognise old ids.
  */
 export function buildProcessId(scope: string, title: string): string {
   return `process:${scope}:${slugifyProcessTitle(title)}`;
+}
+
+/** #2296 / ADR-0295 — a new opaque process id: `process:<uuid>`. */
+export function newProcessId(): string {
+  return `process:${globalThis.crypto.randomUUID()}`;
 }

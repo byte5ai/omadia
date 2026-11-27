@@ -14,7 +14,7 @@ import type {
 import {
   PROCESS_DEDUP_DEFAULT_THRESHOLD,
   PROCESS_TITLE_REGEX,
-  buildProcessId,
+  newProcessId,
   buildRecallTsQuery,
 } from '@omadia/plugin-api';
 
@@ -46,6 +46,8 @@ interface ProcessRow {
   updated_at: Date | string;
   /** #1540 — absent from projections that do not select it. */
   unprotected?: boolean;
+  /** #2296 — the pre-ADR-0295 id; absent from projections that do not select it. */
+  legacy_id?: string | null;
 }
 
 interface ProcessHistoryRow {
@@ -115,6 +117,7 @@ function rowToRecord(row: ProcessRow): ProcessRecord {
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
     ...(row.unprotected === true ? { unprotected: true } : {}),
+    ...(typeof row.legacy_id === 'string' ? { legacyId: row.legacy_id } : {}),
   };
 }
 
@@ -276,7 +279,8 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       };
     }
 
-    const id = buildProcessId(input.scope, input.title);
+    // #2296 / ADR-0295 — opaque: nothing of the title or scope in the id.
+    const id = newProcessId();
     const visibility = input.visibility ?? 'team';
     const inserted = await this.pool.query<ProcessRow>(
       `
@@ -285,7 +289,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
          created_by_omadia_user_id)
       VALUES
         ($1, $2, $3, $4, $5::jsonb, $6, $7::vector, 1, NOW(), NOW(), $8, $9)
-      RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
+      RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected, legacy_id
       `,
       [
         id,
@@ -347,7 +351,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
         `
         SELECT id, scope, title, steps, visibility, version, created_at, updated_at
           FROM processes
-         WHERE tenant_id = $1 AND id = $2
+         WHERE tenant_id = $1 AND (id = $2 OR legacy_id = $2)
          FOR UPDATE
         `,
         [this.tenantId, input.id],
@@ -430,7 +434,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
                    updated_at = NOW(),
                    unprotected = unprotected OR $7::boolean
              WHERE tenant_id = $1 AND id = $2
-             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
+             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected, legacy_id
             `
           : `
             UPDATE processes
@@ -441,12 +445,12 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
                    updated_at = NOW(),
                    unprotected = unprotected OR $6::boolean
              WHERE tenant_id = $1 AND id = $2
-             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
+             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected, legacy_id
             `,
         embeddingParam
           ? [
               this.tenantId,
-              input.id,
+              existing.id,
               newTitle,
               JSON.stringify(newSteps),
               newVisibility,
@@ -455,7 +459,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
             ]
           : [
               this.tenantId,
-              input.id,
+              existing.id,
               newTitle,
               JSON.stringify(newSteps),
               newVisibility,
@@ -528,6 +532,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
           created_at,
           updated_at,
           unprotected,
+          legacy_id,
           CASE
             WHEN $1::text IS NULL OR embedding IS NULL THEN 0
             WHEN (1 - (embedding <=> $1::vector)) <> (1 - (embedding <=> $1::vector)) THEN 0
@@ -561,13 +566,13 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       ),
       normalised AS (
         SELECT
-          id, scope, title, steps, visibility, version, created_at, updated_at, unprotected,
+          id, scope, title, steps, visibility, version, created_at, updated_at, unprotected, legacy_id,
           cosine_sim,
           CASE WHEN bm25_raw <= 0 THEN 0 ELSE bm25_raw / (bm25_raw + 1) END AS bm25_norm
           FROM scored
       )
       SELECT
-        id, scope, title, steps, visibility, version, created_at, updated_at, unprotected,
+        id, scope, title, steps, visibility, version, created_at, updated_at, unprotected, legacy_id,
         cosine_sim, bm25_norm,
         CASE
           WHEN $1::text IS NULL THEN bm25_norm
@@ -604,9 +609,9 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
   async get(id: string): Promise<ProcessRecord | null> {
     const result = await this.pool.query<ProcessRow>(
       `
-      SELECT id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
+      SELECT id, scope, title, steps, visibility, version, created_at, updated_at, unprotected, legacy_id
         FROM processes
-       WHERE tenant_id = $1 AND id = $2
+       WHERE tenant_id = $1 AND (id = $2 OR legacy_id = $2)
       `,
       [this.tenantId, id],
     );
@@ -621,7 +626,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
         FROM process_history ph
         LEFT JOIN processes p
           ON p.tenant_id = ph.tenant_id AND p.id = ph.id
-       WHERE ph.tenant_id = $1 AND ph.id = $2
+       WHERE ph.tenant_id = $1
+         AND ph.id = COALESCE(
+               (SELECT id FROM processes WHERE tenant_id = $1 AND legacy_id = $2 LIMIT 1),
+               $2)
        ORDER BY ph.version DESC
       `,
       [this.tenantId, id],
@@ -637,6 +645,36 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       createdAt: toIso(row.superseded_at),
       updatedAt: toIso(row.superseded_at),
     }));
+  }
+
+  /**
+   * #2296 / ADR-0295 — re-key processes whose id still carries the title
+   * (`process:<scope>:<slug>`): the same rewrite as Neon migration 0040, for
+   * rows an older build wrote after the migration ran (a rolling deploy).
+   * Idempotent; returns how many rows it re-keyed.
+   */
+  async rekeyLegacyIds(): Promise<number> {
+    const result = await this.pool.query<{ id: string }>(
+      `WITH remap AS MATERIALIZED (
+         SELECT tenant_id, id AS old_id, 'process:' || gen_random_uuid()::text AS new_id
+           FROM processes
+          WHERE tenant_id = $1
+            AND legacy_id IS NULL
+            AND id !~ '^process:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+       ),
+       history AS (
+         UPDATE process_history h SET id = r.new_id
+           FROM remap r
+          WHERE h.tenant_id = r.tenant_id AND h.id = r.old_id
+       )
+       UPDATE processes p
+          SET id = r.new_id, legacy_id = r.old_id
+         FROM remap r
+        WHERE p.tenant_id = r.tenant_id AND p.id = r.old_id
+       RETURNING p.id`,
+      [this.tenantId],
+    );
+    return result.rowCount ?? 0;
   }
 
   async countByCreator(omadiaUserId: string): Promise<{ count: number }> {

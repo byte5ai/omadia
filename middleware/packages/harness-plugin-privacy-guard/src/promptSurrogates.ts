@@ -87,6 +87,23 @@ const RESERVED_SHAPES_ANCHORED: readonly RegExp[] = RESERVED_SHAPES.map(
   ({ source, flags }) => new RegExp(`^(?:${source})$`, flags),
 );
 
+const RESERVED_SHAPES_GLOBAL: readonly RegExp[] = RESERVED_SHAPES.map(
+  ({ source, flags }) => new RegExp(source, `${flags}g`),
+);
+
+/**
+ * #2296 — the distinct reserved-shape surrogates in `text`, lower-cased,
+ * whichever turn minted them. Stored text written before ADR-0191 can carry
+ * them; no real value has such a shape, so a hit is never the user's data.
+ */
+export function reservedSurrogateShapesIn(text: string): Set<string> {
+  const hits = new Set<string>();
+  for (const re of RESERVED_SHAPES_GLOBAL) {
+    for (const m of text.matchAll(re)) hits.add(m[0].toLowerCase());
+  }
+  return hits;
+}
+
 /** True when `value` has the shape of a surrogate the shield mints and that no
  *  real value can have. Such a value carries nothing of the user's data. */
 export function isReservedSurrogateShape(value: string): boolean {

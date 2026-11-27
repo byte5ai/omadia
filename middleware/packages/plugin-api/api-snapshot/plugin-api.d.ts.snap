@@ -3314,6 +3314,7 @@ readonly reason: string;
 };
 export interface UnresolvedSurrogateCountOptions {
 readonly unreadableLiterals?: boolean;
+readonly reservedShapes?: boolean;
 }
 export interface PrivacyGuardService {
 internToolResultV4(request: PrivacyToolResultV4Request): Promise<PrivacyToolResultV4Result>;
@@ -3363,6 +3364,7 @@ export declare const PROCESS_TITLE_REGEX: RegExp;
 export declare const PROCESS_DEDUP_DEFAULT_THRESHOLD = 0.9;
 export interface ProcessRecord {
 readonly id: string;
+readonly legacyId?: string;
 readonly scope: string;
 readonly title: string;
 readonly steps: readonly string[];
@@ -3454,6 +3456,7 @@ history(_id: string): Promise<readonly ProcessRecord[]>;
 }
 export declare function slugifyProcessTitle(title: string): string;
 export declare function buildProcessId(scope: string, title: string): string;
+export declare function newProcessId(): string;
 
 // ===== questionCard.d.ts =====
 export declare const CARD_QUESTION_KINDS: readonly ["single_choice", "multiple_choice", "ranking", "consent", "assignment", "text", "number", "date"];

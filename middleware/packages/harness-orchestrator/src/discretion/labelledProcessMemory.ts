@@ -18,8 +18,12 @@
  * Fail closed as for recalled turns: a failed lookup labels the turn
  * unreadable. Outside a labelled turn (background jobs) nothing is recorded
  * or added. A failed label write is logged and the process stays as written
- * (`mergeSubjectWithTurn`). No path deletes a process today, so none drops
- * its labels.
+ * (`mergeSubjectWithTurn`). Only the user purge deletes processes
+ * (`purgeByCreator`); their labels stay (a known gap, ADR-0295).
+ *
+ * #2296 / ADR-0295 — a process written before migration 0040 kept its labels
+ * under its old id (`legacyId`); every read takes both, so the rewrite to an
+ * opaque id loses none of them.
  */
 
 import type {
@@ -57,14 +61,14 @@ export class LabelledProcessMemory implements ProcessMemoryService {
   async write(input: WriteProcessInput): Promise<WriteProcessResult> {
     const result = await this.inner.write(input);
     if (result.ok) await this.keep(result.record.id);
-    else if (result.reason === 'duplicate') await this.read([result.conflictingId]);
+    else if (result.reason === 'duplicate') await this.read(await this.idsOf(result.conflictingId));
     return result;
   }
 
   async edit(input: EditProcessInput): Promise<EditProcessResult> {
     const result = await this.inner.edit(input);
     if (result.ok) {
-      await this.read([result.record.id]);
+      await this.read(subjectIds(result.record));
       await this.keep(result.record.id);
     }
     return result;
@@ -72,20 +76,26 @@ export class LabelledProcessMemory implements ProcessMemoryService {
 
   async query(input: QueryProcessesInput): Promise<readonly ProcessQueryHit[]> {
     const hits = await this.inner.query(input);
-    await this.read(hits.map((hit) => hit.record.id));
+    await this.read(hits.flatMap((hit) => subjectIds(hit.record)));
     return hits;
   }
 
   async get(id: string): Promise<ProcessRecord | null> {
     const record = await this.inner.get(id);
-    if (record) await this.read([record.id]);
+    if (record) await this.read(subjectIds(record));
     return record;
   }
 
   async history(id: string): Promise<readonly ProcessRecord[]> {
     const records = await this.inner.history(id);
-    if (records.length > 0) await this.read([id]);
+    if (records.length > 0) await this.read(await this.idsOf(id));
     return records;
+  }
+
+  /** The current and the pre-0040 id of the process `id` names (either form). */
+  private async idsOf(id: string): Promise<string[]> {
+    const record = await this.inner.get(id);
+    return record ? [...new Set([id, ...subjectIds(record)])] : [id];
   }
 
   private async read(ids: readonly string[]): Promise<void> {
@@ -95,6 +105,11 @@ export class LabelledProcessMemory implements ProcessMemoryService {
   private async keep(id: string): Promise<void> {
     await mergeSubjectWithTurn(this.port, SUBJECT, id, turnContext.currentAgentSlug() ?? 'default');
   }
+}
+
+/** The label subjects a process answers to: its id and, if any, its pre-0040 id. */
+function subjectIds(record: ProcessRecord): string[] {
+  return record.legacyId !== undefined ? [record.id, record.legacyId] : [record.id];
 }
 
 /** The kernel's `processMemory` decorator: labelled, never twice. */

@@ -9542,6 +9542,11 @@ derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditAc
 (`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
 Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
 
+Prozess-IDs (#2296, ADR-0295): `process:<uuid>` (`newProcessId`), Neon-Migration 0040 schreibt
+alte `process:<scope>:<slug>`-IDs um und behält sie in `processes.legacy_id` (Lookups lösen
+beide Formen auf, Diskretions-Labels werden unter beiden gelesen). Gespeicherter Text mit
+Platzhaltern früherer Turns wird pro Eintrag zurückgehalten (`maskStoredTextPerEntry`, ADR-0296).
+
 Achse `user` seit ADR-0186 (#1840/#1842/#1843): `resolveUserSelector` (`services/memoryPurgeUser.ts`)
 liest omadia-User-ID, Konto-ID (`web:<users.id>`) oder `<kanal>~<id>`; geteilte
 `MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.100.0),

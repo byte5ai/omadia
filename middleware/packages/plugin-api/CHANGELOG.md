@@ -8,6 +8,25 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.112.0 — 2026-11-27
+
+Additive. (Numbered after 1.108.0–1.111.0 of #2331 / #2332 / #2328 / #2343; the lander
+renumbers if needed.)
+
+### Added
+
+- **`newProcessId()`** and **`ProcessRecord.legacyId`** (#2296, ADR-0295): process ids are
+  opaque (`process:<uuid>`); a process written before keeps its old `process:<scope>:<slug>` id
+  as `legacyId`, and providers resolve either form.
+- **`UnresolvedSurrogateCountOptions.reservedShapes`** (#2296): also count reserved-shape
+  surrogates (`PLATZHALTER-*`, pool names at `example.net`) whichever turn minted them; for
+  stored text read back into a turn.
+
+### Deprecated
+
+- **`buildProcessId(scope, title)`** (#2296): the slug carries the title's values into the id.
+  Kept to recognise old ids; new processes use `newProcessId()`.
+
 ## 1.107.0 — 2026-11-27
 
 Additive.
