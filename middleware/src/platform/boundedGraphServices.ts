@@ -82,7 +82,7 @@ import {
   PRIVATE_TREES,
   memoryTreesFor,
 } from './memoryTrees.js';
-import { neighborsForPlugin } from './shieldedNeighbors.js';
+import { isPlanReadableUnderShield, neighborsForPlugin } from './shieldedNeighbors.js';
 
 /** The registry key of the entity-ref bus (`entityRefBus@1`). */
 export const ENTITY_REF_BUS_SERVICE_NAME = 'entityRefBus';
@@ -550,9 +550,12 @@ export function boundKnowledgeGraph(
       case 'own-plans':
         // Plans carry no owners: like the node filter and recall, only in
         // `off` / `enforce` (`user`), and only the turn's own conversation.
+        // #2333 — under a shield, only plans the recall plan leg would show.
         out[method] = async (...args) => {
           const bound = reads.requireBoundary(method);
-          return bound.kind === 'user' && args[0] === ownPlanScope() ? call(...args) : [];
+          if (bound.kind !== 'user' || args[0] !== ownPlanScope()) return [];
+          const found = (await call(...args)) as GraphNode[];
+          return shieldActive() ? filterReadablePlans(kg, found) : found;
         };
         break;
       case 'kernel-only':
@@ -587,7 +590,10 @@ function boundedPlans(
   const ownPlan = async (method: string, planExternalId: string): Promise<GraphNode | null> => {
     const scope = ownScope(method);
     const plan = await kg.getPlan(planExternalId);
-    return plan && plan.props['scope'] === scope ? plan : null;
+    if (!plan || plan.props['scope'] !== scope) return null;
+    // #2333 — under a shield, a plan of an unprotected or unknown turn of
+    // this conversation reads as missing, as in `listPlansForScope`.
+    return (await planReadable(kg, plan)) ? plan : null;
   };
   return {
     async ingestPlan(input: Parameters<KnowledgeGraph['ingestPlan']>[0]) {
@@ -610,7 +616,9 @@ function boundedPlans(
     async setPlanStepStatus(...args: Parameters<KnowledgeGraph['setPlanStepStatus']>): Promise<void> {
       const scope = ownScope('setPlanStepStatus');
       const plan = (await kg.getNeighbors(args[0])).find((n) => n.type === 'Plan');
-      if (plan?.props['scope'] !== scope) throw outOfScope('setPlanStepStatus');
+      if (!plan || plan.props['scope'] !== scope || !(await planReadable(kg, plan))) {
+        throw outOfScope('setPlanStepStatus');
+      }
       return kg.setPlanStepStatus(...args);
     },
     async deletePlan(planExternalId: string): ReturnType<KnowledgeGraph['deletePlan']> {
@@ -618,6 +626,17 @@ function boundedPlans(
       return kg.deletePlan(planExternalId);
     },
   };
+}
+
+/** A plan of the own conversation a plugin may read now (always without a shield). */
+async function planReadable(kg: KnowledgeGraph, plan: GraphNode): Promise<boolean> {
+  return !shieldActive() || isPlanReadableUnderShield(kg, plan, turnContext.current()?.turnId);
+}
+
+async function filterReadablePlans(kg: KnowledgeGraph, plans: GraphNode[]): Promise<GraphNode[]> {
+  const turnId = turnContext.current()?.turnId;
+  const keep = await Promise.all(plans.map((plan) => isPlanReadableUnderShield(kg, plan, turnId)));
+  return plans.filter((_, i) => keep[i]);
 }
 
 /** The graph scope the turn's plans live under (as the plan runner writes them). */

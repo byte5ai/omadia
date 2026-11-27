@@ -44,6 +44,24 @@ async function hasProtectedTurn(kg: NeighborGraph, node: GraphNode): Promise<boo
 }
 
 /** Not stamped, and linked to no `unprotected` Turn (a missing link is fine). */
+/**
+ * #2333 — a Plan a plugin may read under a Privacy Shield: the current turn's
+ * own plan (it runs under this shield; its Turn node lands only after the
+ * turn), or one linked to a known Turn, none of them `unprotected` — the plan
+ * rule of the recall leg (`listRecentPlans` with `excludeUnprotected`, #1536).
+ * The session tail's continuity exception for unprotected turns of the same
+ * chat does not extend to plans (ADR-0315).
+ */
+export async function isPlanReadableUnderShield(
+  kg: NeighborGraph,
+  plan: GraphNode,
+  currentTurnId: string | undefined,
+): Promise<boolean> {
+  if (isStampedUnprotected(plan)) return false;
+  if (currentTurnId !== undefined && plan.props['planId'] === currentTurnId) return true;
+  return hasProtectedTurn(kg, plan);
+}
+
 async function isProtectedMemory(kg: NeighborGraph, node: GraphNode): Promise<boolean> {
   if (isStampedUnprotected(node)) return false;
   const neighbors = await kg.getNeighbors(node.id);

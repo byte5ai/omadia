@@ -2920,6 +2920,12 @@ The same provenance reaches three more readers (#1540):
   process, `run_stored_process` refuses it, and the duplicate branch of
   `write_process` and the result of `edit_process` withhold its title and id
   (the id embeds the title's slug).
+- **A plugin's plan reads (#2333, ADR-0315).** Under a privacy handle the
+  bounded `listPlansForScope`, `getPlan`, `getPlanSteps`,
+  `getPlanStepsForPlans`, `deletePlan` and `setPlanStepStatus` see only the
+  own conversation's plans linked to a known protected Turn, plus the current
+  turn's own plan (its Turn lands after the turn). The session tail's
+  continuity residual does not extend to plans.
 - **A plugin's `ctx.knowledgeGraph.getNeighbors`.** Inside a turn with a
   privacy handle (`shieldedNeighbors.ts`) it keeps reference nodes (sessions,
   entities, users, channel identities), Turns not stored `unprotected`, Facts

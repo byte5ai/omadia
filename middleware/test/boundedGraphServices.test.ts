@@ -289,6 +289,57 @@ describe('ADR-0044 · bounded plans: the turn’s own conversation only', () => 
   });
 });
 
+describe('#2333 · bounded plans under a Privacy Shield', () => {
+  const SCOPE = 'atlas::web-1';
+  const shielded = <T>(fn: () => Promise<T>): Promise<T> =>
+    inTurn(USER_BOUND, fn, { sessionScope: 'web-1', turnId: 't-now', privacyHandle: {} });
+  const plain = <T>(fn: () => Promise<T>): Promise<T> => inTurn(USER_BOUND, fn, { sessionScope: 'web-1', turnId: 't-now' });
+
+  /** Own-conversation plans of a protected, an unprotected, an unknown and the current turn. */
+  function planGraph(): KnowledgeGraph {
+    const plans: GraphNode[] = [
+      node('plan:t-ok', 'Plan', { scope: SCOPE, planId: 't-ok', turnId: 't-ok' }),
+      node('plan:t-open', 'Plan', { scope: SCOPE, planId: 't-open', turnId: 't-open' }),
+      node('plan:t-gone', 'Plan', { scope: SCOPE, planId: 't-gone' }),
+      node('plan:t-now', 'Plan', { scope: SCOPE, planId: 't-now' }),
+    ];
+    const neighbours: Record<string, GraphNode[]> = {
+      'plan:t-ok': [node('t-ok', 'Turn', { scope: SCOPE })],
+      'plan:t-open': [node('t-open', 'Turn', { scope: SCOPE, unprotected: true })],
+      'planstep:open-1': [plans[1]!],
+    };
+    const kg: Partial<KnowledgeGraph> = {
+      listPlansForScope: async (scope) => plans.filter((p) => p.props['scope'] === scope),
+      getPlan: async (id) => plans.find((p) => p.id === id) ?? null,
+      getPlanSteps: async () => [node('planstep:x', 'PlanStep')],
+      getNeighbors: async (id) => neighbours[id] ?? [],
+      setPlanStepStatus: async () => undefined,
+    };
+    return kg as KnowledgeGraph;
+  }
+
+  it('lists only plans of a known, protected turn plus the current turn’s own', async () => {
+    const bounded = boundKnowledgeGraph(planGraph(), PLUGIN);
+    const ids = (await shielded(() => bounded.listPlansForScope(SCOPE))).map((p) => p.id);
+    assert.deepEqual(ids, ['plan:t-ok', 'plan:t-now']);
+    const open = (await plain(() => bounded.listPlansForScope(SCOPE))).map((p) => p.id);
+    assert.equal(open.length, 4, 'without a shield the own conversation stays whole');
+  });
+
+  it('reads a plan of an unprotected or unknown turn by id as missing', async () => {
+    const bounded = boundKnowledgeGraph(planGraph(), PLUGIN);
+    assert.equal(await shielded(() => bounded.getPlan('plan:t-open')), null);
+    assert.equal(await shielded(() => bounded.getPlan('plan:t-gone')), null);
+    assert.deepEqual(await shielded(() => bounded.getPlanSteps('plan:t-open')), []);
+    assert.equal((await shielded(() => bounded.getPlan('plan:t-now')))?.id, 'plan:t-now');
+    assert.equal((await plain(() => bounded.getPlan('plan:t-open')))?.id, 'plan:t-open');
+    await assert.rejects(
+      () => shielded(() => bounded.setPlanStepStatus('planstep:open-1', 'done')),
+      (err: unknown) => err instanceof GraphServiceRefusedError && err.reason === 'out-of-scope',
+    );
+  });
+});
+
 function processRecord(id: string, scope: string): ProcessRecord {
   return { id, scope, title: id, steps: ['a'], version: 1, visibility: 'team' } as unknown as ProcessRecord;
 }
