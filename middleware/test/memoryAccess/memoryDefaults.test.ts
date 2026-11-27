@@ -85,9 +85,9 @@ const PINS: readonly Pin[] = [
   {
     name: 'kg_auto_merge_threshold',
     file: EXTRAS,
-    pattern: /ctx\.config\.get<unknown>\('kg_auto_merge_threshold'\), ([\d.]+),/,
-    expected: '0.9',
-    meaning: 'similarity at which two memories merge',
+    pattern: /const AUTO_MERGE_DEFAULT_THRESHOLD = ([\d.]+);/,
+    expected: '0.98',
+    meaning: 'similarity at which two identical-text machine copies merge (ADR-0190)',
   },
   {
     name: 'scratch_promotion_enabled',
@@ -195,6 +195,10 @@ describe('memory defaults (memory-ACL plan step 4c)', () => {
       }
       for (const key of keys) if (manifest.includes(key)) found.push(`${pkg}: ${key}`);
     }
-    assert.deepEqual(found, [], 'a manifest names a memory default; pin its value here');
+    // ADR-0190 made the auto-merge switch a manifest field; its default is
+    // pinned below, every other key must stay out of the manifests.
+    assert.deepEqual(found, ['harness-orchestrator-extras: kg_auto_merge_enabled'], 'a manifest names a memory default; pin its value here');
+    const extras = readFileSync(path.join(packages, 'harness-orchestrator-extras', 'manifest.yaml'), 'utf8');
+    assert.match(extras, /- key: "kg_auto_merge_enabled"\n(?:\s+.*\n)*?\s+default: "true"\n/, 'kg_auto_merge_enabled manifest default is on');
   });
 });

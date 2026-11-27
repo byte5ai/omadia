@@ -381,11 +381,12 @@ jobs:
           # Neon sweeps. 799 → 806 with W03 recall/memorables: memorableLifecycle.pg
           # (3 Neon tests, ADR-0190), recallFtsOrQuery1822.pg (3),
           # correctedInsight1863.pg (1).
-          # 806 → 809 with the ACL contract after migrations
-          # (memoryAccess/aclAfterMigrations.pg, 3 tests, memory-ACL step 4d).
-          # 809 → 820 with the memory lifecycle invariants (memoryAccess/
+          # 806 → 847 with the memory-ACL train (#2276/#2280–#2283): main had
+          # drifted to ran=833 (CI run 45960492506 on c6418333), plus the ACL
+          # contract after migrations (memoryAccess/aclAfterMigrations.pg, 3
+          # tests, step 4d) and the lifecycle invariants (memoryAccess/
           # lifecycle*.pg, 11 tests, step 5).
-          PG_TEST_FLOOR: '820'
+          PG_TEST_FLOOR: '847'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

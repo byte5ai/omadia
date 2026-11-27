@@ -330,7 +330,7 @@ changelog.
   raw channel id, as Teams auto-promotion writes them).
 - The seed now registers each members tier in `members-index`, as the binder does; the purge finds a
   person's member notes through it.
-- CI `PG_TEST_FLOOR` 809 → 820: the 11 new Postgres tests (re-based onto main's 806 at landing).
+- CI `PG_TEST_FLOOR` → 847 together with step 4: main's measured 833 plus the 3 + 11 new Postgres tests.
 
 ### Added — memory completeness guards (memory-ACL test plan, step 4) (2026-11-26)
 
@@ -350,7 +350,8 @@ changelog.
   fires on a new file and that no allowlist entry has gone stale.
 - **Memory defaults pinned** (`memoryAccess/memoryDefaults.test.ts`): `KG_ACL_AUTO_PROMOTE`
   (on, 0.7), `KG_DURABLE_AUTOPROMOTE` (on, 0.85), `KG_RECALL_TEAM_VISIBILITY` (on), auto-merge
-  (on, 0.9), the scratch reaper (on, 24 h, keeps unpromoted scratch),
+  (on, 0.98 for identical-text machine copies since ADR-0190; the manifest field
+  `kg_auto_merge_enabled` defaults on and is pinned too), the scratch reaper (on, 24 h, keeps unpromoted scratch),
   `OMADIA_INJECTIVE_SCOPE_KEYS` (off), memory visibility without a value (`private`, both
   backends), `agents.context_memory` (`members`) and the orchestrator fallback (`off`). A
   changed default fails until the pin, this CHANGELOG and the oracle change together.
@@ -359,7 +360,7 @@ changelog.
   `team` as the code before #1823 did; the boot migrator then applies the rest. Memorable
   knowledge and excerpts must equal the oracle for the world as the migrations are documented
   to leave it (`migrated()`, written from 0037's intent). A migration that widened visibility
-  showed 18,036 leaks. `PG_TEST_FLOOR` 806 → 809 (re-based onto main at landing).
+  showed 18,036 leaks. `PG_TEST_FLOOR`: see step 5 (847 for both steps).
 
 ### Fixed — scopeGraphKey: a produced key is no longer a fixed point (#2277) (2026-11-26)
 

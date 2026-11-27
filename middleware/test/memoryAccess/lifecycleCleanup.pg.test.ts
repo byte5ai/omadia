@@ -119,6 +119,8 @@ describe('memory lifecycle invariants on Neon: jobs that age, merge and erase me
       embeddingClient,
       autoMergeThreshold: 0.9,
       minSimilarity: 0.9,
+      // The whole group shares one axis; scan all of it so the copy is seen.
+      topK: 1000,
       log: () => undefined,
     });
     const count = async (): Promise<number> =>
@@ -126,13 +128,39 @@ describe('memory lifecycle invariants on Neon: jobs that age, merge and erase me
         `SELECT count(*) AS c FROM graph_nodes WHERE tenant_id = $1 AND type = 'MemorableKnowledge'`,
         [n.tenants.main],
       )).rows[0]!.c);
+    const sources = mks.filter((x) => x.authorship === 'conversation' && x.provenance === 'protected');
+    // ADR-0190: only a machine-made copy with the same text is retired; the
+    // world's group mates differ in their canary and stay open pairs. Give
+    // each source such a copy (same owners, visibility and agent, same axis).
+    const graph = n.seeded.stores.main.graph;
+    for (const mk of sources) {
+      const id = n.seeded.location.get(mk.canary)!;
+      const row = (await pool!.query<{ properties: Record<string, unknown>; visibility: string | null }>(
+        `SELECT properties, visibility FROM graph_nodes WHERE tenant_id = $1 AND external_id = $2`,
+        [n.tenants.main, id],
+      )).rows[0]!;
+      const p = row.properties;
+      const owners = Array.isArray(p['acl_owners']) ? (p['acl_owners'] as string[]) : [];
+      const copy = await graph.createMemorableKnowledge({
+        kind: p['kind'] as 'reference',
+        summary: String(p['summary']),
+        createdBy: String(p['created_by']),
+        ...(owners.length > 0 ? { aclOwners: owners } : {}),
+        ...(row.visibility ? { visibility: row.visibility as 'private' } : {}),
+        ...(typeof p['origin_agent'] === 'string' ? { originAgent: p['origin_agent'] } : {}),
+      });
+      await pool!.query(
+        `UPDATE graph_nodes SET embedding = $3::vector WHERE tenant_id = $1 AND external_id = $2`,
+        [n.tenants.main, copy.memorableKnowledgeNodeId, `[${axis(mkGroup(mk)).join(',')}]`],
+      );
+    }
     const beforeCount = await count();
     await guarded(n, 'auto-merge', async () => {
       // Sources: one memory per owners × visibility × agent; their duplicates
       // are searched among all of them.
-      for (const mk of mks.filter((x) => x.authorship === 'conversation' && x.provenance === 'protected')) {
+      for (const mk of sources) {
         const id = n.seeded.location.get(mk.canary)!;
-        if (await n.seeded.stores.main.graph.getMemorableKnowledge(id)) await detector.detectFor(id);
+        if (await graph.getMemorableKnowledge(id)) await detector.detectFor(id);
       }
     });
     // Positive control: duplicates were found and retired.
