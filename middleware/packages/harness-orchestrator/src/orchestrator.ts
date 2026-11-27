@@ -311,6 +311,7 @@ import { peopleEgressDecision } from './discretion/turnLabels.js';
 import { fieldClassesForTurn, personalFieldsWithheld } from './discretion/fieldRights.js';
 import { FIELD_WITHHELD_NOTICE, renderedAnswerForAudience } from './privacyAudience.js';
 import { answerWithheldText } from './discretion/disclosure.js';
+import { ToolOutputHold } from './toolOutputHold.js';
 import { withoutAnswer } from './identityGuard/answerRecordGate.js';
 import { labelSummary } from './discretion/labels.js';
 import {
@@ -8481,6 +8482,8 @@ export class Orchestrator {
       // #2198 — the `kg_insert` pulse shows the memorable promoted from this
       // turn's answer: it waits for the answer's egress check.
       const heldUntilDone: ChatStreamEvent[] = [];
+      // #2342 — a tool output streams only while the same check passes (ADR-0316).
+      const toolOutputs = new ToolOutputHold(() => this.egressRefusesNow());
       for await (const event of guardedInner) {
         if (event.type === 'turn_annotation') {
           if (event.channel === 'kg_insert') {
@@ -8621,7 +8624,8 @@ export class Orchestrator {
               );
           const guardedDone = await this.guardStreamedDone(doneEvent, this.turnLocale(input));
           // #2198 — what derives from the answer goes out with it, or not at all.
-          if (!guardedDone.withheld) yield* [...heldUntilDone, ...afterTurnEvents];
+          if (guardedDone.withheld) yield* toolOutputs.settle(true);
+          else yield* [...toolOutputs.settle(false), ...heldUntilDone, ...afterTurnEvents];
           if (guardedDone.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
           yield this.discloseDoneEvent(guardedDone.done, input, bound?.ledger);
           continue;
@@ -8637,12 +8641,13 @@ export class Orchestrator {
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
           const guarded = await this.guardStreamedDone(event, this.turnLocale(input));
           // #2198 — what derives from the answer goes out with it, or not at all.
-          if (!guarded.withheld) yield* [...heldUntilDone, ...afterTurnEvents];
+          if (guarded.withheld) yield* toolOutputs.settle(true);
+          else yield* [...toolOutputs.settle(false), ...heldUntilDone, ...afterTurnEvents];
           if (guarded.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
           yield this.discloseDoneEvent(guarded.done, input, bound?.ledger);
           continue;
         }
-        yield event;
+        yield* await toolOutputs.pass(event);
       }
     } finally {
       if (steeringLive) steeringBus.endTurn(sessionId);
@@ -11926,6 +11931,23 @@ export class Orchestrator {
       ...(result.privacyReceipt !== undefined ? { privacyReceipt: result.privacyReceipt } : {}),
       ...(result.answerSource !== undefined ? { answerSource: result.answerSource } : {}),
     };
+  }
+
+  /**
+   * #2342 — whether the people-egress check (`guardStreamedDone`) would
+   * refuse this turn's answer with the labels collected so far. A tool
+   * output streams live only while it would not (`ToolOutputHold`). A check
+   * that fails answers `true`.
+   */
+  public async egressRefusesNow(): Promise<boolean> {
+    const state = currentDiscretion();
+    if (!state || isConsultationRunOf(this.agentId)) return false;
+    try {
+      const decision = await peopleEgressDecision(state);
+      return decision !== undefined && !decision.allowed;
+    } catch {
+      return true;
+    }
   }
 
   /**

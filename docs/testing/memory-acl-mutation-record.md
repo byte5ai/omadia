@@ -13,7 +13,7 @@ mutated files; RT02 and RT03 were rerun there with the same result.
 
 ## Result
 
-75 mutants, one per access predicate. **62** turned a memory-access suite red directly. **6** survived the memory-access suites but are killed by a unit test outside them, which CI also runs. **3** survived and were closed in this step with a new or widened test. **4** still survive (IM14, NE09, GV09, GV10): test gaps, not leaks, tracked in #2340.
+75 mutants, one per access predicate. **64** turn a memory-access suite red directly. **8** survive the memory-access suites but are killed by a unit test outside them, which CI also runs. **3** survived and were closed in this step with a new or widened test. None survives: the last four (IM14, NE09, GV09, GV10) were test gaps, not leaks, and were closed by #2340 (2026-11-27, rerun by hand on `wave7/w42-privacy-acl-mcp`).
 
 ## How it was run
 
@@ -65,7 +65,7 @@ stale one fails the audit-row checks for reasons unrelated to the mutant.
 | IM11 | in-memory graph | memory search: members room rule drops origin-agent isolation | Killed by `aclContract.test.ts` |
 | IM12 | in-memory graph | memory search: Privacy Shield skip dropped | Killed by `aclContract.test.ts` |
 | IM13 | in-memory graph | excerpt search: Privacy Shield skip dropped | Killed by `aclContractExcerptsOwnerOnly.test.ts` |
-| IM14 | in-memory graph | shield: DERIVED_FROM unprotected-turn check dropped | Survives since #2278: every memory derived from an unprotected turn is now stamped `unprotected` itself, so the stamp alone hides it. The edge check only decides for a turn marked unprotected after promotion, which no test seeds. #2340. |
+| IM14 | in-memory graph | shield: DERIVED_FROM unprotected-turn check dropped | Survived since #2278 (the stamp alone hid every seeded memory). Not by memoryAccess; killed by `test/recallDerivedUnprotected1536.test.ts` since #2340, which re-ingests a memory's source turn as unprotected after promotion. |
 | IM15 | in-memory graph | empty audience no longer matches nothing | Killed by `aclContract.test.ts` |
 | IM16 | in-memory graph | getMemorableKnowledge(id, viewer): owner check dropped | Killed by `canaryHttp.test.ts` |
 | IM17 | in-memory graph | turn search: user filter dropped | Killed by `canarySweepOff.test.ts` |
@@ -90,7 +90,7 @@ stale one fails the audit-row checks for reasons unrelated to the mutant.
 | NE06 | Neon graph | memory search: members room rule ignores the audience | Killed by `aclContract.pg.test.ts` |
 | NE07 | Neon graph | memory search: sharedOnly narrowing dropped | Killed by `aclContract.pg.test.ts` |
 | NE08 | Neon graph | memory search: Privacy Shield skip dropped | Killed by `aclContract.pg.test.ts` |
-| NE09 | Neon graph | shield: DERIVED_FROM unprotected-turn check dropped | Survives since #2278, as IM14: the stamp hides every seeded memory; no test marks a turn unprotected after promotion. #2340. |
+| NE09 | Neon graph | shield: DERIVED_FROM unprotected-turn check dropped | Survived since #2278, as IM14. Not by memoryAccess; killed by `test/recallDerivedUnprotected1536.pg.test.ts` since #2340 (same contract case as IM14). |
 | NE10 | Neon graph | memory search: tenant predicate dropped | Killed by `aclContract.pg.test.ts` |
 | NE11 | Neon graph | excerpt search: tenant predicates dropped | Killed by `aclContractExcerpts.pg.test.ts` |
 | NE12 | Neon graph | excerpt search: team branch on without teamVisibility | Killed by `aclContractExcerpts.pg.test.ts` |
@@ -109,8 +109,8 @@ stale one fails the audit-row checks for reasons unrelated to the mutant.
 | GV06 | graph view | shielded turn: unprotected turns shown | Killed by `canarySweepOffProductionRecall.test.ts` |
 | GV07 | graph view | turn visible without being in a readable session | Killed by `canarySweepOff.test.ts` |
 | GV08 | graph view | entity visible without a visible capturing turn | Killed by `canarySweepStrictProductionRecall.test.ts` |
-| GV09 | graph view | another person's User node visible | Survives: the world has no User node with a canary. #2340. |
-| GV10 | graph view | fact visible when one source turn is hidden | Survives: the world has no Fact item. #2340. |
+| GV09 | graph view | another person's User node visible | Survived while the world had no User node with a canary. Killed by `canarySweepOff.test.ts` since #2340: each person's User node carries a canary in its profile. |
+| GV10 | graph view | fact visible when one source turn is hidden | Survived while the world had no Fact item. Killed by `canarySweepOff.test.ts` since #2340: a fact from Alice's DM and room1 reaches Bob through the room turn. |
 | MS01 | /memories scope | scoped store: every read allowed | Killed by `canarySweepStrict.test.ts` |
 | MS02 | /memories scope | scoped store: ro: veto on writes dropped | Not by memoryAccess (the sweep's memory store is read-only); killed by `test/scopedMemoryStore.contexts.test.ts`. |
 | MS03 | /memories scope | enforce-strict reads the transcript trees (core, not core-notes) | Killed by `canarySweepStrictProductionRecall.test.ts` |
@@ -130,14 +130,14 @@ stale one fails the audit-row checks for reasons unrelated to the mutant.
 
 ## Survivors
 
-- **IM14** — Survives since #2278: every memory derived from an unprotected turn is now stamped `unprotected` itself, so the stamp alone hides it. The edge check only decides for a turn marked unprotected after promotion, which no test seeds. #2340.
+- **IM14** — Survived since #2278 (the stamp alone hid every seeded memory). Not by memoryAccess; killed by `test/recallDerivedUnprotected1536.test.ts` since #2340.
 - **IM20** — Survived before this step: the shield's digest hid the canaries from the sweep. Killed by `canarySweepOff.test.ts` now that the sweep reads raw tool results (`tool-raw`).
 - **IM26** — Not by memoryAccess (recall does not pass `userId` to `listRecentPlans`); killed by `test/recallProbe.test.ts`.
-- **NE09** — Survives since #2278, as IM14: the stamp hides every seeded memory; no test marks a turn unprotected after promotion. #2340.
+- **NE09** — Survived since #2278, as IM14. Not by memoryAccess; killed by `test/recallDerivedUnprotected1536.pg.test.ts` since #2340.
 - **NE19** — Survived before this step: the Neon REST sweep asserted only the topic routes. Killed by `canaryHttp.pg.test.ts` now that it asserts every route.
 - **GV03** — Survived before this step: every sweep ran team visibility on, where the oracle allows team memories anyway. Killed by `canarySweepOffOwnerOnly.test.ts`, the new owner-only sweep.
-- **GV09** — Survives: the world has no User node with a canary. #2340.
-- **GV10** — Survives: the world has no Fact item. #2340.
+- **GV09** — Survived while the world had no User node with a canary. Killed by `canarySweepOff.test.ts` since #2340.
+- **GV10** — Survived while the world had no Fact item. Killed by `canarySweepOff.test.ts` since #2340.
 - **MS02** — Not by memoryAccess (the sweep's memory store is read-only); killed by `test/scopedMemoryStore.contexts.test.ts`.
 - **MS04** — Not by memoryAccess (no writes in the sweep); killed by `test/memoryContextIsolation.test.ts`.
 - **MS05** — Not by memoryAccess; killed by `test/memoryContextIsolation.test.ts`.
@@ -170,7 +170,18 @@ removing the shield's `DERIVED_FROM` check (IM14, NE09) turned the contract red.
 Since #2278, `createMemorableKnowledge` stamps `unprotected` from its source
 turns, so the stamp alone hides every seeded memory. The edge check now only
 decides for a turn marked unprotected after a memory was promoted from it, which
-`ingestTurn` allows and no test seeds (#2340).
+`ingestTurn` allows. #2340 seeds exactly that order in the #1536 recall contract
+(`test/recallDerivedUnprotected1536Contract.ts`, in-memory and Neon): a memory
+promoted from a protected turn, the turn re-ingested as unprotected, and a
+shielded search no longer returns the memory or its excerpts.
+
+**The world had no User and no Fact item** (GV09, GV10). Since #2340 each
+person's User node carries a canary in its profile (the display name identity
+resolution writes), allowed only to that person, and one fact per tenant is
+extracted from two turns (Alice's DM and room1), allowed only where both turns
+are. The sweep reaches both through `getNeighbors`; a control in every sweep
+checks that an allowed User and Fact canary arrives wherever the oracle allows
+one.
 
 **That check found two real leaks**, both kept as known leaks (`todo` tests naming
 the issue) until fixed:

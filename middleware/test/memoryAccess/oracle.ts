@@ -31,6 +31,7 @@ import {
   type DatasetItem,
   type EntityItem,
   type ExcerptItem,
+  type FactItem,
   type Item,
   type MkItem,
   type PlanItem,
@@ -39,6 +40,7 @@ import {
   type TopicItem,
   type TurnItem,
   type TenantKey,
+  type UserItem,
   type UserKey,
   type Viewer,
 } from './world.js';
@@ -144,7 +146,31 @@ export function expected(
       return dataset(v, item);
     case 'topic':
       return topic(v, mode, item);
+    case 'user':
+      return user(v, item);
+    case 'fact':
+      return fact(v, mode, item);
   }
+}
+
+function user(v: Viewer, u: UserItem): Verdict {
+  return u.user === v.user
+    ? doc(true, 'your own User node (S graph walks #2208/#1825: "a User node only the viewer\'s own")')
+    : doc(
+        false,
+        'another person\'s User node, their profile (S graph walks #2208/#1825: "a User node only the viewer\'s own"; C #2208)',
+      );
+}
+
+/** A fact is visible only when every turn it was extracted from is. */
+function fact(v: Viewer, mode: Mode, f: FactItem): Verdict {
+  const hidden = f.sources.map((t) => turn(v, mode, t)).find((verdict) => !verdict.allowed);
+  return hidden
+    ? doc(
+        false,
+        `a source turn is hidden (S graph walks #2208/#1825: facts "only where their turns … allow"): ${hidden.source}`,
+      )
+    : doc(true, 'every source turn is visible (S graph walks #2208/#1825: facts "only where their turns … allow")');
 }
 
 function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem, settings: Settings): Verdict {

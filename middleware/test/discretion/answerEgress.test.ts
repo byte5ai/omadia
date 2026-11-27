@@ -88,8 +88,21 @@ function streamingInChunks(model: ReturnType<typeof scriptedModel>): ReturnType<
   return { ...model, provider };
 }
 
-function build(recalledLabels: LabelSet, opts: { streamChunks?: boolean } = {}) {
-  const scripted = scriptedModel([text(`Kurz gesagt: ${SECRET}.`)]);
+const SIGNED_LINK = 'https://files.example.test/report.xlsx?sig=w42-signed';
+
+function build(recalledLabels: LabelSet, opts: { streamChunks?: boolean; withTool?: boolean } = {}) {
+  const scripted = scriptedModel([
+    ...(opts.withTool ? [toolCalls(['report_tool', {}])] : []),
+    text(`Kurz gesagt: ${SECRET}.`),
+  ]);
+  const nativeToolRegistry = new NativeToolRegistry();
+  if (opts.withTool) {
+    nativeToolRegistry.register('report_tool', {
+      handler: async () => `Bericht erstellt: ${SIGNED_LINK}`,
+      spec: { name: 'report_tool', description: 'd', input_schema: { type: 'object', properties: {} } },
+      domain: 'test.report',
+    });
+  }
   const model = opts.streamChunks ? streamingInChunks(scripted) : scripted;
   const logged: Array<{ assistantAnswer: string }> = [];
   const persisted = new Map<string, LabelSet>();
@@ -108,7 +121,7 @@ function build(recalledLabels: LabelSet, opts: { streamChunks?: boolean } = {}) 
     maxTokens: 1024,
     maxToolIterations: 4,
     domainTools: [],
-    nativeToolRegistry: new NativeToolRegistry(),
+    nativeToolRegistry,
     agentId: 'mira',
     knowledgeGraph,
     discretion,
@@ -183,6 +196,37 @@ describe('the answer egress (criterion 18)', () => {
     const done = events[doneAt]!;
     assert.equal(done.answer?.includes('Paula'), false);
     assert.match(done.answer ?? '', /nicht alle hier|not everyone here/);
+  });
+
+  it('#2342 · a withheld streamed answer never sends the tool outputs of its turn', async () => {
+    const narrow = unionLabels([{ kind: 'context', key: 'telegram:dm-ab', readers: readersOf(['a', 'b']) }]);
+    const { orchestrator } = build(narrow, { streamChunks: true, withTool: true });
+    const { input, participants } = groupTurn(['a', 'b', 'c']);
+    const events: Array<{ type: string; output?: string; answer?: string }> = [];
+    await turnContext.runWithChatParticipants(participants as never, async () => {
+      for await (const event of orchestrator.chatStream(input)) events.push(event as never);
+    });
+    const results = events.filter((e) => e.type === 'tool_result');
+    assert.equal(results.length, 1, 'one result per call: the row shows the call finished');
+    assert.equal(JSON.stringify(results).includes('w42-signed'), false, 'no tool output reaches the client');
+    assert.match(events.find((e) => e.type === 'done')?.answer ?? '', /nicht alle hier|not everyone here/);
+  });
+
+  it('#2342 · an answer everyone may know streams its tool output live, once', async () => {
+    const wide = unionLabels([{ kind: 'context', key: 'telegram:dm-ab', readers: readersOf(['a', 'b', 'c']) }]);
+    const { orchestrator } = build(wide, { streamChunks: true, withTool: true });
+    const { input, participants } = groupTurn(['a', 'b', 'c']);
+    const events: Array<{ type: string; id?: string; output?: string }> = [];
+    await turnContext.runWithChatParticipants(participants as never, async () => {
+      for await (const event of orchestrator.chatStream(input)) events.push(event as never);
+    });
+    const results = events.filter((e) => e.type === 'tool_result');
+    assert.equal(results.length, 1, 'one result per call');
+    assert.match(results[0]!.output ?? '', /w42-signed/);
+    // Live: the result comes before the answer's text, not held to the end.
+    const resultAt = events.indexOf(results[0] as never);
+    const firstText = events.findIndex((e) => e.type === 'text_delta');
+    assert.ok(resultAt < firstText, 'the output streams as the tool finishes');
   });
 
   it('a streamed answer everyone may know is not retracted', async () => {

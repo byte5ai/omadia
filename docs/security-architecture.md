@@ -1271,7 +1271,7 @@ of the turn carries all of it.
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b). A tool whose input and output leave the instance only with the answer (Office `create_xlsx`/`create_docx`) declares `none`: the answer's people egress gates its file (#2338, ADR-0298). Diagrams declares its effect at activation (`ToolRegistrationOptions.sideEffects`, ADR-0299): `none` only while its Kroki endpoint is internal (private address or name, or the setup field `kroki_internal`; never `kroki.io`), else checked like a write, since the source and chart data go to Kroki. Gap: a withheld streamed answer leaves the tool outputs in the client's trace (#2342) | `guardIntegrationEgress`, before the call runs |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b). A tool whose input and output leave the instance only with the answer (Office `create_xlsx`/`create_docx`) declares `none`: the answer's people egress gates its file (#2338, ADR-0298). Diagrams declares its effect at activation (`ToolRegistrationOptions.sideEffects`, ADR-0299): `none` only while its Kroki endpoint is internal (private address or name, or the setup field `kroki_internal`; never `kroki.io`), else checked like a write, since the source and chart data go to Kroki. A streamed tool output goes out live only while the egress check, with the labels collected so far, would let the answer through; otherwise it is held, and a withheld answer never sends it (#2342, ADR-0316) | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
 at disclosure level `none` a consultation is regenerated without memory and without
@@ -2947,7 +2947,16 @@ The same provenance reaches three more readers (#1540):
   the process recall leg and the plan-runner's process reuse skip such a
   process, `run_stored_process` refuses it, and the duplicate branch of
   `write_process` and the result of `edit_process` withhold its title and id
-  (the id embeds the title's slug).
+  (the id embeds the title's slug). A plugin's bounded `processMemory@1`
+  applies the same rule: under a privacy handle `get`, `history` and `edit`
+  answer an `unprotected` process like a missing one, as `query` already did
+  (#2334).
+- **A plugin's plan reads (#2333, ADR-0315).** Under a privacy handle the
+  bounded `listPlansForScope`, `getPlan`, `getPlanSteps`,
+  `getPlanStepsForPlans`, `deletePlan` and `setPlanStepStatus` see only the
+  own conversation's plans linked to a known protected Turn, plus the current
+  turn's own plan (its Turn lands after the turn). The session tail's
+  continuity residual does not extend to plans.
 - **A plugin's `ctx.knowledgeGraph.getNeighbors`.** Inside a turn with a
   privacy handle (`shieldedNeighbors.ts`) it keeps reference nodes (sessions,
   entities, users, channel identities), Turns not stored `unprotected`, Facts
@@ -7675,7 +7684,13 @@ server). That separates caches, not servers: all stdio children share the one
 run-as UID, so a hostile stdio server can read the other stdio servers'
 `/proc/<pid>/environ` (their config values, Vault secrets of their rows
 included), files and caches (accepted in ADR-0270; one UID per server is the
-follow-up). `/home/node` is `0700` too. On Fly the entrypoint sets the Machines
+follow-up). The shim is also the child's supervisor (#2329, ADR-0317): the
+middleware cannot signal a process of another UID, and sudo cannot forward a
+SIGKILL it receives itself, so the shim starts the server in its own process
+group (`setsid`) and, on SIGTERM or when its parent sudo is gone, sends TERM to
+that group and KILL after `MCP_STDIO_STOP_GRACE_S` (3 s). A server that ignores
+stdin EOF and SIGTERM does not outlive `close()` as an orphan of `omadia-mcp`.
+`/home/node` is `0700` too. On Fly the entrypoint sets the Machines
 API socket `/.fly/api` to `0600` when it is present (open check: not verified
 live).
 

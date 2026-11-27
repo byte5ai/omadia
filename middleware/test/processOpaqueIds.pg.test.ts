@@ -120,6 +120,34 @@ describe('#2296 · opaque process ids (real PG)', () => {
     assert.match(rec?.id ?? '', OPAQUE);
   });
 
+  it('#2358 · rekeyLegacyIds re-keys a slug written again after an earlier re-key without failing', async (t) => {
+    if (!pool) return t.skip('no test database');
+    await runGraphMigrations(pool);
+    await wipe(pool);
+    const lateWrite = () =>
+      pool!.query(
+        `INSERT INTO processes (id, tenant_id, scope, title, steps, visibility)
+         VALUES ('process:s:late-write', $1, 's', 'Ops: Late write', '["x"]'::jsonb, 'team')`,
+        [TENANT],
+      );
+    const store = new NeonProcessMemoryStore({ pool, tenantId: TENANT, resolveEmbeddingClient: () => embedder });
+    await lateWrite();
+    assert.equal(await store.rekeyLegacyIds(), 1);
+    const first = await store.get('process:s:late-write');
+    // An older build writes the same slug id once more.
+    await lateWrite();
+    assert.equal(await store.rekeyLegacyIds(), 1, 'the second row is re-keyed, not a unique violation');
+    assert.equal(await store.rekeyLegacyIds(), 0);
+    const { rows } = await pool.query<{ id: string; legacy_id: string | null }>(
+      `SELECT id, legacy_id FROM processes WHERE tenant_id = $1 ORDER BY legacy_id NULLS LAST`,
+      [TENANT],
+    );
+    assert.equal(rows.length, 2);
+    for (const row of rows) assert.match(row.id, OPAQUE);
+    assert.deepEqual(rows.map((r) => r.legacy_id), ['process:s:late-write', null]);
+    assert.equal((await store.get('process:s:late-write'))?.id, first?.id, 'the old id still names the first process');
+  });
+
   it('a new write gets an opaque id', async (t) => {
     if (!pool) return t.skip('no test database');
     await runGraphMigrations(pool);

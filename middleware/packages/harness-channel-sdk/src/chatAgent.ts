@@ -1135,6 +1135,11 @@ export type ChatStreamEvent =
        */
       foreign?: true;
     }
+  /**
+   * #2342 / ADR-0316 — one per call. A result whose output the people-egress
+   * check would refuse at that point is held to just before `done`; for a
+   * withheld answer it arrives with `output: ''`.
+   */
   | {
       type: 'tool_result';
       id: string;

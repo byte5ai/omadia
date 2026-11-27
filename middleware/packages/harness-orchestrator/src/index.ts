@@ -359,6 +359,7 @@ export { captureMcpStructured } from './mcp/mcpStructuredCapture.js';
 // #2306 / ADR-0270 — stdio MCP children: scrubbed env, optional own OS user.
 export {
   MCP_STDIO_CHILD_SHIM,
+  MCP_STDIO_STOP_GRACE_S,
   MCP_STDIO_LOCALE_ENV_KEYS,
   MCP_STDIO_RUN_AS_PATTERN,
   MCP_STDIO_SUDO_COMMAND,

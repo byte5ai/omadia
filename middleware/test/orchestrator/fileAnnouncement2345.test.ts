@@ -83,4 +83,48 @@ describe('file-build announcement (#2345)', () => {
   it('one announcing sentence among capability sentences still counts', () => {
     yes(['Ich kann Excel- und Word-Dateien erstellen. Ich erstelle jetzt die Excel-Datei.']);
   });
+
+  it('#2351 · an addressee with a kind of file, or "word" as a noun, is no announcement', () => {
+    no([
+      'Ich erstelle dir gerne Excel- oder Word-Dateien.',
+      'Ich beantworte Fragen und erstelle dir Excel-Dateien.',
+      'Let me make a word of caution.',
+      'Let me add a word about the numbers.',
+      'I can create the file if you want.',
+      'Wenn du die Daten schickst, erstelle ich jetzt die Excel-Datei.',
+      'Hier ist eine Übersicht, die du in Excel öffnen kannst.',
+    ]);
+    yes(['Ich erstelle dir die Excel-Datei.', 'Let me create a Word document with the minutes.']);
+  });
+
+  it('#2351 · a "now" word outranks an ability marker; a polite offer is no condition', () => {
+    yes([
+      'Ich helfe dir gern und erstelle jetzt die Excel-Datei.',
+      "If you want I'll create the file.",
+      'Wenn du möchtest, erstelle ich dir die Excel-Datei.',
+    ]);
+  });
+
+  it('#2351 · a claim that the file is there counts', () => {
+    yes([
+      'Hier ist die Excel-Datei mit allen Zeilen.',
+      'Anbei die Datei mit den Zahlen.',
+      'Here is the Excel file with all rows.',
+      "Here's your spreadsheet.",
+    ]);
+    no([
+      'Hier ist die Übersicht.',
+      'Hier ist die Datei-Übersicht der Abteilung.',
+      'Ist hier die Excel-Datei gemeint?',
+      // Talking about a file is no claim that one was built (review of #2351).
+      'Here is a summary of the file you uploaded.',
+      'Hier ist eine Zusammenfassung der Excel-Datei.',
+      'Hier sind die wichtigsten Punkte aus der Datei:',
+      'Anbei die Kennzahlen aus der Arbeitsmappe.',
+      'Here are the totals from the spreadsheet: 42.',
+      "Here's what I found in the file: nothing.",
+      'Im Anhang der Mail war die Datei leider leer.',
+    ]);
+    yes(['Hier ist die fertige Excel-Datei.']);
+  });
 });

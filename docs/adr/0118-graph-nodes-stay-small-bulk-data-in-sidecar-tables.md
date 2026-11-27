@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [0295](0295-process-ids-are-opaque.md) (process ids are opaque, `process:<uuid>`; the old `process:<scope>:<slug(title)>` id lives on as `legacy_id`)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers (recorded retroactively); initial graph schema (v0.1.0),
