@@ -322,6 +322,7 @@ import {
 } from './discretion/turnLabels.js';
 import { conversationContextKey, once, ownerContextKey, readersFromAudience } from './discretion/turnSetup.js';
 import { withReplayedAnswerNote } from './replayedAnswerNote.js';
+import { announcesFileBuild } from './fileAnnouncement.js';
 import {
   consultationAllowsTool,
   consultationToolRefusal,
@@ -3996,7 +3997,7 @@ export class Orchestrator {
     // #1972 — only an agent that may call an office file tool this turn gets
     // the forced retry; for any other it would be a turn it cannot use.
     if (!this.hasOfficeFileToolThisTurn()) return false;
-    return FILE_ANNOUNCE_RE.test(answer);
+    return announcesFileBuild(answer);
   }
 
   /**
@@ -12351,9 +12352,6 @@ function candidateLabel(c: {
 }): string {
   return c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
 }
-
-const FILE_ANNOUNCE_RE =
-  /\b(baue|erstelle|erzeuge|generiere|exportiere)\b[^.!?\n]{0,100}\b(excel|xlsx|datei|word|docx|arbeitsmappe|workbook)\b/i;
 
 /** Injected as a user turn to force the model to actually call the file tool.
  *  #1219 — English, without shouted caps; the one sentence to the user is in
