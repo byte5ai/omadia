@@ -69,7 +69,7 @@ changelog.
   `GET /api/v1/admin/bulk-promote/retired`, `POST …/unretire { turnId }` (audit
   `memory.promotion_unretire`, written first; 404 `bulk.unretire_not_found`, 409
   `bulk.unretire_no_person_owner`). Admin › Bulk Promotion shows the list with "Allow again"
-  for `memory_deleted` and `discretion` (en + de). Decision recorded in ADR-0263. plugin-api **1.108.0**: `BulkPromotionService.listRetired?`, `unretire?`.
+  for `memory_deleted` and `discretion` (en + de). Decision recorded in ADR-0263. plugin-api **1.109.0**: `BulkPromotionService.listRetired?`, `unretire?`.
 
 ### Fixed — bulk memory promotion runs the discretion check (#2294, ADR-0263) (2026-11-27)
 
@@ -79,7 +79,7 @@ changelog.
   against the label set its turn record stored, with the live flow rule (owners of a
   member-scoped turn, otherwise unknown readers). Refused turns count as `skipped`, are
   audited (`target: bulk-promotion`) and retired with reason `discretion`, so they do not block
-  later runs; a failed lookup refuses. plugin-api **1.108.0**:
+  later runs; a failed lookup refuses. plugin-api **1.109.0**:
   `BulkPromoteRunOptions.mayPromote`, `BulkPromoteCandidate`.
 
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)

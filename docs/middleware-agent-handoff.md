@@ -5498,7 +5498,7 @@ Grenzen: `docs/security-architecture.md` §7c.
   Ergebnis `promotePhase.skipped` zählt bewusst ausgelassene Turns.
 - **Diskretion im Bulk-Pfad (ADR-0263, #2294).** Der Kernel dekoriert `bulkPromotion@1`
   (`withBulkPromotionGate`, `discretion/bulkPromotionGate.ts`): jeder Kandidat wird gegen die
-  gespeicherten Turn-Labels mit der Live-Flow-Regel geprüft (`mayPromote`, plugin-api 1.108.0);
+  gespeicherten Turn-Labels mit der Live-Flow-Regel geprüft (`mayPromote`, plugin-api 1.109.0);
   verweigert = `skipped` + Audit `target: bulk-promotion`, Fehler = verweigert.
 - **Zurückholen (#2295).** `GET /api/v1/admin/bulk-promote/retired` listet ausgeschlossene
   Turns (ID, Grund, Zeit, Agent), `POST …/unretire { turnId }` entfernt `promotionRetired`

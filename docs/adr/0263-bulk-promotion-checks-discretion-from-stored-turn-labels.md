@@ -33,7 +33,7 @@ whose readers may not know it. How does an offline pass apply the same rule?
 
 Chosen option: **A**.
 
-- **Contract.** `BulkPromoteRunOptions.mayPromote?(candidate)` (plugin-api 1.108.0) with
+- **Contract.** `BulkPromoteRunOptions.mayPromote?(candidate)` (plugin-api 1.109.0) with
   `BulkPromoteCandidate { turnId, owners?, agentSlug? }`. The provider asks it for every promote
   candidate before any LLM call; `false` or a throw counts the turn as `skipped` and retires it
   (`promotionRetired.reason = discretion`). Unretired, the same high-significance turns would
