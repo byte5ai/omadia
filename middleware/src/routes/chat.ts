@@ -24,11 +24,7 @@ import type {
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
 import { chatViewer, mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
-import {
-  resolveTurnUploads,
-  WEB_CHAT_UPLOAD_MAX_BYTES,
-  WEB_CHAT_UPLOADS_PER_TURN,
-} from './chatUploads.js';
+import { resolveTurnUploads, WEB_CHAT_UPLOADS_PER_TURN } from './chatUploads.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
 import {
@@ -91,10 +87,8 @@ const ChatRequestSchema = z.object({
    */
   attachments: z
     .array(
-      z.object({
-        storageKey: z.string().min(1).max(512),
-        sizeBytes: z.number().int().nonnegative().max(WEB_CHAT_UPLOAD_MAX_BYTES).optional(),
-      }),
+      // Only the key: name, type and size are the kernel's, not the request's.
+      z.object({ storageKey: z.string().min(1).max(512) }),
     )
     .max(WEB_CHAT_UPLOADS_PER_TURN)
     .optional(),

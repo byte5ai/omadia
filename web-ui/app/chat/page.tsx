@@ -361,7 +361,7 @@ export default function ChatPage(): React.ReactElement {
         // this one turn; a normal send carries nothing.
         ...(opts?.answerVerbosity ? { answerVerbosity: opts.answerVerbosity } : {}),
         ...(files.length > 0
-          ? { attachments: files.map((f) => ({ storageKey: f.storageKey, sizeBytes: f.sizeBytes })) }
+          ? { attachments: files.map((f) => ({ storageKey: f.storageKey })) }
           : {}),
       });
       if (!started) return;

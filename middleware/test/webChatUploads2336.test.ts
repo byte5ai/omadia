@@ -29,6 +29,7 @@ import {
   sanitizeUploadFileName,
   WEB_CHAT_UPLOAD_MAX_BYTES,
   WEB_CHAT_UPLOAD_PRODUCER,
+  WEB_CHAT_UPLOADS_PER_CHAT,
   webChatUploadKey,
 } from '../src/routes/chatUploads.js';
 import {
@@ -92,6 +93,14 @@ describe('#2336 — web-chat uploads', () => {
         store: () => objects,
         bindings: { get: (k) => bindings.get(k), bindIfAbsent: (k, b) => bindings.bindIfAbsent(k, b) },
         recordUpload: (key, owner) => registry.recordFor(WEB_CHAT_UPLOAD_PRODUCER, key, owner),
+        uploadsOf: async (owner) =>
+          (await registry.rows({ scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId })).map((r) => r.storageKey),
+        releaseUpload: async (key, owner) => {
+          await registry.release(
+            { scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId },
+            (row) => row.storageKey === key,
+          );
+        },
         getChatSessionStore: () => chats,
         newUploadId: () => `00000000-0000-4000-8000-${String(nextId++).padStart(12, '0')}`,
       }),
@@ -185,11 +194,12 @@ describe('#2336 — web-chat uploads', () => {
 
   it('a turn states its uploads as storedAttachments, with the model block', async () => {
     const { upload: up } = (await (await upload('anna', 'call.m4a')).json()) as { upload: { storageKey: string } };
+    // A size the client claims is not taken over: name, type (and size) are the kernel's.
     const res = await turn('anna', { message: '', sessionId: CHAT, attachments: [{ storageKey: up.storageKey, sizeBytes: 2048 }] });
     assert.equal(res.status, 200);
     const input = turns[0];
     assert.deepEqual(input?.storedAttachments, [
-      { fileName: 'call.m4a', contentType: 'audio/mp4', storageKey: up.storageKey, sizeBytes: 2048 },
+      { fileName: 'call.m4a', contentType: 'audio/mp4', storageKey: up.storageKey },
     ]);
     assert.match(input?.userMessage ?? '', /\[attachments-info\] 1 Datei\(en\)/);
     assert.match(input?.userMessage ?? '', new RegExp(`storage_key=${up.storageKey}`));
@@ -240,6 +250,40 @@ describe('#2336 — web-chat uploads', () => {
     assert.deepEqual((stored?.messages[0] as { uploads?: unknown } | undefined)?.uploads, [upload]);
   });
 
+  it('removing an upload from the composer deletes it; only the own upload of this chat', async () => {
+    const { upload: up } = (await (await upload('anna', 'a.pdf')).json()) as { upload: { storageKey: string } };
+    const del = (account: string, sessionId: string, key: string): Promise<Response> =>
+      fetch(`${base}/chat/uploads?sessionId=${sessionId}&storageKey=${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+        headers: { 'x-test-account': account },
+      });
+    assert.equal((await del('ben', CHAT, up.storageKey)).status, 404, 'another account');
+    assert.equal((await del('anna', 'otherchat', up.storageKey)).status, 404, 'key of another chat');
+    assert.equal(objects.objects.has(up.storageKey), true);
+    assert.equal((await del('anna', CHAT, up.storageKey)).status, 204);
+    assert.equal(objects.objects.has(up.storageKey), false);
+    assert.deepEqual(await ledger.select({ scope: CHAT }), []);
+  });
+
+  it('a chat holds at most WEB_CHAT_UPLOADS_PER_CHAT uploads', async () => {
+    for (let i = 0; i < WEB_CHAT_UPLOADS_PER_CHAT; i += 1) {
+      await registry.recordFor(WEB_CHAT_UPLOAD_PRODUCER, `web-chat/${CHAT}/x${String(i)}/a.pdf`, {
+        ownerOmadiaUserId: 'u-anna',
+        scope: CHAT,
+      });
+    }
+    const res = await upload('anna', 'one-more.pdf');
+    assert.equal(res.status, 429);
+    assert.equal(((await res.json()) as { code: string }).code, 'chat_upload.chat_limit');
+  });
+
+  it('without a bound ledger the upload is refused and not kept', async () => {
+    registry = createGeneratedObjectsRegistry({ store: () => undefined, currentTurn: () => undefined });
+    const res = await upload('anna', 'a.pdf');
+    assert.equal(res.status, 500);
+    assert.equal(objects.objects.size, 0);
+  });
+
   it('deleting the chat (ledger release) deletes the uploaded file', async () => {
     const { upload: up } = (await (await upload('anna', 'a.csv', 'a,b\n1,2')).json()) as { upload: { storageKey: string } };
     const released = await registry.release({ scope: CHAT, ownerOmadiaUserId: 'u-anna' });
@@ -253,6 +297,11 @@ describe('#2336 — key and name helpers', () => {
     assert.equal(sanitizeUploadFileName('../../etc/passwd.txt'), 'passwd.txt');
     assert.equal(sanitizeUploadFileName('a/b\\c:d?.pdf'), 'c_d_.pdf');
     assert.equal(sanitizeUploadFileName('...hidden.md'), 'hidden.md');
+    // macOS decomposed umlaut stays one letter.
+    assert.equal(sanitizeUploadFileName('Mu\u0308ller.pdf'), 'Müller.pdf');
+    // A cut never splits a surrogate pair, so the name survives its own key check.
+    const emoji = sanitizeUploadFileName(`${'😀'.repeat(130)}.pdf`);
+    assert.equal(sanitizeUploadFileName(emoji), emoji);
     const long = sanitizeUploadFileName(`${'x'.repeat(300)}.xlsx`);
     assert.equal(long.length, 120);
     assert.ok(long.endsWith('.xlsx'));

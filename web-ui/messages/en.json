@@ -1803,6 +1803,7 @@
         "tooMany": "too many files for one message",
         "empty": "empty file",
         "storeUnavailable": "no file storage configured on this instance",
+        "chatLimit": "this chat already holds the maximum number of files",
         "noAccount": "sign in with an account to upload",
         "failed": "upload failed",
         "unknownAttachment": "An attached file no longer belongs to this chat. Remove it and attach it again."

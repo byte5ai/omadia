@@ -47,7 +47,10 @@ changelog.
   ingest, Privacy Shield masking and prompt-masked transcripts (ADR-0198) as channel uploads.
   `read_attachment` / `transcribe_recording` are offered on web turns that carry files.
 - Web chat: attach by paper clip, drag & drop or paste; size/type limits; attachment list in
-  the sent message (en + de). New ADR-0310.
+  the sent message (en + de). A file removed before sending is deleted at once
+  (`DELETE /api/chat/uploads`); a chat holds at most 100 uploads. New ADR-0310.
+- API contract: `POST /api/chat` / `/api/chat/stream` with a whitespace-only `message` and no
+  `attachments` now answers `400` (it passed before).
 
 ### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
 

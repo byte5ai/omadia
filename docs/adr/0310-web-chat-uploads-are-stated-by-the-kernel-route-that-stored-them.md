@@ -61,11 +61,12 @@ Chosen option: **A**.
   it in the `generated_objects` ledger as producer `web-chat-upload` under the account's omadia
   user id and the chat. If either write fails, the object is deleted again. The web chat is a
   one-account room, so no audience-floor check runs at upload; reads keep it.
-- **Turn.** `POST /api/chat` and `/api/chat/stream` take `attachments: [{ storageKey,
-  sizeBytes? }]` (at most 10) with a `sessionId` and no debug `scope`. A reference counts only
+- **Turn.** `POST /api/chat` and `/api/chat/stream` take `attachments: [{ storageKey }]`
+  (at most 10) with a `sessionId` and no debug `scope`. A reference counts only
   when the key has the web-chat layout *of this chat* and its binding names this chat; one that
   does not refuses the turn with `400 chat_upload.unknown_attachment` before the stream starts.
-  The kernel states file name and content type from the key and sets `storedAttachments`, so
+  The kernel states file name and content type from the key (no size the client claims) and
+  sets `storedAttachments`, so
   ingest, Privacy Shield masking, `read_attachment` and the ADR-0198 transcript rule run exactly
   as for a channel upload. Like a channel adapter, the route appends the human-readable
   `[attachments-info]` note (which the kernel never parses) so the model learns the
@@ -73,8 +74,14 @@ Chosen option: **A**.
 - **Tools.** `read_attachment` and `transcribe_recording` are offered on any turn whose context
   carries upload keys (`turnUploadKeys`), web turns included; a web turn without uploads still
   does not get them (#1976).
+- **Limits per chat.** A chat holds at most 100 uploads of an account
+  (`429 chat_upload.chat_limit`).
 - **Deletion.** Deleting the chat releases its ledger rows and deletes the file through the
-  registered deleter; the memory purge for the person does the same (ADR-0187).
+  registered deleter; the memory purge for the person does the same (ADR-0187). A file
+  removed from the composer before sending is deleted at once
+  (`DELETE /api/chat/uploads?sessionId=&storageKey=`, only the account's own upload of that
+  chat, else `404`). Without a bound ledger the upload is refused and the file removed, so
+  no file is kept that nothing would delete.
 - **Display.** The chat message keeps name, type and size of each upload (`uploads`) so the
   attachment list survives a reload; the storage key stays out of the persisted chat.
 
@@ -92,6 +99,10 @@ Chosen option: **A**.
 - 🔴 **Bad:** A chat id that is not stored yet may be used by any account (ADR-0180 rule for
   turns); ids are random client ids, so this matches the turn rule rather than widening it.
 - ⚪ **Neutral:** API callers with a debug `scope` or without a chat cannot attach uploads.
+- 🔴 **Bad:** No upload rate limit beyond the session gate and the per-chat cap; an account
+  can fill storage by opening many chats. Follow-up if abuse shows: a per-account quota.
+- ⚪ **Neutral:** `POST /api/chat` with a whitespace-only `message` and no attachments is now
+  `400` (it used to pass `min(1)`).
 
 ## Pros and Cons of the Options
 

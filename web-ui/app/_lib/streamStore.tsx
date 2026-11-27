@@ -90,7 +90,7 @@ export interface StreamRequest {
   /** Phase 3 — answer-size pick for THIS turn only ("Kürzer" / "Mehr Details"). */
   answerVerbosity?: AnswerVerbosity;
   /** #2336 (ADR-0310) — uploads of this chat the message carries. */
-  attachments?: { storageKey: string; sizeBytes: number }[];
+  attachments?: { storageKey: string }[];
 }
 
 /** What the runner pulls off the queue. */

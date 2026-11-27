@@ -31,6 +31,7 @@ export type ChatUploadError =
   | 'tooMany'
   | 'empty'
   | 'storeUnavailable'
+  | 'chatLimit'
   | 'noAccount'
   | 'failed';
 
@@ -77,6 +78,8 @@ export function uploadErrorFromResponse(status: number, code: string | undefined
       return 'storeUnavailable';
     case 'chat_upload.no_account':
       return 'noAccount';
+    case 'chat_upload.chat_limit':
+      return 'chatLimit';
     default:
       return status === 413 ? 'tooLarge' : 'failed';
   }
@@ -100,6 +103,24 @@ export async function uploadChatFile(
     return { ok: false, error: uploadErrorFromResponse(res.status, body.code) };
   } catch {
     return { ok: false, error: 'failed' };
+  }
+}
+
+/**
+ * Delete an upload that will not be sent (removed from the composer). Best
+ * effort: a failure leaves the file to the chat's deletion. Never throws.
+ */
+export async function deleteChatUpload(
+  sessionId: string,
+  storageKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  const query = new URLSearchParams({ sessionId, storageKey });
+  try {
+    const res = await fetchImpl(`/bot-api/chat/uploads?${query.toString()}`, { method: 'DELETE' });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

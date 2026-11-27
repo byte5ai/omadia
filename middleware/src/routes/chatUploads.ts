@@ -35,6 +35,9 @@ export const WEB_CHAT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 /** Most uploads one message may carry. */
 export const WEB_CHAT_UPLOADS_PER_TURN = 10;
 
+/** Most uploads one chat may hold; a further upload is refused (429). */
+export const WEB_CHAT_UPLOADS_PER_CHAT = 100;
+
 const KEY_PREFIX = 'web-chat';
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const UPLOAD_ID_RE = /^[0-9a-f-]{36}$/;
@@ -93,14 +96,15 @@ export function webChatUploadContentType(fileName: string): string | undefined {
  * extension kept.
  */
 export function sanitizeUploadFileName(raw: string): string {
-  const base = raw.split(/[\\/]/).pop() ?? '';
-  // eslint-disable-next-line no-control-regex
-  const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').replace(/[^\p{L}\p{N}._ -]/gu, '_').trim();
-  const name = cleaned.replace(/^\.+/, '');
-  if (name.length <= MAX_FILE_NAME_LENGTH) return name;
-  const ext = extensionOf(name);
+  // NFC first: macOS hands out decomposed names (`u` + combining diaeresis).
+  const base = (raw.normalize('NFC').split(/[\\/]/).pop() ?? '');
+  const cleaned = base.replace(/[^\p{L}\p{M}\p{N}._ -]/gu, '_').trim();
+  // Code points, not UTF-16 units: a cut must never split a surrogate pair.
+  const chars = Array.from(cleaned.replace(/^\.+/, ''));
+  if (chars.length <= MAX_FILE_NAME_LENGTH) return chars.join('');
+  const ext = extensionOf(chars.join(''));
   const keep = MAX_FILE_NAME_LENGTH - (ext ? ext.length + 1 : 0);
-  return ext ? `${name.slice(0, keep)}.${ext}` : name.slice(0, MAX_FILE_NAME_LENGTH);
+  return ext ? `${chars.slice(0, keep).join('')}.${ext}` : chars.slice(0, MAX_FILE_NAME_LENGTH).join('');
 }
 
 /** `web-chat/<sessionId>/<uploadId>/<fileName>`. */
@@ -131,10 +135,20 @@ export interface ChatUploadDeps {
   store: () => UploadObjectStore | undefined;
   bindings: AttachmentBindingStore;
   /** Files the key in the ADR-0187 ledger under account and chat. May throw. */
-  recordUpload: (storageKey: string, owner: { ownerOmadiaUserId: string; scope: string }) => Promise<void>;
+  recordUpload: (storageKey: string, owner: UploadOwner) => Promise<void>;
+  /** The keys this account uploaded into this chat (ledger rows). */
+  uploadsOf: (owner: UploadOwner) => Promise<string[]>;
+  /** Deletes one upload of this account and chat now (file and ledger row). */
+  releaseUpload: (storageKey: string, owner: UploadOwner) => Promise<void>;
   getChatSessionStore?: () => ChatSessionStore | undefined;
   legacyChatOwner?: LegacyChatOwner;
   newUploadId?: () => string;
+}
+
+/** The account and chat an upload is filed under in the ledger. */
+export interface UploadOwner {
+  ownerOmadiaUserId: string;
+  scope: string;
 }
 
 /** What the upload route answers and what the client sends back with its turn. */
@@ -194,7 +208,43 @@ export function createChatUploadsRouter(deps: ChatUploadDeps): Router {
     },
   );
 
+  // A file removed from the composer before sending: deleted at once instead
+  // of waiting for the chat's deletion. Only the account's own upload of this
+  // chat; anything else answers like a missing one.
+  router.delete('/chat/uploads', async (req: Request, res: Response) => {
+    try {
+      const refusal = await removeUpload(req, deps);
+      if (refusal) {
+        refuse(res, refusal);
+        return;
+      }
+      res.status(204).end();
+    } catch (err) {
+      console.error('[chat-uploads] delete failed:', err instanceof Error ? err.message : String(err));
+      refuse(res, { status: 500, code: 'chat_upload.failed', message: 'delete failed' });
+    }
+  });
+
   return router;
+}
+
+async function removeUpload(req: Request, deps: ChatUploadDeps): Promise<UploadRefusal | undefined> {
+  const notFound: UploadRefusal = { status: 404, code: 'not_found', message: 'upload not found' };
+  const owner = req.session?.omadia_user_id;
+  if (typeof owner !== 'string' || owner === '') {
+    return { status: 401, code: 'chat_upload.no_account', message: 'sign in with an account' };
+  }
+  const sessionId = typeof req.query['sessionId'] === 'string' ? req.query['sessionId'] : '';
+  const storageKey = typeof req.query['storageKey'] === 'string' ? req.query['storageKey'] : '';
+  const parsed = parseWebChatUploadKey(storageKey);
+  if (!SESSION_ID_RE.test(sessionId) || parsed?.sessionId !== sessionId) return notFound;
+  if (!(await mayUseChatSession(req, deps.getChatSessionStore?.(), sessionId, deps.legacyChatOwner))) {
+    return notFound;
+  }
+  const uploadOwner = { ownerOmadiaUserId: owner, scope: sessionId };
+  if (!(await deps.uploadsOf(uploadOwner)).includes(storageKey)) return notFound;
+  await deps.releaseUpload(storageKey, uploadOwner);
+  return undefined;
 }
 
 async function storeUpload(req: Request, deps: ChatUploadDeps): Promise<WebChatUpload | UploadRefusal> {
@@ -233,6 +283,14 @@ async function storeUpload(req: Request, deps: ChatUploadDeps): Promise<WebChatU
   if (!binding) {
     return { status: 400, code: 'chat_upload.bad_request', message: 'sessionId is not a chat' };
   }
+  const uploadOwner = { ownerOmadiaUserId: owner, scope: sessionId };
+  if ((await deps.uploadsOf(uploadOwner)).length >= WEB_CHAT_UPLOADS_PER_CHAT) {
+    return {
+      status: 429,
+      code: 'chat_upload.chat_limit',
+      message: `a chat holds at most ${String(WEB_CHAT_UPLOADS_PER_CHAT)} uploads`,
+    };
+  }
 
   const storageKey = webChatUploadKey(sessionId, (deps.newUploadId ?? randomUUID)(), fileName);
   await store.put(storageKey, file.buffer, contentType);
@@ -240,7 +298,7 @@ async function storeUpload(req: Request, deps: ChatUploadDeps): Promise<WebChatU
     // ADR-0178: bound at upload, to the chat, before any turn can name it.
     await deps.bindings.bindIfAbsent(storageKey, binding);
     // ADR-0187: deleted with the chat or the person.
-    await deps.recordUpload(storageKey, { ownerOmadiaUserId: owner, scope: sessionId });
+    await deps.recordUpload(storageKey, uploadOwner);
   } catch (err) {
     // Without its binding the file is unreadable, without its record it is
     // never deleted: do not keep it.
@@ -253,7 +311,6 @@ async function storeUpload(req: Request, deps: ChatUploadDeps): Promise<WebChatU
 /** A turn's reference to an earlier upload, as the client sends it. */
 export interface TurnUploadRef {
   storageKey: string;
-  sizeBytes?: number | undefined;
 }
 
 export type TurnUploadResolution =
@@ -293,12 +350,7 @@ export async function resolveTurnUploads(
     if (!parsed || parsed.sessionId !== sessionId || !contentType) return { ok: false, refusal: unknown };
     const bound = await bindings.get(ref.storageKey);
     if (!bound || !bindingsEqual(bound, chatBinding)) return { ok: false, refusal: unknown };
-    stored.push({
-      fileName: parsed.fileName,
-      contentType,
-      storageKey: ref.storageKey,
-      ...(typeof ref.sizeBytes === 'number' ? { sizeBytes: ref.sizeBytes } : {}),
-    });
+    stored.push({ fileName: parsed.fileName, contentType, storageKey: ref.storageKey });
   }
   return { ok: true, stored, modelBlock: attachmentsInfoBlock(stored) };
 }

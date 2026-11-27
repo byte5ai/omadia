@@ -4416,6 +4416,16 @@ async function main(): Promise<void> {
       store: () => attachmentStore.store,
       bindings: attachmentBindings,
       recordUpload: (key, owner) => generatedObjects.recordFor(WEB_CHAT_UPLOAD_PRODUCER, key, owner),
+      uploadsOf: async (owner) =>
+        (await generatedObjects.rows({ scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId }))
+          .filter((row) => row.producer === WEB_CHAT_UPLOAD_PRODUCER)
+          .map((row) => row.storageKey),
+      releaseUpload: async (key, owner) => {
+        await generatedObjects.release(
+          { scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId },
+          (row) => row.producer === WEB_CHAT_UPLOAD_PRODUCER && row.storageKey === key,
+        );
+      },
       getChatSessionStore,
       legacyChatOwner,
     }),

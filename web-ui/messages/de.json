@@ -1803,6 +1803,7 @@
         "tooMany": "zu viele Dateien für eine Nachricht",
         "empty": "leere Datei",
         "storeUnavailable": "auf dieser Instanz ist kein Dateispeicher eingerichtet",
+        "chatLimit": "dieser Chat enthält bereits die maximale Anzahl Dateien",
         "noAccount": "zum Hochladen mit einem Konto anmelden",
         "failed": "Hochladen fehlgeschlagen",
         "unknownAttachment": "Eine angehängte Datei gehört nicht mehr zu diesem Chat. Entferne sie und hänge sie erneut an."

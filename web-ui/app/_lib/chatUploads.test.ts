@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CHAT_UPLOAD_ACCEPT,
   CHAT_UPLOAD_MAX_BYTES,
+  deleteChatUpload,
   precheckUpload,
   readyUploads,
   uploadChatFile,
@@ -26,6 +27,7 @@ describe('#2336 — web-chat uploads (client)', () => {
     expect(uploadErrorFromResponse(415, 'chat_upload.unsupported_type')).toBe('unsupportedType');
     expect(uploadErrorFromResponse(503, 'chat_upload.store_unavailable')).toBe('storeUnavailable');
     expect(uploadErrorFromResponse(401, 'chat_upload.no_account')).toBe('noAccount');
+    expect(uploadErrorFromResponse(429, 'chat_upload.chat_limit')).toBe('chatLimit');
     expect(uploadErrorFromResponse(413, undefined)).toBe('tooLarge');
     expect(uploadErrorFromResponse(500, 'chat_upload.failed')).toBe('failed');
   });
@@ -68,5 +70,17 @@ describe('#2336 — web-chat uploads (client)', () => {
       { localId: '3', fileName: 'c.exe', sizeBytes: 1, status: 'error', error: 'unsupportedType' },
     ];
     expect(readyUploads(list)).toEqual([file]);
+  });
+
+  it('deletes a removed upload by chat and key, never throws', async () => {
+    let called = '';
+    const ok = ((url: string, init: RequestInit) => {
+      called = `${String(init.method)} ${url}`;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }) as unknown as typeof fetch;
+    expect(await deleteChatUpload('c1', 'web-chat/c1/u/a b.pdf', ok)).toBe(true);
+    expect(called).toBe('DELETE /bot-api/chat/uploads?sessionId=c1&storageKey=web-chat%2Fc1%2Fu%2Fa+b.pdf');
+    const broken = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    expect(await deleteChatUpload('c1', 'k', broken)).toBe(false);
   });
 });
