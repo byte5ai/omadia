@@ -258,13 +258,16 @@ export type {
   ResolvedModelPolicy,
 } from './registry/modelPolicy.js';
 export {
+  AGENT_CONFIG_RESOURCES,
   AGENT_SLUG_RE,
+  AgentConfigRevisionConflictError,
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
   validateModelRoutingShape,
 } from './registry/configStore.js';
 export type {
+  AgentConfigResource,
   AgentInput,
   AgentPatch,
   AgentPluginInput,
@@ -1174,3 +1177,5 @@ export {
 
 // #1976 — is this turn one that can carry an upload (channel turn)?
 export { turnMayCarryUploads } from './attachmentToolAvailability.js';
+export { wrapChatAgentWithConversationContext } from './conversationContextAgent.js';
+export type { ConversationContextLookup } from './conversationContextAgent.js';

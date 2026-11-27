@@ -40,6 +40,8 @@ function dto(overrides: Partial<ContextMemoryDto> = {}): ContextMemoryDto {
     slug: 'sales-bot',
     mode: 'off',
     modes: ['off', 'enforce', 'enforce-strict'],
+    // #2315 — the revision the form was read at goes back with the save.
+    revision: 4,
     ...overrides,
   };
 }
@@ -103,7 +105,7 @@ describe('AgentContextMemory (#899)', () => {
     await user.click(screen.getByRole('checkbox'));
     expect(save).toBeEnabled();
     await user.click(save);
-    await waitFor(() => expect(mockSet).toHaveBeenCalledWith('sales-bot', 'enforce'));
+    await waitFor(() => expect(mockSet).toHaveBeenCalledWith('sales-bot', 'enforce', 4));
   });
 
   it('re-arms the acknowledgement when the operator picks a different mode', async () => {
@@ -126,7 +128,7 @@ describe('AgentContextMemory (#899)', () => {
     await user.click(screen.getByRole('radio', { name: /Off/i }));
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Save/i }));
-    await waitFor(() => expect(mockSet).toHaveBeenCalledWith('sales-bot', 'off'));
+    await waitFor(() => expect(mockSet).toHaveBeenCalledWith('sales-bot', 'off', 4));
   });
 
   it('tightening enforce → enforce-strict needs no acknowledgement', async () => {
@@ -136,7 +138,7 @@ describe('AgentContextMemory (#899)', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Save/i }));
     await waitFor(() =>
-      expect(mockSet).toHaveBeenCalledWith('sales-bot', 'enforce-strict'),
+      expect(mockSet).toHaveBeenCalledWith('sales-bot', 'enforce-strict', 4),
     );
   });
 

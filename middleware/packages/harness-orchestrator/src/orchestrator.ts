@@ -2129,6 +2129,28 @@ ${priorContext}`,
 }
 
 /**
+ * #2317 (ADR-0278) — the conversation's data block (routine deliveries) as it
+ * crosses the wire: masked like the caller's hint, but a block that cannot be
+ * masked is DROPPED from this turn instead of failing it. Dropping is the
+ * closed direction: the unmasked text never reaches the model, and the turn
+ * the user asked still runs. Logged without the text.
+ */
+export async function wireConversationContextHint(
+  privacy: PrivacyTurnHandle | undefined,
+  hint: string | undefined,
+): Promise<string | undefined> {
+  if (hint === undefined || hint.trim().length === 0) return undefined;
+  try {
+    return await maskPromptForWire(privacy, hint, 'context');
+  } catch (err) {
+    console.warn(
+      `[orchestrator] conversation context left out of this turn: it could not be masked (${err instanceof Error ? err.name : 'error'})`,
+    );
+    return undefined;
+  }
+}
+
+/**
  * The per-turn system hint as it crosses the wire (#361): the caller's
  * `extraSystemHint` masked through the turn's prompt map like the user's
  * message — once, through this turn's map — then composed with the kernel's
@@ -2152,12 +2174,14 @@ async function wireExtraSystemHint(
   memoryIndexBlock?: string,
 ): Promise<string | undefined> {
   const callerHint = input.extraSystemHint;
-  const wireHint =
+  const maskedCallerHint =
     callerHint !== undefined && callerHint.trim().length > 0
       ? // #1541 — the hint quotes claims of the restored answer: tool data,
         // not the user's words.
         await maskPromptForWire(privacy, callerHint, 'context')
       : undefined;
+  const contextHint = await wireConversationContextHint(privacy, input.conversationContextHint);
+  const wireHint = [maskedCallerHint, contextHint].filter((h): h is string => h !== undefined).join('\n\n') || undefined;
   // `fixedSystemHint` is NOT masked: it is a compile-time constant from a
   // trusted in-process wrapper (see its doc on `ChatTurnInput`) — kernel-grade
   // prose with no user data, so it joins the static blocks, not the caller's.

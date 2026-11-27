@@ -75,7 +75,7 @@ export interface StreamRecord {
   /** OM-76 — which 503 cause it was. `agent_unavailable` = this session's
    *  pinned agent is gone (offer re-bind); `no_agents_active` = there is no
    *  orchestrator at all (offer a link to LLM access, no re-bind). */
-  agentUnavailableReason?: 'agent_unavailable' | 'no_agents_active';
+  agentUnavailableReason?: 'agent_unavailable' | 'agent_deleted' | 'no_agents_active';
 }
 
 /** Payload the UI hands the store to ask <StreamRunner /> to do the work. */

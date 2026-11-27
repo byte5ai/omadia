@@ -34,6 +34,7 @@ import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
+import { FakeConfigRevisions } from './_helpers/fakeConfigRevisions.js';
 
 const ODOO = '@acme/integration-odoo';
 const SEARCH = '@acme/web-search';
@@ -59,6 +60,10 @@ interface PluginMem {
 }
 
 class FakeStore {
+  /** #2315 — per-resource config revisions. */
+  private readonly revisionTwin = new FakeConfigRevisions();
+  configRevisions = this.revisionTwin.configRevisions;
+  claimConfigRevision = this.revisionTwin.claimConfigRevision;
   // #2055 — the directory reads the availability principals.
   routing = {
     listAvailabilityPrincipals: (): Promise<never[]> => Promise.resolve([]),

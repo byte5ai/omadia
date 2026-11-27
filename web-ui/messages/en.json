@@ -2177,6 +2177,7 @@
     "emptyCta": "No agents configured — open Operator → Agents",
     "unavailableTitle": "This session's agent is no longer available",
     "unavailableBody": "The agent \"{slug}\" was deleted or disabled. Pick how to recover this session.",
+    "unavailableReplacedBody": "The agent this chat was opened with was deleted. \"{slug}\" is now a different agent, so this chat no longer reaches it. Rebind the chat or delete it.",
     "actionReSnapshot": "Re-bind to the default agent",
     "actionDelete": "Delete session",
     "noAgentsTitle": "No agent is running",
@@ -2349,7 +2350,8 @@
       "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
       "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation.",
-      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again."
+      "identity_revision_conflict": "Someone changed this identity elsewhere since you opened it, so your save was not stored. Reload to see the current version, then make your change again.",
+      "config_revision_conflict": "Someone changed this setting elsewhere since you opened it, so your save was not stored. Reload to see the current value, then make your change again."
     },
     "statusEnabled": "enabled",
     "statusDisabled": "disabled",

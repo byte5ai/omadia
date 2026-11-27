@@ -22,7 +22,6 @@ import {
   registerProviderOAuthStoreBinding,
   resolveLlmProvider,
   writeProviderOAuthTokens,
-  type OAuthTokens,
 } from '@omadia/llm-provider';
 import express from 'express';
 import type { RequestHandler } from 'express';
@@ -160,7 +159,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, isWebChatSessionId, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -209,6 +208,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { createChannelDeliveryContext } from './plugins/routines/routineDeliveryContext.js';
 import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
   DEV_GRAPH_PATH,
@@ -3955,6 +3955,17 @@ async function main(): Promise<void> {
       ],
       log: (msg) => console.log(msg),
     });
+    // #2316 (ADR-0279) — a channel chat's recent routine deliveries as
+    // conversation context of its turns (`conversationContext@1`, read by the
+    // orchestrator plugin per turn). The web chat reads its own document.
+    serviceRegistry.provide(
+      'conversationContext',
+      createChannelDeliveryContext({
+        store: () => routinesHandle?.store,
+        isWebChatScope: isWebChatSessionId,
+        timeZone: config.PROACTIVE_TIMEZONE,
+      }),
+    );
     // Phase 5B: publish the channel-facing surface so dynamic-imported
     // channel plugins can late-resolve all routines callbacks (capture-
     // turn, proactive-send registration, action handler, smart-card
@@ -4411,6 +4422,8 @@ async function main(): Promise<void> {
       },
       getChatSessionStore,
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
+      // #2314 — a pin of a deleted agent whose slug was reused is refused.
+      agentIdForSlug: (slug) => getRegistry()?.get(slug)?.agent.id,
     }),
   );
 
@@ -4464,6 +4477,8 @@ async function main(): Promise<void> {
             }
           : undefined;
       },
+      // #2318 — and is recorded in the admin audit (created later in boot).
+      audit: () => adminAudit,
     }),
   );
 
@@ -7141,45 +7156,29 @@ async function main(): Promise<void> {
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
 
   // #294 — bind the process-wide OAuth token store for the ChatGPT provider to
-  // the vault: `load` reads every LLM-plugin scope newest-wins (rotation makes
-  // divergent copies dangerous), `persist` fans a refreshed/rotated token back
-  // out to all scopes with one shared stamp. Only wired when the experimental
-  // provider is on; harmless otherwise (no provider resolves the bearer).
+  // the vault. #2313 (ADR-0215): the tokens live in the kernel scope only;
+  // `consolidateProviderCredentials` folded any older per-module copy in at
+  // boot (newest-wins), so `load` reads one copy and `persist` writes one.
+  // Only wired when the experimental provider is on; harmless otherwise (no
+  // provider resolves the bearer).
   if (config.CHATGPT_SUBSCRIPTION_EXPERIMENTAL) {
     const oauthVault = secretVault;
     const OAUTH_PROVIDER = 'openai-chatgpt';
-    const LLM_SCOPES = [
-      '@omadia/orchestrator',
-      '@omadia/verifier',
-      '@omadia/orchestrator-extras',
-    ] as const;
+    const readKernel = (k: string): Promise<string | undefined> =>
+      oauthVault.get(KERNEL_PROVIDER_CREDENTIAL_SCOPE, k);
     registerProviderOAuthStoreBinding(OAUTH_PROVIDER, {
       load: async () => {
-        const copies: Array<{ tokens: OAuthTokens; updatedAt: number }> = [];
-        for (const scope of LLM_SCOPES) {
-          const tokens = await readProviderOAuthTokens(
-            (k) => oauthVault.get(scope, k),
-            OAUTH_PROVIDER,
-          );
-          if (tokens !== undefined) {
-            const updatedAt = await readProviderOAuthUpdatedAt(
-              (k) => oauthVault.get(scope, k),
-              OAUTH_PROVIDER,
-            );
-            copies.push({ tokens, updatedAt });
-          }
-        }
-        return copies;
+        const tokens = await readProviderOAuthTokens(readKernel, OAUTH_PROVIDER);
+        if (tokens === undefined) return [];
+        return [{ tokens, updatedAt: await readProviderOAuthUpdatedAt(readKernel, OAUTH_PROVIDER) }];
       },
       persist: async (tokens, updatedAtMs) => {
-        for (const scope of LLM_SCOPES) {
-          await writeProviderOAuthTokens(
-            (k, v) => oauthVault.setMany(scope, { [k]: v }),
-            OAUTH_PROVIDER,
-            tokens,
-            updatedAtMs,
-          );
-        }
+        await writeProviderOAuthTokens(
+          (k, v) => oauthVault.setMany(KERNEL_PROVIDER_CREDENTIAL_SCOPE, { [k]: v }),
+          OAUTH_PROVIDER,
+          tokens,
+          updatedAtMs,
+        );
       },
     });
     console.log('[middleware] ChatGPT-subscription OAuth token store bound (experimental)');

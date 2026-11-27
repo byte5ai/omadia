@@ -165,6 +165,48 @@ changelog.
   resolved once per turn and reused as the run-trace owner. Memory tiers stay per channel.
 - No migration. Plugin side: omadia-channel-telegram 0.9.0 (user picker, kernel-validated pairing).
 
+### Added — routine deliveries are context in Teams, Telegram, Slack, Discord and WhatsApp chats (#2316, ADR-0279) (2026-11-27)
+
+A routine created in a channel chat now remembers that chat's session scope (routines
+migration **0013**, `routines.origin_scope`). The next turns in that chat get the routine's
+recent deliveries (24 hours, at most three) as conversation context, like the web chat
+(ADR-0244). The kernel serves them through the boundary-only `conversationContext@1`; no
+channel plugin changes. Routines created before this change get no context.
+
+### Fixed — a routine delivery no longer disables the fast path or blocks a chat's turns (#2317, ADR-0278) (2026-11-27)
+
+The chat's recent routine deliveries now travel as `ChatTurnInput.conversationContextHint`
+(channel-sdk 0.3.20) instead of `extraSystemHint`. The fast path no longer passes such turns
+through for 24 hours, and a delivery whose text cannot be masked is left out of the turn
+instead of failing every turn of the chat until it leaves the window.
+
+### Fixed — stale agent config saves return 409 instead of overwriting (#2315, ADR-0277) (2026-11-27)
+
+`PUT /api/v1/operator/agents/:slug/{plugins,bindings,model-policy,context-memory,fast-lane,agent-to-agent,availability}`
+accept an optional `expected_revision`; a save based on an older revision is refused with
+`409 config_revision_conflict` and nothing is written. Migration **0121**
+(`0121_agent_config_revisions.sql`) adds `agents.config_revisions` (one counter per resource).
+The web UI's model policy, context memory, fast lane and agent-to-agent panels send it.
+
+### Fixed — a web chat of a deleted agent no longer reaches the new agent with its slug (#2314, ADR-0276) (2026-11-27)
+
+The chat's agent pin now records the agent id. When the pinned agent was deleted and a new
+agent took its slug, the chat's next turn is refused with `503 agent_unavailable`
+(`reason: agent_deleted`) and the web chat shows its recovery banner, which re-binds or
+deletes the chat and resets the picked agent.
+
+### Changed — provider OAuth tokens and the /setup key seed write only the kernel scope (#2313, ADR-0275) (2026-11-27)
+
+The OAuth device flow and the token refresh no longer copy tokens into the verifier's and
+orchestrator-extras' vault scopes, and `/setup` seeds its Anthropic key once into the kernel
+scope. On boot, existing module copies are folded in newest-wins and deleted.
+
+### Fixed — deleting a chat is recorded in the admin audit (#2318) (2026-11-27)
+
+Deleting a saved chat now writes a `chat.delete` row to the admin audit (ADR-0100): target
+`chat:<id>`, with whether its transcripts were removed and which routines the delete paused.
+Written after the delete; a failed audit write is logged and the delete stands.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

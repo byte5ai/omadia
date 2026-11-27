@@ -115,6 +115,13 @@ export interface ChatProactiveMarker {
  */
 export interface SessionConfigSnapshot {
   agentSlug: string;
+  /**
+   * #2314 (ADR-0218) — the id of the agent the slug named when the session
+   * pinned it. A deleted agent frees its slug; a new agent with the same slug
+   * has another id, so a turn of the old tab is refused instead of reaching
+   * the new agent with the old transcript. Absent on pins from before #2314.
+   */
+  agentId?: string;
   pluginIds: string[];
   toolIds: string[];
   memoryScope: string[];

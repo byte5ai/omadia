@@ -7036,9 +7036,14 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   und WhatsApp sollten `CoreApi.channelIdentityLinks` statt reiner Allow-Listen nutzen;
   Cross-Channel-Memory (`docs/cross-channel-memory.md`) entscheidet, ob ein verknüpftes Konto die
   Memory-Tiers des Web-Kontos sieht.
+- **Agent-Config-Revisionen, Rest (#2315, ADR-0277):** Dashboard-Editoren für Plugins/Bindings
+  und die Verfügbarkeits-Sektion senden noch kein `expected_revision` (Server bereit; `GET
+  /:slug/plugins` liefert `revision`); Agent-Anlage, Onboarding, Canvas und Templates bewegen die
+  Zähler nicht.
+
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
-  pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
+  pro Prozess); Zustellungs-Kontext für Kanal-Routinen von vor #2316 (ohne `origin_scope`);
   Zustellungen und Transkripte ohne Komplett-Rewrite pro Lauf (#1753, Rest); Graph-Knoten
   gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
@@ -11999,6 +12004,40 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   200 pro Routine, 90 Tage (`RoutineRunsStore.prune`).
 - **Routinen-Seite**: DTO `timeZone`, `nextRunAt`, `until`; Läufe `?before=`;
   Fehlertexte über `routineErrors.ts` + `serverErrorCode`.
+
+## Agents, Keys, Routinen: Folgen (W34, Welle 6) (2026-11-27)
+
+- **Chat löschen im Admin-Audit (#2318, ADR-0100):** `DELETE /api/chat/sessions/:id` schreibt
+  für einen gespeicherten Chat eine Zeile `chat.delete` (Ziel `chat:<id>`, `after` = `kind`,
+  `transcriptsPurged`, pausierte Routinen als `routine:<id>`), best-effort nach dem Löschen.
+  `ChatRoutinesPort.pauseForChat` liefert dafür die Ids statt einer Zahl.
+- **OAuth-Tokens und /setup-Seed nur im Kernel-Scope (#2313, ADR-0275):** Device-Flow
+  (`storeProviderOAuthTokens`), Token-Store-`persist`/`load` und `/setup`-Seed schreiben/lesen nur
+  `KERNEL_PROVIDER_CREDENTIAL_SCOPE`; `consolidateProviderCredentials` übernimmt beim Boot eine
+  neuere Modul-Kopie (Stempel `oauth_updated_at`) und löscht die Modul-Kopien.
+- **Chat-Pin mit Agent-Id (#2314, ADR-0276):** `SessionConfigSnapshot.agentId` wird beim ersten
+  Turn mitgepinnt; gehört der gepinnte Slug inzwischen einem anderen Agenten (gelöscht, Slug neu
+  vergeben), antwortet `POST /api/chat[/stream]` mit `503 agent_unavailable`, `reason:
+  'agent_deleted'` (Option `agentIdForSlug`). Der Web-Chat zeigt das Recovery-Banner
+  (`unavailableReplacedBody`) und setzt Pin und Auswahl beim Neu-Zuordnen zurück.
+- **Revisionen der Agent-Config-Writes (#2315, ADR-0277, Migration 0121):** `PUT /:slug/plugins`,
+  `/bindings`, `/model-policy`, `/context-memory`, `/fast-lane`, `/agent-to-agent`,
+  `/availability` nehmen optional `expected_revision`; ein Zähler pro Ressource in
+  `agents.config_revisions`, `ConfigStore.claimConfigRevision` vor dem ersten Write. Stale →
+  `409 config_revision_conflict` (mit `resource`). GETs und Writes liefern `revision`;
+  `GET /:slug/config-revisions` liefert alle Zähler. Web-UI
+  sendet es aus den vier Detail-Panels.
+- **Zustellungs-Kontext als eigenes Feld (#2317, ADR-0278, channel-sdk 0.3.20):**
+  `ChatTurnInput.conversationContextHint` trägt den Block aus `routineDeliveriesHint`; kein
+  Fast-Path-Pass-Through-Grund; maskiert wie `extraSystemHint`, aber bei Block/Fehler fällt nur
+  der Block aus dem Turn (`wireConversationContextHint`, CLI `maskContextOrDrop`).
+- **Zustellungs-Kontext in Kanal-Chats (#2316, ADR-0279, Routines-Migration 0013):**
+  `routines.origin_scope` = Session-Scope des anlegenden Kanal-Turns (`manage_routine` create);
+  Kernel-Service `conversationContext@1` (`createChannelDeliveryContext`, boundary-only) liest
+  die gelieferten Läufe der Routinen des Turn-Agenten (`RoutineStore.recentDeliveriesForScope`,
+  24 h, max. 3; ein anderer Agent im selben Chat sieht sie nicht);
+  `wrapChatAgentWithConversationContext` (vor dem Fast-Path) füllt `conversationContextHint`.
+  Keine Plugin-Änderung nötig.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 
