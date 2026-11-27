@@ -34,19 +34,7 @@ const MESSAGES_DIR = path.join(WEB_UI_DIR, 'messages');
 const FORBIDDEN = /\borchestrator(s)?\b/i;
 
 /** Message values that may keep the word. Key path is `<locale>:<dotted.key>`. */
-const MESSAGE_ALLOWLIST: ReadonlyMap<string, string> = new Map([
-  // The KG-priorities form is prefilled with the real, persisted id of the
-  // default agent (`DEFAULT_AGENT` in the page). The placeholder shows that id
-  // verbatim; renaming a persisted id is a backend migration, not a UI string.
-  [
-    'en:adminKgPriorities.agentIdPlaceholder',
-    'verbatim persisted agent id, same value as DEFAULT_AGENT in the page',
-  ],
-  [
-    'de:adminKgPriorities.agentIdPlaceholder',
-    'verbatim persisted agent id, same value as DEFAULT_AGENT in the page',
-  ],
-]);
+const MESSAGE_ALLOWLIST: ReadonlyMap<string, string> = new Map([]);
 
 /** Markdown files that may keep the word. Key is `<file name under messages/>`. */
 const MARKDOWN_ALLOWLIST: ReadonlyMap<string, string> = new Map([

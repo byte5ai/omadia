@@ -394,11 +394,11 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
             axis: 'agent',
             selector: 'a',
             reseed: false,
-            planned: { scratch: 2, kg: 1, conversation: 17, kgDeowned: 0, kgExcerpts: 0, datasets: 0, processes: 0, identity: 0, reseedEntries: [] },
+            planned: { scratch: 2, kg: 1, conversation: 17, kgDeowned: 0, kgExcerpts: 0, datasets: 0, processes: 0, identity: 0, generatedFiles: 0, reseedEntries: [] },
           },
         ]);
         assert.deepEqual(outcomes, [
-          { id: 'audit-1', outcome: { status: 'completed', deleted: { scratch: 2, kg: 1, conversation: 17, kgDeowned: 0, kgExcerpts: 0, datasets: 0, processes: 0, identity: 0 } } },
+          { id: 'audit-1', outcome: { status: 'completed', deleted: { scratch: 2, kg: 1, conversation: 17, kgDeowned: 0, kgExcerpts: 0, datasets: 0, processes: 0, identity: 0, generatedFiles: 0 } } },
         ]);
 
         failOutcome = true;
@@ -447,7 +447,7 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         assert.deepEqual(outcomes, [
           {
             status: 'failed',
-            deleted: { scratch: 2, kg: 1, conversation: 0, kgDeowned: 0, kgExcerpts: 0, datasets: 0, processes: 0, identity: 0 },
+            deleted: { scratch: 2, kg: 1, conversation: 0, kgDeowned: 0, kgExcerpts: 0, datasets: 0, processes: 0, identity: 0, generatedFiles: 0 },
             error: 'connection reset',
           },
         ]);

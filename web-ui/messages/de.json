@@ -6507,7 +6507,8 @@
       "reseed_failed": "Die Defaults konnten nicht zurückgeschrieben werden; sie kommen beim nächsten Neustart zurück, außer MEMORY_SEED_MODE steht auf skip.",
       "user_selector_resolved": "Der Selektor ist {via, select, account_id {eine Konto-ID} channel_identity {eine Kanal-Identität} other {keine omadia-User-ID}}; der Purge arbeitet mit der omadia-User-ID {omadiaUserId} dieser Person.",
       "user_unknown": "Zu dieser ID gibt es keine Person: keinen Knowledge-Graph-Nutzer und kein Konto. Prüfe, ob du die omadia-User-ID oder die Konto-ID von der Nutzerseite kopiert hast.",
-      "user_layers_unsupported": "Diese Installation kann {layers} der Person nicht löschen; sie bleiben."
+      "user_layers_unsupported": "Diese Installation kann {layers} der Person nicht löschen; sie bleiben.",
+      "generated_files_pending": "{count} erzeugte Dateien hätten gelöscht werden sollen, wurden es aber nicht: das Office- oder Diagramm-Plugin ist nicht aktiv, oder sein Bucket hat das Löschen abgelehnt. Sie werden beim nächsten Purge oder Löschen eines Chats gelöscht; die Lifecycle-Regel des Buckets bleibt die Rückfallebene."
     },
     "errors": {
       "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
@@ -6538,7 +6539,8 @@
       "datasets": "Datensätze",
       "processes": "Gespeicherte Prozesse",
       "identity": "Identitätsknoten (Name, E-Mail)",
-      "deowned": "Geteilte Fakten: nur diese Person wird als Eigentümer entfernt"
+      "deowned": "Geteilte Fakten: nur diese Person wird als Eigentümer entfernt",
+      "generatedFiles": "Erzeugte Dateien (Office, Diagramme)"
     }
   },
   "adminDuplicates": {

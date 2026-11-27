@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-office"
   name: "Headless Office"
-  version: "0.1.6"
+  version: "0.1.7"
   kind: "tool"
   domain: "productivity.office"
   description:
@@ -21,6 +21,10 @@ identity:
 compat:
   core: ">=1.0 <2.0"
   node: ">=20"
+
+# ADR-0187 (#1986) — generated files are recorded and deleted with chat and person.
+optional_requires:
+  - "generatedObjects@1"
 
 lifecycle:
   entry: "dist/plugin.js"

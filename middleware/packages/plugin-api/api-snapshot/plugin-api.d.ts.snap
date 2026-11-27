@@ -1178,6 +1178,15 @@ outcome: 'sent';
 } | FollowupRefusal>;
 }
 
+// ===== generatedObjects.d.ts =====
+export declare const GENERATED_OBJECTS_SERVICE_NAME = "generatedObjects";
+export declare const GENERATED_OBJECTS_CAPABILITY = "generatedObjects@1";
+export type GeneratedObjectDeleter = (storageKey: string) => Promise<void>;
+export interface GeneratedObjectsService {
+record(producer: string, storageKey: string): Promise<void>;
+registerDeleter(producer: string, deleter: GeneratedObjectDeleter): () => void;
+}
+
 // ===== inconsistency.d.ts =====
 export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
 export type InconsistencyResolution =
@@ -1238,6 +1247,7 @@ export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
 export * from './datasetId.js';
+export * from './generatedObjects.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
 export * from './boundaryPresets.js';

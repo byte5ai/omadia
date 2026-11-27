@@ -117,6 +117,8 @@ export const KERNEL_SQL_RELATIONS: ReadonlySet<string> = new Set([
   'execution_grants',
   'execution_kill_switches',
   'execution_scopes',
+  // ADR-0187 (#1986) — generated Office/Diagram files per person and chat.
+  'generated_objects',
   'github_issue_cache',
   'graph_edges',
   'graph_embedding_model',

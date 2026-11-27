@@ -7419,6 +7419,12 @@ leave a record of who did it.
   selected) and their `User` / `ChannelIdentity` nodes (name, e-mail) — last,
   so the earlier layers still resolve them. Preview and audit row carry the
   extra counts (`deleted_detail`).
+- **Generated files (ADR-0187, #1986).** Office exports and diagrams are recorded with the
+  producing turn's person and chat (`generated_objects`, migration 0119). Chat deletion, the user
+  axis and axis "All" release the matching records; a file no record keeps is deleted from the
+  bucket, a failed or impossible delete stays pending for the next release. Untracked files (from
+  before the change, or produced outside a turn) expire only by the bucket's lifecycle rule,
+  which an operator-managed bucket must set itself.
 - **Account deletion is separate.** Deleting an account in `/admin/users`
   removes the `users` row only; the dialog and the page say that memory and
   data stay and point to the purge with the omadia user id the page shows.
