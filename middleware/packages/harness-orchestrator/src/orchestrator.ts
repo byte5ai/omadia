@@ -11759,7 +11759,10 @@ export class Orchestrator {
   private toolSystemOf(name: string): ToolSystem | undefined {
     const native = this.nativeTools.get(name);
     if (native?.agentId !== undefined) {
-      return { system: native.agentId, effect: isWriteCapableTool(native.writeCapabilities) ? 'write' : 'unknown' };
+      // #2338 / ADR-0299 — a declared write capability is a write; else the
+      // effect the plugin declared at registration; else the manifest decides.
+      const effect = isWriteCapableTool(native.writeCapabilities) ? 'write' : (native.sideEffects ?? 'unknown');
+      return { system: native.agentId, effect };
     }
     const domain = this.domainToolsByName.get(name);
     if (!domain || domain === this.consultTool) return undefined;

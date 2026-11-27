@@ -9,6 +9,7 @@ import { DiagramService } from './diagramService.js';
 import { DiagramTool, diagramToolSpec, type DiagramBrandMemory } from './diagramTool.js';
 import { createDiagramsRouter } from './diagramsRouter.js';
 import { createKrokiClient } from './krokiClient.js';
+import { configFlag, isInternalKrokiEndpoint } from './krokiEndpoint.js';
 import { createTigrisStore } from './tigrisStore.js';
 
 /** The producer id the kernel files this plugin's renders under (ADR-0187). */
@@ -61,6 +62,10 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
   ctx.log('activating diagrams plugin');
 
   const krokiBaseUrl = ctx.config.require<string>('kroki_base_url');
+  // #2338 / ADR-0299 — a renderer inside the instance is no integration
+  // egress: the tool declares `none`. Any other endpoint keeps the
+  // write-like check (a turn with another conversation's label is refused).
+  const krokiInternal = isInternalKrokiEndpoint(krokiBaseUrl, configFlag(ctx.config.get<unknown>('kroki_internal')));
   const publicBaseUrl = ctx.config.require<string>('public_base_url');
   const tigrisBucket = ctx.config.require<string>('tigris_bucket');
   const tigrisEndpoint = ctx.config.require<string>('tigris_endpoint');
@@ -127,6 +132,7 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
     (input) => tool.handle(input),
     {
       promptDoc: SYSTEM_PROMPT_DOC,
+      ...(krokiInternal ? { sideEffects: 'none' as const } : {}),
       // Drains only the finishing turn's renders (#1961).
       attachmentSink: (): NativeToolAttachment[] | undefined => {
         const renders = tool.takeRenders(currentTurnId());
@@ -157,7 +163,7 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
   });
 
   ctx.log(
-    `[diagrams] ready (kroki=${krokiBaseUrl}, bucket=${tigrisBucket}, tenant=${tenantId})`,
+    `[diagrams] ready (kroki=${krokiBaseUrl}${krokiInternal ? ' internal' : ' external'}, bucket=${tigrisBucket}, tenant=${tenantId})`,
   );
 
   return {

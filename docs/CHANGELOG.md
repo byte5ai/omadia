@@ -44,8 +44,14 @@ changelog.
   refused every export with `integration_undeclared`; Telegram turns without such a label worked.
   The Office manifest now declares `capabilities[].side_effects: "none"`: Office renders
   in-process, and the file reaches the person only with the answer, which the people egress
-  checks. Diagrams stays undeclared because `render_diagram` sends its source to the configured
-  Kroki endpoint. Every other undeclared tool is still checked like a write. Known gap: a withheld
+  checks. Every other undeclared tool is still checked like a write.
+- **#2338 — Diagrams follows its Kroki endpoint (ADR-0299, owner decision).** `render_diagram`
+  sends its source, chart data included, to `kroki_base_url`. An internal renderer (loopback,
+  private address, `.internal`/`.flycast`/compose name, or the new setup field `kroki_internal`)
+  counts as a reader inside the instance, and the tool declares `none` through the new
+  `ToolRegistrationOptions.sideEffects` (plugin-api 1.111.0, Diagrams 0.2.6). `kroki.io` and other
+  external endpoints keep the write-like check, so a turn with another conversation's label renders
+  no diagram there. The boot line says `kroki=… internal|external`. Known gap: a withheld
   streamed answer leaves the tool outputs (the signed link included) in the client's tool trace
   (#2342).
 - **#2341 — a masked replayed answer comes with a kernel note.** A channel replays the agent's own

@@ -11748,7 +11748,11 @@ Leserkreis, Offenlegungsstufe).
     `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen).
     Ein Tool, dessen Ein- und Ausgabe die Instanz nur mit der Antwort verlassen (Office
     `create_xlsx`/`create_docx`), deklariert `none`; seine Datei prüft der Antwort-Ausgang
-    unten mit (#2338, ADR-0298). Diagrams bleibt undeklariert, die Quelle geht an Kroki.
+    unten mit (#2338, ADR-0298). Diagrams deklariert beim Aktivieren
+    (`ToolRegistrationOptions.sideEffects`, ADR-0299): `none` nur bei internem Kroki
+    (private Adresse oder Name, `.flycast`/`.internal`/Compose-Name, oder Setup-Feld
+    `kroki_internal`; `kroki.io` nie), sonst wie `write`, denn Quelle und Chart-Daten gehen
+    an Kroki.
     Offen: eine zurückgehaltene gestreamte Antwort lässt die Tool-Ausgaben (samt
     signiertem Link) im Tool-Trace des Clients (#2342);
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das

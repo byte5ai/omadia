@@ -48,10 +48,11 @@ gets the data.
   instance except as part of the answer (a file, an image, a card). A tool that sends data to
   another system declares `write`, and the integration egress checks it against the operator's
   readership declaration.
-- **Diagrams stays undeclared.** `render_diagram` sends the diagram source, chart data included,
-  to the Kroki endpoint the operator configured, which may be a public service. It keeps the
-  write-like check until the Kroki target can be declared (a readership row for
-  `@omadia/diagrams`, or `none` for a renderer inside the instance).
+- **Diagrams declares nothing in its manifest.** `render_diagram` sends the diagram source, chart
+  data included, to the Kroki endpoint the operator configured, which may be a public service.
+  Its effect follows that endpoint and is declared at activation
+  ([ADR-0299](0299-an-internal-kroki-renderer-is-a-reader-inside-the-instance.md)): `none` for a
+  renderer inside the instance, otherwise the write-like check.
 - The object store keeps the file under the person and chat that produced it
   ([ADR-0187](0187-generated-files-are-recorded-and-deleted-with-their-owner.md)).
 
@@ -68,8 +69,8 @@ gets the data.
   trace, tracked in #2342, not new to Office.
 - 🔴 **Bad:** A withheld answer can leave an object in the bucket until the chat is deleted or the
   bucket's lifecycle rule expires it.
-- ⚪ **Neutral:** Diagrams in a turn with a foreign label is still refused until the Kroki target
-  is declared.
+- ⚪ **Neutral:** Diagrams in a turn with a foreign label is refused while its Kroki endpoint is
+  external (ADR-0299).
 
 ## Pros and Cons of the Options
 

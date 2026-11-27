@@ -44,7 +44,7 @@ describe('file tools are no integration egress (#2338)', () => {
     }
   });
 
-  it('Diagrams stays undeclared: its source goes to the Kroki endpoint, which may be a third party', async () => {
+  it('Diagrams declares nothing in its manifest: its effect follows the Kroki endpoint at activation (ADR-0299)', async () => {
     const diagrams = await manifest('harness-diagrams');
     assert.equal(diagrams.tool_side_effects, undefined);
   });
