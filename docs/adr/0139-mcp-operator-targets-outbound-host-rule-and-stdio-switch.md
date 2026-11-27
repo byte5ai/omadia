@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0211](0211-stdio-mcp-servers-share-the-middleware-trust-domain.md) (stdio trust model; the Compose stack ships stdio off)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers; issues #1341 and #1342, implemented in #1423

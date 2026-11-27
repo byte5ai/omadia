@@ -18,6 +18,12 @@ export interface CliCompletedTurn {
   readonly toolCalls: number;
   readonly iterations: number;
   readonly runTrace: RunTracePayload;
+  /**
+   * ADR-0195 — under the turn's privacy handle: the texts as the CLI child
+   * carried them (masked message, the model's own answer). The row keeps it
+   * as its masked view and the fact extraction reads it, as in-process.
+   */
+  readonly wireView?: { readonly userMessage: string; readonly answer: string };
 }
 
 /**

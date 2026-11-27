@@ -16,7 +16,11 @@ import {
   providerIdFromApiKeyVaultKey,
   providerVerifiedAtVaultKey,
 } from '../platform/providerCredentialVerifier.js';
-import { rebuildOrder } from '../platform/providerDependents.js';
+import { llmPluginsToRebuild, rebuildOrder } from '../platform/providerDependents.js';
+import {
+  deleteSupersededCopies,
+  LEGACY_PROVIDER_CREDENTIAL_SCOPES,
+} from '../platform/kernelProviderCredentials.js';
 
 /**
  * Operator settings overview — a single editable view of every `.env`-based
@@ -232,6 +236,8 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
      *  "the key works" verdict must be dropped, or a replaced key would keep
      *  serving the previous key's `verified` until the TTL expires. */
     const touchedProviders = new Set<string>();
+    /** #2240 — provider key names this batch revokes (their superseded copies go too). */
+    const revokedKeys = new Set<string>();
     /** A change whose key IS a setting this server offers, rejected because the
      *  VALUE did not pass validation. It decides which code a fully-rejected
      *  batch answers with (see the `affected.size === 0` branch below): the
@@ -309,12 +315,18 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
         if (providerId !== undefined) touchedProviders.add(providerId);
         for (const scope of def.secret.scopes) {
           if (cleared) {
-            const list = secretDelete.get(scope) ?? [];
-            list.push(def.secret.vaultKey);
-            // Also delete the legacy fallback key, else readProviderApiKey keeps
-            // resolving the stale key and the operator's revoke is ineffective.
-            if (legacyKey !== undefined) list.push(legacyKey);
-            secretDelete.set(scope, list);
+            revokedKeys.add(def.secret.vaultKey);
+            if (legacyKey !== undefined) revokedKeys.add(legacyKey);
+            // #2240 / ADR-0215 — a revoke also clears a copy left in a system
+            // module's old scope.
+            for (const target of [scope, ...LEGACY_PROVIDER_CREDENTIAL_SCOPES]) {
+              const list = secretDelete.get(target) ?? [];
+              list.push(def.secret.vaultKey);
+              // Also delete the legacy fallback key, else readProviderApiKey keeps
+              // resolving the stale key and the operator's revoke is ineffective.
+              if (legacyKey !== undefined) list.push(legacyKey);
+              secretDelete.set(target, list);
+            }
           } else {
             const map = secretSet.get(scope) ?? {};
             map[def.secret.vaultKey] = value;
@@ -379,6 +391,9 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
         for (const [scope, keys] of secretDelete) {
           for (const k of keys) await deps.vault.deleteKey(scope, k);
         }
+        // #2240 / ADR-0215 — and the copies the boot consolidation renamed
+        // aside, so a revoked key leaves no copy behind.
+        if (revokedKeys.size > 0) await deleteSupersededCopies(deps.vault, [...revokedKeys]);
         // The credential changed → every recorded verdict about the OLD key is
         // now meaningless. Drop the in-memory cache and the durable record so
         // the provider falls back to an honest "unverified" until re-probed.
@@ -391,13 +406,19 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
         }
       }
       // Live apply: reactivate every touched plugin so it re-reads config.
-      // A key lands in the orchestrator, verifier and extras scopes, in
-      // catalog order; the orchestrator captures the other two's services in
-      // its own activate(), so it goes last (#1394) — otherwise the first key
-      // save on a fresh stack left it holding extras' key-less boot instances
-      // (fact extraction off until a restart).
+      // The orchestrator captures the verifier's and extras' services in its
+      // own activate(), so it goes last (#1394) — otherwise the first key save
+      // on a fresh stack left it holding extras' key-less boot instances (fact
+      // extraction off until a restart).
       if (deps.reactivate) {
-        const order = rebuildOrder(affected, (id) => deps.installedRegistry.has(id));
+        // #2240 / ADR-0215 — the key sits in the kernel scope only, but the
+        // agent runtime, the verifier and extras each built a provider from it
+        // at activation: a key change rebuilds every installed one, so one
+        // rotation reaches all of them.
+        const isInstalled = (id: string) => deps.installedRegistry.has(id);
+        const rebuild =
+          touchedProviders.size > 0 ? [...affected, ...llmPluginsToRebuild(isInstalled)] : [...affected];
+        const order = rebuildOrder(rebuild, isInstalled);
         for (const pluginId of order) {
           await deps.reactivate(pluginId);
         }

@@ -3,14 +3,15 @@ import {
   MEDIA_TYPE,
   OfficeRenderError,
   isFormulaCell,
+  type CellKeptAsText,
   type CellValue,
   type ColumnSpec,
-  type ColumnType,
   type RenderResult,
   type SheetRename,
   type SheetSpec,
   type XlsxDescriptor,
 } from './types.js';
+import { coerceCell, withoutLeadingEquals } from './cellCoercion.js';
 import { sanitizeFilename } from './filename.js';
 import {
   assertComputedColumnStaysInWorkbook,
@@ -161,8 +162,26 @@ function cellValueOf(row: Readonly<Record<string, unknown>>, key: string): CellV
     return value;
   }
   if (typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const formula: unknown = (value as { formula?: unknown }).formula;
-  return typeof formula === 'string' && formula.length > 0 ? { formula } : undefined;
+  const raw: unknown = (value as { formula?: unknown }).formula;
+  // #1969 — the file stores a formula without its leading `=`.
+  const formula = typeof raw === 'string' ? withoutLeadingEquals(raw) : '';
+  return formula.length > 0 ? { formula } : undefined;
+}
+
+/**
+ * #1969 — a computed column's template without the leading `=`, before any
+ * check reads it. Anything that is not text is left for `checkColumn` to
+ * refuse.
+ */
+function normalizeColumn(col: ColumnSpec, sheetName: string): ColumnSpec {
+  if (typeof col.formula !== 'string') return col;
+  const formula = withoutLeadingEquals(col.formula);
+  if (formula.length === 0) {
+    throw new OfficeRenderError(
+      `formula in sheet "${sheetName}", computed column "${String(col.key)}" rejected: it is empty`,
+    );
+  }
+  return { ...col, formula };
 }
 
 /**
@@ -193,25 +212,6 @@ function checkColumn(
   }
   assertComputedColumnStaysInWorkbook(col.formula, location);
   checkSheetReferences(col.formula, location);
-}
-
-/** Coerce a cell value into the type Excel should store, so number formats
- *  actually apply (a currency stored as text would not sum). Falls back to
- *  the original value when coercion is not possible — never throws. */
-function coerce(value: CellValue, type: ColumnType | undefined): CellValue | Date {
-  if (value === null) return null;
-  if (type === 'date' && typeof value === 'string') {
-    const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? value : d;
-  }
-  if (
-    (type === 'number' || type === 'currency' || type === 'percent') &&
-    typeof value === 'string'
-  ) {
-    const n = Number(value);
-    return Number.isNaN(n) ? value : n;
-  }
-  return value;
 }
 
 /** The formula a cell gets, or undefined for a plain value. A computed column
@@ -248,16 +248,18 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
 
   let rowsWritten = 0;
   let wroteFormula = false;
+  const cellsKeptAsText: CellKeptAsText[] = [];
 
   const sheetNames = resolveSheetNames(descriptor.sheets);
   const checkSheetReferences = sheetReferenceCheck(sheetNames);
 
   for (const { sheet, written } of sheetNames) {
     const ws = workbook.addWorksheet(written);
+    const columns = sheet.columns.map((col) => normalizeColumn(col, ws.name));
     // Headers and computed-column templates are checked before exceljs sees
     // any of them.
-    for (const col of sheet.columns) checkColumn(col, ws.name, checkSheetReferences);
-    ws.columns = sheet.columns.map((col) => ({
+    for (const col of columns) checkColumn(col, ws.name, checkSheetReferences);
+    ws.columns = columns.map((col) => ({
       header: col.header,
       key: col.key,
       ...(col.width !== undefined ? { width: col.width } : {}),
@@ -268,7 +270,7 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
 
     for (const row of sheet.rows) {
       const coerced: Record<string, CellValue | Date> = {};
-      for (const [columnIndex, col] of sheet.columns.entries()) {
+      for (const [columnIndex, col] of columns.entries()) {
         // Computed columns derive their value from the formula template below,
         // not from the row/dataset — leave the cell empty for now.
         if (col.formula) {
@@ -283,7 +285,13 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
             `value in sheet "${ws.name}", cell ${address} rejected: ${CELL_VALUE_RULE}`,
           );
         }
-        coerced[col.key] = coerce(value, col.type);
+        const cell = coerceCell(value, col.type);
+        coerced[col.key] = cell.value;
+        if (cell.keptAsText) {
+          // addRow has not run for this row yet, so it lands on the next one.
+          const address = `${ws.getColumn(columnIndex + 1).letter}${String(ws.rowCount + 1)}`;
+          cellsKeptAsText.push({ sheet: ws.name, cell: address, type: col.type ?? 'text' });
+        }
       }
       const added = ws.addRow(coerced);
       const rowNumber = added.number;
@@ -291,7 +299,7 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
       // cached value is ever stored next to one (defence in depth on top of
       // `cellValueOf`). Cross-sheet references (e.g. `'Offene Posten'!C:C`)
       // resolve when the opening application recalculates.
-      for (const col of sheet.columns) {
+      for (const col of columns) {
         const formula = formulaFor(col, coerced[col.key], rowNumber);
         if (formula === undefined) continue;
         const cell = added.getCell(col.key);
@@ -329,5 +337,6 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
     renamedSheets: sheetNames
       .filter((name) => name.requested !== name.written)
       .map(({ requested, written }) => ({ requested, written })),
+    ...(cellsKeptAsText.length > 0 ? { cellsKeptAsText } : {}),
   };
 }

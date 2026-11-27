@@ -166,6 +166,28 @@ describe('reportPlatformIssueTool', () => {
     assert.match(result.sanitizedBody ?? '', /\[REDACTED:internal-url\]/);
   });
 
+  it('#1783: sanitizes the title and counts each report against the daily cap', async () => {
+    const fetch: CacheFetch = () =>
+      Promise.resolve(mockResponse({ status: 200, body: { items: [] } }));
+    await freshSetup(fetch);
+    const ctx = buildContextStub({ draftStore: store, userEmail, draftId, triageLog, githubIssueCache: cache });
+    const input = {
+      title: 'Key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA leaks',
+      body: 'Repro.',
+      fingerprint: 'cafe0001',
+      summary: 'leak',
+      severity: 'bug' as const,
+    };
+    const first = await reportPlatformIssueTool.run(input, ctx);
+    assert.equal(first.mode, 'browser-submit');
+    assert.ok(!(first.browserSubmit?.githubNewUrl ?? '').includes('sk-ant'));
+    await reportPlatformIssueTool.run({ ...input, fingerprint: 'cafe0002' }, ctx);
+    await reportPlatformIssueTool.run({ ...input, fingerprint: 'cafe0003' }, ctx);
+    const fourth = await reportPlatformIssueTool.run({ ...input, fingerprint: 'cafe0004' }, ctx);
+    assert.equal(fourth.mode, 'rate_limited');
+    assert.equal(fourth.rateLimit?.used, 3);
+  });
+
   it('input schema accepts a summary longer than the old 280-char cap (regression)', () => {
     // The agent realistically generates a full-sentence summary. The
     // previous max(280) rejected anything longer with a Zod too_big,

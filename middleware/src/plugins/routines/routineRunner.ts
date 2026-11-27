@@ -85,6 +85,9 @@ export async function publishRoutineAnswer(
   result: ChatTurnResult,
 ): Promise<SemanticAnswer> {
   const answer = toSemanticAnswer(result);
+  // #1877 — the turn did not run (`model_unavailable`): the management
+  // layer's notice goes out as it is, never stamped as the agent's prose.
+  if (result.systemNotice) return answer;
   const { emitter, speaker } = orchestrator;
   if (!emitter || !speaker) return answer;
   const outcome = await emitter.emit({
@@ -154,6 +157,27 @@ export type RoutineActorScope =
   | { kind: 'operator' };
 
 /** The store-level owner filter for a scope, or undefined for an operator. */
+/**
+ * #1907 / ADR-0206 — the outer turn scope of a routine run. Fresh on purpose
+ * (see `runTurnWithOptionalCapture`): it carries the routine owner's MCP
+ * identity recorded at creation, never the identity of whatever turn happens
+ * to be open, and marks the run unattended, so an MCP call starts no OAuth
+ * flow and parks no input request nobody can answer.
+ */
+function routineTurnScope(routine: Routine): {
+  turnId: string;
+  turnDate: string;
+  mcpUnattended: true;
+  mcpUserKey?: string;
+} {
+  return {
+    turnId: '',
+    turnDate: today(),
+    mcpUnattended: true,
+    ...(routine.mcpUserKey ? { mcpUserKey: routine.mcpUserKey } : {}),
+  };
+}
+
 function ownerFilter(scope: RoutineActorScope): RoutineOwner | undefined {
   return scope.kind === 'channel-user'
     ? { tenant: scope.tenant, userId: scope.userId }
@@ -874,7 +898,7 @@ export class RoutineRunner {
       // same routine. Same routine, same owner, two identities, decided by
       // whether an output template happens to be configured.
       const result = await turnContext.run(
-        { turnId: '', turnDate: today() },
+        routineTurnScope(routine),
         () =>
           orchestrator.runTurn({
             userMessage: routine.prompt,
@@ -908,8 +932,7 @@ export class RoutineRunner {
             // builds its own child scope; it inherits our
             // `captureRawToolResult` callback (parent ALS forwarding,
             // analogous to `chatParticipants` + `privacyHandle`).
-            turnId: '',
-            turnDate: today(),
+            ...routineTurnScope(routine),
             captureRawToolResult,
           },
           () =>

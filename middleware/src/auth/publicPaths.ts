@@ -23,8 +23,9 @@ import { TEAMS_MESSAGING_PATH_RE } from '../platform/teamsMessagingPath.js';
 
 /** Escape a literal path for embedding in a RegExp, so the shared constant —
  *  not a hand-retyped pattern — is what the allowlist actually matches. */
-function pathPrefixPattern(path: string): RegExp {
-  return new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|\\?)`);
+function pathPrefixPattern(path: string, opts: { trailingSlash?: boolean } = {}): RegExp {
+  const slash = opts.trailingSlash === true ? '\\/?' : '';
+  return new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${slash}(?:$|\\?)`);
 }
 
 /** Public paths that are constant regardless of configuration. */
@@ -123,7 +124,11 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // `mcp:write:<tool>` for a write), AND have an enabled
   // `public_mcp_key_bindings` row naming the one agent and the exact tools it
   // reaches. A key with no row authenticates and reaches nothing.
-  pathPrefixPattern(PUBLIC_MCP_PATH),
+  //
+  // #1952 — one optional trailing slash: the express mount already routes
+  // `/api/v1/mcp/` to the same handler, and refusing it here answered a client
+  // that appends one with a "no session" 401 instead of the endpoint.
+  pathPrefixPattern(PUBLIC_MCP_PATH, { trailingSlash: true }),
 ];
 
 /**

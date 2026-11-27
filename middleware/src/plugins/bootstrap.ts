@@ -1288,6 +1288,16 @@ async function bootstrapOrchestratorFromEnv(
 // Diagrams (tool-kind built-in, needs secrets → can't auto-install)
 // ---------------------------------------------------------------------------
 
+/**
+ * #1965 — the names of the variables that are unset or empty, so a skipped
+ * auto-install says which one to set instead of naming a whole group.
+ */
+function missingEnvNames(values: Readonly<Record<string, string | undefined>>): string[] {
+  return Object.entries(values)
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+}
+
 async function bootstrapDiagramsFromEnv(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
@@ -1308,17 +1318,18 @@ async function bootstrapDiagramsFromEnv(deps: BootstrapDeps): Promise<void> {
     DIAGRAM_MAX_PNG_BYTES,
   } = deps.config;
 
-  const envHasMinimum =
-    Boolean(KROKI_BASE_URL) &&
-    Boolean(DIAGRAM_URL_SECRET) &&
-    Boolean(DIAGRAM_PUBLIC_BASE_URL) &&
-    Boolean(BUCKET_NAME) &&
-    Boolean(AWS_ENDPOINT_URL_S3) &&
-    Boolean(AWS_ACCESS_KEY_ID) &&
-    Boolean(AWS_SECRET_ACCESS_KEY);
-  if (!envHasMinimum) {
+  const missing = missingEnvNames({
+    KROKI_BASE_URL,
+    DIAGRAM_URL_SECRET,
+    DIAGRAM_PUBLIC_BASE_URL,
+    BUCKET_NAME,
+    AWS_ENDPOINT_URL_S3,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+  });
+  if (missing.length > 0) {
     log(
-      `[bootstrap] diagrams tool: .env lacks one of KROKI_BASE_URL / DIAGRAM_* / BUCKET_NAME / AWS_* — skipping auto-install`,
+      `[bootstrap] diagrams tool: environment lacks ${missing.join(', ')} — skipping auto-install`,
     );
     return;
   }
@@ -1388,16 +1399,17 @@ async function bootstrapOfficeFromEnv(deps: BootstrapDeps): Promise<void> {
     DIAGRAM_SIGNED_URL_TTL_SEC,
   } = deps.config;
 
-  const envHasMinimum =
-    Boolean(DIAGRAM_URL_SECRET) &&
-    Boolean(DIAGRAM_PUBLIC_BASE_URL) &&
-    Boolean(BUCKET_NAME) &&
-    Boolean(AWS_ENDPOINT_URL_S3) &&
-    Boolean(AWS_ACCESS_KEY_ID) &&
-    Boolean(AWS_SECRET_ACCESS_KEY);
-  if (!envHasMinimum) {
+  const missing = missingEnvNames({
+    DIAGRAM_URL_SECRET,
+    DIAGRAM_PUBLIC_BASE_URL,
+    BUCKET_NAME,
+    AWS_ENDPOINT_URL_S3,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+  });
+  if (missing.length > 0) {
     log(
-      `[bootstrap] office tool: .env lacks one of DIAGRAM_URL_SECRET / DIAGRAM_PUBLIC_BASE_URL / BUCKET_NAME / AWS_* — skipping auto-install`,
+      `[bootstrap] office tool: environment lacks ${missing.join(', ')} — skipping auto-install`,
     );
     return;
   }

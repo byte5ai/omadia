@@ -342,7 +342,7 @@ describe('public MCP endpoint — privacy', () => {
     assert.match(body, /tool `query_crm` failed with Error \[ref /);
   });
 
-  it('never serves a RETURNED `Error:` text — the gate fails tool-error redaction closed', async (t) => {
+  it('never serves a RETURNED `Error:` text — answers a generic isError result (#1937)', async (t) => {
     const h = await start(
       options({
         dispatchers: {
@@ -359,7 +359,10 @@ describe('public MCP endpoint — privacy', () => {
     if (!h) return;
     const { payload } = await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
     assert.doesNotMatch(JSON.stringify(payload), /sensitive\.person@customer\.example/);
-    assert.match(rpcErrorMessage(payload) ?? '', /privacy masking did not run/);
+    assert.equal(payload['error'], undefined, 'a tool error is not a JSON-RPC error');
+    const result = payload['result'] as { isError?: boolean; content?: { text: string }[] } | undefined;
+    assert.equal(result?.isError, true);
+    assert.match(result?.content?.[0]?.text ?? '', /^Tool `query_crm` reported an error\./);
   });
 
   it('still reports the failure as an error rather than swallowing it', async (t) => {

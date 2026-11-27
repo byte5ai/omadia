@@ -113,13 +113,17 @@ export const ENVELOPE_METADATA_KEYS: ReadonlySet<string> = new Set([
   'next',
   'cursor',
   'next_cursor',
+  // #1848 — query_dataset's `{ rows, totalMatched }`: the full match count
+  // next to one page. As a column it repeated the total on every row and
+  // the render footer only knew the page.
+  'totalMatched',
 ]);
 
 /**
  * Is `v` a scalar-equivalent envelope value? Primitives, plus the Odoo
  * many2one `[id, "label"]` tuple (the materializer flattens it to the label).
- * Genuine nested values (objects, other arrays) are dropped — as a column
- * they would only reintroduce the per-cell JSON dump the expansion removes.
+ * Genuine nested values (objects, other arrays) are not: an envelope with one
+ * of those does not expand (see `expandEnvelope`).
  */
 function isEnvelopeScalar(v: unknown): boolean {
   if (v === null) return true;
@@ -131,6 +135,13 @@ function isEnvelopeScalar(v: unknown): boolean {
     typeof v[0] === 'number' &&
     typeof v[1] === 'string'
   );
+}
+
+/** An empty array or empty plain object: a sibling that carries no data, so
+ *  leaving it out of an expanded envelope loses nothing (`warnings: []`). */
+function isEmptyContainer(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length === 0;
+  return isPlainObject(v) && Object.keys(v).length === 0;
 }
 
 /**
@@ -152,12 +163,16 @@ function isEnvelopeScalar(v: unknown): boolean {
  *  - every other scalar is business data and is copied onto each record as a
  *    column (`jahr`, `kw` — the timesheet plugin renders them), the record's
  *    own field winning a key collision.
- * Nested siblings are dropped.
  *
  * Conservative by design: only fires when the object has EXACTLY ONE
- * record-array field (a non-empty array of plain objects). Zero is an
+ * record-array field (a non-empty array of plain objects) and every other
+ * sibling is a scalar (or an empty array/object). Zero record arrays is an
  * ordinary object (one row); more than one is ambiguous — which is the record
- * table? — and stays ONE `nested` row with every field, no metadata.
+ * table? — and stays ONE `nested` row with every field, no metadata. A
+ * non-empty nested sibling (an object, a non-record array) is data too: a
+ * weather result `{ location: {…}, current: {…}, other_matches: [ … ] }`
+ * expanded to the match list would drop `location` and `current`, its main
+ * content, so it also stays ONE `nested` row (#1728).
  */
 function expandEnvelope(
   obj: Record<string, unknown>,
@@ -165,6 +180,10 @@ function expandEnvelope(
   const recordKeys = Object.keys(obj).filter((k) => isRecordArray(obj[k]));
   if (recordKeys.length !== 1) return undefined;
   const itemsPath = recordKeys[0] as string;
+  const hasNestedSibling = Object.entries(obj).some(
+    ([k, val]) => k !== itemsPath && !isEnvelopeScalar(val) && !isEmptyContainer(val),
+  );
+  if (hasNestedSibling) return undefined;
   const metadata: Record<string, unknown> = {};
   const columns: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(obj)) {

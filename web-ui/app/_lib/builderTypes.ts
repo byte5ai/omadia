@@ -253,6 +253,31 @@ export type JsonPatch =
 
 export type SpecBusCause = 'agent' | 'user';
 
+/** Per-tool runtime-smoke outcome. Mirror of `ToolSmokeStatus` in
+ *  middleware/src/plugins/builder/runtimeSmoke.ts (ADR-0232). */
+export type RuntimeSmokeToolStatus =
+  | 'ok'
+  | 'auth_rejected'
+  | 'skipped'
+  | 'timeout'
+  | 'threw'
+  | 'validation_failed';
+
+export type RuntimeSmokeReason =
+  | 'ok'
+  | 'writes_skipped'
+  | 'activate_failed'
+  | 'tool_failures'
+  | 'no_tools'
+  | 'admin_route_schema_violation'
+  | 'ui_route_render_failed';
+
+/** ADR-0232 — a tool fails the smoke unless its handler ran cleanly, the
+ *  upstream refused the stub credentials, or it was skipped as a write. */
+export function isSmokeToolFailure(status: RuntimeSmokeToolStatus): boolean {
+  return status !== 'ok' && status !== 'auth_rejected' && status !== 'skipped';
+}
+
 export type SpecBusEvent =
   | { type: 'spec_patch'; patches: JsonPatch[]; cause: SpecBusCause }
   | { type: 'slot_patch'; slotKey: string; source: string; cause: SpecBusCause }
@@ -300,11 +325,11 @@ export type SpecBusEvent =
       type: 'runtime_smoke_status';
       phase: 'running' | 'ok' | 'failed';
       buildN: number;
-      reason?: 'ok' | 'activate_failed' | 'tool_failures' | 'no_tools';
+      reason?: RuntimeSmokeReason;
       activateError?: string;
       results?: ReadonlyArray<{
         toolId: string;
-        status: 'ok' | 'timeout' | 'threw' | 'validation_failed';
+        status: RuntimeSmokeToolStatus;
         durationMs: number;
         errorMessage?: string;
       }>;

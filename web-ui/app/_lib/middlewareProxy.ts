@@ -1,5 +1,6 @@
 import type { NextRequest } from 'next/server';
 
+import { PROXY_MAX_BODY_BYTES } from './proxyBodyLimit';
 import { publicScheme } from './publicScheme';
 
 /**
@@ -63,6 +64,19 @@ export function createMiddlewareProxy(
     headers.set('x-forwarded-proto', publicScheme());
 
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+    // #1846 — a body over the proxy limit arrives truncated; relaying it
+    // fails on the Content-Length mismatch and surfaced as a bare 500. Say
+    // what happened instead, in the same envelope the middleware uses.
+    const declaredLength = Number(req.headers.get('content-length') ?? '0');
+    if (hasBody && declaredLength > PROXY_MAX_BODY_BYTES) {
+      return Response.json(
+        {
+          code: 'upload.too_large',
+          message: `request body exceeds the ${String(PROXY_MAX_BODY_BYTES)}-byte limit`,
+        },
+        { status: 413 },
+      );
+    }
     const upstream = await fetch(target, {
       method: req.method,
       headers,

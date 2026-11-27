@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import type { McpServerConfig, McpServerRow } from '@omadia/orchestrator';
+import type { McpCallResult, McpServerConfig, McpServerRow } from '@omadia/orchestrator';
 
 import { mcpActionId, parseMcpActionId } from '../src/conductor/mcpActionId.js';
 import { createMcpActionInvoker, listMcpActions } from '../src/conductor/mcpActionInvoker.js';
@@ -57,15 +57,19 @@ describe('mcp action ids', () => {
 });
 
 describe('createMcpActionInvoker', () => {
-  function harness(rows: McpServerRow[], result = 'ok', denial: (s: string, t: string) => string | null = () => null) {
-    const calls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  function harness(
+    rows: McpServerRow[],
+    result: string | McpCallResult = 'ok',
+    denial: (s: string, t: string) => string | null = () => null,
+  ) {
+    const calls: Array<{ toolName: string; args: Record<string, unknown>; unattended?: boolean }> = [];
     const invoke = createMcpActionInvoker({
       dispatchDenial: denial,
       listServers: async () => rows,
       getMcp: () => ({
-        callTool: async (_cfg, toolName, args) => {
-          calls.push({ toolName, args });
-          return result;
+        callToolResult: async (_cfg, toolName, args, _replay, opts) => {
+          calls.push({ toolName, args, ...(opts?.unattended ? { unattended: true } : {}) });
+          return typeof result === 'string' ? { text: result, status: 'ok' } : result;
         },
       }),
       toConfig: (row) => ({ id: row.id, name: row.name, transport: row.transport, endpoint: row.endpoint ?? undefined }) as unknown as McpServerConfig,
@@ -76,7 +80,7 @@ describe('createMcpActionInvoker', () => {
   it('calls the tool with object input and returns the text result', async () => {
     const { invoke, calls } = harness([server()]);
     assert.equal(await invoke('mcp:srv-1:attach_receipt', { id: 7 }), 'ok');
-    assert.deepEqual(calls, [{ toolName: 'attach_receipt', args: { id: 7 } }]);
+    assert.deepEqual(calls, [{ toolName: 'attach_receipt', args: { id: 7 }, unattended: true }]);
   });
 
   it('coerces non-object input to {}', async () => {
@@ -108,8 +112,15 @@ describe('createMcpActionInvoker', () => {
     assert.equal(await invoke('mcp:srv-1:list_missing_receipts', {}), 'ok');
   });
 
-  it('turns an "Error: …" text result into a step failure', async () => {
-    const { invoke } = harness([server()], 'Error: receipt not found');
-    await assert.rejects(invoke('mcp:srv-1:attach_receipt', {}), /Error: receipt not found/);
+  it('fails the step on every outcome but a delivered result (#1909)', async () => {
+    for (const status of ['tool_error', 'failed', 'auth_required', 'input_required', 'blocked', 'outcome_unknown'] as const) {
+      const { invoke } = harness([server()], { text: `Error: ${status}`, status });
+      await assert.rejects(invoke('mcp:srv-1:attach_receipt', {}), new RegExp(`Error: ${status}`));
+    }
+  });
+
+  it('keeps a delivered result whose text merely starts with "Error:"', async () => {
+    const { invoke } = harness([server()], { text: 'Error: no match found', status: 'ok' });
+    assert.equal(await invoke('mcp:srv-1:attach_receipt', {}), 'Error: no match found');
   });
 });

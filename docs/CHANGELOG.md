@@ -36,6 +36,223 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — office files, attachments and transcription (Welle 5 W07-08) (2026-11-26)
+
+- **File export follows the agent's grant (#1972).** The Excel offer under a truncated
+  Privacy Shield table, the "Datei-Erzeugung" prompt rules 14/15, the dedup recipe's
+  `create_xlsx` step and the forced "file announced but not built" retry now need
+  `create_xlsx`/`create_docx` to be *granted to this agent* (same gate as the tool list,
+  #1598), not only registered. `Orchestrator.isNativeToolOfferedThisTurn`.
+- **Attachment tools are channel-neutral (#1976).** `read_attachment` and
+  `transcribe_recording` are offered only on a turn that came in through a messaging
+  channel (`turnMayCarryUploads`, `attachmentToolAvailability.ts`); the web chat and the
+  HTTP API have no upload. Their texts no longer name the internal `[attachments-info]`
+  block, and the not-found answer (`attachmentNotFound`) tells the model to say the file is
+  not available instead of asking for a re-upload.
+- **Dropped attachments are visible (#1978).** Auto-ingest writes an
+  `[attachment-not-ingested: <name>]` block with a plain reason (damaged, unsupported type,
+  not found in storage, no text) and a server warning for every file it cannot read; a
+  failed storage read is logged in `attachmentReaderFactory.ts`. A corrupt XLSX states
+  "the file is damaged or unreadable (not a valid XLSX workbook)"; the jszip text goes to the log only.
+  `ExtractResult` failures carry a `kind` (`PLAIN_EXTRACT_FAILURE`).
+- **`create_xlsx` formulas without the leading `=` (#1969).** The renderer strips one
+  leading `=` from inline formula cells and computed-column templates before the ADR-0140
+  formula policy reads them, so the file holds `<f>SUM(A2:A3)</f>`, not `==SUM(…)`. A
+  formula of only `=` is refused.
+- **`create_xlsx` strict type coercion (#1971).** Typed columns convert only ISO dates
+  (`YYYY-MM-DD`, optional time; without a zone read as UTC) and plain decimals (`.` as
+  decimal point). `""` and Odoo's `false` become empty cells in date/numeric columns;
+  `12.03.2024`, `März 2024`, `1.234,56`, `0x1F`, `Infinity` stay text and the tool result
+  lists them by address under `cellsKeptAsText` (never their values). `cellCoercion.ts`;
+  the column `type` description now names the accepted formats.
+- **Diagrams overlay keeps `middleware/.env` values (#1965).** `docker-compose.diagrams.yaml`
+  no longer sets `DIAGRAM_URL_SECRET` (an empty `${…:-}` replaced the value from
+  `middleware/.env`) or a hard-coded `DIAGRAM_PUBLIC_BASE_URL` under `environment:`; the URL
+  default `http://localhost:8080` moved to `middleware/compose.defaults.env`. The boot's skip
+  lines name each missing variable (`environment lacks DIAGRAM_URL_SECRET`).
+- **Diagrams reinstallable on a Postgres-memory stack (#1973).** Diagrams declares
+  `optional_requires: memoryStore@1` instead of `depends_on: @omadia/memory` and resolves it
+  at first use (ADR-0053); its row in `BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20` is retired.
+  `agent-reference-maximum` drops the same dependency. `install.missing_dependencies` carries
+  `details.missing`, and the Store drawer names the missing plugins (en/de).
+- **Signed-link secret and defaults (#1975).** Rotation is documented as each plugin's setup
+  field (`DIAGRAM_URL_SECRET` is read only on the boot that auto-installs). Env and Store
+  installs now share their defaults: TTL 3600 s (`DIAGRAM_SIGNED_URL_TTL_SEC`, was 900),
+  tenant `default` (manifests and plugin fallbacks, was `dev`), PNG cap 900000 bytes and
+  source cap 1000000 bytes (manifests, were 10 MiB / 1 MiB). Existing installs keep their
+  stored config; an install without a stored tenant (Store) or without `GRAPH_TENANT_ID`
+  (env) now prefixes keys with `default`, so its diagram cache starts empty once; signed
+  links already handed out keep working (the full key is in the URL). Because
+  `DIAGRAM_PUBLIC_BASE_URL` now has a stack default, a stack with only the storage overlay
+  and a `DIAGRAM_URL_SECRET` auto-installs Office, which it skipped before.
+- **Public-path texts (#1980).** The claim log says an ungranted prefix is closed
+  (`404 public_path.not_granted`) and points to Store → plugin → Grants; the Store text says
+  consent is removed on uninstall (en/de); Getting Started, the Office README and the plugin
+  comments say `/diagrams/dl` and `/documents/dl` must be granted before links work.
+- **Docs and metadata (#1988).** `.docx` provenance lists no `category`; URL paths read
+  `/diagrams/dl/<key>` and `/documents/dl/<key>`; the six `smoke:*` scripts that point at
+  gitignored files are gone from `middleware/package.json`; 14 bundled manifests say `MIT`
+  like their packages (guarded by `manifestLicenseParity.test.ts`); Web Search texts say the
+  plugin must be assigned to an agent and a provider/key change only needs a save.
+- **Connection probes and "not configured" (#1974).** `@omadia/plugin-web-search` and
+  `@omadia/transcription-adapter-openai` export `verifyConnection` (a one-result search,
+  resp. `GET /v1/models`; 401 or an auth 403 ⇒ `rejected`, red badge, tools withheld), so
+  "Test connection" works; a missing key reports `needs_action` "Nicht konfiguriert"
+  instead of a plain "Active".
+- **Transcription provider texts (#1981).** The admin page shows the active provider by its
+  label and links the setup fields when it publishes nothing; a rolled-back switch is
+  described from `details.restoredProviderId`/`previousProviderId` (en/de). The kernel
+  publishes `transcriptionProviderState@1` so `transcribe_recording` says "installed but not
+  configured" instead of "no provider installed"; with no previous provider the server no
+  longer says it "could not be restored".
+- **OpenAI adapters reach only declared hosts (#1984, ADR-0200).** The transcription and
+  embedding adapters declare `api.openai.com` plus `$config.allowed_hosts` instead of
+  placeholder names, and refuse a Base URL (or realtime URL) on any other host at
+  activation (`ctx.status` error, no service). **Operator step:** an installation that uses
+  a custom endpoint (Azure, Ollama's OpenAI endpoint, a local server) must list its host in
+  the new setup field "Additional allowed hosts", or the adapter stops publishing after the
+  update.
+- **Readable file-link errors (#1964, part).** `/diagrams/dl` and `/documents/dl` answer a
+  browser that opens an expired, missing or failing link with a short German/English HTML
+  page that says what happened and how to get the file again (`fileLinkErrorPage.ts`,
+  `sendFileLinkError`); images, Teams and other clients keep the plain-text body. Renewing
+  an expired link without re-creating the file is still open (#1964).
+- **Versions:** `@omadia/plugin-web-search` 0.2.2, `@omadia/transcription-adapter-openai`
+  0.1.1, `@omadia/embedding-adapter-openai` 0.1.1, `@omadia/diagrams` 0.2.3,
+  `@omadia/plugin-office` 0.1.6.
+- **Transcripts are recording content, kept whole (#1983, #1987).** `transcribe_recording`
+  stores every chunk with the marker line `[recording-transcript speaker="…"]`
+  (`recordingTranscript.ts`) and `SessionLogEntry.source: 'recording'`; the session log
+  labels it `**Recording:**`, and every replay of stored turns — context tail and recall
+  (`contextRetriever.ts`), session resume (`sessionBriefing.ts`), session summary
+  (`sessionSummaryGenerator.ts`) via `renderUserLine`, and the subscription-CLI history
+  (`cliChatAgent.ts`, `replayUserLine`) — renders it as quoted recording content instead of
+  `Nutzer:`/`User:`.
+  Transcript text is cut into chunks of at most 1,300 characters, below the session log's
+  1,500-character entry cap, so the log holds the full transcript; the tool result says
+  "vollständig im Session-Protokoll" only when the entries were written.
+
+### Fixed — agent model policy reaches the running agent; system modules on the kernel provider pool (#1870, #1871, #1877, #1891, #2240, ADR-0215) (2026-11-26)
+
+- **An agent's model policy reaches the running agent and fails visibly (#1870, #1871, #1877).** Saving an agent's model policy rebuilds the agent (`runtimeChangeReasons` reason `model_policy`); the next turn runs on the saved primary, effort and fallback, and the "Auto (…)" read-out follows. The policy refuses a provider that cannot run tool turns in the agent loop (the subscription CLI, ADR-0086) with `400 model_policy_tool_incompatible`, shown localized in the Model tab; `deferredProvider` is reported only when no provider pool switches the turn. When the pool cannot serve a pinned primary, a turn with a fallback starts on it and is marked as a fallback (receipt `fallbackUsed`, `provider_fallback` chip); with fallback "None" (or a fallback that is unavailable or cannot read the turn's images) it ends with the new system notice `model_unavailable` (plugin-api 1.102.0), worded per reason, instead of running silently on another provider — in chat, stream, verifier and routines alike (`ChatTurnResult.systemNotice`), and the working-mode classifier sends nothing to another provider either. GET/PUT model-policy return `primaryUnavailable` and, for a policy saved earlier with the subscription CLI, `toolIncompatible`; the Model tab shows both.
+- **A provider plugin's config change reaches every LLM plugin (#1891).** A config or secret write to a provider plugin (e.g. `anthropic_base_url` of `@omadia/plugin-llm-anthropic`) rebuilds the provider plugin, then in `rebuildOrder` the LLM plugins that may run on its provider (the agent runtime always, last; the verifier and orchestrator-extras when their provider chain names it); orchestrator-extras no longer keeps calling the old endpoint until a restart. A plugin that does not come back up — or a provider plugin that itself stays down, in which case nothing is rebuilt onto it — is reported as `runtime.dependent_rebuild_failed`.
+- **System modules use the kernel provider pool; provider keys in one vault scope (#2240, ADR-0215).** The verifier and orchestrator-extras build their providers from the kernel `llmProviderPool` only, like the agent runtime. Provider API keys live in one kernel vault scope (id `@omadia/orchestrator`); LLM access (and the orchestrator's own secret editor) writes only there and rebuilds every installed LLM plugin, so one rotation reaches all three. Boot migration `consolidateProviderCredentials` clears the verifier's and extras' scopes key by key: a copy equal to the kernel key is dropped, every other copy is renamed to `superseded:<key>` (numbered when taken) — never deleted, never logged, never promoted into the kernel scope (a key only a module held must be entered under LLM access; the boot log says so); idempotent. A revoke under LLM access and a provider plugin's uninstall also remove the `superseded:` copies. A provider API key sent to the verifier's or extras' own scope is refused with `400 runtime.provider_key_in_kernel_scope`; both manifests drop their `anthropic_api_key` field (`@omadia/verifier` 0.2.0, `@omadia/orchestrator-extras` 0.3.0). An install that ran extras on a dedicated Anthropic key now runs it on the LLM-access key (old key kept as `superseded:<key>`, boot log warns). The verifier now shares the pool's retry budget. ADR-0215 (Proposed) supersedes the pool part of ADR-0165.
+
+### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
+
+- With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
+  and `totalGroups` reports their number; `group_by` without `aggregate` is refused
+  (`group_by_requires_aggregate`).
+- A filter or `group_by` on a column holding `enc1:` cells is refused with
+  `encrypted_column` (`assertNoEncryptedQueryColumns`, mirrors the `__k_*` refusal of
+  ADR 0098) instead of matching ciphertext.
+- Digit runs over 15 significant digits stay `string` instead of being rounded. The
+  `[dataset-imported]` block no longer blames a missing secret when a file has no text
+  columns. Upload hint and receipt say only text cells are scanned and whether flagged cells
+  are stored encrypted or as pseudonyms; the receipt lists every sheet.
+- plugin-api 1.101.0 (additive).
+
+### Fixed — Dataset import: CSV dialects, ISO dates, linear masking, 25 MB uploads (#1845, #1846, #1847, #1867) (2026-11-26)
+
+- Date cells are stored as ISO-8601 (`d.m.yyyy`, slash dates, XLSX timestamps), so `date`
+  columns sort and filter in date order; impossible dates no longer type a column `date`.
+- `parseCsv` detects the separator (`,` `;` tab), decodes Windows-1252 when the file is not
+  UTF-8, keeps repeated header names as `a`, `a_2`, and returns coded failures
+  (`dataset.csv_unreadable`, `csv_ragged_rows`, `csv_empty`, `row_cap`, `reserved_column`)
+  that the admin UI translates.
+- The import masks the whole table with `maskTableCells` (privacy-guard) in linear time, one
+  surrogate per value per table (#1546), and yields to the event loop; per-cell `maskPrompt`
+  was quadratic and blocked `/health` and every chat (20,000 rows now ~1 s).
+- The web UI raises `proxyClientMaxBodySize` to 26 MiB (`app/_lib/proxyBodyLimit.ts`; the
+  login gate keeps covering `/bot-api`, ADR 0161), answers 413 for larger bodies and
+  refuses an over-limit file before uploading.
+
+### Changed — Subscription CLI runs under the Privacy Shield instead of being refused (#2239, #2241; ADR-0195, ADR-0196) (2026-11-26)
+
+- Agents on the Claude subscription (`claude-cli`) now answer on instances with a privacy
+  guard. The CLI turn gets its own privacy handle (`Orchestrator.cliTurnPrivacy`,
+  `cliTurnPrivacy.ts`); message, steering hint, recall and replayed history are masked
+  before the spawn, loopback tool results are interned, and the v4 tools are offered. The
+  stream is restored, including placeholders split across two chunks
+  (`StreamSurrogateRestorer`). The answer takes the server render and the restore; the
+  receipt is attached to `done`. A guard without a handle still refuses before the spawn.
+- Builder and preview-chat CLI sub-agents run as operator jobs outside the shield, like
+  their API-key path; only `OMADIA_PRIVACY_FORCE_GUARDED` refuses them (decided per
+  recommendation, reversible). The conductor workflow builder reports a CLI privacy refusal
+  as `ConductorBuilderUnavailableError` (503).
+- ADR-0195 supersedes the CLI part of ADR-0165.
+
+### Changed — Privacy Shield: per-operation intern exemptions, diagrams and transcripts (#1866, #1967, #1985; ADR-0197, ADR-0198) (2026-11-26)
+
+- `query_dataset` hands the model `list_datasets` and `get_schema` (column names and types,
+  no sample cell) in clear, so a dataset is found by the name the user gave it; `query_rows`
+  stays interned (`INTERN_EXEMPT_OPERATIONS`, `isInternExemptCall` in
+  `privacyInternPolicy.ts`).
+- `render_diagram`, `create_xlsx` and `create_docx` results (file metadata and link, never a
+  cell value) are exempt, while their handlers still run on the user's restored values
+  (`runsOnModelInput`), so a diagram reply no longer shows the signed URL as an
+  "Originaldaten" table.
+- A `transcribe_recording` transcript of a recording uploaded in the same turn
+  (adapter-stated `storedAttachments` key, ADR-0178) is prompt-masked instead of interned,
+  so the agent can answer about it; any other key, or one typed into the message, stays
+  interned.
+- The public MCP endpoint additionally refuses tools with exempt operations
+  (`query_dataset`) and no longer lists the now-exempt file producers (`render_diagram`,
+  `create_xlsx`, `create_docx`), whose uninterned result its masking check would refuse.
+
+### Fixed — Privacy Shield v4: nested siblings, true totals, every render (#1728, #1848, #1769) (2026-11-26)
+
+- A tool result with one record list next to a nested object (weather: `location`/`current`
+  plus `other_matches`) no longer drops the nested objects in Guarded mode; it stays one
+  nested row, so the main content reaches the model. Empty siblings (`warnings: []`) still
+  let the list become the rows (`v4/datasetStore.ts`).
+- `totalMatched` is envelope metadata instead of a column on every row. The render footer
+  counts the envelope total (`totalMatched`/`total`) instead of the queried page; when the
+  turn dataset holds only a page, the Excel offer names the queried rows instead of
+  promising the full list (`v4/materializer.ts`).
+- A turn that calls `v4_render_answer` more than once shows every render in call order on
+  the buffered and the streaming path (before, the last render overwrote the others). Prose
+  is joined, masked values merged, `isError` only when every render failed
+  (`v4/renderedAnswers.ts`).
+
+### Added — operator tool for owner-less legacy web chats (#1762 follow-up, ADR-0184) (2026-11-26)
+
+- `POST /api/v1/admin/chats/assign-orphans` `{ userId, dryRun? }` gives every web chat without
+  an owner (written before ADR-0180) to one account, stamping its `providerUserId` (the session
+  `sub` the chat routes compare). Owned chats never change; idempotent. `dryRun: true` answers
+  `{ wouldAssign, unreadable }` and changes nothing. A real run writes `admin_audit`
+  `chat.assign_orphans` (target `user:<users.id>`, `after: { owner, count }`) first and changes
+  nothing if that fails. Unknown account 404, disabled account 409.
+
+### Security — bounded plugin services: graphPool table guard, declared memory trees, boundary-only recall (ADR-0255/0256/0257) (2026-11-26)
+
+- **#2230, ADR-0255:** a granted `graphPool` covers only the plugin's own tables. For every
+  plugin that is not bundled, `borrowPool` (`middleware/src/platform/borrowedPool.ts`) runs
+  each statement through `sqlTableGuard.ts` first. A statement that names a kernel relation
+  from `kernelSqlRelations.ts` is refused with `SqlTableRefusedError`
+  (`test/kernelSqlRelations.test.ts` keeps that list complete against every kernel
+  migration). So are dollar-quoted text, `DO`, `CREATE FUNCTION`, SQL-text functions
+  (`query_to_xml`, …), `standard_conforming_strings`/`set_config`, `pg_stats`,
+  `LISTEN`/`NOTIFY`, submittables and another plugin's `plg_` namespace. A query config is
+  copied before it runs. The guarded pool also hides its listeners, `options`, `Client` and
+  internals from `get` and reflection. It does not contain a hostile in-process upload
+  (ADR-0255 residual). channel-teams keeps `teams_conversation_refs`
+  / `teams_attachments`, and dev-platform keeps its `dev_*` tables. The canary sweep gains a
+  `graphPool` probe on Neon.
+- **#2232, ADR-0256:** through `memoryStore@1` a plugin reads `core` and the `_*` trees and
+  changes only the top-level trees its manifest declares: the new manifest field
+  `permissions.memory.trees` (`permissions_summary.memory_trees`, shown on the store page).
+  The first plugin to use a tree owns it (`/memories/_plugin-trees/<tree>.json`, private).
+  `core` is now read-only for plugins. `pairings` stays `@omadia/channel-telegram`'s
+  through a dated legacy row until its manifest declares it.
+- **#2231, ADR-0257:** `contextRetriever`, `sessionBriefing`, `palaiaExcerpt`,
+  `bulkPromotion`, `bulkInconsistencyDetect`, `bulkMergeDetect`, `bulkExcerptMergeDetect`,
+  `inconsistencyDetector`, `mergeCandidateDetector`, `nudgeProviders` and `graphLifecycle`
+  resolve only for the bundled boundary implementers
+  (`BOUNDARY_ONLY_SERVICE_NAMES`). `entityRefBus@1` is publish-only for every other plugin.
+  `GRAPH_BOUNDARY_IMPLEMENTERS` moved to `platform/graphBoundaryImplementers.ts`.
+- ADR-0044's status line now reads superseded in part by 0256, refined by 0255 and 0257.
+
 ### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
 
 - Memory purge, axis "User": the selector may be the omadia user id, the account id from
@@ -151,6 +368,87 @@ changelog.
 - **#1886** — "Delete session" in the agent-unavailable banner removes the session from the list
   and resets the picked agent instead of clearing it (the clear's PUT recreated the session).
 
+### Added — static headers and API keys for MCP servers, kept in the Vault (#1912, ADR-0210) (2026-11-26)
+
+- `GET/PUT /api/v1/operator/mcp-servers/:id/headers` and `headers` on `POST /mcp-servers`
+  (http/sse): plain headers as typed, secret ones as `{header_<name>}` with the value in the
+  Vault; a secret is never returned. Checked names (RFC 9110 token, no transport headers, no
+  duplicates) and values (no CR/LF, ≤ 8192 chars, ≤ 20 headers).
+- A config field marked secret now works in the endpoint too (`getConfigEndpoint`); Discover no
+  longer answers `422 mcp_endpoint_placeholder` for a secret with a stored value.
+- The config schema of http/sse servers follows the endpoint and header placeholders on every
+  read and save; vanished fields are dropped and their Vault secrets deleted.
+- New "Headers" editor in the expanded server row (`ServerHeadersForm.tsx`); secret header
+  fields no longer show up in the config form. Deleting a server deletes its config secrets
+  (best effort, after the connection is dropped). Re-scan failure messages are redacted against
+  the server's stored secrets before they are returned or stored.
+  ADR-0210 (Proposed).
+
+### Security — stdio MCP servers off in the Compose stack; trust model documented (#1914, ADR-0211) (2026-11-26)
+
+- A stdio MCP server runs under the middleware's OS user and can read `/proc/1/environ`
+  (`VAULT_KEY`, `DATABASE_URL`, …) and `/data` (dev vault key), so it can decrypt every stored
+  secret. Decision by recommendation (reversible): accept and document this instead of
+  isolating the child for now. ADR-0211 (Proposed) supersedes ADR-0139 in part.
+- **⚠️ Compose upgrade:** `middleware/compose.defaults.env` now sets `MCP_STDIO_ENABLED=false`.
+  An operator who uses stdio servers sets `MCP_STDIO_ENABLED=true` in `middleware/.env`;
+  until then existing stdio rows are refused at connect time. The built-in default
+  (from source, desktop, Fly) stays `true`.
+- The add-server stdio hint and the catalog card of a stdio entry say that such a server can
+  read the middleware's secrets. `docs/security-architecture.md` §10p, `.env.example`, handoff
+  §10 updated.
+
+### Fixed — MCP Control Center: input checks, re-scan results, risk and grant errors, stdio flag, i18n (#1916, #1941, #1943, #1953, #1954, #1955, #1957, #1959) (2026-11-26)
+
+- **Migration `0116_mcp_server_last_scan`** adds `mcp_servers.last_scan_at` and
+  `last_scan_error`. **#1916** "Re-scan all" and the periodic re-scan stamp every server's
+  outcome; the page shows a summary of the run and a "last re-scan failed" line per server.
+- **#1955** `POST /mcp-servers` validates name, transport, endpoint (http(s) URL, `{placeholder}`
+  allowed) with stable codes; duplicate server and registry names answer 409 `name_taken`; a
+  non-UUID id under `/mcp-servers/…` or `/mcp-registries/…` is a 404 (`routes/mcpServerInput.ts`).
+  The add button stays disabled until name and endpoint are filled.
+- **#1957** `GET /mcp-servers` returns `stdioEnabled`; with `MCP_STDIO_ENABLED=false` the stdio
+  option and catalog Connect for stdio entries are disabled and the hint says why.
+- **#1941** Enabling a server with unacknowledged risks names the tools and their severity.
+- **#1943** "Grant all" skips tools that need a review, grants the rest, lists the skipped ones
+  and always reloads.
+- **#1953** An MCP input-card answer is shown and stored as "Sent to <server>: <field names>";
+  the envelope with the values rides only in the `/api/chat` request, and
+  `PUT /api/chat/sessions/:id` replaces any envelope an older tab sends back
+  (`scrubMcpInputEnvelopes`). Not backfilled: an envelope stored before this change stays until
+  that session is saved again.
+- **#1954** The agent page's tool-grant list reloads after "Save allowlist"; its copy no longer
+  calls itself read-only.
+- **#1959** Structured-output badge reads `skills.verdict.*`, risk codes and audit failure
+  reasons are translated, audit times and the "discovered" time use the locale, `unresolved`
+  renders as "not resolved", ICU plurals for tool/step/connector counts, the add-server dialog
+  uses "du". New ratchet: `scripts/i18n-missing-keys.mjs` (part of `npm run i18n:check`, ceiling
+  0) fails on `t('key')` calls whose key is in no catalog. Not done here: the English OAuth
+  callback page (left to W09-10, which reworks its texts in #1924).
+
+### Fixed — public MCP endpoint: write limits, usage log, tool errors, binding writes (#1935–#1938, #1940, #1949, #1952) (2026-11-26)
+
+- **#1935** A changed write limit applies on the next call: `createRateLimiter` reads the
+  capacity per call instead of pinning it on first sight. The bindings form refuses an empty
+  or out-of-range write budget and warns that `0` blocks every write.
+- **#1936** Every authenticated `POST /api/v1/mcp` writes one entry to the key's usage log
+  (`publicMcpUsage.ts`; outcome `ok`, `error`, `forbidden`, `rate_limited`), so an MCP-only key
+  shows "last used" on `/admin/api-keys`.
+- **#1937** A tool that reports an error (MCP `isError`, upstream JSON-RPC error, missing OAuth
+  connection) is answered as an `isError` result with a generic text and logged as
+  "tool reported an error", not as "privacy masking did not run". ADR-0212 (Proposed)
+  supersedes that bullet of ADR-0142. `ToolDispatchService` now flags guarded control-flow
+  results `isError` (the loopback MCP server forwards the flag).
+- **#1938** A tool listed under a binding's write tools gets the idempotency replay too
+  (`ToolDispatchOptions.treatAsWrite`).
+- **#1940** `mcp:write:<tool>` accepts `[A-Za-z0-9_-]{1,64}` (upper case kept, as
+  `mcpNativeToolName` produces it); a binding refuses write tools outside that grammar
+  (`write_tool_name_invalid`).
+- **#1949** Saving over an existing binding needs `replace: true` (409 `binding_exists`
+  otherwise; the pane asks first; ADR-0213, Proposed). Revoked and expired keys get their own
+  warnings (`key_revoked`, `key_expired`) and no "Active" badge.
+- **#1952** `/api/v1/mcp/` reaches the endpoint, `serverInfo.version` is the build version,
+  README status codes corrected, `PUBLIC_MCP_*` in `.env.example` and handoff §10.
 ### Security — web, routine and API turns are one-person rooms; memories private by default (#1774, #1826, #1823, ADR-0182, ADR-0183) (2026-11-26)
 
 - Web chat turns carry `TurnOrigin { channelType: 'http', scope: personal(<omadia user id>) }`,
@@ -340,6 +638,68 @@ changelog.
   kernel owns that link, and the plugin attests only the channel identity. Implementation
   follows. Until it ships, a channel does not claim a link in its texts.
 
+### Fixed — Builder dashboard pages: preview mount slug and tool input (2026-11-26)
+
+The live preview of a dashboard page looked for route captures under the scoped
+package name (`/p/@omadia/agent-weather`) while the generated plugin mounts
+under the unscoped slug; it now uses the same `uiRouteMountSlug` and renders
+(#1789). The page form gets an input field for `data_binding.args` that names
+the bound tool's required fields still missing; `validateSpecForCodegen` flags
+`ui_route_data_binding_missing_args`; the builder prompt documents `args`; and
+the library templates (`list-card`, `kpi-tiles`) show "The data could not be
+loaded" with the missing field names instead of the raw Zod output under a
+hard-coded German heading (#1808).
+
+### Security — Builder hygiene: issue-report redaction + daily cap, test-credential purge, SkillSpector high-risk (2026-11-26)
+
+The core-bug report sanitizer also redacts Anthropic / OpenAI keys, JWTs,
+`key=` / `token=` / `password=` values (the key name stays), absolute home
+paths and link-local / cloud-metadata addresses; the title is sanitized like
+the body in the tool, the confirm card, the `issues/new` URL and the
+create-issue route; and each prepared report is written to
+`builder_triage_log`, so the cap of 3 reports per operator per 24 h finally
+applies (#1783). Deleting a draft drops its test credentials from the vault;
+`DELETE /drafts/:id/permanent` (and "Delete permanently" in the deleted list)
+removes a deleted draft for good; a daily purge removes soft-deleted published
+drafts past the grace period together with their credentials (#1790). The
+SkillSpector sidecar treats exit 1 with a valid report as a completed
+above-threshold scan, so high-risk packages show `high_risk` with their
+findings instead of "Scan failed"; exit 2 and an exit-1 report without issues
+stay failures (#1813).
+
+### Fixed — Builder runtime smoke: a green result needs a handler that ran, on stub credentials (2026-11-26)
+
+The post-build runtime smoke activates its own instance of the fresh build with
+stub setup values (`'smoke-test'`) and `ctx.smokeMode === true` instead of the
+warm preview handle with the operator's test credentials, and never calls a
+tool the spec declares `side_effects: 'write'` (`skipped`; all skipped →
+`writes_skipped`) (#1778). A tool whose input schema rejects the synthetic input
+(`validation_failed`) now fails the smoke, because its handler never ran; an
+upstream 401/403 on the stub credentials stays a controlled exit
+(`auth_rejected`) (#1727, decision by recommendation, reversible). ADR-0232
+(Proposed) supersedes the smoke criterion of ADR-0056.
+
+### Fixed — Builder codegen: playbook lists, escaped spec text, clean tsc errors, `requires:`, linted spec writes (2026-11-26)
+
+#1729: `manifest.yaml` now carries `playbook.not_for` and `playbook.example_prompts` exactly as in the spec, written through the YAML AST (the index-bound `NOT_FOR_CASE_1` / `EXAMPLE_PROMPT_1/2` placeholders are gone from both boilerplates); empty lists build, and a tool without `output` gets no `output_schema` instead of the search-result default. #1736: placeholder values are encoded for the file they land in (`codegenPlaceholders.ts`: JSON and YAML through their AST, TS/JS string-escaped, HTML-escaped), so a description with `"` or `\` no longer breaks `package.json` / `manifest.yaml`; a value that itself contains `{{…}}` is refused with the spec field named. #1739: `scripts/build-zip.mjs` (both boilerplates, identical) ends a failed step with one `✗ build-zip: …` line and exit 1 instead of throwing, and `parseTscErrors` no longer folds stack frames, `node:internal`, `throw new Error` or `file:///…` lines into the last tsc error. #1779: codegen writes `requires: ['<service>@^<major>']` for every `external_reads` service (`codegenRequires.ts`); the major comes from the provider's `provides:` (new `ServiceTypeRegistration.major`, filled at activation in `index.ts`), and a provider without one fails codegen with the field named, so preview and install judge the same declaration. #1795: `PATCH /api/v1/builder/drafts/:id/spec` runs the manifest linter like `patch_spec` and answers `422 builder.manifest_lint_failed` with the violations, nothing stored; `lint_spec` reports manifest-linter violations as `manifest.<kind>` errors.
+
+### Fixed — Builder slot code travels with the spec (preview, self-extension, bundles, rollback) (2026-11-26)
+
+The Builder keeps slot code in `draft.slots`, not in `spec.slots`; five paths
+passed only the spec and failed codegen with `missing_required_slot`. The
+manifest preview now passes the draft's slots (#1726). A self-extension
+proposal patches the live spec with the draft's slots merged in, installs as
+the next patch version, and removes its throwaway draft when the install fails
+(#1786). Profile snapshots and bundles carry `knowledge/slots.json`; the bundle
+import restores it into the new draft, checks the draft quota like create /
+restore / clone, and reports a replaced installed plugin version
+(`replaced_version`), which the import dialog shows before it opens the draft
+(#1787). A rollback restores the draft's spec and slots (spec only for older
+snapshots, and says so) and schedules a preview rebuild (#1788). A bundle whose
+plugin id + version is already installed keeps the installed package and
+creates the draft instead of failing on the duplicate-version guard
+(`kept_installed`, #1811).
+
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
 
 The auto-rebuild scheduler and the preview routes now share one build-and-warm
@@ -363,6 +723,57 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Added — MCP `structuredContent` feeds the data side channel (#547, ADR-0021) (2026-11-26)
+
+- MCP tools their server declares `readOnlyHint` are now data-action read tools for
+  `deliver_data`. The table is built from the call's `structuredContent` (captured for that
+  one call, `captureMcpStructured` / `mcpReadToolInvoker`) instead of the model-facing text,
+  which is often prose. The model still gets only the status (ADR-0021, ADR-0094). A call
+  without an attributable caller (a trigger firing) is refused by the fast-path invoker.
+
+### Fixed — typed MCP call outcomes, no interaction from unattended runs (ADR-0206) (2026-11-26)
+
+- **#1909** Conductor MCP action steps fail on an authorization request or an
+  `input_required` answer instead of storing the prompt as the step result. Unattended
+  calls (Conductor, routines, triggers) start no OAuth flow and park no input request.
+  New `McpManager.callToolResult` returns `{ text, status }`; `callTool` is unchanged.
+- **#1944** The Control Center test call reports `ok` from the call's status, so a
+  delivered result whose text starts with `Error:` is no longer shown as failed. The
+  response also carries `status`.
+- **#1906** A `per_user` OAuth-protected MCP server with no caller identity receives
+  nothing (new `McpAuthProvider.blockedReason`, runtime and Builder router). Servers
+  without OAuth are called as before: they hold no per-user credential. A tool error the
+  server answered is reported as that error, not as "Nothing was sent to the server". The
+  delegation switch for servers without OAuth follows in the OAuth-UX change.
+- **#1907** Routines record the creating turn's MCP identity (routines migration
+  `0007_routines_mcp_user_key.sql`, column `routines.mcp_user_key`) and run as their owner
+  on `per_user` servers. Older routines keep failing closed there, with a message that fits
+  an unattended run.
+- **#1921** The MCP call audit names sub-agents (not the orchestrator), API-key calls of
+  the public MCP endpoint (caller kind `api_key`; acting identity `apikey:<id>` when no
+  user resolved), and records no turn instead of the web chat's `http-chat-<scope>`
+  placeholder; a subscription-CLI turn under the web chat records its own turn id.
+- Unattended mode is carried through plugin `ctx.mcp`, skill-bound MCP tools and
+  consultations, and trigger data actions run unattended.
+
+### Fixed — MCP calls are re-sent only when safe; one failure ends only its own request (ADR-0205) (2026-11-26)
+
+- **#1904** `McpManager.callTool` no longer re-sends an answerless `tools/call` (timeout,
+  dropped connection, socket reset) unless the server declared the tool `readOnlyHint` or
+  `idempotentHint`. Otherwise the model gets `Error: outcome unknown — …` and is told to
+  have the user check before trying again. Every attempt that reached the server gets its
+  own `mcp_call_log` row. Discovery now keeps `idempotentHint` on the descriptor.
+- **#1905** A failed call drops the pooled connection only when it is really gone
+  (transport closed, session lost), under its exact key and only if it still holds the
+  connection the call used. One user's timeout no longer closes the shared stdio /
+  token-less HTTP client under other users' in-flight calls.
+- **#1919** Every `tools/call` carries a progress token, so a server that reports progress
+  keeps its call alive past `OMADIA_MCP_CALL_TIMEOUT_MS` (up to the total ceiling).
+- **#1945** An HTTP 404 on a request with an `Mcp-Session-Id` starts a new session and
+  sends the call once more.
+- Drift fix: the agent-reach view read `annotations.readOnlyHint` from persisted
+  descriptors, which store the hint flat; it now reads both.
+- ADR-0205 (Proposed) supersedes ADR-0008's "dropped on a failed tool call" rule.
 
 ### Fixed — memory notes keep their meaning under prompt masking (ADR-0191) (2026-11-26)
 

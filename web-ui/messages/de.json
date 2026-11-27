@@ -694,7 +694,7 @@
     "chatValidationFailed": "Validierungsprobleme:",
     "chatValidationWarnings": "Warnungen zum Entwurf",
     "chatDraftHeading": "Entwurf",
-    "chatDraftSummary": "{steps} Step(s) · Trigger: {trigger}",
+    "chatDraftSummary": "{steps, plural, one {# Schritt} other {# Schritte}} · Trigger: {trigger}",
     "chatPublish": "Entwurf veröffentlichen",
     "chatPublishing": "Veröffentliche…",
     "chatPublished": "{slug} veröffentlicht.",
@@ -713,7 +713,7 @@
     "chatPersonPartial": "Verzeichnis unvollständig — ein fehlender Name beweist nichts.",
     "chatPersonApplied": "Übernommen: {name}",
     "chatPersonChange": "Ändern",
-    "chatDraftMissing": "{count} Connector(en) fehlen",
+    "chatDraftMissing": "{count, plural, one {# Connector fehlt} other {# Connectors fehlen}}",
     "chatConnectedNote": "{actionId} für Step {stepId} verbunden.",
     "actionMcpBadge": "MCP",
     "chatProposalCoverage": "{filled} von {total} Slots vorausgefüllt",
@@ -1445,6 +1445,10 @@
         "what": "Die Änderung wurde gespeichert, aber nicht jedes Plugin, das sie nutzt, ist neu gestartet.",
         "next": "Speichere erneut, um den Neustart zu wiederholen. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
       },
+      "provider_key_in_kernel_scope": {
+        "what": "Provider-API-Keys werden nicht mehr pro Plugin gespeichert. Agentenlaufzeit, Verifier und Hintergrund-Jobs nutzen alle die Keys unter LLM-Zugang.",
+        "next": "Trag den Key unter Admin → LLM-Zugang ein. Hier wurde nichts gespeichert."
+      },
       "empty_secrets_patch": {
         "what": "Beim Speichern war kein geänderter Wert dabei.",
         "next": "Ändere oder leere mindestens ein Feld, bevor du speicherst."
@@ -1816,7 +1820,9 @@
       "heading": "„{server}“ braucht für „{tool}“ noch weitere Angaben.",
       "secretHint": "Bei der Eingabe verborgen — an den Server geht der Wert unverändert.",
       "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
-      "submit": "An Server senden"
+      "submit": "An Server senden",
+      "sentLabel": "An „{server}“ gesendet: {fields}",
+      "sentLabelEmpty": "An „{server}“ gesendet (keine Felder ausgefüllt)"
     },
     "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
@@ -2314,6 +2320,7 @@
       "multi_orchestrator_unavailable": "Die Multi-Agent-Laufzeit ist nicht verfügbar.",
       "not_found": "Diesen Agenten gibt es nicht mehr — lad die Seite neu.",
       "plugin_not_assigned": "Dieses Plugin ist dem Agenten nicht mehr zugewiesen — lad die Seite neu.",
+      "model_policy_tool_incompatible": "Dieser Provider kann die Turns eines Agenten nicht ausführen: Das Abo-CLI beantwortet nur Anfragen ohne Tools. Wähle einen Provider mit API-Key.",
       "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
       "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
       "unknown": "Request fehlgeschlagen: {detail}",
@@ -2451,7 +2458,7 @@
     },
     "grants": {
       "heading": "Tool-Grants",
-      "hint": "Nur-Lese-Ansicht der Tools, die dieser Agent aufrufen darf, und der MCP-Server, die seinen Plugins zugewiesen sind. Grants werden auf der MCP-Admin-Seite verwaltet.",
+      "hint": "Die Tools, die dieser Agent aufrufen darf, und die MCP-Server, die seinen Plugins zugewiesen sind. Grants änderst du im MCP-Server-Editor darunter oder auf der MCP-Admin-Seite; diese Liste aktualisiert sich nach jedem Speichern.",
       "loading": "Grants werden geladen…",
       "refresh": "Aktualisieren",
       "empty": "Dieser Agent hält noch keine Tool-Grants.",
@@ -2509,6 +2516,10 @@
       "sameRef": "Fallback und Primär sind dasselbe Modell — anderen Fallback wählen oder Keiner.",
       "sameProvider": "Gleicher Provider wie das primäre Modell — ein Ausfall des Providers trifft beide.",
       "deferred": "Das primäre Modell nennt {provider}, der Host läuft aber auf {active} und hat keinen Pool für {provider} — der Effort greift, der Modellwechsel nicht.",
+      "toolIncompatible": "Diese Richtlinie nennt {provider}, das die Turns dieses Agenten nicht ausführen kann (das Abo-CLI beantwortet nur Anfragen ohne Tools). Wähle einen Provider mit API-Key und speichere.",
+      "primaryUnavailable": "{provider} ist gerade nicht verfügbar (kein Key oder der Provider wurde entfernt). Mit Fallback „Keiner“ scheitern die Turns dieses Agenten mit einem Hinweis; mit Fallback laufen sie auf dem Fallback.",
+      "summaryUnavailableNoFallback": "{primary} nicht verfügbar · kein Fallback, Turns scheitern",
+      "summaryUnavailableWithFallback": "{primary} nicht verfügbar · läuft auf Fallback {fallback}",
       "fallbackNoVision": "Das Fallback-Modell kann keine Bilder lesen — bei Turns mit Anhängen läuft das primäre Modell ohne Fallback.",
       "primaryNoVision": "Das primäre Modell kann keine Bilder lesen.",
       "summaryAuto": "Auto ({model})",
@@ -3804,6 +3815,8 @@
           "running": "smoke #{buildN} läuft …",
           "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
           "okTools": "Smoke #{buildN} ✓ ({count} {count, plural, one {Tool} other {Tools}} ok)",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {das einzige Tool schreibt, darum hat der Smoke es nicht aufgerufen} other {alle # Tools schreiben, darum hat der Smoke keines aufgerufen}}",
+          "writesSkippedSuffix": "{count, plural, one { · # schreibendes Tool nicht aufgerufen} other { · # schreibende Tools nicht aufgerufen}}",
           "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
           "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
@@ -4157,7 +4170,11 @@
           "heading": "Datenquelle",
           "toolLabel": "Tool:",
           "noToolOption": "— Kein Tool gebunden —",
-          "help": "Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output fließt als Props in die Render-Funktion."
+          "help": "Das gewählte Tool wird bei jedem Seitenaufruf mit der festen Eingabe darunter aufgerufen; sein Output fließt als Props in die Render-Funktion.",
+          "argsLabel": "Eingabe:",
+          "argsPlaceholder": "'{' \"city\": \"Berlin\" '}'",
+          "argsInvalid": "Die Eingabe muss ein JSON-Objekt sein, zum Beispiel '{' \"city\": \"Berlin\" '}'.",
+          "argsMissing": "Das Tool verlangt {count, plural, one {dieses Feld} other {diese Felder}}, das die Eingabe nicht setzt: {fields}"
         },
         "interactive": {
           "label": "Interaktiv (Hydration)",
@@ -4256,6 +4273,8 @@
       "toastNoDiff": "Kein Unterschied seit letztem Snapshot",
       "toastSnapshotCreated": "Snapshot erstellt ({hash})",
       "toastRollbackDone": "Rollback abgeschlossen · {count, plural, one {# Datei} other {# Dateien}} wiederhergestellt",
+      "toastRollbackDraftRestored": "Rollback abgeschlossen · Spec und Slot-Code des Drafts wiederhergestellt",
+      "toastRollbackSpecOnly": "Rollback abgeschlossen · Spec des Drafts wiederhergestellt; dieser Snapshot enthält keinen Slot-Code, die Slots bleiben, wie sie sind",
       "noteOptional": "Notiz (optional)",
       "notePlaceholder": "Warum dieser Stand?",
       "vendorBundleLabel": "Plugin-ZIPs ins Bundle packen (Air-Gap-Export)",
@@ -4270,7 +4289,7 @@
       "colLive": "Live",
       "rollbackConfirmTitle": "Rollback bestätigen",
       "rollbackBodyPrefix": "Live-",
-      "rollbackBodySuffix": " + Knowledge-Dateien werden auf den Snapshot-Stand zurückgesetzt. Plugin-Pins bleiben unverändert.",
+      "rollbackBodySuffix": " + Knowledge-Dateien, die Spec des Drafts und sein Slot-Code werden auf den Snapshot-Stand zurückgesetzt. Ein Snapshot von vor der Slot-Code-Erfassung stellt nur die Spec wieder her. Plugin-Pins bleiben unverändert.",
       "rollbackTypeHint": "Tippe die ersten 12 Zeichen des Bundle-Hashes ein, um zu bestätigen.",
       "rollbackExpected": "Erwartet:",
       "rollbackExecute": "Rollback durchführen",
@@ -4420,6 +4439,8 @@
           "failed": "Export fehlgeschlagen: {message}"
         },
         "confirmDelete": "Draft \"{name}\" löschen?",
+        "confirmPurge": "Draft „{name}“ endgültig löschen? Spec, Slot-Code und Test-Zugangsdaten werden entfernt. Das lässt sich nicht rückgängig machen.",
+        "purge": "Endgültig löschen",
         "lastUpdated": "Zuletzt {relative}",
         "relative": {
           "justNow": "gerade eben",
@@ -4448,7 +4469,13 @@
         },
         "errors": {
           "notZip": "Bundle muss eine .zip-Datei sein.",
-          "conflict": "Profile hat bereits abweichenden Live-Content ({assets}). Aktiviere „Überschreiben\" um zu ersetzen."
+          "conflict": "Profile hat bereits abweichenden Live-Content ({assets}). Aktiviere „Überschreiben\" um zu ersetzen.",
+          "quotaExceeded": "Das Draft-Limit ist erreicht. Lösch einen Draft und importier dann erneut."
+        },
+        "notice": {
+          "replaced": "Das installierte Plugin {id} wurde durch dieses Bundle von {from} auf {to} umgestellt.",
+          "kept": "{id} {version} war schon installiert; das installierte Paket bleibt.",
+          "continue": "Weiter"
         }
       },
       "quota": {
@@ -4805,6 +4832,7 @@
       "permissions": {
         "memoryReads": "Memory · Reads",
         "memoryWrites": "Memory · Writes",
+        "memoryTrees": "Memory · Eigene Ordner",
         "graphReads": "Graph · Reads",
         "graphWrites": "Graph · Writes",
         "entitySystems": "Graph · Entity-Systeme",
@@ -4816,7 +4844,7 @@
         "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
         "publicPathsTitle": "Öffentliche (nicht authentifizierte) Pfade",
         "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
-        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
+        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird entfernt, wenn das Plugin deinstalliert wird.",
         "none": "Keine Berechtigungen deklariert.",
         "runtimeCredentials": "Laufzeit-Credentials",
         "sqlNotGranted": "Deklarieren ist nicht Erteilen: Das Plugin erhält erst eine Datenbankverbindung, wenn Sie nach der Installation unter „Freigaben“ zustimmen."
@@ -4927,6 +4955,7 @@
       "success": "Installation erfolgreich",
       "installNow": "Jetzt installieren",
       "unknownError": "Unbekannter Fehler.",
+      "missingPlugins": "Fehlende Plugins:",
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
       "updateActivationFailedLead": "Aktualisiert, aber das Plugin ist nicht gestartet.",
       "activationFailedLead": "Installiert, aber das Plugin ist nicht gestartet.",
@@ -5339,8 +5368,20 @@
       "restoreBody": "Der Key {keyId} erhält sofort alles zurück, was auf dieser Zeile steht: {tools}.",
       "restoreConfirm": "Wiederherstellen",
       "warnings": {
-        "keyUnknown": "Es existiert noch kein API-Key mit dieser ID. Das Binding wurde gespeichert, erreicht aber nichts, solange kein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
-        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten."
+        "keyUnknown": "Es gibt keinen API-Key mit dieser ID. Das Binding erreicht nichts, bis ein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
+        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten.",
+        "keyRevoked": "Der API-Key dieses Bindings wurde widerrufen, daher erreicht das Binding nichts.",
+        "keyExpired": "Der API-Key dieses Bindings ist abgelaufen, daher erreicht das Binding nichts."
+      },
+      "keyInactive": "Key inaktiv",
+      "replaced": "Das bisherige Binding dieses Keys wurde ersetzt.",
+      "replaceTitle": "Bestehendes Binding ersetzen?",
+      "replaceBody": "Der Key {keyId} ist bereits an {agent} gebunden, mit den Tools {tools}. Speichern ersetzt Agent, Tools und Schreib-Budget dieses Bindings.",
+      "replaceConfirm": "Binding ersetzen",
+      "writeRateInvalid": "Gib für das Schreib-Budget eine ganze Zahl von 0 bis 600 ein.",
+      "writeRateZero": "Ein Schreib-Budget von 0 blockiert jeden Aufruf der Schreib-Tools.",
+      "errors": {
+        "writeToolNameInvalid": "Ein Schreib-Tool-Name darf nur Buchstaben, Ziffern, „_“ und „-“ enthalten (höchstens 64 Zeichen), sonst lässt er sich nie als Schreib-Scope vergeben. ({detail})"
       }
     },
     "plugins": {
@@ -5354,7 +5395,7 @@
       "transport": "Transport",
       "transportDeprecated": "Veraltet",
       "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
-      "stdioHint": "Ein stdio-Server läuft als Prozess im Middleware-Container – mit den Rechten der Middleware (gleicher Benutzer, Dateisystem- und Netzwerkzugriff). Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
+      "stdioHint": "Ein stdio-Server läuft als Prozess im Middleware-Container, unter dem Benutzer der Middleware. Seine eigene Umgebung ist minimal, er kann aber die Umgebung und das Datenverzeichnis der Middleware lesen, darunter VAULT_KEY und DATABASE_URL, und damit jedes gespeicherte Secret. Füge nur Befehle hinzu, denen du vertraust. Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
       "showDeprecatedTransports": "Veraltete Transports anzeigen",
       "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
@@ -5409,6 +5450,42 @@
       "state": {
         "enabled": "aktiv",
         "disabled": "deaktiviert"
+      },
+      "unackedRisks": "{count, plural, one {Dieser Server lässt sich noch nicht aktivieren: ein Tool muss zuerst geprüft werden: {tools}.} other {Dieser Server lässt sich noch nicht aktivieren: # Tools müssen zuerst geprüft werden: {tools}.}} Öffne den Server, prüfe die Tools und bestätige sie.",
+      "stdioOptionDisabled": "stdio (abgeschaltet)",
+      "stdioDisabledHint": "stdio-Server sind auf diesem Deployment abgeschaltet (MCP_STDIO_ENABLED=false). Du kannst nur http-Server hinzufügen.",
+      "rescanSummary": "{servers, plural, one {# Server} other {# Server}} neu gescannt, {tools, plural, one {# Tool} other {# Tools}} geprüft, {failed, plural, =0 {keine Fehler} one {# Server fehlgeschlagen} other {# Server fehlgeschlagen}}.",
+      "rescanFailure": "{name}: {error}",
+      "lastScanFailedAt": "Letzter Re-Scan fehlgeschlagen ({at})",
+      "lastScanFailed": "Letzter Re-Scan fehlgeschlagen",
+      "headers": {
+        "title": "Header",
+        "intro": "Statische Request-Header, zum Beispiel ein API-Key in x-api-key oder Authorization: Bearer …. Ein als geheim markierter Header wird verschlüsselt im Vault gespeichert und nie wieder angezeigt; lass das Feld leer, um den gespeicherten Wert zu behalten. Nimm für einen Key lieber einen Header als die Endpunkt-URL: Eine Fehlermeldung des Servers kann die URL zitieren.",
+        "name": "Header-Name",
+        "namePlaceholder": "x-api-key",
+        "value": "Header-Wert",
+        "valuePlaceholder": "Wert",
+        "secret": "geheim",
+        "secretStored": "•••••••• (gespeichert — leer lassen zum Behalten)",
+        "secretPlaceholder": "geheimen Wert eingeben",
+        "add": "Header hinzufügen",
+        "remove": "Entfernen",
+        "save": "Header speichern",
+        "saved": "Gespeichert",
+        "errors": {
+          "nameInvalid": "Ein Header-Name darf nur Buchstaben, Ziffern und - _ . ! # $ % & ' * + ^ ` | ~ enthalten.",
+          "nameReserved": "Diesen Header setzt der MCP-Transport selbst (zum Beispiel Content-Type, Accept, Host).",
+          "nameDuplicate": "Ein Header steht doppelt in der Liste.",
+          "valueInvalid": "Ein Header-Wert darf keinen Zeilenumbruch enthalten und höchstens 8192 Zeichen lang sein.",
+          "valueRequired": "Ein nicht geheimer Header braucht einen Wert.",
+          "secretRequired": "Ein neuer geheimer Header braucht einen Wert.",
+          "tooMany": "Ein Server hat höchstens 20 Header.",
+          "secretsUnavailable": "Es ist kein Vault konfiguriert, daher lassen sich keine geheimen Header speichern.",
+          "invalid": "Die Header-Liste ließ sich nicht lesen. Lade die Seite neu und versuche es noch einmal.",
+          "notSupported": "Ein stdio-Server bekommt seine Zugangsdaten als Config-Felder, nicht als Header.",
+          "loadFailed": "Die Header ließen sich nicht laden ({detail}).",
+          "saveFailed": "Die Header ließen sich nicht speichern ({detail})."
+        }
       }
     },
     "sandbox": {
@@ -5470,7 +5547,7 @@
       "browseOnly": "nur Ansicht",
       "browseOnlyHint": "Dieser Registry-Eintrag hat keinen verbindbaren Endpoint — er verweist nur auf die Quelle (ein selbst gehosteter Server). Hoste ihn selbst und füge ihn dann manuell über „Server hinzufügen\" hinzu.",
       "authHintRemote": "🔒 braucht evtl. Autorisierung",
-      "authHintLocal": "lokal (Env-Zugangsdaten)",
+      "authHintLocal": "lokal (stdio): läuft in der Middleware und kann ihre Secrets lesen",
       "addRegistry": "Registry hinzufügen",
       "addRegistryConfirm": "Registry hinzufügen",
       "removeRegistry": "Registry entfernen",
@@ -5499,7 +5576,8 @@
       "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen.",
       "errorBlocked": "Die Registry „{name}“ ist aus Sicherheitsgründen gesperrt.",
       "errorBlockedHint": "Eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen. Private und Intranet-Adressen sind erlaubt. Ändere die Registry-URL oder wähle oben eine andere Registry.",
-      "errorDetail": "Grund: {detail}"
+      "errorDetail": "Grund: {detail}",
+      "stdioDisabledHint": "Dieser Eintrag läuft als stdio-Server, und stdio ist auf diesem Deployment abgeschaltet."
     },
     "grants": {
       "grantHeading": "Tools einem Agenten zuweisen",
@@ -5508,7 +5586,7 @@
       "grantAll": "Alle Tools zuweisen",
       "grantHint": "Agent und Server wählen, dann die Tools zuweisen, die er nutzen darf. Das ist der Schritt, der einen registrierten Server im Chat nutzbar macht.",
       "noToolsDiscover": "Dieser Server hat noch keine erkannten Tools — führe zuerst auf dem Server-Tab Discover aus.",
-      "toolCount": "{count} Tools",
+      "toolCount": "{count, plural, one {# Tool} other {# Tools}}",
       "holder": "Vergeben an",
       "server": "Server",
       "tool": "Tool",
@@ -5532,7 +5610,8 @@
       "manageHint": {
         "skill": "im Skill-Editor verwalten",
         "plugin": "über Plugin-Grants verwalten"
-      }
+      },
+      "grantAllSkipped": "{count, plural, one {Ein Tool wurde nicht freigegeben, weil es zuerst geprüft werden muss: {tools}.} other {# Tools wurden nicht freigegeben, weil sie zuerst geprüft werden müssen: {tools}.}}"
     },
     "audit": {
       "time": "Zeit",
@@ -5554,6 +5633,18 @@
         "plugin": "Plugin",
         "unattributed": "Nicht zugeordnet",
         "api_key": "API-Key (Public MCP)"
+      },
+      "reason": {
+        "authRequired": "Der Server braucht zuerst eine Anmeldung.",
+        "maskingSkipped": "Die Privacy-Maskierung lief nicht; das Ergebnis wurde verworfen.",
+        "maskingFailed": "Die Privacy-Maskierung ist fehlgeschlagen; das Ergebnis wurde verworfen.",
+        "privacyProviderAbsent": "Es ist kein Privacy-Provider installiert.",
+        "writeRateLimited": "Schreib-Limit des Keys erreicht.",
+        "notAllowlisted": "Das Tool ist für diesen Key nicht freigegeben.",
+        "noBinding": "Der Key hat kein öffentliches MCP-Binding.",
+        "agentInactive": "Der gebundene Agent ist nicht aktiv.",
+        "capacity": "Der Endpunkt war ausgelastet.",
+        "toolError": "Das Tool hat einen Fehler gemeldet."
       }
     },
     "guard": {
@@ -5575,7 +5666,7 @@
         "registryTab": "Registry",
         "manualTab": "Manuell",
         "loadingRegistries": "Registries werden geladen…",
-        "noRegistries": "Es sind keine Registries konfiguriert. Fügen Sie den Server stattdessen manuell hinzu.",
+        "noRegistries": "Es sind keine Registries konfiguriert. Füge den Server stattdessen manuell hinzu.",
         "useManual": "Manuell einrichten",
         "registryLabel": "Registry",
         "searchLabel": "Registry durchsuchen",
@@ -5592,7 +5683,7 @@
         "statusEnabled": "aktiv",
         "statusDisabled": "deaktiviert",
         "serviceBadge": "Service",
-        "toolCount": "{count} Tool(s)"
+        "toolCount": "{count, plural, one {# Tool} other {# Tools}}"
       },
       "manual": {
         "nameLabel": "Servername",
@@ -5600,7 +5691,7 @@
         "transportHttp": "HTTP",
         "transportSse": "SSE",
         "transportStdio": "Standardein- und -ausgabe",
-        "sseDeprecated": "SSE ist für neue Server veraltet. Verwenden Sie nach Möglichkeit HTTP.",
+        "sseDeprecated": "SSE ist für neue Server veraltet. Verwende nach Möglichkeit HTTP.",
         "endpointLabel": "Endpunkt",
         "endpointPlaceholder": "https://beispiel.de/mcp",
         "create": "Server erstellen",
@@ -5612,12 +5703,12 @@
       "connect": {
         "server": "{name} wird verbunden",
         "busy": "Der Server wird aktiviert und seine Tools werden ermittelt…",
-        "needsAuth": "Melden Sie sich beim Anbieter an und starten Sie die Ermittlung danach erneut.",
+        "needsAuth": "Melde dich beim Anbieter an und starte die Ermittlung danach erneut.",
         "retry": "Ermittlung wiederholen",
         "retrying": "Wird wiederholt",
         "detailsUnknown": "Details nicht verfügbar",
         "configRequired": "Für folgende Felder ist eine Konfiguration erforderlich: {fields}.",
-        "endpointPlaceholder": "Ersetzen Sie diese Platzhalter im Endpunkt: {placeholders}.",
+        "endpointPlaceholder": "Ersetze diese Platzhalter im Endpunkt: {placeholders}.",
         "configure": "Im Control Center konfigurieren",
         "slow": "Die Ermittlung dauert länger als erwartet. Der Server ist möglicherweise nicht erreichbar – Endpunkt prüfen ({endpoint}) oder zurückgehen und korrigieren.",
         "authorizedButRefused": "Du bist autorisiert, aber der Server lehnt die Ermittlung weiterhin ab (HTTP 403). Meist stimmt der Endpunkt-Pfad nicht – viele Server bieten MCP unter /mcp an, nicht an der Wurzel ({endpoint}). Endpunkt im Control Center korrigieren und erneut versuchen."
@@ -5630,6 +5721,17 @@
         "delegationButton": "Service-Delegation aktivieren"
       },
       "initialServerMissing": "Der verbundene Server ist nicht mehr verfügbar – wähle oder erstelle einen."
+    },
+    "input": {
+      "nameRequired": "Gib einen Namen ein.",
+      "nameTooLong": "Der Name ist zu lang (höchstens 120 Zeichen).",
+      "endpointRequired": "Gib einen Endpunkt ein: eine URL für http, eine Kommandozeile für stdio.",
+      "endpointInvalid": "Der Endpunkt muss eine http://- oder https://-URL sein. Platzhalter in geschweiften Klammern sind erlaubt.",
+      "invalidTransport": "Wähle einen Transport: http, stdio oder sse.",
+      "invalidStatus": "Der Status muss aktiv oder deaktiviert sein.",
+      "nameTaken": "Dieser Name ist schon vergeben. Wähle einen anderen.",
+      "urlInvalid": "Die Registry-URL muss eine http://- oder https://-URL sein.",
+      "notFound": "Dieser Eintrag existiert nicht mehr. Lade die Seite neu."
     }
   },
   "adminRegistries": {
@@ -5704,7 +5806,7 @@
         "plugin": "Plugin-Scope"
       },
       "mcpWriteToolsHint": "Tool-Namen, durch Kommas getrennt. Jeder Name gewährt den Scope {prefix}name für genau dieses Tool.",
-      "mcpWriteToolsInvalid": "Tool-Namen dürfen nur Kleinbuchstaben, Ziffern, „_“ und „-“ enthalten und müssen mit einem Buchstaben beginnen.",
+      "mcpWriteToolsInvalid": "Tool-Namen dürfen nur Buchstaben, Ziffern, „_“ und „-“ enthalten (höchstens 64 Zeichen).",
       "expiryInvalid": "Das Ablaufdatum muss in der Zukunft liegen.",
       "scopesUnavailable": "Die Scope-Liste konnte nicht geladen werden, daher wird nur chat:write angeboten."
     },
@@ -6585,10 +6687,14 @@
     },
     "upload": "Importieren",
     "uploading": "Importiert",
-    "uploadLimits": "Höchstens {maxRows} Zeilen und {maxMb} MB pro Datei. Jede Zelle durchläuft vor dem Speichern den Privacy-Scan.",
+    "uploadLimits": "Bis {maxRows} Zeilen und {maxMb} MB pro Datei. Textzellen durchlaufen vor dem Speichern den Privacy-Scan; Zahlen-, Datums- und Ja/Nein-Spalten werden nicht gescannt.",
     "receipt": {
       "imported": "Import abgeschlossen — {rows} Zeilen gespeichert.",
-      "privacyScan": "Privacy-Scan: {scanned} Zellen geprüft, {masked} maskiert.",
+      "privacyScan": "Privacy-Scan: {scanned} Textzellen geprüft, {masked} markiert.",
+      "importedSheets": "Import abgeschlossen — {sheets} Tabellenblätter, {rows} Zeilen gespeichert, ein Datensatz pro Blatt.",
+      "sheet": "Blatt „{sheet}“: {rows} Zeilen.",
+      "flaggedEncrypted": "Markierte Zellen sind verschlüsselt mit ihrem echten Wert gespeichert; nur Sie können sie lesen.",
+      "flaggedMasked": "Markierte Zellen sind als Pseudonym gespeichert; ihr echter Wert wird nicht aufbewahrt.",
       "truncated": "{cells} Zellen überschritten das Limit von 4.000 Zeichen pro Zelle und wurden gekürzt. Betroffene Spalten: {columns}."
     },
     "loading": "lädt…",
@@ -6618,6 +6724,13 @@
       "notCsv": "Unterstützt werden CSV- und Excel-Dateien (.xlsx, .xlsm).",
       "noFile": "Es kam keine Datei an — bitte zuerst eine Tabelle auswählen.",
       "importFailed": "Die Datei konnte nicht importiert werden. {detail}",
+      "csvUnreadable": "Die CSV-Datei konnte nicht gelesen werden. Prüfen Sie, ob sie durch Komma, Semikolon oder Tab getrennt ist und jedes Anführungszeichen geschlossen wird.",
+      "csvUnreadableAtLine": "Die CSV-Datei konnte in Zeile {line} nicht gelesen werden. Prüfen Sie, ob sie durch Komma, Semikolon oder Tab getrennt ist und jedes Anführungszeichen geschlossen wird.",
+      "csvRaggedRows": "Eine Zeile der CSV-Datei hat eine andere Spaltenzahl als die Kopfzeile.",
+      "csvRaggedRowsAtLine": "Zeile {line} der CSV-Datei hat eine andere Spaltenzahl als die Kopfzeile.",
+      "csvEmpty": "Die Datei hat keine Kopfzeile oder keine Datenzeilen.",
+      "rowCap": "Die Datei hat mehr als {maxRows} Zeilen.",
+      "reservedColumn": "Ein Spaltenname beginnt mit dem reservierten Präfix \"__k_\". Benennen Sie die Spalte um und importieren Sie erneut.",
       "notFound": "Diesen Datensatz gibt es nicht mehr — womöglich wurde er in einem anderen Tab gelöscht.",
       "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
       "unexpected": "Die Anfrage ist fehlgeschlagen. {detail}"
@@ -6661,14 +6774,18 @@
     "publishedLabel": "Service published",
     "publishedYes": "ja — {provider}",
     "publishedNo": "nein",
-    "capabilityMissing": "Der aktive Adapter published keinen Service — er läuft, ist aber nicht konfiguriert (API-Key fehlt).",
+    "capabilityMissing": "Der aktive Adapter published keinen Service — er läuft, ist aber nicht konfiguriert (API-Key fehlt oder Endpoint-Host nicht freigegeben).",
+    "openSetup": "Setup-Felder öffnen",
     "providersTitle": "Installierte Provider",
     "noProviders": "Kein transcription@1-Adapter installiert. Zuerst einen aus dem Plugin-Store installieren (z.B. \"Transkription (OpenAI)\").",
     "activeBadge": "aktiv",
     "switchTo": "Aktivieren",
     "switching": "schaltet um…",
     "switchFailed": "Umschalten fehlgeschlagen: {message}",
-    "switchTargetUnavailable": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (API-Key fehlt) — der vorherige Provider wurde nach Möglichkeit wiederhergestellt.",
+    "switchTargetUnavailable": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert) — der vorherige Provider wurde nach Möglichkeit wiederhergestellt.",
+    "switchTargetUnavailableRestored": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert: API-Key fehlt oder Endpoint-Host nicht freigegeben) — der vorherige Provider ({provider}) wurde wiederhergestellt und ist aktiv.",
+    "switchTargetUnavailableNoneLive": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert) — der vorherige Provider ließ sich nicht wiederherstellen, es ist jetzt kein Provider aktiv.",
+    "switchTargetUnavailableNoPrevious": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert). Vorher war kein Provider aktiv, also ist jetzt keiner aktiv — vervollständige seine Setup-Felder und aktiviere ihn dann erneut.",
     "switchInProgress": "Ein anderer Wechsel läuft noch — der Zustand unten wurde neu gelesen; danach erneut versuchen.",
     "switchAlreadyActive": "Dieser Provider ist bereits aktiv."
   },

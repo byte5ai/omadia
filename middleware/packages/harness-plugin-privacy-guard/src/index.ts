@@ -33,3 +33,6 @@ export {
   dedupSpans,
 } from './promptMask.js';
 export type { MaskPromptResult, ResolvedSpan } from './promptMask.js';
+// #1867 — linear whole-table masking for the dataset import.
+export { maskTableCells, TABLE_MASK_YIELD_EVERY } from './tableMask.js';
+export type { TableMaskResult } from './tableMask.js';

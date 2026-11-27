@@ -9,6 +9,7 @@ import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
 
 import express from 'express';
 
+import { DraftQuota } from '../src/plugins/builder/draftQuota.js';
 import { DraftStore } from '../src/plugins/builder/draftStore.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
@@ -347,6 +348,127 @@ describe('POST /api/v1/profiles/import-bundle', () => {
       true,
       'non-spec knowledge files are persisted',
     );
+  });
+
+  const MIN_SPEC = (): string =>
+    JSON.stringify({
+      template: 'integration',
+      id: 'de.byte5.agent.import-test',
+      name: 'Imported Agent',
+      version: '1.0.0',
+      description: 'Roundtrip fixture',
+      category: 'productivity',
+      depends_on: [],
+      tools: [],
+      setup_fields: [],
+      playbook: { when_to_use: 'beim Test', not_for: [], example_prompts: [] },
+      network: { outbound: [] },
+      external_reads: [],
+      slots: {},
+      builder_settings: { auto_fix_enabled: false },
+      test_cases: [],
+    });
+
+  async function bundleWith(opts: {
+    knowledge?: Array<{ filename: string; content: Buffer }>;
+    vendoredVersion?: string;
+  }): Promise<Buffer> {
+    const version = opts.vendoredVersion ?? TEST_PLUGIN_VERSION;
+    const bundle = await zipProfileBundle(
+      { store },
+      {
+        profileId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        profileName: 'Imported Agent',
+        profileVersion: '1.0.0',
+        createdBy: 'op@example.com',
+        agentMd: FIXTURE_AGENT_MD,
+        pluginPins: [{ id: TEST_PLUGIN_ID, version }],
+        knowledge: opts.knowledge ?? [
+          { filename: 'spec.json', content: Buffer.from(MIN_SPEC(), 'utf8') },
+        ],
+        ...(opts.vendoredVersion !== undefined
+          ? {
+              inlineVendoredPlugins: new Map([
+                [`${TEST_PLUGIN_ID}@${version}`, Buffer.from('PK\x03\x04 rebuilt-zip')],
+              ]),
+            }
+          : {}),
+        createdAt: '2026-05-08T10:00:00.000Z',
+      },
+    );
+    return bundle.buffer;
+  }
+
+  it('#1787: the draft slot code travels as slots.json and is restored', async () => {
+    const slots = { 'toolkit-impl': 'export const x = 1;', 'skill-prompt': 'Be brief.' };
+    const res = await uploadBundle(
+      baseUrl,
+      await bundleWith({
+        knowledge: [
+          { filename: 'spec.json', content: Buffer.from(MIN_SPEC(), 'utf8') },
+          { filename: 'slots.json', content: Buffer.from(JSON.stringify(slots), 'utf8') },
+        ],
+      }),
+    );
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body['slots_restored'], true);
+    const draft = await draftStore.findById(res.body['draft_id'] as string);
+    assert.deepEqual(draft!.slots, slots);
+    assert.equal(
+      storageStub.capture.setKnowledgeFile.some((w) => w.filename === 'slots.json'),
+      false,
+      'slots.json is draft source, not knowledge',
+    );
+  });
+
+  it('#1787: a draft import respects the draft quota (409 quota.exceeded)', async () => {
+    await draftStore.create('op@example.com', 'Existing');
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as unknown as { session: { email: string } }).session = { email: 'op@example.com' };
+      next();
+    });
+    app.use(
+      '/api/v1/profiles',
+      createProfilesRouter({
+        catalog: makeCatalogStub(),
+        registry: new InMemoryInstalledRegistry(),
+        liveStorage: storageStub.storage,
+        draftStore,
+        draftQuota: new DraftQuota({ store: draftStore, cap: 1, warnAt: 1 }),
+        uploadedPackageStore: store,
+        packageUploadService: makeUploadServiceStub(),
+      }),
+    );
+    const capped = await listenLoopback(app);
+    try {
+      const url = `http://127.0.0.1:${String((capped.address() as AddressInfo).port)}`;
+      for (const fields of [{ target: 'draft' }, {}] as Array<Record<string, string>>) {
+        const res = await uploadBundle(url, await bundleWith({}), fields);
+        assert.equal(res.status, 409, JSON.stringify(res.body));
+        assert.equal(res.body['code'], 'quota.exceeded');
+      }
+      assert.equal((await draftStore.list('op@example.com')).length, 1);
+    } finally {
+      await new Promise<void>((resolve) => capped.close(() => resolve()));
+    }
+  });
+
+  it('#1811: same id + version already installed → kept, draft created, no ingest', async () => {
+    const res = await uploadBundle(baseUrl, await bundleWith({ vendoredVersion: TEST_PLUGIN_VERSION }));
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(typeof res.body['draft_id'], 'string');
+    assert.equal(uploadServiceCalls.length, 0);
+    const plugins = res.body['plugins_installed'] as Array<Record<string, unknown>>;
+    assert.equal(plugins[0]!['kept_installed'], true);
+  });
+
+  it('#1787: a vendored install that swaps the installed version reports it', async () => {
+    const res = await uploadBundle(baseUrl, await bundleWith({ vendoredVersion: '0.9.0' }));
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(uploadServiceCalls.length, 1);
+    const plugins = res.body['plugins_installed'] as Array<Record<string, unknown>>;
+    assert.equal(plugins[0]!['replaced_version'], TEST_PLUGIN_VERSION);
   });
 
   it('source-only bundle (no spec.json) → spec_source=agent_md_fallback', async () => {

@@ -15,6 +15,7 @@
  * WHAT to purge.
  */
 
+import { SUPERSEDED_KEY_PREFIX } from './kernelProviderCredentials.js';
 import type { SecretVault } from '../secrets/vault.js';
 
 /** Every vault scope a provider credential is written to (see
@@ -65,6 +66,17 @@ export function isProviderCredentialKey(
 }
 
 /**
+ * #2240 / ADR-0215 — a copy the boot consolidation renamed aside
+ * (`superseded:provider:<id>/<leaf>`, optionally `#<n>`) belongs to the same
+ * provider and leaves with it.
+ */
+function isSupersededCredentialKey(vaultKey: string, providerId: string): boolean {
+  if (!vaultKey.startsWith(SUPERSEDED_KEY_PREFIX)) return false;
+  const original = vaultKey.slice(SUPERSEDED_KEY_PREFIX.length).replace(/#\d+$/, '');
+  return isProviderCredentialKey(original, providerId);
+}
+
+/**
  * Delete every `provider:<providerId>/*` leaf from the LLM scopes. Best-effort
  * per scope: one unreadable scope must not keep the key in the others, and the
  * uninstall that calls this must complete. Returns the deleted keys as
@@ -84,7 +96,7 @@ export async function purgeProviderCredentials(
     try {
       const keys = await vault.listKeys(scope);
       for (const key of keys) {
-        if (!isProviderCredentialKey(key, providerId)) continue;
+        if (!isProviderCredentialKey(key, providerId) && !isSupersededCredentialKey(key, providerId)) continue;
         await vault.deleteKey(scope, key);
         removed.push(`${scope} ${key}`);
       }

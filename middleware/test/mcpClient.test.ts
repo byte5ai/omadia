@@ -401,32 +401,49 @@ describe('McpManager against a live MCP server (W0-5)', () => {
     );
   });
 
-  it('retries a genuinely transient failure exactly once, then succeeds', async (t) => {
+  it('re-sends a declared read-only tool once over the SAME connection, then succeeds', async (t) => {
     const seen: Array<{ name: string; input: unknown }> = [];
-    const first = await startServer(t, seen);
-    if (!first) return;
-    const second = await startServer(t, seen);
-    if (!second) return;
-    proxy = await startRecordingProxy([first, second], { failFirstToolCall: true });
+    const url = await startServer(t, seen);
+    if (!url) return;
+    proxy = await startRecordingProxy([url], { failFirstToolCall: true });
 
     manager = new McpManager();
     const closed = recordPoolInvalidations(manager);
     const cfg = serverConfig(proxy.url, {
       headers: { Authorization: `Bearer ${BEARER}` },
     });
+    // ADR-0205 — what discovery records for `annotations.readOnlyHint: true`.
+    manager.rememberToolSchema(cfg.id, { name: TOOL, readOnlyHint: true });
 
     const result = await manager.callTool(cfg, TOOL, { value: 'retry-me' });
 
-    // The shipped once-retry mitigation (flaky hosted proxy) must stay: the
-    // first tools/call fails transiently, the second one succeeds.
+    // The flaky-hosted-proxy mitigation stays for tools that are safe to
+    // re-send: the first tools/call fails transiently, the second succeeds.
     assert.equal(result, 'dispatch:ping:{"value":"retry-me"}');
-    assert.equal(proxy.toolCallCount(), 2, 'exactly one retry — no more, no fewer');
-    assert.equal(
-      closed().length,
-      1,
-      'the retry must drop the pooled connection once so it reconnects fresh',
+    assert.equal(proxy.toolCallCount(), 2, 'exactly one re-send — no more, no fewer');
+    assert.deepEqual(
+      closed(),
+      [],
+      '#1905: a JSON-RPC error leaves the connection healthy, so it must not be dropped',
     );
     assert.deepEqual(seen, [{ name: TOOL, input: { value: 'retry-me' } }]);
+  });
+
+  it('does not re-send an undeclared tool after a transient failure (#1904)', async (t) => {
+    const seen: Array<{ name: string; input: unknown }> = [];
+    const url = await startServer(t, seen);
+    if (!url) return;
+    proxy = await startRecordingProxy([url], { failFirstToolCall: true });
+
+    manager = new McpManager();
+    const cfg = serverConfig(proxy.url, {
+      headers: { Authorization: `Bearer ${BEARER}` },
+    });
+
+    const result = await manager.callTool(cfg, TOOL, { value: 'once' });
+
+    assert.match(result, /^Error: outcome unknown/);
+    assert.equal(proxy.toolCallCount(), 1);
   });
 
   it('negotiates the MODERN era against a v2 server, on the v2 client family (#562 phase 2)', async (t) => {

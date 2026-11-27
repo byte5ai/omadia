@@ -132,9 +132,18 @@ docker compose -f docker-compose.yaml \
   -f docker-compose.embeddings.yaml up -d
 ```
 
-> **Diagram rendering** also needs a signing secret. Generate one and add it to
-> `middleware/.env` as `DIAGRAM_URL_SECRET` before starting the diagrams overlay:
-> `openssl rand -hex 32`. The plugin stays inactive until it is set.
+> **Diagrams and Office files** need a signing secret. Generate one and add it to
+> `middleware/.env` as `DIAGRAM_URL_SECRET` before starting the storage and
+> diagrams overlays: `openssl rand -hex 32`. Both plugins stay inactive until it is
+> set; the boot log names any variable that is still missing. Behind a reverse
+> proxy, also set `DIAGRAM_PUBLIC_BASE_URL` there (default `http://localhost:8080`).
+> The secret is read once, on the first boot; to rotate it later, enter a new
+> value in each plugin's setup field in the Store.
+>
+> **Download links answer 404 until you grant them.** Diagram images live under
+> `/diagrams/dl`, Excel and Word files from Headless Office under `/documents/dl`.
+> Grant each path once in the admin UI: Store → *Diagrams* / *Headless Office* →
+> **Grants**.
 
 ## Troubleshooting
 

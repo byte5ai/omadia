@@ -364,11 +364,43 @@ describe('<AdminDatasetsPage />', () => {
     await user.click(screen.getByRole('button', { name: 'Import' }));
 
     expect(
-      await screen.findByText('Privacy scan: 480 cells checked, 12 masked.'),
+      await screen.findByText(/Privacy scan: 480 text cells checked, 12 flagged\./),
     ).toBeTruthy();
+    // #1844 — no key reported ⇒ the pseudonym wording, never "encrypted".
+    expect(screen.getByText(/stored as pseudonyms/)).toBeTruthy();
     expect(screen.getByText('Import complete — 120 rows stored.')).toBeTruthy();
     // The list is re-read so the new dataset appears without a manual refresh.
     expect(mockListDatasets).toHaveBeenCalledTimes(2);
+  });
+
+  it('#1844 — lists every sheet of a workbook and says flagged cells are encrypted', async () => {
+    const user = userEvent.setup();
+    const table = (id: string, rows: number, sheetName: string) => ({
+      dataset: { datasetId: id, rowCount: rows, graphNodeId: `node-${id}` },
+      privacyScan: { scannedCells: rows * 2, maskedCells: 3, encryptedAtRest: true },
+      truncation: { truncatedCellCount: 0, truncatedColumns: [] },
+      sheetName,
+    });
+    const kunden = table('ds-k', 100, 'Kunden');
+    mockUploadDataset.mockResolvedValue({
+      dataset: kunden.dataset,
+      privacyScan: kunden.privacyScan,
+      truncation: kunden.truncation,
+      datasets: [kunden, table('ds-o', 8, 'Orte')],
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Q3 orders');
+
+    await user.upload(
+      screen.getByLabelText('CSV or Excel file'),
+      new File(['x'], 'book.csv', { type: 'text/csv' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText(/2 sheets, 108 rows stored/)).toBeTruthy();
+    expect(screen.getByText('Sheet “Kunden”: 100 rows.')).toBeTruthy();
+    expect(screen.getByText('Sheet “Orte”: 8 rows.')).toBeTruthy();
+    expect(screen.getAllByText(/stored encrypted with their real values/)).toHaveLength(2);
   });
 
   it('clears the file input after an import so the SAME file can be re-imported', async () => {
@@ -561,5 +593,46 @@ describe('<AdminDatasetsPage />', () => {
     expect(
       await screen.findByText('The file exceeds the 25 MB upload limit.'),
     ).toBeTruthy();
+  });
+
+  it('#1847 — shows a coded CSV failure with its line, not the parser text', async () => {
+    const user = userEvent.setup();
+    mockUploadDataset.mockRejectedValue(
+      new MockApiError(
+        422,
+        'POST /v1/datasets failed: 422',
+        JSON.stringify({
+          code: 'dataset.csv_unreadable',
+          message: 'invalid CSV (separator ",") — Invalid Opening Quote',
+          line: 2,
+        }),
+      ),
+    );
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Q3 orders');
+
+    await user.upload(
+      screen.getByLabelText('CSV or Excel file'),
+      new File(['x'], 'semi.csv', { type: 'text/csv' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText(/could not be read at line 2/)).toBeTruthy();
+    expect(screen.queryByText(/Invalid Opening Quote/)).toBeNull();
+  });
+
+  it('#1846 — refuses a file over the limit before uploading it', async () => {
+    const user = userEvent.setup();
+    mockUploadDataset.mockClear();
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Q3 orders');
+
+    const big = new File(['x'], 'big.csv', { type: 'text/csv' });
+    Object.defineProperty(big, 'size', { value: 26 * 1024 * 1024 });
+    await user.upload(screen.getByLabelText('CSV or Excel file'), big);
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText('The file exceeds the 25 MB upload limit.')).toBeTruthy();
+    expect(mockUploadDataset).not.toHaveBeenCalled();
   });
 });

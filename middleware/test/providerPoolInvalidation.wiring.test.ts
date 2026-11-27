@@ -42,13 +42,13 @@ function body(startAnchor: string, endAnchor: string): string {
 describe('#1080 boot wiring — the kernel provider pool follows vault writes', () => {
   it('subscribes the pool listener on the scope the pool reads, before any plugin activates', () => {
     const poolScope =
-      /const kernelProviderPool = createLlmProviderPool\(\{\s*getSecret: \(k\) => secretVault\.get\('([^']+)', k\)/.exec(
+      /const kernelProviderPool = createLlmProviderPool\(\{\s*getSecret: \(k\) => secretVault\.get\(([A-Za-z_]+|'[^']+'), k\)/.exec(
         src,
       )?.[1];
     assert.ok(poolScope, 'kernelProviderPool must read its credentials from secretVault');
 
     const listenerMatch =
-      /secretVault\.onWrite\(\s*createProviderPoolCredentialListener\(\{\s*pool: kernelProviderPool,\s*scope: '([^']+)'/.exec(
+      /secretVault\.onWrite\(\s*createProviderPoolCredentialListener\(\{\s*pool: kernelProviderPool,\s*scope: ([A-Za-z_]+|'[^']+')/.exec(
         src,
       );
     assert.ok(

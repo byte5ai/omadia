@@ -13,6 +13,7 @@ import type {
 
 import { InlineSlotEditor } from './InlineSlotEditor';
 import { PagePreviewFrame } from './PagePreviewFrame';
+import { DataBindingArgsField, requiredInputFields } from './DataBindingArgsField';
 
 interface PageFormProps {
   route: UiRoute;
@@ -274,6 +275,24 @@ export function PageForm({
             ))}
           </select>
         </label>
+        {route.data_binding ? (
+          <DataBindingArgsField
+            key={route.data_binding.tool_id}
+            args={route.data_binding.args}
+            requiredFields={requiredInputFields(
+              tools.find((tool) => tool.id === route.data_binding?.tool_id)?.input,
+            )}
+            onCommit={(args) => {
+              if (args === null) {
+                if (route.data_binding?.args) {
+                  void onPatch([{ op: 'remove', path: '/data_binding/args' }]);
+                }
+                return;
+              }
+              patchField('/data_binding/args', args);
+            }}
+          />
+        ) : null}
         <p className="text-[11px] text-[color:var(--fg-muted)]">
           {t('dataBinding.help')}
         </p>

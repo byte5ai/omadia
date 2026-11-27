@@ -15,6 +15,7 @@ import {
   borrowPool,
   PoolLifecycleError,
 } from '../src/platform/borrowedPool.js';
+import { SqlTableRefusedError } from '../src/platform/sqlTableGuard.js';
 
 const PLUGIN = '@omadia/verifier';
 
@@ -132,3 +133,83 @@ describe('#470 C7 borrowPool', () => {
     assert.equal(borrowPool(pool, PLUGIN).totalCount, 3);
   });
 });
+
+describe('ADR-0255 borrowPool with the table guard', () => {
+  const UPLOAD = '@acme/tool';
+  const guarded = (pool: Pool): Pool => borrowPool(pool, UPLOAD, { guardStatements: true });
+
+  it('runs the plugin’s own statements, pool and client', async () => {
+    const { pool } = fakePool();
+    const borrowed = guarded(pool);
+    assert.equal((await borrowed.query('SELECT * FROM acme_items')).rows.length, 1);
+    const client = await borrowed.connect();
+    assert.equal((await client.query({ text: 'UPDATE acme_items SET n = $1', values: [1] })).rows.length, 1);
+  });
+
+  it('refuses a kernel table on the pool and on a client, before the statement runs', async () => {
+    let ran = 0;
+    const { pool } = fakePool();
+    const counting = Object.assign(pool, { query: () => { ran += 1; return Promise.resolve({ rows: [] }); } });
+    const borrowed = guarded(counting as unknown as Pool);
+    await assert.rejects(() => borrowed.query('SELECT * FROM graph_nodes'), SqlTableRefusedError);
+    const client = await borrowed.connect();
+    await assert.rejects(() => client.query('SELECT * FROM memory_files'), SqlTableRefusedError);
+    assert.equal(ran, 0);
+  });
+
+  it('answers a callback-style query through the callback', async () => {
+    const { pool } = fakePool();
+    const err = await new Promise<unknown>((resolve) => {
+      (guarded(pool).query as unknown as (sql: string, cb: (e: unknown) => void) => void)('SELECT * FROM users', resolve);
+    });
+    assert.ok(err instanceof SqlTableRefusedError);
+  });
+
+  it('hides the listeners, the connection options and the internals', async () => {
+    const { pool } = fakePool();
+    Object.assign(pool, { on: () => pool, options: { password: 'secret' }, _clients: [], Client: class {} });
+    const borrowed = guarded(pool) as unknown as Record<string, unknown>;
+    for (const member of ['on', 'once', 'addListener', 'options', '_clients', 'Client']) {
+      assert.throws(() => borrowed[member], PoolLifecycleError, member);
+    }
+    const client = (await guarded(pool).connect()) as unknown as Record<string, unknown>;
+    for (const member of ['connection', 'connectionParameters', 'password', '_queryable']) {
+      assert.throws(() => client[member], PoolLifecycleError, member);
+    }
+  });
+
+  it('hides the same members from reflection and refuses writes', async () => {
+    const { pool } = fakePool();
+    Object.assign(pool, { options: { password: 'secret' }, _clients: [] });
+    const borrowed = guarded(pool);
+    assert.equal(Object.getOwnPropertyDescriptor(borrowed, 'options'), undefined);
+    assert.equal(Object.getOwnPropertyDescriptor(borrowed, '_clients'), undefined);
+    assert.equal('options' in borrowed, false);
+    assert.ok(!Reflect.ownKeys(borrowed).includes('options'));
+    assert.throws(() => Object.assign(borrowed, { query: () => undefined }), PoolLifecycleError);
+    assert.throws(() => (borrowed as unknown as { constructor: unknown }).constructor, PoolLifecycleError);
+    const client = await borrowed.connect();
+    Object.assign(client, {});
+    assert.throws(() => (client as unknown as { on: unknown }).on, PoolLifecycleError);
+  });
+
+  it('passes the checked copy to pg, not the plugin’s object', async () => {
+    const seen: unknown[] = [];
+    const { pool } = fakePool();
+    Object.assign(pool, { query: (arg: unknown) => { seen.push(arg); return Promise.resolve({ rows: [] }); } });
+    let reads = 0;
+    const tricky = { get text(): string { reads += 1; return reads <= 1 ? 'SELECT 1' : 'SELECT * FROM users'; } };
+    await guarded(pool).query(tricky as never);
+    assert.deepEqual((seen[0] as { text: string }).text, 'SELECT 1');
+    await assert.rejects(
+      () => guarded(pool).query({ text: 'SELECT 1', submit: () => undefined } as never),
+      SqlTableRefusedError,
+    );
+  });
+
+  it('leaves an unguarded (bundled) borrower as before', async () => {
+    const { pool } = fakePool();
+    assert.equal((await borrowPool(pool, PLUGIN).query('SELECT * FROM graph_nodes')).rows.length, 1);
+  });
+});
+

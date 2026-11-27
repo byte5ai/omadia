@@ -45,6 +45,11 @@ export {
   USER_CORRECTED_MARKER,
   extractCandidateTerms,
 } from './contextRetriever.js';
+export {
+  parseRecordingTranscript,
+  RECORDING_TRANSCRIPT_MARKER,
+  renderUserLine,
+} from './recordingTranscriptRender.js';
 // KG-walk chat visualization — builds the per-turn `kg_graph` payload of the
 // recalled Knowledge-Graph neighbourhood. Best-effort, UI-only.
 export { buildKgInsertPayload, buildKgWalkPayload } from './kgWalkPayload.js';

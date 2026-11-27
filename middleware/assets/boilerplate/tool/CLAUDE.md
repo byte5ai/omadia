@@ -63,3 +63,16 @@ type: 'PERSON' }]`), die die Privacy Shield immer maskiert. Jedes Feld mit
 Namen, E-Mail, Telefon o. Ä. deklarieren. Was
 ein Agent über das Plugin weiß, steht in den Tool-Beschreibungen und im
 `playbook:` (wann nutzen, wofür nicht).
+
+## Kernel-Services und Speicher
+
+Ein Tool-Plugin braucht selten Kernel-Services. Wenn doch, gelten dieselben
+Grenzen wie für `integration` (dort ausführlicher):
+
+- **`memoryStore@1` (ADR-0256):** liest `core` und `_*`, ändert nur Bäume aus
+  `permissions.memory.trees` (im Manifest standardmäßig `[]`). Das erste Plugin,
+  das einen Baum benutzt, besitzt ihn.
+- **`graphPool` (ADR-0255):** nur mit `permissions.sql` und Operator-Grant,
+  und nur für die eigenen Tabellen; Kernel-Tabellen wirft `SqlTableRefusedError`.
+- **Recall- und Kurationsdienste (ADR-0257)** sind kernel-only;
+  `entityRefBus` erlaubt nur `publish`.
