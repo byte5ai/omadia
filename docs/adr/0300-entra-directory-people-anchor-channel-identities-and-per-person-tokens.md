@@ -129,8 +129,8 @@ Chosen option: **A**.
   syncs; a Teams turn of a person disabled in Entra in between still keys on them.
 - 🔴 **Bad:** A Teams sender is a person by the plugin's attestation (as the Teams `userRef`
   already is); the kernel narrows that to the plugin that owns `teams`, nothing more.
-- ⚪ **Neutral:** The connect flow for directory people without a web session (#2312, bound to
-  their Teams SSO token, no bearer link) is a follow-up record.
+- ⚪ **Neutral:** The connect flow for directory people without a web session is
+  [ADR-0301](0301-a-directory-person-connects-bound-to-their-teams-sso-token.md).
 
 ## Pros and Cons of the Options
 

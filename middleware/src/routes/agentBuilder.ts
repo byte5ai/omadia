@@ -16,6 +16,7 @@
 import {
   mcpOAuthCallbackLocale,
   mcpOAuthCallbackPage,
+  mcpOAuthTeamsHandBackPage,
   type McpOAuthCallbackMessage,
 } from './mcpOAuthCallbackPage.js';
 import {
@@ -221,6 +222,8 @@ export interface AgentBuilderRouterOptions {
     }>;
     /** #1947 — drop the stored client of an issuer no server uses any more. */
     forgetClient(issuer: string): Promise<boolean>;
+    /** ADR-0301 — how a pending flow is completed; `teams-sso` flows are handed back to Teams. */
+    flowCompletion?(state: string): Promise<'session' | 'teams-sso' | undefined>;
     /** #1947 — a server's issuer; `undefined` when it cannot be told now. */
     issuerUse(server: McpServerRow): Promise<string | null | undefined>;
     beginAuthorization(server: McpServerRow, userKey: string, actor?: AuditActor): Promise<{ authorizeUrl: string }>;
@@ -2767,6 +2770,23 @@ export function createAgentBuilderRouter(
         return;
       }
       const iss = typeof rawIss === 'string' ? rawIss : null;
+      // #2312 / ADR-0301 — a flow a directory person started with their Teams
+      // SSO token is not exchanged here: the page returns the code to the
+      // Teams authentication window, which completes it with the same
+      // person's SSO token. The flow stays pending until then.
+      if (state !== '' && (await options.mcpOAuth.flowCompletion?.(state)) === 'teams-sso') {
+        // Bounded before it is reflected into the page (the completion caps it too).
+        if (state.length > 4096 || code.length > 4096 || (iss?.length ?? 0) > 4096 || providerError.length > 512) {
+          res.status(400).send(donePage(false, 'missingCodeOrState'));
+          return;
+        }
+        const page = mcpOAuthTeamsHandBackPage(locale, { state, code, iss, error: providerError || null });
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Referrer-Policy', 'no-referrer');
+        res.setHeader('Content-Security-Policy', page.csp);
+        res.status(200).send(page.html);
+        return;
+      }
       if (providerError) {
         res.status(400).send(donePage(false, 'providerError', providerError));
         return;

@@ -78,3 +78,36 @@ export function recordMcpAuthPrompt(prompt: string): void {
     scope.mint.record(prompt);
   }
 }
+
+/** A server a turn's connect prompt asks the user to connect (#2312, ADR-0301). */
+export interface McpConnectRequest {
+  readonly serverId: string;
+  readonly serverName: string;
+}
+
+const AUTH_BLOCK_RE = /<mcp-auth-required\s+([^>]*)><\/mcp-auth-required>/;
+
+function attr(attrs: string, name: string): string | undefined {
+  const m = new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attrs);
+  if (!m) return undefined;
+  return m[1]!
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * The server of a kernel-minted connect prompt, read from its
+ * `<mcp-auth-required>` block. Only call it on a result the mint recognised
+ * ({@link McpAuthPromptMint.minted}): a server cannot forge one.
+ */
+export function parseMcpConnectRequest(prompt: string): McpConnectRequest | undefined {
+  const m = AUTH_BLOCK_RE.exec(prompt);
+  if (!m) return undefined;
+  const serverId = attr(m[1]!, 'serverId');
+  if (!serverId) return undefined;
+  return { serverId, serverName: attr(m[1]!, 'server') ?? serverId };
+}
+

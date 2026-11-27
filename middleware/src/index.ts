@@ -393,6 +393,7 @@ import { createChannelIdentityLinks } from './channels/channelIdentityLinks.js';
 import { DirectoryService } from './directory/directoryService.js';
 import { DirectoryStore } from './directory/directoryStore.js';
 import { unlinkPersonIdentities } from './directory/directoryLinks.js';
+import { createDirectoryConnectRedirect, createDirectoryConnectRouter } from './directory/directoryConnectRoutes.js';
 import { channelResolverFor, chatAgentBundleFor, createOriginTypeCheck } from './channels/turnOriginGuard.js';
 import {
   createConductorWebhooksInboundRouter,
@@ -6775,6 +6776,26 @@ async function main(): Promise<void> {
         }),
       );
       console.log('[middleware] directory admin endpoints ready at /api/v1/admin/directory (auth: required)');
+      // #2312 / ADR-0301 — a directory person connects a per_user MCP server
+      // from Teams: start and complete with their Teams SSO token, never a link.
+      if (mcpOAuthService) {
+        // The redirect first: Teams' authentication window navigates there without a bearer.
+        app.use(
+          '/api/v1/directory/connect/go',
+          createDirectoryConnectRedirect({ authorizeUrl: (state) => mcpOAuthService.teamsAuthorizeUrl(state) }),
+        );
+        app.use(
+          '/api/v1/directory/connect',
+          createTeamsSsoGate('directory-connect', { verifier: teamsSsoVerifier }),
+          createDirectoryConnectRouter({
+            store: directoryStore,
+            listServers: () => mcpStore.listMcpServers(),
+            oauth: mcpOAuthService,
+            audit: () => adminAudit,
+          }),
+        );
+        console.log('[middleware] directory connect ready at /api/v1/directory/connect (auth: teams-sso)');
+      }
     }
 
     const findWebIdentity = knowledgeGraph.findOmadiaUserIdByChannelIdentity?.bind(knowledgeGraph);

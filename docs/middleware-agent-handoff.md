@@ -7100,8 +7100,8 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ## 13. Offene Roadmap
 
 - **MCP Welle 6 — Reste (2026-11-27):** #2312 Per-User-OAuth-Connect für Kanal-Nutzer ohne
-  omadia-Login — Owner-Entscheidung: kein Bearer-Link, Connect gebunden an Teams-SSO des
-  Verzeichnis-Principals (ADR-0300, W40 zweiter PR); MCP-Bilder
+  omadia-Login — erledigt (ADR-0301, Teams-SSO-gebunden; andere Kanäle nur per Identitäts-Verknüpfung
+  mit einer Verzeichnis-Person, Connect dann in Teams oder Web); MCP-Bilder
   auch für Sub-Agenten/CLI/Public MCP (ADR-0272); stdio-Kinder teilen einen OS-User (ADR-0270).
 - **Kanal-Konto-Links (W35, ADR-0280) — Reste:** (#2324 erledigt, ADR-0302: Origin-Kanaltyp pro
   Plugin geprüft, Links auf deaktivierte Konten gelten nicht); Slack, Discord
@@ -12279,5 +12279,9 @@ keine Konten (jedes Konto ist Admin, ADR-0113).
 - **Routen:** `GET /api/v1/admin/directory`, `POST …/sync`, `GET …/people/:id`,
   `POST …/people/:id/unlink`, `POST …/people/:id/connections/:serverId/revoke` (Session).
   Web-UI: `/admin/directory`.
-- **Offen (§13):** Connect ohne Web-Session per Teams-SSO (#2312, ADR-0301, zweiter PR);
-  Teams-Plugin-Quelle `teamsDirectorySource.ts` (Plugin-PR).
+- **Connect ohne Web-Session (#2312, ADR-0301):** `src/directory/directoryConnectRoutes.ts` —
+  `POST /api/v1/directory/connect/mcp/:serverId/start` (→ `startUrl` `/go/<state>`),
+  `POST …/mcp/complete` (Teams-SSO-Gate), `GET …/go/<state>` (Redirect, vor dem Gate).
+  Flow-Spalten `completion`/`authorize_url` (Migration 0124); Callback-Übergabeseite
+  `mcpOAuthTeamsHandBackPage`; `SemanticAnswer.mcpConnectRequired` (channel-sdk 0.3.23).
+  Teams-Plugin: Connect-Aktion + Dialogseite, `teamsDirectorySource.ts`.

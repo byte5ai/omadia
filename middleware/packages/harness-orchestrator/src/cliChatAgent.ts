@@ -1257,6 +1257,8 @@ export interface CliTurnCards {
   readonly followUpOptions?: FollowUpOption[];
   readonly pendingSlotCard?: PendingSlotCard;
   readonly pendingOAuthConsent?: boolean;
+  /** #2312 — servers this CLI turn's connect prompts named. */
+  readonly mcpConnectRequired?: readonly { readonly serverId: string; readonly serverName: string }[];
 }
 
 /**

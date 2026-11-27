@@ -5,6 +5,8 @@
  * provider redirects to, outside the Next app.
  */
 
+import { createHash } from 'node:crypto';
+
 export type McpOAuthCallbackLocale = 'de' | 'en';
 
 export type McpOAuthCallbackMessage =
@@ -100,5 +102,78 @@ export function mcpOAuthCallbackPage(
     `<body style="font-family:system-ui;padding:2rem;max-width:32rem">` +
     `<h2>${ok ? t.okHeading : t.failHeading}</h2><p>${escapeHtml(t.messages[message])}${detailHtml}</p>` +
     `<p>${t.closeHint}</p></body></html>`
+  );
+}
+
+/** The Teams JavaScript SDK the hand-back page loads (same build the Teams plugin's tabs use). */
+export const TEAMS_JS_SDK_URL = 'https://res.cdn.office.net/teams-js/2.34.0/js/MicrosoftTeams.min.js';
+/** Subresource integrity of {@link TEAMS_JS_SDK_URL}: the page holds an authorization code. */
+export const TEAMS_JS_SDK_INTEGRITY = 'sha384-brW9AazbKR2dYw2DucGgWCCcmrm2oBFV4HQidyuyZRI/TnAkmOOnTARSTdps3Hwt';
+
+const HAND_BACK_TEXTS: Readonly<Record<McpOAuthCallbackLocale, { title: string; working: string; outside: string }>> = {
+  en: {
+    title: 'MCP authorization',
+    working: 'Finishing the connection in Microsoft Teams…',
+    outside:
+      'This connection was started in Microsoft Teams and can only be finished there. Close this window and start Connect again in Teams.',
+  },
+  de: {
+    title: 'MCP-Autorisierung',
+    working: 'Die Verbindung wird in Microsoft Teams abgeschlossen…',
+    outside:
+      'Diese Verbindung wurde in Microsoft Teams gestartet und lässt sich nur dort abschließen. Schließe dieses Fenster und starte „Verbinden“ in Teams erneut.',
+  },
+};
+
+/** What the provider sent back, handed to the Teams authentication window. */
+export interface TeamsHandBackPayload {
+  readonly state: string;
+  readonly code: string;
+  readonly iss: string | null;
+  readonly error: string | null;
+}
+
+/**
+ * #2312 / ADR-0301 — the callback page of a flow a directory person started
+ * with their Teams SSO token. It exchanges nothing: it returns state, code and
+ * iss to the Teams authentication window that opened the provider
+ * (`authentication.notifySuccess`), whose page completes the flow with the
+ * same person's SSO token. Outside Teams it only says to finish there. The
+ * payload is JSON in a data block with `<` escaped, never interpolated into
+ * script source.
+ */
+export function mcpOAuthTeamsHandBackPage(locale: McpOAuthCallbackLocale, payload: TeamsHandBackPayload): {
+  readonly html: string;
+  /** The page's own Content-Security-Policy: only the SDK and the one inline script run. */
+  readonly csp: string;
+} {
+  const t = HAND_BACK_TEXTS[locale];
+  const data = JSON.stringify(payload).replace(/</g, '\\u003c');
+  const script = handBackScript(escapeHtml(t.outside));
+  const scriptHash = createHash('sha256').update(script).digest('base64');
+  const html =
+    `<!doctype html><html lang="${locale}"><meta charset="utf-8"><title>${t.title}</title>` +
+    `<body style="font-family:system-ui;padding:2rem;max-width:32rem">` +
+    `<p id="msg">${escapeHtml(t.working)}</p>` +
+    `<script type="application/json" id="payload">${data}</script>` +
+    `<script src="${TEAMS_JS_SDK_URL}" integrity="${TEAMS_JS_SDK_INTEGRITY}" crossorigin="anonymous"></script>` +
+    `<script>${script}</script></body></html>`;
+  return {
+    html,
+    csp: `default-src 'none'; script-src 'sha256-${scriptHash}' https://res.cdn.office.net; connect-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+  };
+}
+
+/** The page's only inline script; hashed into its CSP. */
+function handBackScript(outsideHtml: string): string {
+  return (
+    `(function(){var outside=${JSON.stringify(outsideHtml)};` +
+    `function fail(){document.getElementById('msg').innerHTML=outside;}` +
+    `var p=JSON.parse(document.getElementById('payload').textContent);` +
+    `var t=window.microsoftTeams;if(!t||!t.app){fail();return;}` +
+    `var done=false;setTimeout(function(){if(!done)fail();},5000);` +
+    `t.app.initialize().then(function(){done=true;` +
+    `if(p.error){t.authentication.notifyFailure(p.error);}else{t.authentication.notifySuccess(JSON.stringify(p));}` +
+    `},fail);})();`
   );
 }
