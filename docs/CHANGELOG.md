@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a stdio MCP server that timed out is replaced, not reused (#2307, ADR-0205) (2026-11-27)
+
+- `McpManager.callTool`: a `tools/call` on a stdio server that ends in the SDK's request timeout
+  takes the child out of the pool at once, so the next call spawns a fresh process instead of
+  queueing behind the hang. Requests already running on the old child are not cut off (ADR-0205
+  "a failed request ends only itself"); it is closed when the last of them settles, after 30 s at
+  the latest, or on `closeAll()`. HTTP/SSE pooling is unchanged.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn
