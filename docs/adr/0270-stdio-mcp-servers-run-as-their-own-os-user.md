@@ -56,10 +56,14 @@ Chosen option: **A**, because it needs no privileged middleware process, passes 
   `Defaults:node !use_pty, !lecture, runcwd=~`, and sets `ENV MCP_STDIO_RUN_AS=omadia-mcp`.
   `node` can start commands as `omadia-mcp` only, never as root. `SETENV` lets `-E` keep the
   env handed over through `execve`; `-H`, `runcwd=~` and sudo's `secure_path` give the child
-  its own HOME, working directory and PATH.
+  its own HOME, working directory and PATH. Between sudo and the server a `/bin/sh` shim
+  (`MCP_STDIO_CHILD_SHIM`) sets `umask 077` and gives each server its own npm cache,
+  `$HOME/.npm-cache/<sha256(server id)[:16]>` (a row's own `npm_config_cache` wins).
 - **No data directory.** The entrypoint sets `/data` to `0700` owned by `node` on every start
-  (an existing volume was created `0755`). The middleware's `/proc/<pid>/environ` is readable
-  only by its own UID, so the child can no longer read it either.
+  (an existing volume was created `0755`); the image sets `/home/node` to `0700` as well. The
+  middleware's `/proc/<pid>/environ` is readable only by its own UID, so the child can no longer
+  read it either. On Fly the entrypoint also sets the Machines API socket `/.fly/api` to `0600`
+  when it exists (root only; the middleware does not use it), and never fails the boot over it.
 - **Fail closed.** With `MCP_STDIO_RUN_AS` set, the connect guard runs
   `sudo -n -E -H -u <user> -- true` before the first stdio spawn (`createStdioIsolationProbe`).
   A success is cached for the process lifetime, a failure for 30 seconds. When it fails, the
@@ -69,8 +73,9 @@ Chosen option: **A**, because it needs no privileged middleware process, passes 
   the image): the child runs as the middleware's user with the scrubbed env. That is the
   ADR-0211 trust model, unchanged, and the UI says so.
 - **The UI follows the deployment.** `GET /api/v1/operator/mcp-servers` reports
-  `stdioIsolated`; the add-server hint and the catalog card show the isolated or the
-  shared-user wording.
+  `stdioIsolated` (configured) and, when the probe fails, `stdioIsolationError` (its reason);
+  the add-server hint and the catalog card show the isolated or the shared-user wording, and
+  the form names a broken switch before a Discover runs into it.
 - **Compose default stays off.** `MCP_STDIO_ENABLED=false` in `middleware/compose.defaults.env`
   is kept (ADR-0211). Isolation removes access to the secrets; it does not remove the other
   things a stdio child shares with the middleware (network, CPU). Turning stdio on by default
@@ -84,6 +89,12 @@ Chosen option: **A**, because it needs no privileged middleware process, passes 
   scoped to one unprivileged target user.
 - 🟢 **Good:** A broken switch (missing sudo, missing user, changed rule) refuses the connect
   instead of quietly running the child as `node`.
+- 🔴 **Bad:** All stdio children share the one run-as UID. A hostile stdio server can read the
+  other stdio servers' `/proc/<pid>/environ` (their config values, including Vault secrets of
+  their rows), their files and their npm caches, and can signal them. The per-server npm cache
+  only stops accidental sharing (one server's `npx` installing into another's cache); it is not
+  a boundary between servers. Accepted for now: every stdio server is operator configuration;
+  one UID per server (a user pool) is the follow-up if servers must be isolated from each other.
 - 🔴 **Bad:** The child still shares the container's network namespace: it can reach Postgres,
   sidecars and the middleware's own port on loopback, without their credentials. Accepted;
   `docs/security-architecture.md` §10p names it.
@@ -91,9 +102,17 @@ Chosen option: **A**, because it needs no privileged middleware process, passes 
   middleware's home (`/home/node`, e.g. an existing npx cache or config file), no longer
   finds them. It must get what it needs through its config env. Named in `docs/upgrading.md`.
 - 🔴 **Bad:** The image grows by the `sudo` package (about 2 MB).
+- 🔴 **Bad:** A runtime that forbids setuid (`--security-opt no-new-privileges`, some rootless or
+  hardened runtimes) makes the switch fail; stdio is then refused with
+  `stdio_isolation_unavailable` until the runtime allows it or the operator deliberately unsets
+  `MCP_STDIO_RUN_AS`.
 - ⚪ **Neutral:** `/proc` is not mounted with `hidepid`; other processes' command lines stay
   visible to the child. They carry no secrets (env goes through `execve`). A deployment that
   wants it can remount `/proc` with `hidepid=2` on the host side.
+- ⚪ **Neutral:** Open check on Fly: whether `/.fly/api` is present and reachable by a non-root
+  user could not be verified from the build environment; the entrypoint restricts it when it is
+  a socket. The private-network Machines API (`_api.internal:4280`) needs a Fly token, which the
+  child does not have.
 - ⚪ **Neutral:** On the desktop app and from-source runs, isolation is the env scrub only,
   unless the operator creates a user and a sudo rule and sets `MCP_STDIO_RUN_AS`.
 

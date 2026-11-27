@@ -1686,6 +1686,13 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
+      // #2306 — the probe's verdict, so the UI can name a broken switch before
+      // a Discover fails on it. Cached by the probe (success for the process,
+      // failure for 30 s), so a list costs at most one `sudo … true`.
+      const stdioIsolationError =
+        mcpStdioEnabled && options.mcpStdioIsolation
+          ? await options.mcpStdioIsolation.probe()
+          : null;
       res.json({
         servers: (await withToolVerdicts(l, await l.graph.listMcpServers())).map(mcpNode),
         // #1957 — the UI greys out stdio (manual form and catalog Connect)
@@ -1694,6 +1701,7 @@ export function createAgentBuilderRouter(
         // #2306 — whether stdio children run as their own OS user; the UI
         // words the stdio trust hint after it.
         stdioIsolated: options.mcpStdioIsolation !== undefined,
+        ...(stdioIsolationError !== null ? { stdioIsolationError } : {}),
       });
     } catch (err) {
       fail(res, err);

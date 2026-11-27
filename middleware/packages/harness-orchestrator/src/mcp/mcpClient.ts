@@ -2137,7 +2137,7 @@ export class McpManager {
       // #2306 / ADR-0270 — locale + the row's config env (values + Vault
       // secrets, epic #459) over the SDK's safe base, never the process env;
       // with `stdioIsolation.runAsUser` the child runs as that OS user.
-      const launch = stdioLaunch(command, args, cfg.env, this.options?.stdioIsolation);
+      const launch = stdioLaunch(cfg.id, command, args, cfg.env, this.options?.stdioIsolation);
       return new StdioClientTransport(launch);
     }
     const url = new URL(cfg.endpoint);

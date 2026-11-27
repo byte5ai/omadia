@@ -7547,6 +7547,16 @@ to it. Before the first stdio spawn the connect guard probes the switch
 `stdio_isolation_unavailable` and nothing is started. There is no fallback to
 the middleware's user.
 
+Each server gets its own npm cache (`$HOME/.npm-cache/<hash of the server id>`,
+created under `umask 077` by a small `/bin/sh` shim between sudo and the
+server). That separates caches, not servers: all stdio children share the one
+run-as UID, so a hostile stdio server can read the other stdio servers'
+`/proc/<pid>/environ` (their config values, Vault secrets of their rows
+included), files and caches (accepted in ADR-0270; one UID per server is the
+follow-up). `/home/node` is `0700` too. On Fly the entrypoint sets the Machines
+API socket `/.fly/api` to `0600` when it is present (open check: not verified
+live).
+
 What stays shared, accepted in ADR-0270: the container's network namespace
 (Postgres, sidecars and the middleware's own port on loopback are reachable,
 without their credentials), CPU and memory, and `/proc` without `hidepid`
@@ -7601,7 +7611,10 @@ who wants stdio servers sets `true` in `middleware/.env` (ADR-0211).
   stdio server (and every catalog package it pulls) can read the middleware's
   keys and so every stored secret (accepted, ADR-0211). The container image
   runs stdio children as `omadia-mcp` instead (ADR-0270); they keep the
-  container's network and an unhidden `/proc`.
+  container's network and an unhidden `/proc`, and they share that one user,
+  so stdio servers can read each other's config values.
+- Fly: whether `/.fly/api` (Machines API socket) is present and reachable by a
+  non-root user is an open check; the entrypoint restricts it when present.
 ## 10q. The admin audit trail: one actor rule, one read route (#1315, #1347)
 
 `admin_audit` is append-only; nothing in the code updates or deletes a row.

@@ -105,9 +105,11 @@ RUN apt-get update \
 # SETENV is what lets `sudo -E` hand the row's config env over through execve
 # instead of argv. `runcwd=~` starts the child in its own writable home (npx
 # cache). `!use_pty`: the MCP stdio pipes must stay pipes.
+# `/home/node` is closed too (defense in depth: npm cache, CLI state of the
+# middleware user).
 RUN useradd --system --user-group --create-home --home-dir /home/omadia-mcp \
       --shell /usr/sbin/nologin omadia-mcp \
- && chmod 0700 /home/omadia-mcp \
+ && chmod 0700 /home/omadia-mcp /home/node \
  && printf '%s\n' \
       'Defaults:node !use_pty, !lecture, runcwd=~' \
       'node ALL=(omadia-mcp) NOPASSWD:SETENV: ALL' \

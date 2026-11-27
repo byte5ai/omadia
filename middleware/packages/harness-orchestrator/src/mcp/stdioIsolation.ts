@@ -20,10 +20,20 @@
  *     sudoers rule allows with `SETENV`. `-H` sets HOME to the target user's
  *     home, and sudo sets USER/LOGNAME/PATH (secure_path) itself.
  *
+ *     A small `/bin/sh` shim then sets `umask 077` and gives each server its
+ *     own npm cache (`$HOME/.npm-cache/<hash of the server id>`), so one
+ *     server's `npx` does not install into, or run from, another server's
+ *     cache by accident. That separates caches, not servers: every stdio
+ *     child shares the one run-as UID, so a hostile server can still read the
+ *     other children's `/proc/<pid>/environ` (their config values) and files.
+ *     ADR-0270 names that residual risk.
+ *
  * Whether sudo is actually usable is checked by the middleware's connect guard
  * before any child is spawned (fail closed, `stdio_isolation_unavailable`).
  * This module only builds the launch; it never spawns.
  */
+
+import { createHash } from 'node:crypto';
 
 /** The privilege helper. Resolved through PATH like any command. */
 export const MCP_STDIO_SUDO_COMMAND = 'sudo';
@@ -33,6 +43,19 @@ export const MCP_STDIO_SUDO_COMMAND = 'sudo';
  * middleware's environment when set; nothing else of it reaches the child.
  */
 export const MCP_STDIO_LOCALE_ENV_KEYS: readonly string[] = ['LANG', 'LC_ALL', 'LC_CTYPE', 'TZ'];
+
+/**
+ * Runs as the target user, between sudo and the server: `$0` is the cache
+ * key, `"$@"` the server's own command line (positional, never re-parsed by
+ * the shell). A row that sets `npm_config_cache` itself keeps its value.
+ */
+export const MCP_STDIO_CHILD_SHIM =
+  'umask 077 && : "${npm_config_cache:=$HOME/.npm-cache/$0}" && export npm_config_cache && exec "$@"';
+
+/** Cache directory name of one server: stable, path-safe, not the raw id. */
+export function stdioCacheKey(serverId: string): string {
+  return createHash('sha256').update(serverId).digest('hex').slice(0, 16);
+}
 
 /** A POSIX user name as `useradd` accepts it (no uid, no path, no flags). */
 export const MCP_STDIO_RUN_AS_PATTERN = /^[a-z_][a-z0-9_-]{0,31}$/;
@@ -74,8 +97,9 @@ export function stdioChildEnv(
   return { ...env, ...(configEnv ?? {}) };
 }
 
-/** Command, args and env for one stdio child. */
+/** Command, args and env for one stdio child of server `serverId`. */
 export function stdioLaunch(
+  serverId: string,
   command: string,
   args: readonly string[],
   configEnv: Readonly<Record<string, string>> | undefined,
@@ -85,7 +109,15 @@ export function stdioLaunch(
   if (!isolation.runAsUser) return { command, args: [...args], env };
   return {
     command: MCP_STDIO_SUDO_COMMAND,
-    args: [...stdioRunAsPrefix(isolation.runAsUser), command, ...args],
+    args: [
+      ...stdioRunAsPrefix(isolation.runAsUser),
+      '/bin/sh',
+      '-c',
+      MCP_STDIO_CHILD_SHIM,
+      stdioCacheKey(serverId),
+      command,
+      ...args,
+    ],
     env,
   };
 }

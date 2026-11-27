@@ -1395,6 +1395,8 @@ export interface McpServersListResponse {
   stdioEnabled?: boolean;
   /** #2306 — stdio children run as their own OS user (`MCP_STDIO_RUN_AS`); absent on older middleware. */
   stdioIsolated?: boolean;
+  /** #2306 — set when `MCP_STDIO_RUN_AS` is configured but the user switch fails (probe reason). */
+  stdioIsolationError?: string;
 }
 
 export async function listMcpServers(): Promise<McpServersListResponse> {

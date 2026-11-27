@@ -51,6 +51,10 @@ changelog.
   `stdio_isolation_unavailable` (Discover → 502), no child is started.
 - `GET /api/v1/operator/mcp-servers` reports `stdioIsolated`; the stdio hints in `/admin/mcp`
   (form + catalog card) follow it (en + de).
+- A `/bin/sh` shim gives each stdio server its own npm cache (`$HOME/.npm-cache/<hash>`,
+  `umask 077`). All stdio servers share the one user and can read each other's config values
+  (accepted, ADR-0270). `/home/node` is `0700`; on Fly the entrypoint restricts `/.fly/api` to root
+  when present. The list route adds `stdioIsolationError` when the probe fails.
 - Compose keeps `MCP_STDIO_ENABLED=false` (ADR-0211); ADR-0211's trust model is superseded in part
   by ADR-0270.
 

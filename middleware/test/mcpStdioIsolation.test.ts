@@ -6,8 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  MCP_STDIO_CHILD_SHIM,
   MCP_STDIO_RUN_AS_PATTERN,
   McpManager,
+  stdioCacheKey,
   stdioChildEnv,
   stdioLaunch,
   stdioRunAsPrefix,
@@ -51,18 +53,31 @@ describe('stdioLaunch / stdioChildEnv', () => {
   });
 
   it('starts the command directly without a run-as user', () => {
-    const launch = stdioLaunch('npx', ['-y', 'pkg'], { A: '1' });
+    const launch = stdioLaunch('srv-1', 'npx', ['-y', 'pkg'], { A: '1' });
     assert.equal(launch.command, 'npx');
     assert.deepEqual(launch.args, ['-y', 'pkg']);
     assert.equal(launch.env.A, '1');
   });
 
   it('wraps the command in sudo with the env kept out of argv', () => {
-    const launch = stdioLaunch('npx', ['-y', 'pkg'], { API_TOKEN: 'row-secret' }, { runAsUser: 'omadia-mcp' });
+    const launch = stdioLaunch('srv-1', 'npx', ['-y', 'pkg'], { API_TOKEN: 'row-secret' }, { runAsUser: 'omadia-mcp' });
     assert.equal(launch.command, 'sudo');
-    assert.deepEqual(launch.args, ['-n', '-E', '-H', '-u', 'omadia-mcp', '--', 'npx', '-y', 'pkg']);
+    assert.deepEqual(launch.args, [
+      '-n', '-E', '-H', '-u', 'omadia-mcp', '--',
+      '/bin/sh', '-c', MCP_STDIO_CHILD_SHIM, stdioCacheKey('srv-1'),
+      'npx', '-y', 'pkg',
+    ]);
     assert.ok(!launch.args.some((a) => a.includes('row-secret')), 'secrets never go on the command line');
     assert.equal(launch.env.API_TOKEN, 'row-secret');
+  });
+
+  it('gives each server its own npm cache key and keeps the shim argument-safe', () => {
+    assert.match(stdioCacheKey('srv-1'), /^[0-9a-f]{16}$/);
+    assert.notEqual(stdioCacheKey('srv-1'), stdioCacheKey('srv-2'));
+    assert.equal(stdioCacheKey('srv-1'), stdioCacheKey('srv-1'));
+    // The server's command line is passed positionally ("$@"), never spliced into the script.
+    assert.ok(MCP_STDIO_CHILD_SHIM.endsWith('exec "$@"'));
+    assert.ok(MCP_STDIO_CHILD_SHIM.startsWith('umask 077'));
   });
 
   it('refuses a user name that is not a plain POSIX name', () => {

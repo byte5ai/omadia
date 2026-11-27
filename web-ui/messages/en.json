@@ -5606,7 +5606,7 @@
       "transportDeprecated": "Deprecated",
       "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
       "stdioHint": "A stdio server runs as a process inside the middleware container under the middleware's user. Its own environment is minimal, but it can read the middleware's environment and data directory, including VAULT_KEY and DATABASE_URL, and so every stored secret. Only add commands you trust. Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
-      "stdioHintIsolated": "A stdio server runs as a process inside the middleware container, under its own OS user. It gets no environment of the middleware and cannot read its data directory or secrets, only its own config values. It still shares the container's network and CPU. Only add commands you trust. Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
+      "stdioHintIsolated": "A stdio server runs as a process inside the middleware container, under its own OS user. It gets no environment of the middleware and cannot read its data directory or secrets. All stdio servers share that one user, so a stdio server can read the config values and files of the other stdio servers. It also shares the container's network and CPU. Only add commands you trust. Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
       "showDeprecatedTransports": "Show deprecated transports",
       "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
@@ -5769,7 +5769,7 @@
       "browseOnlyHint": "This registry entry has no connectable endpoint — it only points at the source (a self-hosted server). Host it yourself, then add it manually via \"Add server\".",
       "authHintRemote": "🔒 may require authorization",
       "authHintLocal": "local (stdio): runs inside the middleware and can read its secrets",
-      "authHintLocalIsolated": "local (stdio): runs in the middleware container under its own user",
+      "authHintLocalIsolated": "local (stdio): runs under its own user, shared with other stdio servers",
       "addRegistry": "Add a registry",
       "addRegistryConfirm": "Add registry",
       "removeRegistry": "Remove registry",
@@ -5872,7 +5872,7 @@
     "guard": {
       "blockedHost": "This address is blocked for security reasons. An MCP server or registry must not point at a link-local or cloud-metadata address such as 169.254.169.254 or metadata.google.internal; private and intranet addresses are allowed. Change the URL. Details: {detail}",
       "stdioDisabled": "stdio MCP servers are disabled on this installation (MCP_STDIO_ENABLED=false). Use a remote (http) server instead, or set MCP_STDIO_ENABLED=true for the middleware and restart it. Details: {detail}",
-      "stdioIsolationUnavailable": "stdio MCP servers must run as their own OS user on this installation (MCP_STDIO_RUN_AS), but the user switch does not work, so no process was started. Check that the image's sudo rule and the user exist, or unset MCP_STDIO_RUN_AS. Details: {detail}"
+      "stdioIsolationUnavailable": "stdio MCP servers must run as their own OS user on this installation (MCP_STDIO_RUN_AS), but the user switch does not work, so no process was started. Fix the switch: the image needs sudo, the user and its sudoers rule, and the container must allow setuid (no `no-new-privileges`). Only as a deliberate last resort, set MCP_STDIO_RUN_AS empty: stdio servers then run as the middleware's user and can read every stored secret. Details: {detail}"
     },
     "addModal": {
       "title": "Connect an MCP server",

@@ -297,6 +297,8 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
   // #2306 — whether stdio children run as their own OS user (MCP_STDIO_RUN_AS).
   // Unknown (older middleware) counts as not isolated: the stricter hint.
   const [stdioIsolated, setStdioIsolated] = useState(false);
+  // #2306 — the probe's reason when the user switch is configured but broken.
+  const [stdioIsolationError, setStdioIsolationError] = useState<string | null>(null);
   // #1916 — the outcome of the last "Re-scan all", shown until the next action.
   const [rescanResult, setRescanResult] = useState<Awaited<
     ReturnType<typeof rescanAllMcpServers>
@@ -308,6 +310,7 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
       setServers(list.servers);
       setStdioEnabled(list.stdioEnabled !== false);
       setStdioIsolated(list.stdioIsolated === true);
+      setStdioIsolationError(list.stdioIsolationError ?? null);
       setError(null);
     } catch (err) {
       setError(errText(err));
@@ -398,7 +401,9 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
         </label>
         {transport === 'stdio' && stdioEnabled ? (
           <p className="basis-full text-xs text-[color:var(--fg-muted)]">
-            {t(stdioIsolated ? 'servers.stdioHintIsolated' : 'servers.stdioHint')}
+            {stdioIsolationError !== null
+              ? t('guard.stdioIsolationUnavailable', { detail: stdioIsolationError })
+              : t(stdioIsolated ? 'servers.stdioHintIsolated' : 'servers.stdioHint')}
           </p>
         ) : null}
         {!stdioEnabled ? (

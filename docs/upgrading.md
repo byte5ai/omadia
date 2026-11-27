@@ -375,10 +375,19 @@ entrypoint sets `/data` to `0700` on every start. Remote (http) MCP servers are 
 - **The env of a stdio server** is the SDK base, `LANG`/`LC_ALL`/`LC_CTYPE`/`TZ` and its own
   config values on every install. A server that relied on another variable of the middleware's
   environment (for example a proxy setting) needs it as a config field.
-- **Custom images or a different runtime user:** if `sudo -n -u omadia-mcp` does not work, stdio
-  connects are refused with `stdio_isolation_unavailable` (Discover shows it). Either provide
-  the user and the sudoers rule from the repo `Dockerfile`, or set `MCP_STDIO_RUN_AS=` (empty)
-  to run stdio servers as the middleware's user again, with the ADR-0211 trust model.
+- **All stdio servers share the user `omadia-mcp`.** They are isolated from the middleware, not
+  from each other: one stdio server can read another's config values. Each gets its own npm
+  cache under `/home/omadia-mcp/.npm-cache/`.
+- **If stdio is refused with `stdio_isolation_unavailable`** (Discover and the add-server form
+  show it), fix the switch. Known causes: a runtime that forbids setuid
+  (`--security-opt no-new-privileges`, some rootless or hardened runtimes), a custom image
+  without `sudo`, the user or the sudoers rule from the repo `Dockerfile`, or a different runtime
+  user than `node`. Only as a deliberate last resort set `MCP_STDIO_RUN_AS=` (empty): stdio
+  servers then run as the middleware's user again and can read every stored secret (ADR-0211).
+- **Fly:** the entrypoint sets the Machines API socket `/.fly/api` to `0600` when it exists. The
+  middleware does not use it. This is still an open check: after the deploy, confirm that
+  `ls -l /.fly/api` (if present) shows root-only and that the app is healthy.
+- **`/home/node` is now `0700`.**
 
 ## Upgrading past v0.210.0 — agents' own bots on Telegram, Discord and Slack
 
