@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Docs — wave 5 ADRs accepted, roadmap design ADRs 0285–0290 (W36) (2026-11-27)
+
+- ADRs 0175–0257 whose code is on main move from Proposed to Accepted (status line and index
+  only). ADR-0225 stays Proposed: its kernel link seam is not built.
+- New design records, all **Proposed** and waiting for the owner, nothing built:
+  ADR-0285 proof inclusion as the `omadia-proof` plugin on the receipt chain (#442),
+  ADR-0286 deployment directory with check/plan gates, agent apply later (#582),
+  ADR-0287 audio meeting source in the Teams plugin as the agent's tenant user (#584),
+  ADR-0288 Satellites as outbound-only capability bridges, no remote agents (#746),
+  ADR-0289 Linear channel as a third plugin with one Linear app per agent (#1031),
+  ADR-0290 credential broker as a per-agent granted capability (#778).
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn
