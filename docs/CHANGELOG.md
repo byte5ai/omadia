@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — bulk memory promotion runs the discretion check (#2294, ADR-0263) (2026-11-27)
+
+- Bulk promotion skipped `guardMemoryEgress`, so a stored turn that read another conversation
+  could be promoted into a tier whose readers may not know it. The kernel now decorates the
+  published `bulkPromotion@1` service (`withBulkPromotionGate`): every candidate is checked
+  against the label set its turn record stored, with the live flow rule (owners of a
+  member-scoped turn, otherwise unknown readers). Refused turns count as `skipped` and are
+  audited (`target: bulk-promotion`); a failed lookup refuses. plugin-api **1.108.0**:
+  `BulkPromoteRunOptions.mayPromote`, `BulkPromoteCandidate`.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

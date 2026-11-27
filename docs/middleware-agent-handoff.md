@@ -5496,6 +5496,10 @@ Grenzen: `docs/security-architecture.md` §7c.
   `originAgent` (aus `<agentSlug>::…` der Turn-Scope) und die Member-Owner wie der
   Live-Pfad. Turns ohne Personen-Owner (`key:<id>`, Public API) sind keine Kandidaten.
   Ergebnis `promotePhase.skipped` zählt bewusst ausgelassene Turns.
+- **Diskretion im Bulk-Pfad (ADR-0263, #2294).** Der Kernel dekoriert `bulkPromotion@1`
+  (`withBulkPromotionGate`, `discretion/bulkPromotionGate.ts`): jeder Kandidat wird gegen die
+  gespeicherten Turn-Labels mit der Live-Flow-Regel geprüft (`mayPromote`, plugin-api 1.108.0);
+  verweigert = `skipped` + Audit `target: bulk-promotion`, Fehler = verweigert.
 - **Auto-Merge** (`kg_auto_merge_enabled`, Default an; `kg_auto_merge_threshold`
   Default 0.98, Flag-Floor 0.90): löst nur Paare mit gleichem Text (Kind/Summary/
   Rationale ohne Groß-/Kleinschreibung, Leerraum, Satzzeichen) und entfernt nur

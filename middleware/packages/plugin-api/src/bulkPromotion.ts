@@ -36,6 +36,24 @@ export interface BulkPromoteRunOptions {
   promoteLimit?: number;
   /** Significance threshold for promotion. Default 0.7. */
   threshold?: number;
+  /**
+   * #2294 (1.108.0) — the discretion check of the live path, for a stored
+   * turn: may what the turn read go into the tier the entry would land in
+   * (`owners` for a member-scoped turn, otherwise the agent's own memory)?
+   * `false` skips the turn (counted as `skipped`, not retired: a later
+   * operator decision may allow it). Supplied by the kernel, which decorates
+   * the published service; a throw counts as `false` (fail closed).
+   */
+  mayPromote?: (candidate: BulkPromoteCandidate) => Promise<boolean>;
+}
+
+/** #2294 — what {@link BulkPromoteRunOptions.mayPromote} decides on. */
+export interface BulkPromoteCandidate {
+  readonly turnId: string;
+  /** Member-scoped turn: the people who own its knowledge. */
+  readonly owners?: readonly string[];
+  /** The producing agent, from the turn's qualified scope. */
+  readonly agentSlug?: string;
 }
 
 export interface BulkScorePhaseResult {

@@ -351,6 +351,15 @@ export function createBulkPromotionService(
     const tally = { promoted: 0, already: 0, below: 0, skipped: 0, failed: 0 };
     for (const row of promoteRows.rows) {
       try {
+        // #2294 — the live path's discretion check, before any LLM call.
+        if (!(await mayPromote(options, row))) {
+          tally.skipped++;
+          log(`[discretion] bulk promotion of turn ${row.external_id} skipped: the turn carries another conversation's knowledge`);
+          // Retired, or every later run would pick the same high-significance
+          // turns first and spend its whole promote limit on them.
+          await retireTurnFromPromotion(deps.pool, deps.tenantId, row.external_id, 'discretion');
+          continue;
+        }
         const result = await promoteCandidate(row, threshold);
         countOutcome(tally, result);
         await retireIfFinal(row.external_id, result);
@@ -383,4 +392,20 @@ export function createBulkPromotionService(
   }
 
   return { preview, run };
+}
+
+/** #2294 — the kernel's discretion gate for one candidate; a throw refuses. */
+async function mayPromote(options: BulkPromoteRunOptions, row: PromoteCandidate): Promise<boolean> {
+  if (!options.mayPromote) return true;
+  const owners = ownersOf(row.owners);
+  const agentSlug = agentOfTurnScope(row.scope);
+  try {
+    return await options.mayPromote({
+      turnId: row.external_id,
+      ...(owners !== undefined ? { owners } : {}),
+      ...(agentSlug !== undefined ? { agentSlug } : {}),
+    });
+  } catch {
+    return false;
+  }
 }

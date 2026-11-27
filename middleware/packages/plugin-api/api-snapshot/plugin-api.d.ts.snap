@@ -361,6 +361,12 @@ export interface BulkPromoteRunOptions {
 scoreLimit?: number;
 promoteLimit?: number;
 threshold?: number;
+mayPromote?: (candidate: BulkPromoteCandidate) => Promise<boolean>;
+}
+export interface BulkPromoteCandidate {
+readonly turnId: string;
+readonly owners?: readonly string[];
+readonly agentSlug?: string;
 }
 export interface BulkScorePhaseResult {
 scanned: number;
