@@ -6631,7 +6631,8 @@
       "user_selector_resolved": "Der Selektor ist {via, select, account_id {eine Konto-ID} channel_identity {eine Kanal-Identität} other {keine omadia-User-ID}}; der Purge arbeitet mit der omadia-User-ID {omadiaUserId} dieser Person.",
       "user_unknown": "Zu dieser ID gibt es keine Person: keinen Knowledge-Graph-Nutzer und kein Konto. Prüfe, ob du die omadia-User-ID oder die Konto-ID von der Nutzerseite kopiert hast.",
       "user_layers_unsupported": "Diese Installation kann {layers} der Person nicht löschen; sie bleiben.",
-      "generated_files_pending": "{count} erzeugte Dateien hätten gelöscht werden sollen, wurden es aber nicht: das Office- oder Diagramm-Plugin ist nicht aktiv, oder sein Bucket hat das Löschen abgelehnt. Sie werden beim nächsten Purge oder Löschen eines Chats gelöscht; die Lifecycle-Regel des Buckets bleibt die Rückfallebene."
+      "generated_files_pending": "{count} erzeugte Dateien hätten gelöscht werden sollen, wurden es aber nicht: das Office- oder Diagramm-Plugin ist nicht aktiv, oder sein Bucket hat das Löschen abgelehnt. Sie werden beim nächsten Purge oder Löschen eines Chats gelöscht; die Lifecycle-Regel des Buckets bleibt die Rückfallebene.",
+      "sessions_not_revoked": "Diese Installation kann die offenen Web-Sitzungen der Person nicht beenden: Sie arbeiten bis zur nächsten Anmeldung unter der gelöschten ID weiter. Lösche oder deaktiviere danach das Konto."
     },
     "errors": {
       "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
@@ -6663,7 +6664,8 @@
       "processes": "Gespeicherte Prozesse",
       "identity": "Identitätsknoten (Name, E-Mail)",
       "deowned": "Geteilte Fakten: nur diese Person wird als Eigentümer entfernt",
-      "generatedFiles": "Erzeugte Dateien (Office, Diagramme)"
+      "generatedFiles": "Erzeugte Dateien (Office, Diagramme)",
+      "sessions": "Web-Anmeldungen der Person beendet (Konten)"
     }
   },
   "adminDuplicates": {

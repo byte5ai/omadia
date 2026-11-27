@@ -455,6 +455,7 @@ export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]:
     deleteOwnerlessMemory: 'kernel-only',
     findOmadiaUserIdByChannelIdentity: 'kernel-only',
     countUserIdentity: 'kernel-only',
+    listUserChannelIdentities: 'kernel-only',
     purgeUserIdentity: 'kernel-only',
     countMemorableKnowledge: 'kernel-only',
     purgeMemorableKnowledge: 'kernel-only',

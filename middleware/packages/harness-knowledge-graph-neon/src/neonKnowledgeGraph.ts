@@ -9,6 +9,8 @@ import {
   CONVERSATION_HISTORY_NODE_TYPES,
   type ConversationHistoryPurgeFilter,
   channelIdentityNodeId,
+  parseChannelIdentityNodeId,
+  type UserChannelIdentity,
   SYSTEM_ACTOR_OMADIA_USER_ID,
   type ChannelKind,
   entityNodeId,
@@ -3473,6 +3475,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       [this.tenantId, userNodeId(omadiaUserId)],
     );
     return { count: Number(res.rows[0]?.count ?? '0') };
+  }
+
+  async listUserChannelIdentities(omadiaUserId: string): Promise<readonly UserChannelIdentity[]> {
+    const res = await this.pool.query<{ external_id: string }>(
+      `SELECT ci.external_id
+         FROM graph_nodes u
+         JOIN graph_edges e ON e.to_node = u.id AND e.type = 'IS_IDENTITY_OF'
+         JOIN graph_nodes ci ON ci.id = e.from_node AND ci.type = 'ChannelIdentity'
+        WHERE u.tenant_id = $1 AND u.type = 'User' AND u.external_id = $2
+          AND ci.tenant_id = $1
+        ORDER BY ci.external_id`,
+      [this.tenantId, userNodeId(omadiaUserId)],
+    );
+    return res.rows
+      .map((r) => parseChannelIdentityNodeId(r.external_id))
+      .filter((v): v is UserChannelIdentity => v !== null);
   }
 
   async purgeUserIdentity(omadiaUserId: string): Promise<{ deletedNodes: number }> {

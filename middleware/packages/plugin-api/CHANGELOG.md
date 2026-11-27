@@ -8,6 +8,17 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.107.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`KnowledgeGraph.listUserChannelIdentities?(omadiaUserId)`** and the `UserChannelIdentity`
+  type plus `parseChannelIdentityNodeId` (#2293): the channel identities linked to a person's
+  `User` cluster. Kernel-only in the bounded graph services; a user purge uses it to reach the
+  per-channel context trees of every identity and the person's accounts.
+
 ## 1.106.0 — 2026-11-26
 
 Additive.

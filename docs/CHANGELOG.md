@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a user purge covers all linked identities and ends web sessions (#2292, #2293, ADR-0262) (2026-11-27)
+
+- The `user` axis now reads every channel identity of the person's cluster
+  (`KnowledgeGraph.listUserChannelIdentities?`, plugin-api **1.107.0**, in-memory + Neon) and
+  purges the context trees `/memories/contexts/<agent>/user/<kind>~<id>` of all of them in the
+  same run, whichever id the operator typed.
+- The person's accounts (`web` identities) get `users.session_version` bumped after the purge,
+  so open web sessions stop carrying the deleted omadia user id. Preview `sessionAccountCount`,
+  result `sessionsRevoked`, warning `sessions_not_revoked` when no user store is wired; the
+  Danger Zone shows the count (en + de).
+
 ### Fixed — debug `scope` turns and steering are bound to the account (#2291) (2026-11-27)
 
 - `POST /api/chat`, `/chat/stream` and `/chat/steer` with a debug `scope` (or neither `scope`

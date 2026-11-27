@@ -366,6 +366,13 @@ export interface KnowledgeGraph {
    * e-mail). `count` 0 means no cluster with this id. Optional.
    */
   countUserIdentity?(omadiaUserId: string): Promise<{ count: number }>;
+  /**
+   * #2293 (1.107.0) — the channel identities linked to the person's `User`
+   * cluster, e.g. `{ channelKind: 'telegram', channelUserId: '42' }`. Lets a
+   * user purge reach the per-channel context trees of every identity in one
+   * run. Empty when no cluster has this id. Optional.
+   */
+  listUserChannelIdentities?(omadiaUserId: string): Promise<readonly UserChannelIdentity[]>;
   /** #1843 — delete those identity nodes and their edges. A later login
    *  creates a new cluster with a new id. */
   purgeUserIdentity?(omadiaUserId: string): Promise<{ deletedNodes: number }>;
@@ -2704,6 +2711,25 @@ export function ownersCoverAudience(
  */
 export function userNodeId(omadiaUserId: string): string {
   return `user:${omadiaUserId}`;
+}
+
+/** #2293 — one channel identity of a person (`listUserChannelIdentities`). */
+export interface UserChannelIdentity {
+  readonly channelKind: ChannelKind;
+  readonly channelUserId: string;
+}
+
+/**
+ * #2293 — the inverse of {@link channelIdentityNodeId}: split an external id
+ * `<kind>:<id>` at the first `:`. `null` when the shape does not match.
+ */
+export function parseChannelIdentityNodeId(externalId: string): UserChannelIdentity | null {
+  const sep = externalId.indexOf(':');
+  if (sep <= 0 || sep === externalId.length - 1) return null;
+  return {
+    channelKind: externalId.slice(0, sep) as ChannelKind,
+    channelUserId: externalId.slice(sep + 1),
+  };
 }
 
 /**

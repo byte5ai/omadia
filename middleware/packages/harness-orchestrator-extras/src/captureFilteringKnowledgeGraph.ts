@@ -183,6 +183,7 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
   // #1840 / #1843 — identity lookups and the identity purge, forwarded too.
   readonly findOmadiaUserIdByChannelIdentity?: KnowledgeGraph['findOmadiaUserIdByChannelIdentity'];
   readonly countUserIdentity?: KnowledgeGraph['countUserIdentity'];
+  readonly listUserChannelIdentities?: KnowledgeGraph['listUserChannelIdentities'];
   readonly purgeUserIdentity?: KnowledgeGraph['purgeUserIdentity'];
 
   constructor(opts: CaptureFilteringKnowledgeGraphOptions) {
@@ -203,6 +204,8 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     if (innerFindByIdentity) this.findOmadiaUserIdByChannelIdentity = innerFindByIdentity;
     const innerCountIdentity = opts.inner.countUserIdentity?.bind(opts.inner);
     if (innerCountIdentity) this.countUserIdentity = innerCountIdentity;
+    const innerListIdentities = opts.inner.listUserChannelIdentities?.bind(opts.inner);
+    if (innerListIdentities) this.listUserChannelIdentities = innerListIdentities;
     const innerPurgeIdentity = opts.inner.purgeUserIdentity?.bind(opts.inner);
     if (innerPurgeIdentity) this.purgeUserIdentity = innerPurgeIdentity;
   }

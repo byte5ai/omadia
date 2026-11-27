@@ -6631,7 +6631,8 @@
       "user_selector_resolved": "The selector is {via, select, account_id {an account id} channel_identity {a channel identity} other {not an omadia user id}}; the purge works on that person’s omadia user id {omadiaUserId}.",
       "user_unknown": "No person has this id: no knowledge-graph user and no account. Check whether you copied the omadia user id or the account id from the user page.",
       "user_layers_unsupported": "This installation cannot delete the person’s {layers}; they stay.",
-      "generated_files_pending": "{count} generated files should have been deleted but were not: the Office or Diagrams plugin is not active, or its bucket refused the delete. They are deleted on the next purge or chat deletion; the bucket lifecycle rule is the backstop."
+      "generated_files_pending": "{count} generated files should have been deleted but were not: the Office or Diagrams plugin is not active, or its bucket refused the delete. They are deleted on the next purge or chat deletion; the bucket lifecycle rule is the backstop.",
+      "sessions_not_revoked": "This installation cannot end the person’s open web sessions: they keep working under the deleted id until they sign in again. Delete or disable the account afterwards."
     },
     "errors": {
       "invalid_selector": "The selector must be spelled channelType~id, e.g. teams~19:abc@thread.tacv2 (raw native id) or the key shown in the memory browser.",
@@ -6663,7 +6664,8 @@
       "processes": "Stored processes",
       "identity": "Identity nodes (name, e-mail)",
       "deowned": "Shared facts: only this person is removed as owner",
-      "generatedFiles": "Generated files (Office, diagrams)"
+      "generatedFiles": "Generated files (Office, diagrams)",
+      "sessions": "Web sign-ins of the person ended (accounts)"
     }
   },
   "adminDuplicates": {
