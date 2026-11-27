@@ -1855,6 +1855,32 @@ export interface MemoryStore {
   delete(virtualPath: string): Promise<void>;
   /** Rename/move a file or directory. */
   rename(fromVirtualPath: string, toVirtualPath: string): Promise<void>;
+  /**
+   * #1753 (ADR-0322, plugin-api 1.113.0) — append `content` to the end of a
+   * file without reading it back; creates the file with `content` when it is
+   * missing. Optional: a store or decorator without it is driven through
+   * {@link appendToMemoryFile}, which falls back to read + write. A decorator
+   * that implements it applies the same checks as its `writeFile`.
+   */
+  appendFile?(virtualPath: string, content: string): Promise<void>;
+}
+
+/**
+ * #1753 (ADR-0322) — append to a memory file through the store's own
+ * `appendFile` when it has one, else by reading the file and writing it back
+ * (the behaviour every caller had before). Missing file → created.
+ */
+export async function appendToMemoryFile(
+  store: MemoryStore,
+  virtualPath: string,
+  content: string,
+): Promise<void> {
+  if (store.appendFile) {
+    await store.appendFile(virtualPath, content);
+    return;
+  }
+  const previous = (await store.fileExists(virtualPath)) ? await store.readFile(virtualPath) : '';
+  await store.writeFile(virtualPath, previous + content);
 }
 
 export interface MemoryEntry {

@@ -11,11 +11,11 @@ import { ProactiveTargetGoneError, type ProactiveSender } from './proactiveSende
  * `/memories/chat-sessions/<id>.json`). A scheduled routine's output is
  * appended to the ORIGINATING chat as an assistant message marked
  * `proactive`, so the user sees it when they open or re-focus that chat.
- * There is no live push: the web chat has no realtime channel (the WebSocket
- * registry serves channel plugins, SSE serves the builder), so the web UI
- * re-reads the active chat when /chat mounts, after hydration, on chat switch,
- * on visibility change and on window focus, and folds deliveries into its
- * local copy.
+ * #2354 (ADR-0321): after the append, `onDelivered` signals the chat's open
+ * delivery streams (`GET /api/chat/sessions/:id/events`) and the web UI
+ * re-reads the chat at once. It also re-reads the active chat when /chat
+ * mounts, after hydration, on chat switch, on visibility change, on window
+ * focus and on a 60 s poll, and folds deliveries into its local copy.
  *
  * Deliberate limits:
  *  - A deleted chat is NOT recreated. `checkDeliverable` notices it before
@@ -95,6 +95,11 @@ export interface WebChatProactiveSenderOptions {
   /** Warn-level sink (dropped content). Defaults to `console.warn`. */
   warn?: (msg: string) => void;
   now?: () => number;
+  /**
+   * #2354 (ADR-0321) — told after a delivery was stored, so an open chat can
+   * re-read it at once. A throw is logged and never fails the delivery.
+   */
+  onDelivered?: (sessionId: string, deliveredAt: number) => void;
 }
 
 function goneError(sessionId: string): ProactiveTargetGoneError {
@@ -166,9 +171,10 @@ export function createWebChatProactiveSender(
           `[routines/web-sender] ${where}: dropped interactive '${message.interactive.kind}' — web delivery is text-only`,
         );
       }
+      const deliveredAt = now();
       const outcome = await store.appendProactiveMessage(sessionId, {
         content: message.text,
-        deliveredAt: now(),
+        deliveredAt,
         ...(routine ? { routineId: routine.id, routineName: routine.name } : {}),
         ...(attachmentCount > 0 ? { droppedAttachments: attachmentCount } : {}),
         ...(message.interactive ? { droppedInteractive: message.interactive.kind } : {}),
@@ -178,6 +184,13 @@ export function createWebChatProactiveSender(
       });
       // Deleted while the turn ran: gone for good, like the pre-flight case.
       if (outcome === 'not_found') throw goneError(sessionId);
+      try {
+        opts.onDelivered?.(sessionId, deliveredAt);
+      } catch (err) {
+        warn(
+          `[routines/web-sender] ${where}: live signal failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     },
   };
 }

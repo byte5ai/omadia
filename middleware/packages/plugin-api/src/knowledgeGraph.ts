@@ -1894,6 +1894,25 @@ export interface ConversationHistoryPurgeFilter {
    *  id), and Turns with a `BELONGS_TO` edge to the user cluster. A `Session`
    *  goes only once none of its Turns remain. */
   userId?: string;
+  /**
+   * #1753 (ADR-0323, 1.113.0) — restrict to these conversations: unqualified
+   * graph scope keys (as `graphScopeFor` builds them without the Agent), each
+   * matching its unqualified scope and `<any agent>::<key>`. Used when a web
+   * chat or a routine is deleted. An empty array selects nothing.
+   */
+  conversationScopes?: readonly string[];
+}
+
+/**
+ * #1753 (ADR-0323) — does a node's `scope` belong to one of the unqualified
+ * conversation keys? Keys never contain `:` (both scope-key builders map it
+ * away), so the last `::` separates the Agent from the key.
+ */
+export function matchesConversationScope(
+  scope: string,
+  keys: readonly string[],
+): boolean {
+  return keys.some((key) => scope === key || scope.endsWith(`${AGENT_SCOPE_SEP}${key}`));
 }
 
 /** Node types the conversation-history purge selects directly by scope /

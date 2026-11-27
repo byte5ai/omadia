@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0320](0320-the-ai-disclosure-line-follows-the-answer-language.md) (the AI-disclosure line follows the answer's language, not `ChatTurnInput.locale`)
 
 - **Date:** 2026-11-26
 - **Deciders:** Wave 5 cluster W15-17, decided after the recheck's recommendation under the

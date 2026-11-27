@@ -9,7 +9,7 @@ import { createProactiveSender } from './genericProactiveSender.js';
 import type { ManageRoutineContext } from './manageRoutineTool.js';
 import { RoutineRunInProgressError } from './routineRunControl.js';
 import { cardActorScope } from './routineCardActor.js';
-import { RoutineNotActiveError } from './routineRunner.js';
+import { RoutineBudgetRefusedError, RoutineNotActiveError } from './routineRunner.js';
 import {
   ADAPTIVE_CARD_CONTENT_TYPE,
   buildRoutineListSmartCard,
@@ -145,6 +145,9 @@ export function createRoutinesIntegration(
           }
           if (err instanceof RoutineRunInProgressError) {
             return 'Die Routine läuft gerade — warte, bis dieser Lauf fertig ist.';
+          }
+          if (err instanceof RoutineBudgetRefusedError) {
+            return `Routine nicht ausgelöst: ${err.reason}.`;
           }
           throw err;
         }

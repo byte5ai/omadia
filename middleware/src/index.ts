@@ -210,6 +210,8 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { createChatUploadsRouter, WEB_CHAT_UPLOAD_PRODUCER } from './routes/chatUploads.js';
+import { ChatDeliveryBus } from './routes/chatDeliveryEvents.js';
 import { createChannelDeliveryContext } from './plugins/routines/routineDeliveryContext.js';
 import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
@@ -696,7 +698,7 @@ import { createAttachmentByteReader, loopbackOriginFor } from './channels/attach
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { agentEndedText, resolveRoutineAgent } from './plugins/routines/routineAgentBinding.js';
 import { WEB_CHAT_DELETED_PAUSE } from './plugins/routines/webChatProactiveSender.js';
-import { purgeSessionTranscripts } from './plugins/routines/sessionTranscripts.js';
+import { purgeConversationRecords } from './plugins/routines/sessionTranscripts.js';
 import { routineOwnerIdsForAccount } from './plugins/routines/accountRoutineOwner.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
@@ -1337,6 +1339,8 @@ async function main(): Promise<void> {
   // the account source is attached right after the UserStore is built (still
   // before app.listen, so no request is ever evaluated without it).
   const sessionRevocation = new SessionRevocationGuard();
+  // #2354 — routine deliveries into a web chat, signalled to its open streams.
+  const chatDeliveryBus = new ChatDeliveryBus();
   // #778 W1 — HMAC key `promoteSkillOwnerScope` (#577 P3) re-signs a skill's
   // manifest with. Resolved here alongside the session key: same vault,
   // same "generate once, persist, reuse every boot" pattern — see
@@ -1695,10 +1699,8 @@ async function main(): Promise<void> {
   let attachmentBindingStoreRef: AttachmentBindingStore | undefined = config.DATABASE_URL
     ? undefined
     : new InMemoryAttachmentBindingStore();
-  serviceRegistry.provide(
-    'attachmentBindings',
-    createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
-  );
+  const attachmentBindings = createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef);
+  serviceRegistry.provide('attachmentBindings', attachmentBindings);
   // ADR-0187 (#1986) — generated files recorded under the turn's person and
   // chat (migration 0119), released with chat deletion and memory purges.
   // Provided before plugins activate (Office and Diagrams read it then); the
@@ -2661,6 +2663,12 @@ async function main(): Promise<void> {
     // late-resolve the attachment store via ctx.services.get('tigrisStore')
     // instead of constructor-injected Deps.
     serviceRegistry.provide('tigrisStore', attachmentStore.store);
+    // #2336 (ADR-0310) — web-chat uploads are deleted with their chat or person.
+    const uploadStore = attachmentStore.store;
+    if (uploadStore.delete) {
+      const deleteUpload = uploadStore.delete.bind(uploadStore);
+      generatedObjects.registerDeleter(WEB_CHAT_UPLOAD_PRODUCER, (key) => deleteUpload(key));
+    }
   }
   console.log(attachmentStore.message);
 
@@ -3917,12 +3925,23 @@ async function main(): Promise<void> {
         ),
       // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
       defaultTimeZone: config.PROACTIVE_TIMEZONE,
-      // #1753 — a deleted routine's transcripts go with it.
-      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1753 — a deleted routine's transcripts and graph history go with it.
+      purgeTranscripts: (scope) => purgeConversationRecords(
+          {
+            store: memoryStore,
+            // Per call: orchestrator-extras may replace the graph service (ADR-0323).
+            graph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph') ?? knowledgeGraph,
+            tenantId: graphTenantId,
+          },
+          scope,
+        ),
       // #1776 — a manual run's cost is booked on the routine's trigger.
       bookManualRunCost: async (routineId, costUsd) => {
         await triggersRef.current?.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId });
       },
+      // #2357 — a manual run gets the budget checks a scheduled firing gets.
+      manualRunRefusal: (routineId) =>
+        triggersRef.current?.service.manualRunRefusal('routine', routineId) ?? Promise.resolve(undefined),
       // #1744 / #1745 — the agent a routine is bound to, by id.
       resolveAgent: (routine) =>
         resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
@@ -3964,6 +3983,9 @@ async function main(): Promise<void> {
         createWebChatProactiveSender({
           getStore: getChatSessionStore,
           warn: (msg) => console.warn(msg),
+          // #2354 — signal the chat's open streams; the browser re-reads it.
+          onDelivered: (sessionId, deliveredAt) =>
+            chatDeliveryBus.publish({ type: 'delivery', sessionId, deliveredAt }),
         }),
       ],
       log: (msg) => console.log(msg),
@@ -4403,10 +4425,34 @@ async function main(): Promise<void> {
   // callers could trigger LLM inference (cost) and reach the tool surface
   // (KG-lookups, RAG, Memory-Reads). createChatRouter does not register
   // any public-by-design routes — every route is inference-tied.
+  // #2336 (ADR-0310) — web-chat file uploads, bound to the chat at upload.
+  app.use(
+    '/api',
+    requireAuth,
+    createChatUploadsRouter({
+      store: () => attachmentStore.store,
+      bindings: attachmentBindings,
+      recordUpload: (key, owner) => generatedObjects.recordFor(WEB_CHAT_UPLOAD_PRODUCER, key, owner),
+      uploadsOf: async (owner) =>
+        (await generatedObjects.rows({ scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId }))
+          .filter((row) => row.producer === WEB_CHAT_UPLOAD_PRODUCER)
+          .map((row) => row.storageKey),
+      releaseUpload: async (key, owner) => {
+        await generatedObjects.release(
+          { scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId },
+          (row) => row.producer === WEB_CHAT_UPLOAD_PRODUCER && row.storageKey === key,
+        );
+      },
+      getChatSessionStore,
+      legacyChatOwner,
+    }),
+  );
   app.use(
     '/api',
     requireAuth,
     createChatRouter({
+      // #2336 — checks the uploads a turn names against their chat binding.
+      attachmentBindings,
       // #1756 — routine delivery times in the instance zone (ADR 0240).
       timeZone: config.PROACTIVE_TIMEZONE,
       agentResolver,
@@ -4481,8 +4527,18 @@ async function main(): Promise<void> {
       legacyOwner: legacyChatOwner,
       releaseGenerated: (scope, ownerOmadiaUserId) =>
         generatedObjects.release({ scope, ...(ownerOmadiaUserId ? { ownerOmadiaUserId } : {}) }),
-      // #1753 — and removes its markdown transcripts.
-      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1753 — and removes its markdown transcripts and the deleting
+      // person's graph history of it (ADR-0323).
+      purgeTranscripts: (scope, ownerOmadiaUserId) => purgeConversationRecords(
+          {
+            store: memoryStore,
+            // Per call: orchestrator-extras may replace the graph service (ADR-0323).
+            graph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph') ?? knowledgeGraph,
+            tenantId: graphTenantId,
+          },
+          scope,
+          { userId: ownerOmadiaUserId },
+        ),
       // #1757 — deleting a chat pauses the routines that deliver into it.
       routines: () => {
         const runner = routinesHandle?.runner;
@@ -4495,6 +4551,20 @@ async function main(): Promise<void> {
       },
       // #2318 — and is recorded in the admin audit (created later in boot).
       audit: () => adminAudit,
+      // #2354 — live delivery signals, bound to the session like the
+      // builder's event stream (same verdict path as requireAuth).
+      deliveries: {
+        bus: chatDeliveryBus,
+        sessions: {
+          evaluate: (token) =>
+            evaluateSessionToken(token, {
+              signingKey: sessionSigningKey,
+              whitelist: emailWhitelist,
+              sessions: sessionRevocation,
+            }),
+          revocations: sessionRevocation,
+        },
+      },
     }),
   );
 
@@ -8221,8 +8291,8 @@ async function main(): Promise<void> {
     // The AI marking of own-identity posts, by the rule of the agent's turn
     // answers; folded only where the channel has no AI label of its own.
     disclosure: {
-      disclosureFor: (agentSlug: string, channelType: string) =>
-        getRegistry()?.get(agentSlug)?.built.orchestrator.disclosureForChannel(channelType),
+      disclosureFor: (agentSlug: string, channelType: string, text?: string) =>
+        getRegistry()?.get(agentSlug)?.built.orchestrator.disclosureForChannel(channelType, text),
       seen: new InMemoryDisclosureSeenStore(),
     },
   };

@@ -8,6 +8,19 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.113.0 — 2026-11-27
+
+Additive. (Wave 7, W43; the lander renumbers if another PR takes 1.113.0.)
+
+### Added
+
+- **`MemoryStore.appendFile?`** and **`appendToMemoryFile(store, path, content)`** (#1753,
+  ADR-0322): append without reading the file back; the helper falls back to read + write for a
+  store or decorator without `appendFile`.
+- **`ConversationHistoryPurgeFilter.conversationScopes`** and **`matchesConversationScope`**
+  (#1753, ADR-0323): restrict the conversation-history purge to unqualified conversation keys,
+  under every agent.
+
 ## 1.112.0 — 2026-11-27
 
 Additive. (Numbered after 1.108.0–1.111.0 of #2331 / #2332 / #2328 / #2343; the lander

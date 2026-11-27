@@ -223,6 +223,42 @@ export class TriggerService {
     await this.deps.store.bookManualSpend(trigger.id, costUsd, spendMonth(this.now()), detail);
   }
 
+  /**
+   * #2357 (ADR-0324) — why a context's manual run (a routine's "run now")
+   * may not start, by the checks a firing gets before it spends: the kill
+   * switch, a budget pause, and room for one firing's budget in the
+   * trigger's total and the agent's and instance's month. Read-only: a
+   * manual run reserves nothing, its cost is booked afterwards
+   * (`bookManualSpend`). `undefined` = it may run (or there is no trigger).
+   */
+  async manualRunRefusal(kind: TriggerContextKind, contextId: string): Promise<string | undefined> {
+    const trigger = (await this.listForContext(kind, contextId))[0];
+    if (!trigger) return undefined;
+    const { store, limits } = this.deps;
+    if (await store.killSwitchSet(trigger.agentId)) {
+      return 'the agent\'s or the instance\'s kill switch is set; no run starts until it is lifted';
+    }
+    if (trigger.state === 'paused' && trigger.pauseReason === 'budget') {
+      return 'the routine\'s budget is used up (its schedule is paused for budget); raise the budget or wait for the next month';
+    }
+    const amount = trigger.budgetPerFiringUsd;
+    if (amount <= 0) return undefined;
+    if (trigger.spentUsd + trigger.reservedUsd + amount > trigger.budgetTotalUsd) {
+      return 'the routine\'s total budget would be exceeded by one more run';
+    }
+    const month = spendMonth(this.now());
+    for (const [scope, cap, name] of [
+      [trigger.agentId, limits.monthlyAgentUsd, 'agent'],
+      ['instance', limits.monthlyInstanceUsd, 'instance'],
+    ] as const) {
+      const spend = await store.monthSpend(scope, month);
+      if (spend.spentUsd + spend.reservedUsd + amount > cap) {
+        return `the ${name}'s monthly budget would be exceeded by one more run`;
+      }
+    }
+    return undefined;
+  }
+
   get(id: string): Promise<Trigger | undefined> {
     return this.deps.store.get(id);
   }
