@@ -639,7 +639,10 @@ export type { PrivacyEgressContinuation } from './privacyEgress.js';
 export {
   INTERN_EXEMPT_OPERATIONS,
   INTERN_EXEMPT_TOOLS,
+  INTERN_FIELD_EXEMPT_TOOLS,
   PROMPT_MASKED_UPLOAD_TOOLS,
+  fieldExemptModelCopy,
+  hasInternFieldExemption,
   isInternExemptCall,
   isInternExemptTool,
   isPromptMaskedUploadCall,

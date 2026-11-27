@@ -217,8 +217,10 @@ import {
 import { LoopGuard } from './loopGuard.js';
 import {
   TOOLS_OFF_DIRECTIVE,
+  UNATTENDED_DIRECTIVE,
   assertNoToolUseInToolsOffTurn,
   isToolsOffTurn,
+  isUnattendedTurn,
   toolsForTurn,
 } from './toolsOffTurn.js';
 import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
@@ -248,6 +250,7 @@ import type {
   CliTurnRecord,
 } from './cliTurnRecord.js';
 import {
+  fieldExemptModelCopy,
   internFailedNotice,
   isInternExemptCall,
   isPromptMaskedUploadCall,
@@ -2149,6 +2152,7 @@ async function wireExtraSystemHint(
     fixedHint !== undefined && fixedHint.length > 0 ? fixedHint : undefined,
     memoryIndexBlock,
     isToolsOffTurn(input),
+    isUnattendedTurn(input),
   );
 }
 
@@ -2191,12 +2195,17 @@ function composeExtraSystemHint(
   fixedHint?: string,
   memoryIndexBlock?: string,
   toolsOff = false,
+  unattended = false,
 ): string | undefined {
   const parts: string[] = [];
   // #2217 — a tool-less turn says so first, so no later block (fresh check,
   // canvas) reads as an invitation to call a tool.
   if (toolsOff) {
     parts.push(TOOLS_OFF_DIRECTIVE);
+  }
+  // #1770 / ADR 0242 — nobody is present: no questions, assumptions stated.
+  if (unattended) {
+    parts.push(UNATTENDED_DIRECTIVE);
   }
   // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
   // Check (uncached, per turn, static prose that carries no user data), so
@@ -3102,6 +3111,20 @@ const TOOL_DISPATCH_DISCARDED = '__omadia_tool_dispatch_discarded__';
  */
 interface KernelRefusalBox {
   text?: string;
+}
+
+/**
+ * #1747 — stop a turn whose caller cancelled it (`turnContext.abortSignal`):
+ * a routine run past its timeout, or one whose routine was paused or deleted.
+ * Checked at the top of every tool-loop iteration, so no further model call
+ * is paid for; throws the signal's reason so the caller can tell a timeout
+ * from a cancellation.
+ */
+function throwIfTurnAborted(): void {
+  const signal = turnContext.current()?.abortSignal;
+  if (signal?.aborted !== true) return;
+  const reason: unknown = signal.reason;
+  throw reason instanceof Error ? reason : new Error('turn aborted by its caller');
 }
 
 /**
@@ -4745,6 +4768,12 @@ export class Orchestrator {
       console.error('[context] SKIP fresh-check');
       return { text: undefined, recalled: undefined };
     }
+    // #1771 / ADR 0242 — an unattended turn's "recent turns" are earlier runs
+    // of the same routine or trigger, not facts of this one.
+    if (isUnattendedTurn(input)) {
+      console.error('[context] SKIP unattended');
+      return { text: undefined, recalled: undefined };
+    }
     if (!this.contextRetriever) {
       console.error('[context] SKIP no-retriever');
       return { text: undefined, recalled: undefined };
@@ -6130,6 +6159,10 @@ export class Orchestrator {
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
           : {}),
+        // #1747 — an outer caller's cancellation (routine timeout, pause).
+        ...(parent?.abortSignal ? { abortSignal: parent.abortSignal } : {}),
+        // #1743 — the user's zone for `manage_routine` (ADR 0240).
+        ...(input.userTimeZone ? { userTimeZone: input.userTimeZone } : {}),
         // Canvas sentinel tap — installed by the ui-orchestrator in its
         // OUTER scope before this turn scope exists; must survive into the
         // turn so dispatchTool can hand raw sentinels past the privacy guard.
@@ -7265,6 +7298,7 @@ export class Orchestrator {
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        throwIfTurnAborted();
         // Final pass: the loop guard stopped, the wall-clock budget is spent,
         // or this is the last allowed iteration. Suppress tool use (#1211, see
         // `toolParamsFor`) so the model MUST answer in text, and append the
@@ -7523,7 +7557,8 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           // #2217 — not in a tool-less turn: the router is a forced tool call.
-          if (!isToolsOffTurn(input)) {
+          // #1770 — nor in an unattended one: nobody can pick a card.
+          if (!isToolsOffTurn(input) && !isUnattendedTurn(input)) {
             await this.maybeRouteCardsFromText(
               wireUserMessage,
               answer,
@@ -8709,6 +8744,7 @@ export class Orchestrator {
           console.warn('[orchestrator] observer.onIteration threw:', err);
         }
 
+        throwIfTurnAborted();
         // Final pass: loop guard stopped, wall-clock budget spent, or last
         // allowed iteration → answer with tool use suppressed (#1211, see
         // `toolParamsFor`) — best-effort finalize.
@@ -9005,7 +9041,8 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           // #2217 — not in a tool-less turn: the router is a forced tool call.
-          if (!isToolsOffTurn(input)) {
+          // #1770 — nor in an unattended one: nobody can pick a card.
+          if (!isToolsOffTurn(input) && !isUnattendedTurn(input)) {
             await this.maybeRouteCardsFromText(
               wireUserMessage,
               answer,
@@ -10217,6 +10254,13 @@ export class Orchestrator {
         // back to the model as the placeholders it wrote.
         return remaskEchoedValues(privacy, result);
       }
+      // #1768 / ADR 0241 — a field-exempt tool's operational state in clear,
+      // its user-entered free text withheld. Its `Error:` text took the
+      // control-flow guard above like any tool's (not exempt there).
+      const fieldExempt = isGuardedControlFlowResult(result, mcpAuthPromptMint)
+        ? undefined
+        : fieldExemptModelCopy(name, result);
+      if (fieldExempt !== undefined) return remaskEchoedValues(privacy, fieldExempt);
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default

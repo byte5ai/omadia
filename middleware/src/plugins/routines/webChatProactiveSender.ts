@@ -1,4 +1,5 @@
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import { ToolRefusalError } from '@omadia/plugin-api';
 import { isValidSessionId, type ChatSessionStore } from '@omadia/orchestrator';
 
 import { ProactiveTargetGoneError, type ProactiveSender } from './proactiveSender.js';
@@ -69,15 +70,16 @@ export const WEB_CHAT_NO_CONVERSATION_ERROR =
   'this routine was requested outside a saved web chat, so there is no conversation ' +
   'to deliver it into; start it from a chat tab';
 
-/** The target chat id of a web routine, or a thrown explanation why there is none. */
+/** The target chat id of a web routine, or a thrown explanation why there is none.
+ *  #1767 — a refusal written for the model, so `manage_routine` passes it on. */
 function targetSessionId(ref: unknown): string {
   if (typeof ref !== 'object' || ref === null) {
-    throw new Error(WEB_CHAT_NO_CONVERSATION_ERROR);
+    throw new ToolRefusalError(WEB_CHAT_NO_CONVERSATION_ERROR);
   }
   const r = ref as Record<string, unknown>;
   const sessionId = r['sessionId'];
   if (r['kind'] !== 'http-chat' || typeof sessionId !== 'string' || !isValidSessionId(sessionId)) {
-    throw new Error(WEB_CHAT_NO_CONVERSATION_ERROR);
+    throw new ToolRefusalError(WEB_CHAT_NO_CONVERSATION_ERROR);
   }
   return sessionId;
 }

@@ -6,7 +6,7 @@ import {
 } from './routineOutputTemplate.js';
 
 export type RoutineStatus = 'active' | 'paused';
-export type RoutineRunStatus = 'ok' | 'error' | 'timeout';
+export type RoutineRunStatus = 'ok' | 'error' | 'timeout' | 'cancelled' | 'silent';
 
 export interface Routine {
   id: string;
@@ -48,6 +48,10 @@ export interface Routine {
   until?: Date | null;
   /** #2082 — when the owner was asked whether the routine should go on. */
   renewalAskedAt?: Date | null;
+  /** #1743 / ADR 0240 — IANA zone of the cron pattern (migration 0009); null = UTC. */
+  timezone?: string | null;
+  /** #1745 — id of the agent that runs it (migration 0010); null = bound on its next run. */
+  agentId?: string | null;
 }
 
 export interface CreateRoutineInput {
@@ -63,6 +67,10 @@ export interface CreateRoutineInput {
   outputTemplate?: RoutineOutputTemplate | null;
   /** #1598 — see Routine.agentSlug. */
   agentSlug?: string | null;
+  /** #1743 — see Routine.timezone. */
+  timezone?: string | null;
+  /** #1745 — see Routine.agentId. */
+  agentId?: string | null;
   /** #1907 — see Routine.mcpUserKey. */
   mcpUserKey?: string | null;
 }
@@ -127,13 +135,17 @@ interface RoutineRow {
   /** #2082 — migration 0006. */
   until: Date | null;
   renewal_asked_at: Date | null;
+  /** #1743 — migration 0009. */
+  timezone: string | null;
+  /** #1745 — migration 0010. */
+  agent_id: string | null;
 }
 
 const SELECT_COLUMNS = `
   id, tenant, user_id, name, cron, prompt, channel, conversation_ref,
   status, timeout_ms, created_at, updated_at,
   last_run_at, last_run_status, last_run_error,
-  output_template, agent_slug, until, renewal_asked_at, mcp_user_key
+  output_template, agent_slug, until, renewal_asked_at, timezone, agent_id, mcp_user_key
 `;
 
 function rowToRoutine(row: RoutineRow): Routine {
@@ -172,6 +184,8 @@ function rowToRoutine(row: RoutineRow): Routine {
     mcpUserKey: row.mcp_user_key ?? null,
     until: row.until ?? null,
     renewalAskedAt: row.renewal_asked_at ?? null,
+    timezone: row.timezone ?? null,
+    agentId: row.agent_id ?? null,
   };
 }
 
@@ -213,8 +227,8 @@ export class RoutineStore {
       const result = await this.pool.query<RoutineRow>(
         `INSERT INTO routines
            (tenant, user_id, name, cron, prompt, channel,
-            conversation_ref, timeout_ms, output_template, agent_slug, mcp_user_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11)
+            conversation_ref, timeout_ms, output_template, agent_slug, timezone, agent_id, mcp_user_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11, $12, $13)
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.tenant,
@@ -229,6 +243,8 @@ export class RoutineStore {
             ? JSON.stringify(input.outputTemplate)
             : null,
           input.agentSlug ?? null,
+          input.timezone ?? null,
+          input.agentId ?? null,
           input.mcpUserKey ?? null,
         ],
       );
@@ -470,6 +486,30 @@ export class RoutineStore {
     );
     const row = result.rows[0];
     return row ? rowToRoutine(row) : null;
+  }
+
+  /** #1745 — bind a routine created before agent ids to the agent that runs it now. */
+  async bindAgentId(id: string, agentId: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE routines SET agent_id = $2 WHERE id = $1 AND agent_id IS NULL',
+      [id, agentId],
+    );
+  }
+
+  /**
+   * #1744 — the agent ended service (disabled, deleted): every active routine
+   * it runs is paused with `message`, so none fires into an error. Matches
+   * the id, and the slug for rows not yet bound by id. Returns the paused ids.
+   */
+  async pauseForAgent(agentId: string, agentSlug: string, message: string): Promise<string[]> {
+    const result = await this.pool.query<{ id: string }>(
+      `UPDATE routines SET status = 'paused', last_run_error = $3, updated_at = now()
+        WHERE status = 'active'
+          AND (agent_id = $1 OR (agent_id IS NULL AND agent_slug = $2))
+        RETURNING id`,
+      [agentId, agentSlug, message],
+    );
+    return result.rows.map((r) => r.id);
   }
 
   /**

@@ -8,6 +8,7 @@ import {
   parseRoutineOutputTemplate,
   type RoutineOutputTemplate,
 } from '../plugins/routines/routineOutputTemplate.js';
+import { RoutineRunInProgressError } from '../plugins/routines/routineRunControl.js';
 import {
   RoutineNotFoundError,
   type RoutineActorScope,
@@ -54,6 +55,12 @@ export interface RoutineDto {
   lastRunError: string | null;
   /** Phase C.7 — server-side output template, null = legacy LLM-renders path. */
   outputTemplate: RoutineOutputTemplate | null;
+  /** #1748 — a run is in flight on this instance; "run now" answers 409 meanwhile. */
+  running: boolean;
+  /** #1744 — the agent that runs the routine (null = bound to none). */
+  agentSlug: string | null;
+  /** #1744 / #1745 — why no agent may run it (disabled, deleted, replaced, unbound), else null. */
+  agentProblem: string | null;
 }
 
 export interface PreviewRoutineTemplateRequest {
@@ -74,11 +81,14 @@ export type PreviewRoutineTemplateResponse =
       ok: true;
       format: 'markdown';
       text: string;
+      /** #1761 — data sections whose source could not give rows. */
+      warnings: readonly string[];
     }
   | {
       ok: true;
       format: 'adaptive-card';
       items: readonly unknown[];
+      warnings: readonly string[];
     }
   | { ok: false; reason: string };
 
@@ -104,10 +114,12 @@ export interface RoutineRunSummaryDto {
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
-  status: 'ok' | 'error' | 'timeout';
+  status: 'ok' | 'error' | 'timeout' | 'cancelled' | 'silent';
   errorMessage: string | null;
   iterations: number | null;
   toolCalls: number | null;
+  /** #1776 — metered model cost in USD; null = not metered. */
+  costUsd: number | null;
 }
 
 export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
@@ -120,6 +132,8 @@ export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
 export interface ListRoutineRunsResponse {
   runs: RoutineRunSummaryDto[];
   count: number;
+  /** #1776 — what all recorded runs of the routine cost (USD). */
+  totalCostUsd: number;
 }
 
 export interface RoutineRunResponse {
@@ -138,6 +152,7 @@ function toRunSummary(r: RoutineRun): RoutineRunSummaryDto {
     errorMessage: r.errorMessage,
     iterations: r.iterations,
     toolCalls: r.toolCalls,
+    costUsd: r.costUsd,
   };
 }
 
@@ -150,7 +165,7 @@ function toRunDetail(r: RoutineRun): RoutineRunDetailDto {
   };
 }
 
-function toDto(r: Routine): RoutineDto {
+function toDto(r: Routine, running = false, agentProblem: string | undefined = undefined): RoutineDto {
   return {
     id: r.id,
     tenant: r.tenant,
@@ -167,6 +182,9 @@ function toDto(r: Routine): RoutineDto {
     lastRunStatus: r.lastRunStatus,
     lastRunError: r.lastRunError,
     outputTemplate: r.outputTemplate,
+    running,
+    agentSlug: r.agentSlug ?? null,
+    agentProblem: agentProblem ?? null,
   };
 }
 
@@ -205,7 +223,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       // requireAuth — any valid operator session, see OPERATOR_SCOPE.
       const rows = await deps.store.listAll();
       const body: ListRoutinesResponse = {
-        routines: rows.map(toDto),
+        routines: rows.map((r) => toDto(r, deps.runner.isRunning(r.id), deps.runner.agentProblemOf(r))),
         count: rows.length,
       };
       res.json(body);
@@ -243,7 +261,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           before: previous === 'unknown' ? previous : previous && routineAuditStatus(previous),
           after: routineAuditStatus(updated),
         });
-        const body: RoutineResponse = { routine: toDto(updated) };
+        const body: RoutineResponse = { routine: toDto(updated, deps.runner.isRunning(updated.id), deps.runner.agentProblemOf(updated)) };
         res.json(body);
       } catch (err) {
         if (err instanceof RoutineNotFoundError) {
@@ -299,6 +317,22 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       // guaranteed to fail in the background — the web-ui maps this code
       // to a "set the key in Settings" message. Cron fires keep recording
       // `error` runs so the misconfiguration stays visible in history.
+      // #1748 — one run per routine: a second "run now" (or one while the
+      // cron run is in flight) is refused instead of delivering twice.
+      if (deps.runner.isRunning(id)) {
+        res.status(409).json({
+          code: 'routines.run_in_progress',
+          message: new RoutineRunInProgressError(id).message,
+        });
+        return;
+      }
+      // #1744 — the routine's agent is gone, disabled or replaced: say which,
+      // instead of accepting a run that records the same error.
+      const agentProblem = deps.runner.agentProblemOf(routine);
+      if (agentProblem !== undefined) {
+        res.status(409).json({ code: 'routines.agent_unavailable', message: agentProblem });
+        return;
+      }
       if (!deps.runner.chatAgentAvailable(routine.agentSlug ?? null)) {
         res.status(503).json({
           code: 'routines.chat_unavailable',
@@ -325,7 +359,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         target: `routine:${id}`,
         after: { ...routineAuditStatus(routine), trigger: 'manual', accepted: true },
       });
-      const body: RoutineResponse = { routine: toDto(routine) };
+      const body: RoutineResponse = { routine: toDto(routine, true) };
       res.status(202).json(body);
     },
   );
@@ -352,9 +386,11 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           id,
           Number.isFinite(limit) ? limit : 50,
         );
+        const total = await deps.runsStore.totalCost(id);
         const body: ListRoutineRunsResponse = {
           runs: rows.map(toRunSummary),
           count: rows.length,
+          totalCostUsd: total.costUsd,
         };
         res.json(body);
       } catch (err) {
@@ -503,8 +539,8 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       });
       const response: PreviewRoutineTemplateResponse = result.ok
         ? result.format === 'markdown'
-          ? { ok: true, format: 'markdown', text: result.text }
-          : { ok: true, format: 'adaptive-card', items: result.items }
+          ? { ok: true, format: 'markdown', text: result.text, warnings: result.warnings }
+          : { ok: true, format: 'adaptive-card', items: result.items, warnings: result.warnings }
         : { ok: false, reason: result.reason };
       res.json(response);
     },

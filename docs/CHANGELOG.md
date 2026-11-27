@@ -36,6 +36,78 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine runs: cancel, timeout, one run at a time, subscription CLI (W22, 2026-11-26)
+
+- **Run control** (#1746, #1747, #1748, `routineRunControl.ts`): pausing or deleting a routine
+  cancels its run in flight; the run is recorded as the new status `cancelled` (routines
+  migration `0008_routine_runs_cancelled`), not as `timeout`, and nothing is delivered. The
+  status is read once more before delivery, so a pause on another instance also holds. A run
+  deleted mid-flight writes no run row (its history goes with the routine). A cancelled run
+  does not count towards the trigger's circuit breaker. The abort signal reaches the agent
+  turn (`turnContext.abortSignal`, checked at the top of every tool-loop iteration), manual
+  runs get the routine's timeout too, and the timeout floor is 30 s (`manage_routine` rejects
+  less; stored rows below it are raised). One run per routine at a time in a process (across
+  machines only cron is at-most-once, via the trigger lease): `POST
+  /api/v1/routines/:id/trigger` answers `409 routines.run_in_progress` while one is in flight,
+  a cron firing then is skipped, and the routine DTO carries `running`. Resuming an active
+  routine no longer re-arms it.
+- **Subscription CLI** (#1763): a routine on an agent whose tool loop the CLI owns
+  (`ChatAgentBundle.externalToolLoop`) runs through the agent's chat agent instead of the
+  tool-less in-process orchestrator, so it no longer fails on every run. Raw tool results for
+  output templates are captured on that path too; tool calls and iterations are recorded as
+  unknown there.
+- **Time zone and schedule checks** (#1743, #1750, ADR 0240): `middleware/src/scheduler/zonedCron.ts`
+  evaluates cron patterns in a named IANA zone and checks a recurring schedule before it is
+  stored (`checkCronSchedule`: plain 5-field pattern, no `?`, no `@daily`/`L`/`W`/`#`, at
+  least two upcoming runs, minimum gap). A routine stores its zone (routines migration
+  `0009_routines_timezone`): the creator's (`ChatTurnInput.userTimeZone`, now also on the
+  turn context) or `PROACTIVE_TIMEZONE`; its trigger runs in it; rows without one stay UTC.
+  `manage_routine` results name `timeZone` and `nextRun` (`2026-11-27 09:00 (Europe/Berlin)`).
+  Existing routines whose pattern no longer passes are paused on boot with the reason.
+- **`manage_routine` refusals reach the model** (#1767, #1751): schedule refusals, a web
+  routine outside a saved chat and other `ToolRefusalError`s pass `formatError` (ADR 0078)
+  instead of "outcome unknown"; invalid input is a short `field: problem` list, not a zod
+  dump. `targetEmail` is no longer advertised, and its refusal says this deployment cannot
+  message other people instead of sending the user to an operator.
+- **Field-level interning exemption** (#1768, ADR 0241, decided after recommendation,
+  reversible): `manage_routine` results reach the model in clear minus `prompt`,
+  `lastRunError` and the smart-card sidecar (`INTERN_FIELD_EXEMPT_TOOLS`,
+  `fieldExemptModelCopy`, all three dispatch seams); the tool is not served on the public MCP
+  endpoint.
+- **Routines are bound to their agent by id** (#1744, #1745, `routineAgentBinding.ts`, routines
+  migration `0010_routines_agent_id`): a new agent that takes a deleted agent's slug no longer
+  takes over its routines, a routine without an agent never runs on the default agent, and a
+  disabled or deleted agent is named in the run error (no more "configure the LLM API key").
+  Such a routine is paused with the reason when the trigger engine would schedule it, `POST
+  /:id/trigger` answers `409 routines.agent_unavailable`, and the routine DTO carries
+  `agentSlug` and `agentProblem`. Rows from before the migration are bound on their next run.
+  When an agent ends service (disabled, deleted, archetype plugin removed) its active routines
+  are paused with the reason (`EndOfServiceReport.routinesPaused`, `routines_paused` in the
+  agent route response and the audit).
+- **Unattended turns** (#1770, #1771, #1772, ADR 0242): `ChatTurnInput.unattended`
+  (`@omadia/channel-sdk` **0.3.18**), set by the routine runner and the trigger turn executor. Such a turn
+  offers no `ask_user_choice`/`suggest_follow_ups` (in-process and on the subscription CLI), runs no card router, gets a directive to
+  state assumptions instead of asking, and gets no "recent turns" context block (earlier runs
+  are not trusted facts). A routine turn runs outside any routines principal, so a smart-card
+  "run now" inside a chat turn no longer offers `manage_routine` to the run, and the run is
+  told the current time in its zone.
+- **Output templates** (#1759, #1760, #1761): `format: 'html'` and `sections: []` are refused
+  at save and preview (html was stored and then ignored on every run; a stored html template
+  is treated as no template). A static-only template delivers its text without a paid agent
+  turn. A run can stay silent: an answer of `[[nothing]]` (the trigger convention) ends it
+  with the new status `silent` (routines migration `0011_routine_runs_silent`), nothing is
+  delivered, and it does not count towards the breaker. A slot response with a missing slot
+  keeps the slots the model wrote (like the preview) instead of dropping all of them. Data
+  sections report a source that was not called, returned prose instead of JSON rows, or names
+  no list: the renderer returns `warnings`, the preview shows them, and a delivered run
+  records them as `template: …` in its error field.
+- **Routine cost** (#1776, ADR 0243, decided after recommendation, reversible): every run
+  stores its metered model cost (`routine_runs.cost_usd`, routines migration
+  `0012_routine_runs_cost`; a failed turn still counts), `GET /api/v1/routines/:id/runs`
+  returns `costUsd` per run and `totalCostUsd`, and a manual run's cost is booked on the
+  routine's trigger (`TriggerService.bookManualSpend`: spend, monthly budgets, audit row
+  `fired` / `manual_run`), so the operator trigger view shows every run.
+
 ### Fixed — office files, attachments and transcription (Welle 5 W07-08) (2026-11-26)
 
 - **File export follows the agent's grant (#1972).** The Excel offer under a truncated

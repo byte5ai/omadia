@@ -26,7 +26,9 @@ import {
   type JobSchedulerLike,
   type OrchestratorLike,
   type RoutineActorScope,
+  type RoutineRunnerOptions,
 } from '../src/plugins/routines/routineRunner.js';
+import { resolveRoutineAgent } from '../src/plugins/routines/routineAgentBinding.js';
 import { RoutineNameConflictError } from '../src/plugins/routines/routineStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
 import { turnContext } from '@omadia/orchestrator';
@@ -132,6 +134,8 @@ class InMemoryRoutineStore implements RoutineStore {
       lastRunError: null,
       outputTemplate: input.outputTemplate ?? null,
       agentSlug: input.agentSlug ?? null,
+      agentId: input.agentId ?? null,
+      timezone: input.timezone ?? null,
       mcpUserKey: input.mcpUserKey ?? null,
     };
     this.rows.set(id, routine);
@@ -198,6 +202,26 @@ class InMemoryRoutineStore implements RoutineStore {
       return false;
     }
     return this.rows.delete(id);
+  }
+
+  public bindCalls: Array<{ id: string; agentId: string }> = [];
+
+  async bindAgentId(id: string, agentId: string): Promise<void> {
+    this.bindCalls.push({ id, agentId });
+    const existing = this.rows.get(id);
+    if (existing && !existing.agentId) this.rows.set(id, { ...existing, agentId });
+  }
+
+  async pauseForAgent(agentId: string, agentSlug: string, message: string): Promise<string[]> {
+    const ids: string[] = [];
+    for (const [id, r] of this.rows) {
+      if (r.status !== 'active') continue;
+      if (r.agentId === agentId || (!r.agentId && r.agentSlug === agentSlug)) {
+        this.rows.set(id, { ...r, status: 'paused', lastRunError: message });
+        ids.push(id);
+      }
+    }
+    return ids;
   }
 
   async recordRun(input: RecordRunInput): Promise<void> {
@@ -345,6 +369,8 @@ interface MakeHarnessOptions {
   sender?: StubSender;
   registerSender?: boolean;
   maxActivePerUser?: number;
+  /** #1745 — the agent binding seam. */
+  resolveAgent?: RoutineRunnerOptions['resolveAgent'];
   /** When set, every `register()` call throws this error. Used to test the
    *  runner's row-rollback behaviour without depending on real cron parsing. */
   registerThrows?: Error;
@@ -376,6 +402,7 @@ function makeHarness(options: MakeHarnessOptions = {}): Harness {
     senderRegistry,
     log: () => {},
     maxActivePerUser: options.maxActivePerUser,
+    ...(options.resolveAgent ? { resolveAgent: options.resolveAgent } : {}),
   });
   return {
     store,
@@ -1523,6 +1550,417 @@ describe('#1598 — a routine runs on the orchestrator that created it', () => {
   });
 });
 
+
+describe('#1746 / #1747 / #1748 — run control: cancel, timeout signal, one run at a time', () => {
+  /** An orchestrator whose turn waits until the test releases it. */
+  function gatedOrchestrator(): {
+    orchestrator: OrchestratorLike;
+    started: Promise<void>;
+    release: () => void;
+    seenSignals: Array<AbortSignal | undefined>;
+    runTurnCalls: () => number;
+  } {
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((r) => {
+      markStarted = r;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const seenSignals: Array<AbortSignal | undefined> = [];
+    let calls = 0;
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        calls += 1;
+        seenSignals.push(turnContext.current()?.abortSignal);
+        markStarted();
+        await gate;
+        return { answer: 'late answer', toolCalls: 0, iterations: 1 };
+      },
+    };
+    return { orchestrator, started, release, seenSignals, runTurnCalls: () => calls };
+  }
+
+  it('a pause during a run records `cancelled`, stops the turn signal and delivers nothing', async () => {
+    const gated = gatedOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: gated.orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const run = h.scheduler.fire(routine.id);
+    await gated.started;
+    assert.equal(h.runner.isRunning(routine.id), true);
+    await h.runner.pauseRoutine(routine.id, OWNER_SCOPE);
+    assert.equal(gated.seenSignals[0]?.aborted, true, 'the turn sees the cancellation');
+    gated.release();
+    await run;
+
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts.length, 1);
+    assert.equal(h.runsStore.inserts[0]!.status, 'cancelled');
+    assert.match(h.runsStore.inserts[0]!.errorMessage ?? '', /paused while it ran/);
+    assert.equal(h.runner.isRunning(routine.id), false);
+  });
+
+  it('a delete during a run writes no run row (its history went with it) and delivers nothing', async () => {
+    const gated = gatedOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: gated.orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const run = h.scheduler.fire(routine.id);
+    await gated.started;
+    await h.runner.deleteRoutine(routine.id, OWNER_SCOPE);
+    gated.release();
+    await run;
+
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts.length, 0);
+    assert.equal(h.store.recordRunCalls.length, 0);
+  });
+
+  it('a routine paused elsewhere while the turn ran is not delivered (status re-read before delivery)', async () => {
+    const gated = gatedOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: gated.orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const run = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await gated.started;
+    // Another instance (or the harness) paused the row; this runner was not told.
+    h.store.rows.set(routine.id, { ...h.store.rows.get(routine.id)!, status: 'paused' });
+    gated.release();
+    await run;
+
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts[0]!.status, 'cancelled');
+    assert.equal(h.runsStore.inserts[0]!.trigger, 'manual');
+  });
+
+  it('a manual run while one is in flight is refused; a cron firing then is skipped', async () => {
+    const gated = gatedOrchestrator();
+    const h = makeHarness({ orchestrator: gated.orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    const first = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await gated.started;
+    await assert.rejects(
+      h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE),
+      (err: Error) => err.name === 'RoutineRunInProgressError',
+    );
+    await h.scheduler.fire(routine.id);
+    gated.release();
+    await first;
+
+    assert.equal(gated.runTurnCalls(), 1, 'exactly one turn ran');
+    assert.equal(h.runsStore.inserts.length, 1);
+    assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+
+  it('a manual run hands the turn an abort signal (its timeout), like a scheduled one', async () => {
+    const gated = gatedOrchestrator();
+    const h = makeHarness({ orchestrator: gated.orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+    const run = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await gated.started;
+    assert.ok(gated.seenSignals[0], 'the turn context carries an abort signal');
+    assert.equal(gated.seenSignals[0]!.aborted, false);
+    gated.release();
+    await run;
+  });
+
+  it('resuming a routine that is already active and armed does not re-register it', async () => {
+    const h = makeHarness();
+    const routine = await h.runner.createRoutine(baseInput);
+    let registers = 0;
+    const original = h.scheduler.register.bind(h.scheduler);
+    h.scheduler.register = (agentId, spec, handler) => {
+      registers += 1;
+      return original(agentId, spec, handler);
+    };
+    await h.runner.resumeRoutine(routine.id, OWNER_SCOPE);
+    assert.equal(registers, 0);
+  });
+
+  it('effectiveTimeoutMs raises a stored timeout below the floor', async () => {
+    const { effectiveTimeoutMs, MIN_ROUTINE_TIMEOUT_MS } = await import('../src/plugins/routines/routineRunControl.js');
+    assert.equal(effectiveTimeoutMs(1000), MIN_ROUTINE_TIMEOUT_MS);
+    assert.equal(effectiveTimeoutMs(600_000), 600_000);
+  });
+});
+
+describe('#1763 — a routine on an agent whose tool loop runs outside the kernel (subscription CLI)', () => {
+  it('runs through the agent chat agent, delivers its published answer as-is and records unknown counts', async () => {
+    let runTurnCalls = 0;
+    const chatInputs: ChatTurnInput[] = [];
+    const orchestrator: OrchestratorLike = {
+      runTurn(): Promise<ChatTurnResult> {
+        runTurnCalls += 1;
+        return Promise.reject(new Error('claude-cli provider supports only forced single-tool structured output'));
+      },
+      chat(input: ChatTurnInput): Promise<SemanticAnswer> {
+        chatInputs.push(input);
+        return Promise.resolve({ text: 'cli answer', turnId: 'turn-cli' });
+      },
+    };
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator, sender });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+
+    assert.equal(runTurnCalls, 0, 'the tool-less in-process orchestrator is never used');
+    assert.equal(chatInputs.length, 1);
+    assert.equal(chatInputs[0]!.sessionScope, `routine:${routine.id}`);
+    assert.equal(chatInputs[0]!.userId, USER);
+    assert.equal(sender.calls.length, 1);
+    assert.equal(sender.calls[0]!.message.text, 'cli answer');
+    const run = h.runsStore.inserts[0]!;
+    assert.equal(run.status, 'ok');
+    assert.equal(run.answer, 'cli answer');
+    assert.equal(run.iterations, null);
+    assert.equal(run.toolCalls, null);
+  });
+});
+
+
+describe('#1744 / #1745 — a routine is bound to its agent by id', () => {
+  /** A registry whose slug `seo` is held by `holder`. */
+  const registryWith = (holder: { id: string; slug: string } | undefined) => ({
+    get: (slug: string) => (holder && slug === holder.slug ? { agent: holder } : undefined),
+  });
+
+  it('binds the creating agent by id and runs while that agent holds the slug', async () => {
+    let holder: { id: string; slug: string } | undefined = { id: 'agent-1', slug: 'seo' };
+    const sender = new StubSender();
+    const h = makeHarness({ sender, resolveAgent: (r) => resolveRoutineAgent(r, registryWith(holder)) });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    assert.equal(routine.agentId, 'agent-1');
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 1);
+
+    // The agent is deleted and a new one takes the slug: the routine does not follow.
+    holder = { id: 'agent-2', slug: 'seo' };
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 1, 'nothing delivered by the new agent');
+    const last = h.runsStore.inserts.at(-1)!;
+    assert.equal(last.status, 'error');
+    assert.match(last.errorMessage ?? '', /no agent can run this routine: its agent 'seo' was deleted, and the agent that now has that name is a different one/);
+  });
+
+  it('a disabled or deleted agent is named instead of the LLM-key hint', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith(undefined)) });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    const run = h.runsStore.inserts[0]!;
+    assert.match(run.errorMessage ?? '', /its agent 'seo' is disabled or deleted/);
+    assert.doesNotMatch(run.errorMessage ?? '', /API key/);
+    assert.match(h.runner.agentProblemOf(routine) ?? '', /disabled or deleted/);
+  });
+
+  it('a routine without an agent does not fall back to the default agent', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith({ id: 'a', slug: 'other' })) });
+    const routine = await h.runner.createRoutine(baseInput);
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(h.agentCalls.length, 0);
+    assert.match(h.runsStore.inserts[0]!.errorMessage ?? '', /not bound to an agent/);
+  });
+
+  it('binds a pre-migration row (no agent id) on its next run', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith({ id: 'agent-1', slug: 'seo' })) });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    h.store.rows.set(routine.id, { ...h.store.rows.get(routine.id)!, agentId: null });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.deepEqual(h.store.bindCalls, [{ id: routine.id, agentId: 'agent-1' }]);
+  });
+
+  it('pauses the routines of an agent that ends service, with the reason on the routine', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith({ id: 'agent-1', slug: 'seo' })) });
+    const a = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    const b = await h.runner.createRoutine({ ...baseInput, name: 'other', agentSlug: 'seo' });
+    const n = await h.runner.pauseRoutinesOfAgent({ id: 'agent-1', slug: 'seo' }, "paused: its agent 'SEO' was disabled");
+    assert.equal(n, 2);
+    for (const id of [a.id, b.id]) {
+      const row = h.store.rows.get(id)!;
+      assert.equal(row.status, 'paused');
+      assert.match(row.lastRunError ?? '', /was disabled/);
+    }
+    assert.equal(h.scheduler.list().length, 0, 'both unregistered');
+  });
+});
+
+describe('#1770 / #1771 / #1772 — a routine turn is unattended and outside any routines principal', () => {
+  it('runs unattended with its time, and without the clicking turn\'s principal (no manage_routine)', async () => {
+    const seen: Array<{ input: ChatTurnInput; principal: unknown }> = [];
+    const orchestrator: OrchestratorLike = {
+      runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
+        seen.push({ input, principal: routineTurnContext.current() });
+        return Promise.resolve({ answer: 'ok', toolCalls: 0, iterations: 1 });
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({ ...baseInput, timezone: 'Europe/Berlin' });
+
+    // A smart-card "run now" inside a chat turn that carries a routines principal.
+    await routineTurnContext.run(
+      { tenant: TENANT, userId: USER, channel: 'teams', conversationRef: {} },
+      () => h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE),
+    );
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]!.principal, undefined, 'manage_routine is not offered in the run');
+    assert.equal(seen[0]!.input.unattended, true);
+    assert.match(seen[0]!.input.extraSystemHint ?? '', /scheduled run of a routine\. Current time: \d{4}-\d\d-\d\d \d\d:\d\d \(Europe\/Berlin\)/);
+  });
+});
+
+describe('#1759 / #1760 / #1761 — template run outcomes', () => {
+  it('a static-only template delivers its text without running a turn', async () => {
+    const stub = makeStubOrchestrator();
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: stub.orchestrator, agentCallsRef: stub.calls, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: { format: 'markdown', sections: [{ kind: 'static-markdown', text: 'Stand-up in 5 Minuten.' }] },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(stub.calls.length, 0, 'no paid turn');
+    assert.equal(sender.calls[0]!.message.text, 'Stand-up in 5 Minuten.');
+    assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+
+  it('an answer of [[nothing]] ends the run silent, with nothing delivered', async () => {
+    const stub = makeStubOrchestrator({ answerText: '[[nothing]]' });
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: stub.orchestrator, agentCallsRef: stub.calls, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: { format: 'markdown', sections: [{ kind: 'narrative-slot', id: 'intro' }] },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 0);
+    assert.equal(h.runsStore.inserts[0]!.status, 'silent');
+    assert.equal(h.runsStore.inserts[0]!.errorMessage, null);
+  });
+
+  it('records template problems on a delivered run and keeps the slots the model did write', async () => {
+    const stub = makeStubOrchestrator({ answerText: '{"slots":{"intro":"Hallo"}}' });
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator: stub.orchestrator, agentCallsRef: stub.calls, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: {
+        format: 'markdown',
+        sections: [
+          { kind: 'narrative-slot', id: 'intro' },
+          { kind: 'narrative-slot', id: 'outro' },
+          { kind: 'data-list', sourceTool: 'query_hr', itemTemplate: '{{name}}', emptyText: 'none' },
+        ],
+      },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls[0]!.message.text, 'Hallo\n\nnone');
+    const run = h.runsStore.inserts[0]!;
+    assert.equal(run.status, 'ok');
+    assert.match(run.errorMessage ?? '', /^template: the model's slot response was incomplete \(missing required slot 'outro'\)/);
+    assert.match(run.errorMessage ?? '', /'query_hr' was not called/);
+  });
+});
+
+describe('#1776 — what a routine run cost', () => {
+  it('records the metered cost on the run, also for a failed turn, and books a manual run on its trigger', async () => {
+    const { addMeteredCost } = await import('@omadia/usage-telemetry');
+    const booked: Array<{ id: string; cost: number }> = [];
+    let fail = false;
+    const orchestrator: OrchestratorLike = {
+      runTurn(): Promise<ChatTurnResult> {
+        addMeteredCost(0.25);
+        if (fail) return Promise.reject(new Error('provider down'));
+        return Promise.resolve({ answer: 'ok', toolCalls: 1, iterations: 1 });
+      },
+    };
+    const store = new InMemoryRoutineStore();
+    const runsStore = new InMemoryRoutineRunsStore();
+    const scheduler = new StubScheduler();
+    const senderRegistry = new InMemoryProactiveSenderRegistry();
+    senderRegistry.register(new StubSender());
+    const runner = new RoutineRunner({
+      store: store as unknown as RoutineStore,
+      runsStore: runsStore as unknown as RoutineRunsStore,
+      scheduler,
+      getOrchestrator: () => orchestrator,
+      senderRegistry,
+      bookManualRunCost: (id, cost) => {
+        booked.push({ id, cost });
+        return Promise.resolve();
+      },
+      log: () => {},
+    });
+    const routine = await runner.createRoutine(baseInput);
+
+    await runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(runsStore.inserts[0]!.costUsd, 0.25);
+    assert.deepEqual(booked, [{ id: routine.id, cost: 0.25 }]);
+
+    await scheduler.fire(routine.id);
+    assert.equal(runsStore.inserts[1]!.costUsd, 0.25);
+    assert.equal(booked.length, 1, 'a cron run is settled by its firing, not booked again');
+
+    fail = true;
+    await runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(runsStore.inserts[2]!.status, 'error');
+    assert.equal(runsStore.inserts[2]!.costUsd, 0.25, 'a failed turn still spent');
+  });
+});
+describe('review fixes — withheld answers and the pause reason', () => {
+  it('CLI path: a withheld slot answer goes out as the notice, never as the rendered template or card', async () => {
+    const notice = { text: 'Diese Antwort wurde zurückgehalten.', speaker: { kind: 'system' as const }, systemNotice: { kind: 'identity_guard', text: 'Diese Antwort wurde zurückgehalten.' } };
+    const orchestrator: OrchestratorLike = {
+      runTurn: () => Promise.reject(new Error('not on the CLI path')),
+      chat: () => Promise.resolve(notice as unknown as SemanticAnswer),
+    };
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: {
+        format: 'adaptive-card',
+        sections: [
+          { kind: 'narrative-slot', id: 'intro' },
+          { kind: 'static-markdown', text: 'SECRET TABLE' },
+        ],
+      },
+    });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 1);
+    assert.equal(sender.calls[0]!.message.text, notice.text);
+    assert.equal(sender.calls[0]!.cardBody, undefined);
+    assert.doesNotMatch(JSON.stringify(sender.calls[0]), /SECRET TABLE/);
+  });
+
+  it('a cancelled run keeps the reason the routine was paused with', async () => {
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const startedP = new Promise<void>((r) => (started = r));
+    const orchestrator: OrchestratorLike = {
+      runTurn: async () => {
+        started();
+        await new Promise<void>((r) => (release = r));
+        return { answer: 'x', toolCalls: 0, iterations: 1 };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo', agentId: 'a1' });
+    const run = h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    await startedP;
+    await h.runner.pauseRoutinesOfAgent({ id: 'a1', slug: 'seo' }, "paused: its agent 'SEO' was disabled");
+    release();
+    await run;
+    assert.equal(h.runsStore.inserts[0]!.status, 'cancelled');
+    assert.match(h.store.rows.get(routine.id)!.lastRunError ?? '', /its agent 'SEO' was disabled/);
+  });
+});
 describe('RoutineRunner — MCP identity of a run (#1907, ADR-0206)', () => {
   function observingOrchestrator(seen: Array<{ key?: string; unattended?: boolean }>): OrchestratorLike {
     return {
@@ -1567,7 +2005,12 @@ describe('RoutineRunner — MCP identity of a run (#1907, ADR-0206)', () => {
   });
 });
 
+// A model slot, so the templated branch runs a turn (a static-only template
+// skips it, #1760).
 const TEMPLATE_FOR_IDENTITY: RoutineOutputTemplate = {
   format: 'markdown',
-  sections: [{ kind: 'static-markdown', text: 'Report' }],
+  sections: [
+    { kind: 'static-markdown', text: 'Report' },
+    { kind: 'narrative-slot', id: 'intro' },
+  ],
 };

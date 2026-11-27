@@ -88,7 +88,10 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     scheduler = createRoutineTriggerScheduler({
       service: () => wiring?.service,
       routines: () => store,
-      resolveAgent: (slug) => (slug === null || slug === 'erika' ? { id: agentId, slug: 'erika' } : undefined),
+      resolveAgent: (routine) =>
+        routine.agentSlug === null || routine.agentSlug === undefined || routine.agentSlug === 'erika'
+          ? { ok: true, agent: { id: agentId, slug: 'erika' } }
+          : { ok: false, problem: `its agent '${routine.agentSlug}' is disabled or deleted` },
       askOwner: async (_r, text) => {
         sent.push(text);
       },
@@ -185,7 +188,7 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
   });
 
   it('refuses a routine more often than every 15 minutes', async () => {
-    await assert.rejects(() => create('Zu oft', '*/5 * * * *'), /at most every 15 minutes/);
+    await assert.rejects(() => create('Zu oft', '*/5 * * * *'), /runs every 5 min; the minimum is every 15 min/);
     assert.equal(await store.getByName('t1', 'anna', 'Zu oft'), null, 'rolled back');
   });
 
@@ -274,5 +277,74 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     await wiring.worker.tick();
     assert.equal(turns, 1);
     runner = restarted;
+  });
+
+  it('W22: the routine zone reaches its trigger; agent ids bind; agent end of service pauses (pg)', async () => {
+    const routine = await runner.createRoutine({
+      tenant: 't1',
+      userId: 'anna',
+      name: 'Zone',
+      cron: '0 9 * * 1-5',
+      prompt: 'Bericht',
+      channel: 'teams',
+      conversationRef: { conversationId: 'a:1' },
+      agentSlug: 'erika',
+      timezone: 'Europe/Berlin',
+      agentId,
+    });
+    assert.equal(routine.timezone, 'Europe/Berlin');
+    assert.equal(routine.agentId, agentId);
+    const t = await waitFor(() => triggerOf(routine.id), 'the routine trigger');
+    assert.equal(t.timezone, 'Europe/Berlin');
+
+    // A row from before migration 0010 binds once, and only while unbound.
+    await pool.query('UPDATE routines SET agent_id = NULL WHERE id = $1', [routine.id]);
+    await store.bindAgentId(routine.id, agentId);
+    await store.bindAgentId(routine.id, 'someone-else');
+    assert.equal((await store.get(routine.id))?.agentId, agentId);
+
+    const paused = await store.pauseForAgent(agentId, 'erika', "paused: its agent 'Erika' was disabled");
+    assert.deepEqual(paused, [routine.id]);
+    const row = await store.get(routine.id);
+    assert.equal(row?.status, 'paused');
+    assert.match(row?.lastRunError ?? '', /was disabled/);
+  });
+
+  it('W22: a manual run stores its cost and is booked on the trigger without counting a run (pg)', async () => {
+    const runsStore = new RoutineRunsStore({ pool, log: () => undefined });
+    const manual = new RoutineRunner({
+      store,
+      runsStore,
+      scheduler,
+      getOrchestrator: () => ({
+        runTurn: async (): Promise<ChatTurnResult> => {
+          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.05 });
+          return { answer: 'manuell', toolCalls: 0, iterations: 1 } as ChatTurnResult;
+        },
+      }),
+      senderRegistry: (runner as unknown as { senders: InMemoryProactiveSenderRegistry }).senders,
+      bookManualRunCost: (routineId, costUsd) =>
+        wiring.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId }),
+      log: () => undefined,
+    });
+    const routine = await manual.createRoutine({
+      tenant: 't1',
+      userId: 'anna',
+      name: 'Kosten',
+      cron: '0 8 * * *',
+      prompt: 'Bericht',
+      channel: 'teams',
+      conversationRef: { conversationId: 'a:1' },
+      agentSlug: 'erika',
+    });
+    await waitFor(() => triggerOf(routine.id), 'the routine trigger');
+    await manual.triggerRoutineNow(routine.id, owner);
+    const runs = await runsStore.listForRoutine(routine.id);
+    assert.ok(Math.abs((runs[0]?.costUsd ?? 0) - 0.05) < 1e-9);
+    assert.ok(Math.abs((await runsStore.totalCost(routine.id)).costUsd - 0.05) < 1e-9);
+    const t = await triggerOf(routine.id);
+    assert.ok(Math.abs((t?.spentUsd ?? 0) - 0.05) < 1e-9, 'booked on the trigger');
+    assert.equal(t?.runs, 0, 'not a firing');
+    manual.stop();
   });
 });
