@@ -111,6 +111,19 @@ const MessageSchema = z.object({
     })
     .optional(),
   error: z.boolean().optional(),
+  // #2336 (ADR-0310) — the files a user message carried, for display only:
+  // name, type and size, never the storage key. Malformed ⇒ dropped.
+  uploads: z
+    .array(
+      z.object({
+        fileName: z.string().min(1).max(200),
+        contentType: z.string().min(1).max(200),
+        sizeBytes: z.number().int().nonnegative(),
+      }),
+    )
+    .max(10)
+    .optional()
+    .catch(undefined),
   // #1896 — a deliberate NO_REPLY turn; the chat shows no bubble for it.
   silent: z.literal(true).optional(),
   startedAt: z.number(),

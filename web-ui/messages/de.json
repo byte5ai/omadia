@@ -1788,6 +1788,26 @@
     "placeholder": "Frage an den Agenten…",
     "stopButton": "Stop",
     "sendButton": "Senden",
+    "uploads": {
+      "attachTitle": "Dateien anhängen (Aufnahmen, PDFs, Tabellen, Dokumente, Bilder; je bis {maxMb} MB)",
+      "attachAriaLabel": "Dateien anhängen",
+      "listAriaLabel": "Angehängte Dateien",
+      "sentListAriaLabel": "Mit dieser Nachricht gesendete Dateien",
+      "uploading": "Wird hochgeladen",
+      "removeAriaLabel": "{name} entfernen",
+      "dropHint": "Dateien hier ablegen, um sie anzuhängen",
+      "waitForUploads": "Warte, bis alle Dateien hochgeladen sind",
+      "error": {
+        "tooLarge": "zu groß",
+        "unsupportedType": "Dateityp nicht unterstützt",
+        "tooMany": "zu viele Dateien für eine Nachricht",
+        "empty": "leere Datei",
+        "storeUnavailable": "auf dieser Instanz ist kein Dateispeicher eingerichtet",
+        "noAccount": "zum Hochladen mit einem Konto anmelden",
+        "failed": "Hochladen fehlgeschlagen",
+        "unknownAttachment": "Eine angehängte Datei gehört nicht mehr zu diesem Chat. Entferne sie und hänge sie erneut an."
+      }
+    },
     "steerPlaceholder": "Laufenden Turn nachsteuern…",
     "steerButton": "Nachsteuern",
     "steerButtonTitle": "Diese Nachricht in den laufenden Turn einspeisen (⌘↵ / Strg↵) — wird im nächsten Schritt berücksichtigt",

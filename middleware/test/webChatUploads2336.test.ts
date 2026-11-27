@@ -20,6 +20,7 @@ import type { ChatAgent, ChatTurnInput, ChatTurnResult } from '@omadia/orchestra
 
 import { InMemoryAttachmentBindingStore } from '../src/audience/postgresAttachmentBindingStore.js';
 import { createChatRouter } from '../src/routes/chat.js';
+import { createChatSessionsRouter } from '../src/routes/chatSessions.js';
 import {
   attachmentsInfoBlock,
   createChatUploadsRouter,
@@ -84,6 +85,7 @@ describe('#2336 — web-chat uploads', () => {
         who === 'anna' ? ANNA : who === 'ben' ? BEN : undefined;
       next();
     });
+    app.use('/api/chat', createChatSessionsRouter({ getStore: () => chats }));
     app.use(
       '/api',
       createChatUploadsRouter({
@@ -216,6 +218,26 @@ describe('#2336 — web-chat uploads', () => {
 
   it('an empty message without uploads is still refused', async () => {
     assert.equal((await turn('anna', { message: ' ', sessionId: CHAT })).status, 400);
+  });
+
+  it('the chat keeps name, type and size of a message’s uploads, never a storage key', async () => {
+    const upload = { fileName: 'a.pdf', contentType: 'application/pdf', sizeBytes: 3 };
+    const put = await fetch(`${base}/chat/sessions/${CHAT}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-test-account': 'anna' },
+      body: JSON.stringify({
+        id: CHAT,
+        title: 'c',
+        createdAt: 1,
+        updatedAt: 2,
+        messages: [
+          { id: 'm1', role: 'user', content: '', startedAt: 1, uploads: [{ ...upload, storageKey: 'web-chat/x' }] },
+        ],
+      }),
+    });
+    assert.equal(put.status, 200);
+    const stored = await chats.get(CHAT);
+    assert.deepEqual((stored?.messages[0] as { uploads?: unknown } | undefined)?.uploads, [upload]);
   });
 
   it('deleting the chat (ledger release) deletes the uploaded file', async () => {

@@ -1788,6 +1788,26 @@
     "placeholder": "Ask the agent…",
     "stopButton": "Stop",
     "sendButton": "Send",
+    "uploads": {
+      "attachTitle": "Attach files (recordings, PDFs, spreadsheets, documents, images; up to {maxMb} MB each)",
+      "attachAriaLabel": "Attach files",
+      "listAriaLabel": "Attached files",
+      "sentListAriaLabel": "Files sent with this message",
+      "uploading": "Uploading",
+      "removeAriaLabel": "Remove {name}",
+      "dropHint": "Drop files to attach them",
+      "waitForUploads": "Wait until all files are uploaded",
+      "error": {
+        "tooLarge": "too large",
+        "unsupportedType": "file type not supported",
+        "tooMany": "too many files for one message",
+        "empty": "empty file",
+        "storeUnavailable": "no file storage configured on this instance",
+        "noAccount": "sign in with an account to upload",
+        "failed": "upload failed",
+        "unknownAttachment": "An attached file no longer belongs to this chat. Remove it and attach it again."
+      }
+    },
     "steerPlaceholder": "Steer the running turn…",
     "steerButton": "Steer",
     "steerButtonTitle": "Inject this message into the running turn (⌘↵ / Ctrl↵) — applied at the next step",
