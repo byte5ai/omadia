@@ -125,7 +125,7 @@ export class DiagramTool {
      * `brand://logo` but Claude forgot to pass `brand_logo_storage_key`.
      * This makes logo embedding robust against prompt-compliance slips.
      */
-    private readonly memoryStore?: DiagramBrandMemory,
+    private readonly memoryStore?: DiagramBrandMemory | (() => DiagramBrandMemory | undefined),
     private readonly log: (msg: string) => void = (msg) => {
       console.error(msg);
     },
@@ -261,11 +261,15 @@ export class DiagramTool {
    * `brand://logo` placeholder impossible).
    */
   private async lookupBrandLogoKey(): Promise<string | undefined> {
-    if (!this.memoryStore) return undefined;
+    // #1973 — an optional service is resolved at first use (ADR-0053): its
+    // provider may activate after this plugin.
+    const memory =
+      typeof this.memoryStore === 'function' ? this.memoryStore() : this.memoryStore;
+    if (!memory) return undefined;
     try {
-      const exists = await this.memoryStore.fileExists(BRAND_LOGO_MEMORY_PATH);
+      const exists = await memory.fileExists(BRAND_LOGO_MEMORY_PATH);
       if (!exists) return undefined;
-      const content = await this.memoryStore.readFile(BRAND_LOGO_MEMORY_PATH);
+      const content = await memory.readFile(BRAND_LOGO_MEMORY_PATH);
       // YAML frontmatter or bare `key: value` lines — both fine for our
       // simple schema. Tolerant of an optional leading "---" block.
       const match = /(^|\n)\s*storage_key\s*:\s*([^\n\r]+)/.exec(content);

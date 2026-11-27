@@ -35,6 +35,8 @@ async function publishedBundle(config: Record<string, string>): Promise<Verifier
     secrets: { get: async () => 'sk-test' },
     services: {
       get: (name: string) => (name === 'knowledgeGraph' ? {} : undefined),
+      // No kernel pool: the verifier reads its own scope (legacy host path).
+      getOptional: () => undefined,
       provide: (name: string, value: unknown) => {
         if (name === 'verifier') bundle = value as VerifierBundle;
         return () => {};

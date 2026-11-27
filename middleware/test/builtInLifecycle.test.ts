@@ -344,3 +344,35 @@ describe('shipped packages and profiles', () => {
     }
   });
 });
+
+describe('#1965 — a skipped env auto-install names the missing variable', () => {
+  it('diagrams and office name DIAGRAM_URL_SECRET when only it is missing', async () => {
+    await withTmpDir(async (dir) => {
+      const { catalog } = await builtIns(dir);
+      const lines: string[] = [];
+      await runLegacyBootstrap({
+        config: {
+          KROKI_BASE_URL: 'http://kroki:8000',
+          DIAGRAM_PUBLIC_BASE_URL: 'http://localhost:8080',
+          BUCKET_NAME: 'b',
+          AWS_ENDPOINT_URL_S3: 'http://s3:9000',
+          AWS_ACCESS_KEY_ID: 'k',
+          AWS_SECRET_ACCESS_KEY: 's',
+        } as unknown as Config,
+        catalog,
+        registry: new InMemoryInstalledRegistry(),
+        vault: new InMemorySecretVault(),
+        log: (m) => lines.push(m),
+      });
+      const skips = lines.filter((l) => l.includes('skipping auto-install'));
+      assert.ok(
+        skips.some((l) => l.startsWith('[bootstrap] diagrams tool: environment lacks DIAGRAM_URL_SECRET —')),
+        skips.join('\n'),
+      );
+      assert.ok(
+        skips.some((l) => l.startsWith('[bootstrap] office tool: environment lacks DIAGRAM_URL_SECRET —')),
+        skips.join('\n'),
+      );
+    });
+  });
+});

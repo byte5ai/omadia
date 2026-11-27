@@ -16,10 +16,13 @@
  *  - `processMemory@1`: reads see what the process tools see
  *    (`currentProcessReadFilter`); outside a turn they are refused.
  *  - `memoryStore@1`: the private trees (agents, contexts, transcripts, web
- *    chat copies) are never reachable; shared trees (`core`, `_*`, a plugin's
- *    own top-level tree such as `pairings`) are, in and outside a turn.
+ *    chat copies) are never reachable; `core` and the `_*` trees are
+ *    read-only; a plugin changes only the top-level trees it declares and
+ *    owns (`pairings`, ADR-0256), in and outside a turn.
  *  - `topicClustering@1`: kernel-only. Its reads take the viewer as an
  *    argument and its re-cluster rebuilds every account's topics.
+ *  - `entityRefBus@1`: `publish` only (ADR-0257). A ref lands in the turn
+ *    the plugin runs in; `beginCollection` would read any turn's refs.
  *
  * Outside a turn there is no boundary, and the bounded form does not invent
  * one. Kernel code that must read the tenant's graph outside a turn (recall,
@@ -39,6 +42,9 @@ import {
   neighborsOfType,
   scopeBelongsToAgent,
   type EditProcessInput,
+  type EntityRef,
+  type EntityRefBus,
+  type EntityRefCollection,
   type EditProcessResult,
   type EntityIngest,
   type FactIngest,
@@ -67,33 +73,25 @@ import {
   type GraphReadScope,
 } from '@omadia/orchestrator';
 
-import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { GRAPH_BOUNDARY_IMPLEMENTERS, holdsRawGraphServices } from './graphBoundaryImplementers.js';
 import { isKernelReservedSystem } from './kernelNodeNamespaces.js';
+import {
+  CORE_TREE,
+  LEGACY_MEMORY_TREE_OWNERS_2026_11_26,
+  PLUGIN_TREE_OWNERS_TREE,
+  PRIVATE_TREES,
+  memoryTreesFor,
+} from './memoryTrees.js';
 import { neighborsForPlugin } from './shieldedNeighbors.js';
 
+/** The registry key of the entity-ref bus (`entityRefBus@1`). */
+export const ENTITY_REF_BUS_SERVICE_NAME = 'entityRefBus';
+
 // ---------------------------------------------------------------------------
-// Who holds the raw services
+// Who holds the raw services: `graphBoundaryImplementers.ts`
 // ---------------------------------------------------------------------------
 
-/**
- * The bundled modules that hold the raw graph services, because they provide
- * them or implement the boundary itself (recall, tenant review jobs). CLOSED
- * SET, keyed by id and honoured only for `origin === 'bundled'`: an upload or
- * a local-dev package claiming one of these ids gets the bounded form, as it
- * inherits no legacy grant either (#789).
- *
- * Not on the list, by decision (ADR-0044): `@omadia/verifier` (reads master
- * data through `findEntities` only), `@omadia/plugin-plan-runner` (its own
- * plans; processes like the process tools), `@omadia/diagrams` (`_brand`).
- */
-export const GRAPH_BOUNDARY_IMPLEMENTERS: ReadonlySet<string> = new Set([
-  '@omadia/orchestrator',
-  '@omadia/orchestrator-extras',
-  '@omadia/knowledge-graph-neon',
-  '@omadia/knowledge-graph-inmemory',
-  '@omadia/memory',
-  '@omadia/memory-postgres',
-]);
+export { GRAPH_BOUNDARY_IMPLEMENTERS, holdsRawGraphServices };
 
 /** Service names that have a bounded form. */
 export const BOUNDED_GRAPH_SERVICE_NAMES: ReadonlySet<string> = new Set([
@@ -103,32 +101,34 @@ export const BOUNDED_GRAPH_SERVICE_NAMES: ReadonlySet<string> = new Set([
   // Topics are content of every member's memory (ADR-0045): `list` takes any
   // viewer id and `recluster` rebuilds every account's topics. Kernel-only.
   TOPIC_CLUSTERING_SERVICE_NAME,
+  // ADR-0257 — plugins publish the refs their tools saw; collecting another
+  // turn's refs is the orchestrator's.
+  ENTITY_REF_BUS_SERVICE_NAME,
 ]);
 
-/** Whether this plugin resolves the raw graph services. */
-export function holdsRawGraphServices(agentId: string, catalog: PluginCatalog): boolean {
-  return GRAPH_BOUNDARY_IMPLEMENTERS.has(agentId) && catalog.get(agentId)?.origin === 'bundled';
-}
 
 /**
  * The form of `service` (registered under `name`) that `pluginId` gets.
  * Names without a bounded form come back unchanged. One wrapper per
  * (plugin, service object), so repeated lookups return the same object.
  * `entitySystems` is the plugin's `permissions.graph.entity_systems`
- * (ADR-0167: what its `knowledgeGraph@1` entity and fact writes may name).
+ * (ADR-0167: what its `knowledgeGraph@1` entity and fact writes may name),
+ * `memoryTrees` its `permissions.memory.trees` (ADR-0256: the top-level
+ * `/memories` trees its `memoryStore@1` may change).
  */
 export function boundGraphService<T>(
   name: string,
   service: T,
   pluginId: string,
   entitySystems: readonly string[] = [],
+  memoryTrees: readonly string[] = [],
 ): T {
   if (!BOUNDED_GRAPH_SERVICE_NAMES.has(name) || typeof service !== 'object' || service === null) {
     return service;
   }
-  // The entity systems are part of the key: a plugin updated in place with
-  // other `entity_systems` must not keep the wrapper of its old manifest.
-  const key = `${pluginId}\u0000${name}\u0000${[...entitySystems].sort().join(',')}`;
+  // The declarations are part of the key: a plugin updated in place with
+  // another manifest must not keep the wrapper of its old one.
+  const key = [pluginId, name, [...entitySystems].sort().join(','), [...memoryTrees].sort().join(',')].join('\u0000');
   let perService = wrapperCache.get(service);
   if (!perService) {
     perService = new Map();
@@ -143,7 +143,9 @@ export function boundGraphService<T>(
         ? boundProcessMemory(service as unknown as ProcessMemoryService, pluginId)
         : name === TOPIC_CLUSTERING_SERVICE_NAME
           ? boundTopicClustering(pluginId)
-          : boundMemoryStore(service as unknown as MemoryStore, pluginId);
+          : name === ENTITY_REF_BUS_SERVICE_NAME
+            ? boundEntityRefBus(service as unknown as EntityRefBus, pluginId)
+            : boundMemoryStore(service as unknown as MemoryStore, pluginId, memoryTrees);
   perService.set(key, wrapped);
   return wrapped as T;
 }
@@ -692,29 +694,6 @@ export function boundProcessMemory(service: ProcessMemoryService, pluginId: stri
 
 const MEMORIES_ROOT = '/memories';
 
-/**
- * First segments under `/memories` a plugin never reaches through the
- * service: each agent's private root (and every plugin's `ctx.memory` inside
- * it), every plugin's plugin-wide and legacy tree (`agents`,
- * `ctx.memory.pluginWide`), the per-context trees, the session transcripts,
- * the web chat copies and the per-user UI preferences. A plugin reads its
- * own notes through `ctx.memory`.
- */
-const PRIVATE_TREES: ReadonlySet<string> = new Set([
-  'orchestrators',
-  'agents',
-  'contexts',
-  'sessions',
-  'chat-sessions',
-  'ui-prefs',
-]);
-
-/**
- * A shared tree a plugin may read but not change (ADR-0033: the operator
- * promotion log), and what contains it. The `_*` trees: see {@link writable}.
- */
-const READ_ONLY_PREFIXES: readonly string[] = ['/memories/core/audit'];
-
 /** Normalised absolute path; `..`, duplicate and trailing slashes resolved. */
 function canonical(path: string): string {
   const normalized = posix.normalize(path.startsWith('/') ? path : `/${path}`);
@@ -729,73 +708,141 @@ function segments(path: string): string[] {
   return path === MEMORIES_ROOT ? [] : path.slice(MEMORIES_ROOT.length + 1).split('/');
 }
 
+/** What a plugin may do in one top-level tree. `own`: read and write once
+ *  the kernel confirms the plugin owns it. */
+type TreeAccess = 'none' | 'read' | 'own';
+
 /**
- * Readable: under `/memories`, outside the private trees. `inTree`: the path
- * lies inside a top-level tree, not at the root, where an agent's notes from
- * before the namespacer may still lie as loose files.
+ * The access to `tree` (lower-cased: a case-insensitive filesystem store
+ * resolves `Orchestrators` to the private tree). `core` and the `_*` trees
+ * (operator-seeded: `_rules`, `_brand`) are read-only; a declared tree is the
+ * plugin's own; every other tree is another plugin's or nobody's.
  */
-function readable(path: string, inTree: boolean): boolean {
-  if (!underRoot(path)) return false;
-  const [tree] = segments(path);
-  if (tree === undefined) return !inTree;
-  // A case-insensitive filesystem store resolves `Orchestrators` to the
-  // private tree.
-  if (PRIVATE_TREES.has(tree.toLowerCase())) return false;
-  return !inTree || segments(path).length >= 2;
+function treeAccess(tree: string, ownTrees: ReadonlySet<string>): TreeAccess {
+  const lower = tree.toLowerCase();
+  if (PRIVATE_TREES.has(lower)) return 'none';
+  if (lower === CORE_TREE || lower.startsWith('_')) return 'read';
+  return ownTrees.has(lower) ? 'own' : 'none';
+}
+
+/** The owner record of `tree`, as the raw store holds it. */
+function ownerRecordPath(tree: string): string {
+  return `${MEMORIES_ROOT}/${PLUGIN_TREE_OWNERS_TREE}/${tree}.json`;
+}
+
+async function readOwner(store: MemoryStore, tree: string): Promise<string | undefined> {
+  const path = ownerRecordPath(tree);
+  if (!(await store.fileExists(path))) return undefined;
+  try {
+    const parsed = JSON.parse(await store.readFile(path)) as { pluginId?: unknown };
+    // An unreadable record owns the tree for nobody: fail closed.
+    return typeof parsed.pluginId === 'string' ? parsed.pluginId : '';
+  } catch {
+    return '';
+  }
 }
 
 /**
- * Writable: inside a shared tree, not in or above a read-only tree. The `_*`
- * trees are operator-seeded (`_rules`, `_brand`): read-only for plugins.
+ * Claims of one store run one after another in this process: a store's
+ * `createFile` checks and writes in two steps, so two concurrent first
+ * writers could both see no record. Across processes the Postgres store's
+ * unique path is the lock.
  */
-function writable(path: string): boolean {
-  if (!readable(path, true)) return false;
-  if (segments(path)[0]!.startsWith('_')) return false;
-  const lower = path.toLowerCase();
-  return !READ_ONLY_PREFIXES.some(
-    (prefix) => lower === prefix || lower.startsWith(`${prefix}/`) || prefix.startsWith(`${lower}/`),
-  );
-}
+const claimQueues = new WeakMap<MemoryStore, Promise<unknown>>();
 
-/** A listing entry the plugin may see: a top-level tree, or inside one. */
-function listable(entry: MemoryEntry): boolean {
-  const path = canonical(entry.virtualPath);
-  return segments(path).length === 1 ? entry.isDirectory && readable(path, false) : readable(path, true);
+function serialised<T>(store: MemoryStore, fn: () => Promise<T>): Promise<T> {
+  const run = (claimQueues.get(store) ?? Promise.resolve()).then(fn, fn);
+  claimQueues.set(store, run.catch(() => undefined));
+  return run;
 }
 
 /**
- * The bounded `memoryStore@1`: the shared `/memories` trees, without the
- * private ones. A listing drops what it may not show.
+ * Whether `pluginId` owns `tree`, claiming it when nobody does (the first
+ * plugin to use it wins, ADR-0256). A legacy row owns its tree without a
+ * record. A lost race re-reads the record the winner wrote.
  */
-export function boundMemoryStore(store: MemoryStore, pluginId: string): MemoryStore {
+function ownsTree(store: MemoryStore, tree: string, pluginId: string): Promise<boolean> {
+  const legacyOwner = LEGACY_MEMORY_TREE_OWNERS_2026_11_26[tree];
+  if (legacyOwner !== undefined) return Promise.resolve(legacyOwner === pluginId);
+  return serialised(store, () => claimTree(store, tree, pluginId));
+}
+
+async function claimTree(store: MemoryStore, tree: string, pluginId: string): Promise<boolean> {
+  const owner = await readOwner(store, tree);
+  if (owner !== undefined) return owner === pluginId;
+  try {
+    await store.createFile(
+      ownerRecordPath(tree),
+      JSON.stringify({ pluginId, claimedAt: new Date().toISOString() }),
+    );
+    return true;
+  } catch {
+    return (await readOwner(store, tree)) === pluginId;
+  }
+}
+
+/**
+ * The bounded `memoryStore@1`: `core` and the `_*` trees to read, the
+ * plugin's own declared trees to read and change, nothing else. `trees` are
+ * the plugin's `permissions.memory.trees`. A listing drops what it may not
+ * show.
+ */
+export function boundMemoryStore(store: MemoryStore, pluginId: string, trees: readonly string[] = []): MemoryStore {
+  const ownTrees = memoryTreesFor(pluginId, trees);
+  const confirmed = new Set<string>();
   type Access = 'read' | 'read-tree' | 'write';
-  const check = (raw: string, access: Access): string => {
+  const refuse = (path: string, access: Access): never => {
+    // Names the tree at most, never the path: a file name can carry what
+    // the file holds (a chat title, a person).
+    const parts = segments(path);
+    const tree = underRoot(path) && parts.length >= 2 ? `/memories/${parts[0]!}` : 'this path';
+    throw new MemoryPathError(
+      `plugin '${pluginId}' may not ${access === 'write' ? 'change' : 'read'} ${tree} through memoryStore@1: ` +
+        'a plugin reads core and the _* trees and changes only the top-level trees its manifest declares ' +
+        '(permissions.memory.trees) and owns (ADR-0044, ADR-0256)',
+    );
+  };
+  const check = async (raw: string, access: Access): Promise<string> => {
     const path = canonical(raw);
-    const ok = access === 'write' ? writable(path) : readable(path, access === 'read-tree');
-    if (!ok) {
-      // Names the tree at most, never the path: a file name can carry what
-      // the file holds (a chat title, a person).
-      const parts = segments(path);
-      const tree = underRoot(path) && parts.length >= 2 ? `/memories/${parts[0]!}` : 'this path';
-      throw new MemoryPathError(
-        `plugin '${pluginId}' may not ${access === 'write' ? 'change' : 'read'} ${tree} through memoryStore@1: ` +
-          'agent, context, transcript and chat trees are private, and the _* trees and core/audit are read-only (ADR-0044)',
-      );
+    if (!underRoot(path)) return refuse(path, access);
+    const parts = segments(path);
+    // The root itself: a listing, never a file or a change.
+    if (parts.length === 0) return access === 'read' ? path : refuse(path, access);
+    // A tree's root is listable; a file needs a path inside a tree (loose
+    // root files may be an agent's notes from before the namespacer), and
+    // a change never takes a whole tree.
+    if (parts.length === 1 && access !== 'read') return refuse(path, access);
+    const tree = parts[0]!.toLowerCase();
+    const granted = treeAccess(tree, ownTrees);
+    if (granted === 'none') return refuse(path, access);
+    if (granted === 'read') return access === 'write' ? refuse(path, access) : path;
+    if (!confirmed.has(tree)) {
+      if (!(await ownsTree(store, tree, pluginId))) return refuse(path, access);
+      confirmed.add(tree);
     }
     return path;
   };
+  /** A listing entry the plugin may see: a top-level tree it may read, or
+   *  anything inside one. Entries come from a path `check` already passed. */
+  const listable = (entry: MemoryEntry): boolean => {
+    const parts = segments(canonical(entry.virtualPath));
+    if (parts.length === 0) return false;
+    if (parts.length === 1 && !entry.isDirectory) return false;
+    return treeAccess(parts[0]!, ownTrees) !== 'none';
+  };
   return Object.freeze({
     async list(virtualPath: string): Promise<MemoryEntry[]> {
-      const entries = await store.list(check(virtualPath, 'read'));
+      const entries = await store.list(await check(virtualPath, 'read'));
       return entries.filter(listable);
     },
-    fileExists: async (p: string) => store.fileExists(check(p, 'read-tree')),
-    directoryExists: async (p: string) => store.directoryExists(check(p, 'read')),
-    readFile: async (p: string) => store.readFile(check(p, 'read-tree')),
-    createFile: async (p: string, content: string) => store.createFile(check(p, 'write'), content),
-    writeFile: async (p: string, content: string) => store.writeFile(check(p, 'write'), content),
-    delete: async (p: string) => store.delete(check(p, 'write')),
-    rename: async (from: string, to: string) => store.rename(check(from, 'write'), check(to, 'write')),
+    fileExists: async (p: string) => store.fileExists(await check(p, 'read-tree')),
+    directoryExists: async (p: string) => store.directoryExists(await check(p, 'read')),
+    readFile: async (p: string) => store.readFile(await check(p, 'read-tree')),
+    createFile: async (p: string, content: string) => store.createFile(await check(p, 'write'), content),
+    writeFile: async (p: string, content: string) => store.writeFile(await check(p, 'write'), content),
+    delete: async (p: string) => store.delete(await check(p, 'write')),
+    rename: async (from: string, to: string) =>
+      store.rename(await check(from, 'write'), await check(to, 'write')),
   } satisfies MemoryStore);
 }
 
@@ -822,4 +869,23 @@ export function boundTopicClustering(pluginId: string): TopicClusteringService {
   return Object.freeze(
     Object.fromEntries(TOPIC_CLUSTERING_METHODS.map((m) => [m, refuse(m)])),
   ) as unknown as TopicClusteringService;
+}
+
+// ---------------------------------------------------------------------------
+// entityRefBus@1
+// ---------------------------------------------------------------------------
+
+/**
+ * ADR-0257 — the bounded `entityRefBus@1`: `publish` passes (the bus tags the
+ * ref with the turn the call runs in, and drops it outside a turn).
+ * `beginCollection` takes any turn id and would hand the caller every ref of
+ * another user's turn: kernel-only, the orchestrator collects.
+ */
+export function boundEntityRefBus(bus: EntityRefBus, pluginId: string): EntityRefBus {
+  return Object.freeze({
+    publish: (ref: EntityRef): void => bus.publish(ref),
+    beginCollection: (): EntityRefCollection => {
+      throw new GraphServiceRefusedError(pluginId, ENTITY_REF_BUS_SERVICE_NAME, 'beginCollection', 'kernel-only');
+    },
+  }) as unknown as EntityRefBus;
 }

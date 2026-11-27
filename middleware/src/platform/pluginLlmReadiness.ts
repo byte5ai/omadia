@@ -75,9 +75,9 @@ export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     id: '@omadia/verifier',
     label: 'Verifier',
     modelKeys: ['verifier_model'],
-    // #1583 — the verifier resolves its provider without the provider catalog
-    // and needs an API key; on `claude-cli` it never publishes `verifier@1`
-    // ("no API key for provider 'claude-cli'"). The assignment is refused.
+    // #1583 — the verifier cannot run on the subscription CLI: it refuses
+    // `claude-cli` before asking the kernel provider pool (ADR-0215) and never
+    // publishes `verifier@1` there. The assignment is refused.
     rejectsSubscriptionCli: true,
     // The orchestrator captures the `verifier` bundle in its own activate().
     capturedBy: '@omadia/orchestrator',

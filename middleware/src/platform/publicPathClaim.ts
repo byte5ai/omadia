@@ -54,13 +54,14 @@ export async function claimDeclaredPublicPaths(
   const ungranted = declared.filter((p) => !granted.has(p));
   // Epic #470 C16 (#817) — name the remedy, not just the state. An ungranted
   // prefix is NOT an activation failure: the claim holds (nobody else can take
-  // the prefix) and the route stays behind the session gate.
+  // the prefix) and the prefix stays closed — every request ends in
+  // `404 public_path.not_granted`, logged in or not (`publicPathMount.ts`).
   deps.log(
     `[${deps.tag}] public paths for ${agentId}: ${String(granted.size)} granted, ` +
       `${String(ungranted.length)} declared-but-awaiting-consent` +
       (ungranted.length > 0
-        ? ` (${ungranted.join(', ')}) — these prefixes stay behind requireAuth until an operator consents ` +
-          `in the admin UI under Plugins → ${agentId} → Permissions, or with ` +
+        ? ` (${ungranted.join(', ')}) — these prefixes stay closed (404 public_path.not_granted) until an operator ` +
+          `grants them in the admin UI under Store → ${agentId} → Grants, or with ` +
           `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(agentId)}/grants`
         : ''),
   );
@@ -69,7 +70,7 @@ export async function claimDeclaredPublicPaths(
   if (unserved.length > 0) {
     deps.log(
       `[${deps.tag}] ${agentId} registered no router under ${unserved.join(', ')} — ` +
-        'the declared prefix serves nothing in this configuration and stays behind requireAuth; a grant for it is only valid once the plugin serves it',
+        'the declared prefix serves nothing in this configuration and stays closed; a grant for it is only valid once the plugin serves it',
     );
   }
 }

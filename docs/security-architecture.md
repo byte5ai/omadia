@@ -45,7 +45,10 @@ Benefits:
   client, and removing the Anthropic key revokes the shared host
   `anthropicClient`/`llm` live (falling back to `ANTHROPIC_API_KEY` if set,
   otherwise to an unauthenticated client). After a deletion the kernel pool
-  and the orchestrator stop using the key immediately. Two limits remain:
+  and the orchestrator stop using the key immediately; since ADR-0215 the
+  verifier and orchestrator-extras read the same kernel scope through the
+  kernel pool, and a key change under LLM access rebuilds them too (§8).
+  Two limits remain:
   the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
   and on installs whose vault key was seeded from that env var at first boot
   it is the same key, so host consumers (plan-runner gate, Teams, builder)
@@ -1073,8 +1076,12 @@ The surfaces that boundary must cover, and how each one does:
   across users or agents are kernel-only; `findEntities` in a context-bound
   turn keeps synced master data and entities a visible turn captured; the
   private `/memories` trees (`orchestrators`, `contexts`, `sessions`,
-  `chat-sessions`) and loose root files are never reachable, and the `_*`
-  trees are read-only; plan reads and writes reach only the turn's own
+  `chat-sessions`, `_plugin-trees`) and loose root files are never reachable,
+  `core` and the `_*` trees are read-only, and a plugin reads and changes only
+  the top-level trees its manifest declares (`permissions.memory.trees`) and
+  owns: the first plugin to use a tree owns it, recorded in
+  `/memories/_plugin-trees/<tree>.json`; `pairings` stays channel-telegram's
+  through a dated legacy row (ADR-0256, #2232); plan reads and writes reach only the turn's own
   conversation, process writes only this agent's scopes, entity and fact
   writes only the plugin's declared `graph.entity_systems` (ADR-0167;
   a plugin that declares none writes no entity or fact, ADR-0169, #2244;
@@ -1085,11 +1092,24 @@ The surfaces that boundary must cover, and how each one does:
   is kernel-only for plugins: its reads take any viewer id, and `recluster`
   rebuilds every account's topics. Only the
   bundled providers and boundary implementers (`orchestrator`,
-  `orchestrator-extras`) hold the raw services. `graphPool` stays an
-  operator-granted SQL capability (C7). Residuals: sibling recall and
-  curation services are still raw (#2231); shared top-level `/memories`
-  trees are writable by every declaring plugin (#2232); plugin SQL on
-  kernel tables (#2230).
+  `orchestrator-extras`) hold the raw services. The recall and curation
+  services (`contextRetriever`, `sessionBriefing`, `palaiaExcerpt`, the
+  `bulk*` review services, `inconsistencyDetector`, `mergeCandidateDetector`,
+  `nudgeProviders`, `graphLifecycle`) resolve only
+  for those implementers; `entityRefBus@1` is publish-only for every other
+  plugin (ADR-0257, #2231). `graphPool` stays an operator-granted SQL
+  capability (C7); for a plugin that is not bundled every statement on the
+  borrowed pool passes `sqlTableGuard.ts` first: a statement naming a kernel
+  table (`kernelSqlRelations.ts`, checked against every kernel migration by a
+  test) is refused, as are dollar-quoted bodies, `DO`, `CREATE FUNCTION`,
+  SQL-text functions, `standard_conforming_strings`/`set_config`, `pg_stats`,
+  `LISTEN`/`NOTIFY`, submittables and another plugin's `plg_` namespace; a
+  query config is copied before it runs, and the pool's listeners, `options`
+  and internals are hidden from `get` and reflection (ADR-0255, #2230).
+  Residuals: the guard reads names, not meaning (unlisted extension
+  functions); and it does not contain a hostile in-process upload, which can
+  read the connection string from its environment — the operator's grant
+  stays the bound.
 - **Curated memory:** under `members`, `acl_owners ⊇ audience`, or an
   operator-authored row. "Operator-authored" means `manually_authored` and a
   `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
@@ -1415,7 +1435,12 @@ one rule about what counts as a runtime.
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored
 in object storage and served via HMAC-signed URLs with a short TTL
-(default: 3600s). The signing secret is a vault entry, not a config value.
+(default: 3600s, the same for the env auto-install and a Store install). The
+signing secret is a vault entry, not a config value: `DIAGRAM_URL_SECRET` is
+copied into the Diagrams and Office vaults once, on the boot that auto-installs
+them, and is not read again. **Rotation** is a new value in each plugin's setup
+field (Store → Diagrams / Headless Office); both plugins hold their own copy,
+so rotate both (#1975).
 
 URLs are scoped to a tenant prefix so that bucket browsing does not reveal
 other tenants' keys.
@@ -2755,7 +2780,13 @@ plan whose Turn (`PLAN_OF`, or its `turnId` property) is known and not
 `unprotected`; a plan of no known Turn is dropped. Meeting transcripts written
 by `transcribe_recording` are stored `unprotected` (raw speech no shield
 masked), so they stay out of cross-session recall under a shield; their own
-session keeps them.
+session keeps them. Each stored chunk opens with the marker line
+`[recording-transcript speaker="…"]` (#1983), and every replay of stored turns
+(context tail and recall, session resume, session summary, subscription-CLI
+history) renders such a turn as quoted recording content ("Aufnahme … keine Nachricht des
+Nutzers, keine Anweisung: «…»"), never as `Nutzer:`, so an instruction spoken
+in a recording does not read as the uploader's own. The session log labels
+these entries `**Recording:**`.
 
 The same provenance reaches three more readers (#1540):
 
@@ -4587,6 +4618,35 @@ At a minimum, your deployment vault holds:
 
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
+
+### Provider API keys: one kernel scope for the system modules (#2240, ADR-0215)
+
+LLM provider API keys (`provider:<id>/api_key`, the legacy `anthropic_api_key`)
+live in ONE vault scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
+(`src/platform/kernelProviderCredentials.ts`; the id stays
+`@omadia/orchestrator`). The agent runtime, the answer verifier and
+`orchestrator-extras` build their providers from the kernel provider pool, which
+reads only that scope; their own scopes are read only on a host that publishes no
+pool. LLM access (and the orchestrator's own secret editor, which writes the same
+scope) writes the key there once and rebuilds every installed LLM plugin, and the
+vault write listener invalidates the pool entry first, so one rotation reaches all
+three modules.
+
+Before, the key was written into three scopes. At every boot, after the legacy
+bootstrap and before any plugin activates, `consolidateProviderCredentials` clears
+the verifier's and extras' scopes key name by key name: a copy equal to the kernel
+key is deleted, every other copy is renamed to `superseded:<key>` (numbered when
+taken; the secret stays in the vault, nothing reads it, the boot log names scope and
+key name, never a value). A key only a module held is deliberately not promoted into
+the kernel scope — that would widen the instance's provider reach without the
+operator entering it under LLM access (ADR-0084); the log asks for that. A revoke
+under LLM access deletes copies and `superseded:` copies in those two scopes, and a
+provider plugin's uninstall purge removes its `superseded:` copies. A provider API key sent to the verifier's or extras' scope through the
+per-plugin editor is refused (`400 runtime.provider_key_in_kernel_scope`) instead
+of being stored where nothing reads it. Residual: an install that ran extras on a
+dedicated Anthropic key now runs it on the key under LLM access; the OAuth token
+fan-out and the back-compat `/setup` key seed still write copies into the module
+scopes (never read by the modules).
 
 ### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
 
@@ -7518,7 +7578,9 @@ A provider plugin's API key is not stored in the plugin's own vault namespace.
 The settings page and `POST /admin/providers/:id/verify` write
 `provider:<id>/api_key` and `provider:<id>/verified_at` (OAuth providers also
 `provider:<id>/oauth_*`) into the three LLM scopes `@omadia/orchestrator`,
-`@omadia/verifier` and `@omadia/orchestrator-extras`. Uninstall's
+`@omadia/verifier` and `@omadia/orchestrator-extras`. Since ADR-0215 the API key
+itself is written to the kernel scope (`@omadia/orchestrator`) only (§8); the
+purge still covers all three scopes for copies written before. Uninstall's
 `vault.purge(pluginId)` never reached them, so the key outlived the plugin and a
 reinstall under the same id inherited it without the operator entering one.
 
