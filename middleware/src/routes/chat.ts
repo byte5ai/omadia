@@ -10,11 +10,13 @@ import {
   parseAgentCommand,
   suppressNoReplyStream,
   type AgentCommand,
+  type StoredTurnAttachment,
 } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
 import { MAX_STEER_LENGTH, steeringBus, today, turnContext, webAccountOrigin } from '@omadia/orchestrator';
 import type {
   AskObserver,
+  AttachmentBindingStore,
   ChatAgent,
   ChatSessionStore,
   TurnContextValue,
@@ -22,6 +24,7 @@ import type {
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
 import { chatViewer, mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
+import { resolveTurnUploads, WEB_CHAT_UPLOADS_PER_TURN } from './chatUploads.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
 import {
@@ -47,7 +50,8 @@ const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const CHAT_HEARTBEAT_INTERVAL_MS = 2000;
 
 const ChatRequestSchema = z.object({
-  message: z.string().min(1, 'message must be a non-empty string'),
+  // #2336 — may be empty when the message carries uploads (checked below).
+  message: z.string(),
   /** Optional free-form scope for transcript bucketing — e.g. 'cli-john'. */
   scope: z.string().min(1).max(120).optional(),
   /**
@@ -75,7 +79,23 @@ const ChatRequestSchema = z.object({
    * and parsed again by the kernel; `null`/absent = the configured level.
    */
   answerVerbosity: z.enum(ANSWER_VERBOSITY_LEVELS).optional(),
-});
+  /**
+   * #2336 (ADR-0310) — files uploaded to this chat through
+   * `POST /api/chat/uploads` that this message carries. Only references:
+   * the kernel checks each key against its chat binding and states name and
+   * type itself (`resolveTurnUploads`). Requires `sessionId`.
+   */
+  attachments: z
+    .array(
+      // Only the key: name, type and size are the kernel's, not the request's.
+      z.object({ storageKey: z.string().min(1).max(512) }),
+    )
+    .max(WEB_CHAT_UPLOADS_PER_TURN)
+    .optional(),
+}).refine(
+  (body) => body.message.trim().length > 0 || (body.attachments?.length ?? 0) > 0,
+  { message: 'message must be a non-empty string', path: ['message'] },
+);
 
 /**
  * The orchestrator `sessionScope` for an HTTP turn.
@@ -219,9 +239,17 @@ async function routineDeliveriesFor(
   return session ? routineDeliveriesHint(session.messages, options.timeZone) : undefined;
 }
 
-function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
+function chatTurnContext(
+  req: Request,
+  sessionScope: string,
+  uploads: readonly StoredTurnAttachment[] = [],
+): TurnContextValue {
   const identity = sessionIdentity(req);
   return {
+    // #2336 — the turn's own uploads, so `read_attachment` and
+    // `transcribe_recording` are offered on this web turn (both runtimes read
+    // it from here; the orchestrator also sets it on its inner scope).
+    ...(uploads.length > 0 ? { turnUploadKeys: new Set(uploads.map((u) => u.storageKey)) } : {}),
     // Placeholder ids: the orchestrator overwrites both in its own inner turn
     // scope and carries only `mcpUserKey` across. Kept descriptive so a stray
     // log line from this scope is still attributable.
@@ -232,6 +260,34 @@ function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
     turnDate: today(),
     ...(identity ? { mcpUserKey: identity } : {}),
   };
+}
+
+/**
+ * #2336 (ADR-0310) — the uploads this turn carries, checked against their chat
+ * binding, or `undefined` after answering 400. Only a turn in a stored chat
+ * (`sessionId` without a debug `scope`) carries uploads: the binding is to
+ * the chat, and a turn bucketed elsewhere could not read them.
+ */
+async function turnUploadsFor(
+  res: Response,
+  body: z.infer<typeof ChatRequestSchema>,
+  options: CreateChatRouterOptions,
+): Promise<{ stored: StoredTurnAttachment[]; userMessage: string } | undefined> {
+  const result = await resolveTurnUploads(
+    body.attachments,
+    body.scope ? undefined : body.sessionId,
+    options.attachmentBindings,
+  );
+  if (!result.ok) {
+    res.status(result.refusal.status).json({ code: result.refusal.code, message: result.refusal.message });
+    return undefined;
+  }
+  return { stored: result.stored, userMessage: `${body.message}${result.modelBlock}` };
+}
+
+/** The turn-input fields of a turn's uploads. */
+function uploadTurnFields(stored: readonly StoredTurnAttachment[]): { storedAttachments?: StoredTurnAttachment[] } {
+  return stored.length > 0 ? { storedAttachments: [...stored] } : {};
 }
 
 /**
@@ -364,6 +420,9 @@ export interface CreateChatRouterOptions {
    *  session pinned to another id was opened with a deleted agent whose slug
    *  was reused; its turns are refused (503 `agent_unavailable`). */
   agentIdForSlug?: (slug: string) => string | undefined;
+  /** #2336 (ADR-0310) — the attachment binding store the uploads a turn
+   *  names are checked against. Absent: a turn with uploads is refused. */
+  attachmentBindings?: AttachmentBindingStore;
   /** Phase A — chat session store, for snapshot capture on the first
    *  turn of a session. */
   chatSessionStore?: ChatSessionStore;
@@ -581,6 +640,8 @@ export function createChatRouter(
       return;
     }
     const { chatAgent: chat, effectiveSlug, speaker } = resolved;
+    const uploads = await turnUploadsFor(res, parsed.data, options);
+    if (!uploads) return;
 
     try {
       const userId = resolveUserId(req);
@@ -594,9 +655,10 @@ export function createChatRouter(
       const result = await withRoutinePrincipal(
         httpRoutineContext(req, parsed.data, effectiveSlug),
         () =>
-          turnContext.run(chatTurnContext(req, sessionScope), () =>
+          turnContext.run(chatTurnContext(req, sessionScope, uploads.stored), () =>
             chat.chat({
-              userMessage: parsed.data.message,
+              userMessage: uploads.userMessage,
+              ...uploadTurnFields(uploads.stored),
               sessionScope,
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
@@ -683,6 +745,9 @@ export function createChatRouter(
       parsed.data.message,
     );
     if (!resolved) return;
+    // #2336 — refused uploads answer 400 before the stream starts.
+    const uploads = await turnUploadsFor(res, parsed.data, options);
+    if (!uploads) return;
 
     // NDJSON streaming. `X-Accel-Buffering: no` disables nginx response
     // buffering if the middleware ever sits behind one; harmless locally.
@@ -852,11 +917,12 @@ export function createChatRouter(
       // event, which is before any tool (and therefore any MCP call) runs. See
       // the warning on `turnContext.enter`.
       const iterator = turnContext.runGenerator(
-        chatTurnContext(req, resolveScope(parsed.data, req)),
+        chatTurnContext(req, resolveScope(parsed.data, req), uploads.stored),
         () =>
           chat.chatStream(
             {
-              userMessage: parsed.data.message,
+              userMessage: uploads.userMessage,
+              ...uploadTurnFields(uploads.stored),
               sessionScope: resolveScope(parsed.data, req),
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),

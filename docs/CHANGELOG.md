@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Added — file uploads in the web chat (#2336, #1985) (2026-11-27)
+
+- New kernel route `POST /api/chat/uploads`: recordings, PDFs, DOCX, text, CSV/XLSX and
+  images up to 25 MiB, stored under `web-chat/<chat>/<uuid>/<name>`, bound to the chat at upload
+  (ADR-0178) and filed as producer `web-chat-upload` in the `generated_objects` ledger, so
+  deleting the chat or purging the person deletes the file (ADR-0187). No migration.
+- `/api/chat` and `/api/chat/stream` take `attachments` references; the kernel checks each
+  against its chat binding and states it as `storedAttachments`, so web uploads get the same
+  ingest, Privacy Shield masking and prompt-masked transcripts (ADR-0198) as channel uploads.
+  `read_attachment` / `transcribe_recording` are offered on web turns that carry files.
+- Web chat: attach by paper clip, drag & drop or paste; size/type limits; attachment list in
+  the sent message (en + de). A file removed before sending is deleted at once
+  (`DELETE /api/chat/uploads`); a chat holds at most 100 uploads. New ADR-0310.
+- API contract: `POST /api/chat` / `/api/chat/stream` with a whitespace-only `message` and no
+  `attachments` now answers `400` (it passed before).
+
 ### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
 
 - `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows
