@@ -2188,6 +2188,19 @@ before dispatch, and the wired dispatcher runs no handler without one
 drives a real `LocalSubAgent` through the production wiring and asserts on
 what its provider receives.
 
+**File producers on the public endpoint (#2305, ADR-0271).** Intern-exempt tools stay
+unservable (`isPubliclyServableTool`), with one exception: `PUBLIC_RESULT_CHECKED_TOOLS`
+(`render_diagram`, `create_xlsx`, `create_docx`), whose result is the produced file's metadata
+and link. Each such result is read by the shield's free-text detectors
+(`PublicMcpPrivacyGate.checkResult` → `redactToolErrorText`) inside `validateResult`, before it
+is served or retained by the idempotency store. Only a clean verdict sets `resultChecked()`: no
+span, detector not degraded. A span, `withheld`, a degraded C1, a provider without the
+contract, or a throw leaves it unset, and `assertMaskingCrossed` refuses the call like an
+unmasked result (`masked() || resultChecked()` is the bar). Residual: the check covers what the
+endpoint returns, not the bytes behind the signed link, which are the caller's own input. Each
+public request finalizes its privacy turn once its work settles, so interned datasets and C1
+caches of public requests are not kept.
+
 The kernel's own refusals from `dispatchToolInner` (tool unavailable, not
 granted, unknown tool) name only the tool and its plugin; they are exempted by
 per-dispatch provenance, never by their shape, so a provider that cannot

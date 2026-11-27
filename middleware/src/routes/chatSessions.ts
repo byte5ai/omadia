@@ -9,8 +9,7 @@ import {
   chatSessionOwnedBy,
   isValidSessionId,
   isWebChatSessionId,
-  mcpInputReplyLabel,
-  parseMcpInputReply,
+  scrubMcpInputEnvelopes as scrubStoredEnvelopes,
 } from '@omadia/orchestrator';
 
 import { LLM_SETUP_HINT } from '../llmSetupHint.js';
@@ -206,23 +205,9 @@ const SessionSchema = z.object({
 
 type ClientSession = z.infer<typeof SessionSchema>;
 
-/**
- * #1953 — a user message that is an MCP input reply envelope carries every
- * value the user typed into the input card, secret fields included. The web
- * UI no longer stores it, but an older tab still PUTs it back; it is replaced
- * by the field-names-only label the orchestrator uses for the turn log, so no
- * value is persisted. Ordinary messages are untouched.
- */
+/** #1953 — shared with the store's one-time sweep (#2311). */
 export function scrubMcpInputEnvelopes(session: ClientSession): ClientSession {
-  let changed = false;
-  const messages = session.messages.map((message) => {
-    if (message.role !== 'user') return message;
-    const reply = parseMcpInputReply(message.content);
-    if (reply === undefined) return message;
-    changed = true;
-    return { ...message, content: mcpInputReplyLabel(reply) };
-  });
-  return changed ? { ...session, messages } : session;
+  return scrubStoredEnvelopes(session);
 }
 
 interface ChatSessionDeps {

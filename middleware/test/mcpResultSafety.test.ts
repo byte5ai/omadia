@@ -1,7 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import type { PrivacyTurnHandle } from '../packages/harness-orchestrator/src/index.js';
+import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { mcpObservationDigest } from '../packages/harness-orchestrator/src/orchestrator.js';
+import { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
 import {
   MAX_TOOL_RESULT_CHARS,
   capToolResultText,
@@ -42,5 +45,52 @@ describe('mcpObservationDigest (#1934)', () => {
   it('counts records and sizes text', () => {
     assert.equal(mcpObservationDigest('[1,2]'), '2 records (values masked)');
     assert.equal(mcpObservationDigest('plain'), '(5 bytes, values masked)');
+  });
+});
+
+describe('ToolDispatchService result cap (#2309)', () => {
+  const big = 'x'.repeat(MAX_TOOL_RESULT_CHARS * 2);
+
+  function dispatcher(
+    name: string,
+    result: string,
+    privacy?: PrivacyTurnHandle,
+  ): ToolDispatchService {
+    const registry = new NativeToolRegistry();
+    registry.register(name, {
+      spec: { name, description: 'probe', input_schema: { type: 'object', properties: {} } },
+      handler: async () => result,
+    });
+    return new ToolDispatchService({
+      nativeTools: registry,
+      ...(privacy !== undefined ? { privacy: () => privacy } : {}),
+    });
+  }
+
+  it('caps a result when no privacy guard is installed', async () => {
+    const out = await dispatcher('probe_tool', big).dispatch('probe_tool', {});
+    assert.ok(out.content.length < big.length);
+    assert.match(out.content, /\[result truncated/);
+  });
+
+  it('caps an intern-exempt tool under a guard', async () => {
+    const privacy = {} as PrivacyTurnHandle;
+    const out = await dispatcher('query_processes', big, privacy).dispatch('query_processes', {});
+    assert.match(out.content, /\[result truncated/);
+  });
+
+  it('caps an operator-bypassed result', async () => {
+    const privacy = {
+      checkBypass: () => ({ pluginId: 'probe' }),
+      recordBypassedTool: async () => undefined,
+    } as unknown as PrivacyTurnHandle;
+    const out = await dispatcher('probe_tool', big, privacy).dispatch('probe_tool', {});
+    assert.match(out.content, /\[result truncated/);
+  });
+
+  it("leaves a kernel tool's directive whole", async () => {
+    const directive = `{"_pendingCanvas":"${big}"}`;
+    const out = await dispatcher('probe_tool', directive).dispatch('probe_tool', {});
+    assert.equal(out.content, directive);
   });
 });

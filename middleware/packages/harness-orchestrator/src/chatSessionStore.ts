@@ -1,6 +1,7 @@
 import type { MemoryStore, PrivacyReceipt } from '@omadia/plugin-api';
 
 import { withSessionLock } from './chatSessionLock.js';
+import { mcpInputReplyLabel, parseMcpInputReply } from './mcp/pendingMcpInput.js';
 import { mergeServerProactiveMessages } from './chatSessionProactive.js';
 
 /**
@@ -207,6 +208,27 @@ const SERVER_MESSAGE_ID_PREFIX = 'srv-';
  * rule, same two halves).
  */
 /**
+ * #1953 / #2311 — a user message that is an MCP input reply envelope carries
+ * every value the user typed into the input card, secret fields included. It
+ * is replaced by the field-names-only label the turn log uses. Ordinary and
+ * assistant messages are untouched; a session without an envelope is
+ * returned as the same object.
+ */
+export function scrubMcpInputEnvelopes<
+  S extends { readonly messages: ReadonlyArray<{ readonly role: string; readonly content: string }> },
+>(session: S): S {
+  let changed = false;
+  const messages = session.messages.map((message) => {
+    if (message.role !== 'user') return message;
+    const reply = parseMcpInputReply(message.content);
+    if (reply === undefined) return message;
+    changed = true;
+    return { ...message, content: mcpInputReplyLabel(reply) };
+  });
+  return changed ? { ...session, messages } : session;
+}
+
+/**
  * #1753 / #1757 — whether `id` has the shape the web chat mints (a UUID or
  * its `id-<base36>-<base36>` fallback). Anything else is another channel's or
  * the kernel's scope, never a web chat a user can delete.
@@ -378,6 +400,7 @@ export class ChatSessionStore {
   private async sweepServerMirrored(): Promise<{ purged: string[]; failed: number }> {
     if (!(await this.store.directoryExists(DIR))) return { purged: [], failed: 0 };
     const purged: string[] = [];
+    let scrubbed = 0;
     let failed = 0;
     for (const entry of await this.store.list(DIR)) {
       if (entry.isDirectory || !entry.virtualPath.endsWith('.json')) continue;
@@ -386,7 +409,9 @@ export class ChatSessionStore {
       const id = entry.virtualPath.slice(DIR.length + 1, -'.json'.length);
       if (!ID_RE.test(id)) continue;
       try {
-        if (await this.deleteIfServerMirrored(id)) purged.push(id);
+        const outcome = await this.sweepOne(id);
+        if (outcome === 'purged') purged.push(id);
+        if (outcome === 'scrubbed') scrubbed += 1;
       } catch (err) {
         failed += 1;
         console.warn(
@@ -400,25 +425,38 @@ export class ChatSessionStore {
         `[chat-sessions] purged ${String(purged.length)} server-mirrored transcript(s) that were never web chats: ${purged.join(', ')}`,
       );
     }
+    if (scrubbed > 0) {
+      console.warn(
+        `[chat-sessions] removed MCP input-card values from ${String(scrubbed)} stored chat(s) (#2311)`,
+      );
+    }
     return { purged, failed };
   }
 
   /** Read, decide and delete under the session lock, so a client PUT that
    *  lands in between (a tab that still has the transcript open) is not
    *  deleted with it. Unreadable files are left for `list()` to report. */
-  private deleteIfServerMirrored(id: string): Promise<boolean> {
+  private sweepOne(id: string): Promise<'purged' | 'scrubbed' | 'kept'> {
     const virtualPath = this.pathFor(id);
     return this.withLock(id, async () => {
       let parsed: ChatSession;
       try {
         parsed = JSON.parse(await this.store.readFile(virtualPath)) as ChatSession;
       } catch (err) {
-        if (err instanceof SyntaxError) return false;
+        if (err instanceof SyntaxError) return 'kept';
         throw err;
       }
-      if (parsed.id !== id || !isServerMirroredSession(parsed)) return false;
-      await this.store.delete(virtualPath);
-      return true;
+      if (parsed.id !== id) return 'kept';
+      if (isServerMirroredSession(parsed)) {
+        await this.store.delete(virtualPath);
+        return 'purged';
+      }
+      // #2311 — a chat stored before #1953 keeps the input-card values its
+      // user typed until the next save; the sweep rewrites it once.
+      const scrubbed = scrubMcpInputEnvelopes(parsed);
+      if (scrubbed === parsed) return 'kept';
+      await this.store.writeFile(virtualPath, JSON.stringify(scrubbed, null, 2));
+      return 'scrubbed';
     });
   }
 

@@ -2692,6 +2692,28 @@ Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzh
   gemerkt); `forgetClient` beim Löschen des letzten Servers eines Issuers (nur DCR/CIMD,
   fail-closed); `onAuthFailure(cfg, failure)`.
 
+### MCP-Folgen Welle 6 (W33, ADR-0271/0272/0273)
+
+- **stdio-Timeout (#2307):** ein stdio-Child, dessen Call in den SDK-Timeout läuft, verlässt den
+  Pool sofort; laufende Requests darauf enden normal, danach (spätestens 30 s) wird es geschlossen.
+- **Cap überall (#2309):** `capToolResultText` auch auf intern-exempten Tools unter Guard und auf
+  jedem nicht internierten Ergebnis im `ToolDispatchService` (CLI, Loopback, Public MCP).
+- **MCP-Bilder (#1920, ADR-0272):** `mcpBinaryContent.ts` sammelt Bilder pro Dispatch; der
+  Orchestrator hängt sie nur bei Bypass/ohne Guard und Provider-Capability `toolResultImages`
+  (`@omadia/llm-provider-api`, Anthropic) als Bildblock an den `tool_result`.
+- **Public MCP (#2305, ADR-0271):** `render_diagram`, `create_xlsx`, `create_docx` wieder
+  servierbar; jedes Ergebnis läuft durch `PublicMcpPrivacyGate.checkResult` (Shield-Detektoren),
+  nur sauber wird serviert. `ToolDispatchOptions.validateResult` darf async sein. Jeder
+  Public-Request finalisiert seinen Privacy-Turn nach Ende der Arbeit.
+- **Delegation/Audit (#1906, #2308):** Agentenseite verlinkt `/admin/mcp?server=<id>`;
+  `mcp_oauth_tokens.stored_by_*` (Migration 0120), `auth-status` → `sharedAuthorizationStoredBy`.
+- **Key-Löschung (#2310, ADR-0273):** Kernel-Service `publicMcpKeyBindings`
+  (`forgetDeletedKey`), von `@omadia/channel-api` 0.1.1 nach `DELETE /admin/keys/:id` gerufen.
+- **OAuth-Callback-Seite (#1959):** de/en nach `Accept-Language` (`mcpOAuthCallbackPage.ts`).
+- **Chat-Store-Sweep (#2311):** der einmalige Sweep beim ersten `list()` entfernt auch alte
+  Input-Card-Envelopes.
+- **Offen:** #2312 (Per-User-Connect für Kanal-Nutzer ohne Login) — Owner-Entscheidung nötig.
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
@@ -7006,6 +7028,9 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **MCP Welle 6 — Reste (2026-11-27):** #2312 Per-User-OAuth-Connect für Kanal-Nutzer ohne
+  omadia-Login (braucht Kanal-Flow + Owner-Entscheidung zum Link-Risiko, ADR-0175); MCP-Bilder
+  auch für Sub-Agenten/CLI/Public MCP (ADR-0272); stdio-Kinder teilen einen OS-User (ADR-0270).
 - **Kanal-Konto-Links (W35, ADR-0280) — Reste (#2324):** Origin-Kanaltyp pro Plugin prüfen statt Adapter-Attestierung; Deaktivieren eines Kontos entknüpft seine
   Kanal-Identitäten nicht (Turns laufen bis zum Unlink weiter als Konto-Cluster); Slack, Discord
   und WhatsApp sollten `CoreApi.channelIdentityLinks` statt reiner Allow-Listen nutzen;

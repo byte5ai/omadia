@@ -281,6 +281,12 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
   const [authNotice, setAuthNotice] = useState<{ name: string; host: string } | null>(null);
   const [connectModal, setConnectModal] = useState<{ serverId: string; name: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // #1906 — `/admin/mcp?server=<id>` (the agent page's settings link) opens
+  // that server's row, where its delegation switch lives.
+  const deepLinkedServer = useRef<string | null>(null);
+  useEffect(() => {
+    deepLinkedServer.current = new URLSearchParams(window.location.search).get('server');
+  }, []);
   const [confirmDelete, setConfirmDelete] = useState<McpServerNode | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -308,6 +314,11 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
     try {
       const list = await listMcpServers();
       setServers(list.servers);
+      const linked = deepLinkedServer.current;
+      if (linked !== null && list.servers.some((s) => s.id === linked)) {
+        deepLinkedServer.current = null;
+        setExpanded(linked);
+      }
       setStdioEnabled(list.stdioEnabled !== false);
       setStdioIsolated(list.stdioIsolated === true);
       setStdioIsolationError(list.stdioIsolationError ?? null);
