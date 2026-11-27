@@ -11308,6 +11308,27 @@ Spec 2042 §5.10, Kriterium 15. Branch `feat/2042-s3b-plugin-contract`.
   tiefere Pfade werden ignoriert.
 
 
+### Gebundene Plugin-Services: graphPool, memoryStore-Bäume, Recall (ADR-0255/0256/0257, 2026-11-26)
+
+- **`graphPool` (ADR-0255, #2230):** Für jedes nicht gebündelte Plugin prüft
+  `borrowPool(…, { guardStatements: true })` jedes Statement mit
+  `src/platform/sqlTableGuard.ts`. Nennt es eine Kernel-Relation aus
+  `kernelSqlRelations.ts`, wirft es `SqlTableRefusedError`. Ebenso für `$$`, `DO`,
+  `CREATE FUNCTION`, SQL-Text-Funktionen und fremde `plg_`-Namen. Listener, `options`
+  und `_`-Interna des Pools sind verborgen. Eigentum an Kernel-Tabellen:
+  channel-teams (`teams_conversation_refs`, `teams_attachments`), dev-platform
+  (`dev_*`). **Neue Kernel-Tabelle → eine Zeile in `kernelSqlRelations.ts`**;
+  `test/kernelSqlRelations.test.ts` sagt, welche fehlt.
+- **`memoryStore@1` (ADR-0256, #2232):** Ein Plugin liest `core` und `_*` und ändert
+  nur die Bäume aus `permissions.memory.trees` (`src/platform/memoryTrees.ts`). Das
+  erste Plugin, das einen Baum benutzt, besitzt ihn (`/memories/_plugin-trees/<tree>.json`,
+  privat). `core` ist für Plugins read-only. `pairings` gehört über eine datierte
+  Legacy-Zeile `@omadia/channel-telegram`.
+- **Recall/Kuration (ADR-0257, #2231):** `BOUNDARY_ONLY_SERVICE_NAMES` in
+  `pluginServiceGrants.ts` löst nur für `GRAPH_BOUNDARY_IMPLEMENTERS` auf
+  (`graphBoundaryImplementers.ts`). `entityRefBus@1` ist für alle anderen Plugins
+  publish-only.
+
 ## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
 
 Spec: `specs/2042-agents-as-virtual-employees/spec.md` §5.4 und §5.11, ADR-0018 und

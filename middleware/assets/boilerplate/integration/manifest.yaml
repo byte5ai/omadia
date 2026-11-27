@@ -116,6 +116,10 @@ permissions:
   memory:
     reads: ["agent:{{AGENT_ID}}:*"]
     writes: ["agent:{{AGENT_ID}}:*"]
+    # ADR-0256 — own top-level /memories trees for memoryStore@1 (e.g.
+    # ["pairings"]). The first plugin to use a tree owns it. Leave empty
+    # unless the plugin needs a tree shared across its agents.
+    trees: []
   graph:
     reads: []
     writes: []

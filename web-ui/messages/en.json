@@ -4823,6 +4823,7 @@
       "permissions": {
         "memoryReads": "Memory · Reads",
         "memoryWrites": "Memory · Writes",
+        "memoryTrees": "Memory · Own trees",
         "graphReads": "Graph · Reads",
         "graphWrites": "Graph · Writes",
         "entitySystems": "Graph · Entity systems",

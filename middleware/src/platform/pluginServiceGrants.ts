@@ -120,6 +120,7 @@ import {
 import type { ServiceGateOperation } from '@omadia/plugin-api';
 
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { holdsRawGraphServices } from './graphBoundaryImplementers.js';
 import { effectiveKind, type PluginKind } from '../api/admin-v1.js';
 
 /**
@@ -348,6 +349,43 @@ export const KERNEL_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * ADR-0257 (#2231) — recall and curation services that read across users or
+ * agents. Only the modules that implement the graph read boundary
+ * (`GRAPH_BOUNDARY_IMPLEMENTERS`, bundled) resolve them; for every other
+ * plugin they are kernel-only, whatever its manifest declares. The kernel's
+ * admin routes read them through `serviceRegistry.get`.
+ *
+ *  - `contextRetriever`, `sessionBriefing`, `palaiaExcerpt`: recall over the
+ *    tenant's turns and memory, given whatever scope the caller names;
+ *  - `bulkPromotion`, `bulkInconsistencyDetect`, `bulkMergeDetect`,
+ *    `bulkExcerptMergeDetect`: tenant review jobs over every account's
+ *    curated memory;
+ *  - `inconsistencyDetector`, `mergeCandidateDetector`: write review nodes
+ *    for any memory node id the caller names;
+ *  - `nudgeProviders`: the queued providers of other plugins, handed to the
+ *    orchestrator's registry;
+ *  - `graphLifecycle`: graph-wide purges and re-embeds.
+ *
+ * Audit 2026-11-26: no Hub plugin at `origin/main` declares one of them; the
+ * orchestrator (an implementer) consumes `contextRetriever`,
+ * `sessionBriefing`, `palaiaExcerpt` and `nudgeProviders`. `entityRefBus`
+ * stays plugin-facing in a bounded form (publish only, `boundedGraphServices.ts`).
+ */
+export const BOUNDARY_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
+  'contextRetriever',
+  'sessionBriefing',
+  'palaiaExcerpt',
+  'bulkPromotion',
+  'bulkInconsistencyDetect',
+  'bulkMergeDetect',
+  'bulkExcerptMergeDetect',
+  'inconsistencyDetector',
+  'mergeCandidateDetector',
+  'nudgeProviders',
+  'graphLifecycle',
+]);
+
+/**
  * Spec 2042 §5.10, ADR-0017 — raw model clients and provider pools. Code
  * holding `anthropicClient` reaches the provider past every kernel control;
  * `llm` and `llmProviderPool` hand out whole providers. No plugin gets them:
@@ -501,6 +539,7 @@ export function classifyServiceGrant(
 ): ServiceGrantOutcome {
   // Checked before any declaration: no manifest line grants these.
   if (KERNEL_ONLY_SERVICE_NAMES.has(name)) return 'kernel-only';
+  if (BOUNDARY_ONLY_SERVICE_NAMES.has(name) && !holdsRawGraphServices(agentId, catalog)) return 'kernel-only';
   if (declared.has(name)) {
     const plugin = catalog.get(agentId)?.plugin;
     // A dependency declaration grants the name outright — it was paid for at
