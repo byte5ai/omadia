@@ -244,7 +244,7 @@ import { RunTraceCollector, shareEntityRefs, type InvocationHandle } from './run
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
-import type { CliTurnCards } from './cliChatAgent.js';
+import type { CliTurnAttachments, CliTurnCards } from './cliChatAgent.js';
 import type { CliTurnPrivacy } from './cliTurnPrivacy.js';
 import type { DispatchableToolSpec } from './toolDispatchService.js';
 import { CLI_MEMORY_RULES, type CliTurnMemory } from './cliMemoryTool.js';
@@ -4402,6 +4402,19 @@ export class Orchestrator {
    * is the same input the CLI model itself produced. Surfacing masked values is
    * a follow-up that belongs with the CLI path's privacy-shield integration.
    */
+  /**
+   * #2303 (ADR-0177) — the files and diagrams a subscription-CLI turn's
+   * loopback tool calls produced. Called by `CliChatAgent` once, inside the
+   * CLI turn's context, so each sink returns only that turn's outputs.
+   */
+  public drainCliTurnAttachments(): CliTurnAttachments {
+    const { diagrams, files } = this.drainAttachments();
+    return {
+      ...(diagrams.length > 0 ? { attachments: diagrams } : {}),
+      ...(files.length > 0 ? { fileAttachments: files } : {}),
+    };
+  }
+
   public drainCliTurnCards(): CliTurnCards {
     const pendingUserChoice = this.drainPendingChoice();
     const followUpOptions = this.drainFollowUps();

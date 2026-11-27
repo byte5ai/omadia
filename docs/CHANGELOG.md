@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — CLI agents deliver generated Office and diagram files (#2303, ADR-0177) (2026-11-27)
+
+- A subscription-CLI turn now drains the per-turn attachment sinks once, inside its captured turn
+  context (`CliChatAgentDeps.drainTurnAttachments` → `Orchestrator.drainCliTurnAttachments`), and
+  puts the files and diagrams on its `done` event (`attachments` / `fileAttachments`) and on the
+  semantic answer of `chat()`. A withheld answer carries none; the buffers are drained either way.
+  Closes the CLI follow-up named in ADR-0177.
+
 ### Fixed — CLI sub-agents in a guarded turn get the v4 verb tools (#2301, ADR-0268) (2026-11-27)
 
 - A CLI sub-agent asked inside a turn under the Privacy Shield works under the calling turn's

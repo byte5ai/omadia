@@ -5232,7 +5232,10 @@ Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test
   schreibt keine Authorize-URL in den Modelltext.
 - **Tool-Ausgaben pro Turn (#1961, ADR-0177).** `PerTurnBuffer` (`@omadia/diagrams`); Office
   und Diagrams legen Ausgaben unter der Turn-ID ab, der Sink (im Turn-Kontext aufgerufen) leert
-  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`.
+  nur den eigenen Turn. Vertrag dokumentiert an `NativeToolAttachmentSink`. Seit #2303 leert
+  auch ein CLI-Turn die Sinks (`CliChatAgentDeps.drainTurnAttachments` →
+  `Orchestrator.drainCliTurnAttachments`, im erfassten Turn-Kontext) und liefert die Dateien am
+  `done`-Event aus.
 - **Signierte Links routengebunden (#1979, ADR-0176).** HMAC über `<route prefix><key>.<exp>`,
   Router prüfen ihr Key-Layout.
 - **Abgelaufene Datei-Links erneuern (#1964, ADR-0266).** `POST /api/v1/files/renew`
@@ -9035,10 +9038,11 @@ Antwort gibt.
 
 ---
 
-- **W00-Folgepunkte (2026-11-26):** (1) CLI-Agents leeren keine Attachment-Sinks — Office-/
-  Diagram-Ausgaben eines CLI-Turns werden nicht ausgeliefert (ADR-0177). (2) Per-User-MCP-Connect
-  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) Teams: Uploads
-  einer Nachricht, die die Themenwechsel-Karte auslöst, werden nach dem Klick nicht ingestiert.
+- **W00-Folgepunkte (2026-11-26):** (1) ~~CLI-Agents leeren keine Attachment-Sinks~~ — erledigt
+  mit #2303 (2026-11-27). (2) Per-User-MCP-Connect
+  für Kanal-User ohne omadia-Login braucht einen kanalseitigen Flow (ADR-0175). (3) ~~Teams: Uploads
+  einer Nachricht, die die Themenwechsel-Karte auslöst~~ — erledigt mit #2304
+  (`PendingTopicDecision.storedAttachments`, omadia-channel-teams Unreleased).
 
 ## 14. Commands (vom `middleware/`-Dir aus)
 

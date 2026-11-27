@@ -1167,6 +1167,8 @@ export function buildOrchestratorForAgent(
           // kernel-native tool scheduled this turn on the `done` event, so the
           // subscription-CLI path renders them like the API-key path.
           drainTurnCards: () => orchestrator.drainCliTurnCards(),
+          // #2303 (ADR-0177) — and the files and diagrams its tools produced.
+          drainTurnAttachments: () => orchestrator.drainCliTurnAttachments(),
           // #1582 — the AI disclosure, resolved and folded like an API-key turn.
           discloseAnswer: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
           // A refusal under OMADIA_PRIVACY_FORCE_GUARDED is worded in the
