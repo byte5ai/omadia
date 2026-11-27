@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
+
+- The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of
+  wave 6 and was cancelled by its 25-minute limit inside `test:pg` (main at 5ddf9cbf and train
+  #2337). `timeout-minutes` 25 → 40; a cancel there reads as a hang, not a test failure.
+
 ### Fixed — stored chats lose old MCP input-card values without a new save (#2311) (2026-11-27)
 
 - The chat store's one-time sweep on the first `list()` (the one that purges server-mirrored
