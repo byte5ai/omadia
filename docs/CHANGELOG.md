@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — public MCP serves render_diagram, create_xlsx and create_docx again (#2305, ADR-0271) (2026-11-27)
+
+- Owner decision 2026-11-27. The three intern-exempt file producers are publicly servable again;
+  each result passes the shield's free-text detectors (`redactToolErrorText`) inside
+  `validateResult` before it is served or cached, and only a clean verdict (no span, detector not
+  degraded) goes out. Anything else is refused like an unmasked result.
+- `ToolDispatchOptions.validateResult` may return a promise.
+- The public endpoint finalizes each request's privacy turn when the work settles, so interned
+  datasets and C1 caches of public requests no longer stay in memory.
+
 ### Added — MCP images reach the model on bypassed or unguarded servers (#1920, ADR-0272) (2026-11-27)
 
 - A successful MCP call's images (PNG/JPEG/GIF/WebP, ≤ 3.75 MB decoded, ≤ 4 per call) are

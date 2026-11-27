@@ -206,7 +206,7 @@ export interface ToolDispatchOptions {
    * Applied on the non-idempotent path too, so the check does not depend on
    * whether a caller happened to send a key.
    */
-  readonly validateResult?: (result: ToolDispatchResult) => void;
+  readonly validateResult?: (result: ToolDispatchResult) => void | Promise<void>;
 }
 
 /** #1598 — refused by name, without naming the owning plugin (same wording as
@@ -396,7 +396,7 @@ export class ToolDispatchService {
           // would refuse can never be replayed back to it later, and a
           // concurrent duplicate collapsing onto this execution inherits the
           // rejection rather than the body.
-          options?.validateResult?.(produced);
+          await options?.validateResult?.(produced);
           return produced;
         },
         // The trust boundary. `caller.principal` is the API-key id on the public
@@ -415,7 +415,7 @@ export class ToolDispatchService {
     // Same check on the path with no idempotency key, so a caller's
     // admissibility rule does not silently depend on whether the request
     // happened to carry one.
-    options?.validateResult?.(produced);
+    await options?.validateResult?.(produced);
     return produced;
   }
 

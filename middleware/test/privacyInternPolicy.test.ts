@@ -165,18 +165,14 @@ describe('privacyInternPolicy', () => {
 
   describe('public MCP servability', () => {
     it('never serves intern-exempt tools or tools with exempt operations', () => {
-      // The file producers included: their result is not interned, so the
-      // public gate's masking check would refuse every call.
-      for (const name of [
-        'memory',
-        'read_attachment',
-        'query_processes',
-        'query_dataset',
-        'render_diagram',
-        'create_xlsx',
-        'create_docx',
-      ]) {
+      for (const name of ['memory', 'read_attachment', 'query_processes', 'query_dataset']) {
         assert.equal(isPubliclyServableTool(name), false, `${name} must not be public`);
+      }
+    });
+
+    it('serves the file producers behind the per-result check (#2305, ADR-0271)', () => {
+      for (const name of ['render_diagram', 'create_xlsx', 'create_docx']) {
+        assert.equal(isPubliclyServableTool(name), true, `${name} is public again`);
       }
     });
 
