@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** Owner (byte5), decided after the recommendation of the wave-5 recheck (#2239)

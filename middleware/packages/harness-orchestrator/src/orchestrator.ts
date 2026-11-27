@@ -428,6 +428,7 @@ import {
 import { guardToolCommands } from './commandPolicyGuard.js';
 import {
   turnChannelKind,
+  channelTurnMcpUserKey,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -4469,7 +4470,12 @@ export class Orchestrator {
   ): Promise<Pick<TurnContextValue, 'discretion' | 'audienceFloor'>> {
     const parent = turnContext.current();
     const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
-    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, turnOwner.omadiaUserId);
+    const runTraceUserId = await resolveRunTraceOwner(
+      this.knowledgeGraph,
+      input,
+      turnOwner.omadiaUserId,
+      turnOwner.originClusterUserId,
+    );
     const floorFields = this.audienceFloorFor(input, parent, runTraceUserId);
     const { discretion } = this.discretionTurnFields(input, parent, turnOwner.omadiaUserId, floorFields.audienceFloor);
     return { ...floorFields, discretion };
@@ -6087,7 +6093,12 @@ export class Orchestrator {
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
-    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceUserId = await resolveRunTraceOwner(
+      this.knowledgeGraph,
+      input,
+      resolvedOmadiaUserId,
+      turnOwner.originClusterUserId,
+    );
     const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
@@ -6136,9 +6147,7 @@ export class Orchestrator {
     // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity
-        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
-        : undefined);
+      channelTurnMcpUserKey(input, turnOwner);
     // What a throw out of the turn body closes (`closePassOnThrow`). `input`
     // is final here: normalised and through the screening gate.
     const undeliveredPass: UndeliveredPass | undefined = privacyHandle
@@ -8055,7 +8064,12 @@ export class Orchestrator {
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
-    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceUserId = await resolveRunTraceOwner(
+      this.knowledgeGraph,
+      input,
+      resolvedOmadiaUserId,
+      turnOwner.originClusterUserId,
+    );
     const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
@@ -8104,9 +8118,7 @@ export class Orchestrator {
     // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity
-        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
-        : undefined);
+      channelTurnMcpUserKey(input, turnOwner);
 
     const streamFloorFields = this.audienceFloorFor(input, parent, runTraceUserId);
     const context: TurnContextValue = {

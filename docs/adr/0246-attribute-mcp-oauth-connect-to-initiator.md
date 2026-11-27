@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Related:** #1951, [ADR-0100](0100-admin-audit-trail-one-actor-rule.md),

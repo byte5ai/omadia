@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (Welle 5, W02; decision after the recheck recommendation, reversible)
@@ -46,7 +46,9 @@ making an account delete silently destructive.
 - **Owner erasure**: the `aclOwner` purge filter now means "erase this owner": entries they own
   alone are deleted with their excerpts; shared entries lose them, one `memory_acl_audit`
   `shrink` row each, actor = the operator's omadia user id (else the nil-UUID system actor of
-  ADR-0185). Counts report deleted, de-owned and excerpts separately.
+  ADR-0185). Counts report deleted, de-owned and excerpts separately. The owner is every id of
+  the person, as for turns: the omadia user id plus each channel identity's `<kind>:<id>` and
+  AAD object id, which Teams auto-promotion writes as owner (#2279).
 - **Beyond memory**, only for a resolved person: datasets they own (deleted on their behalf),
   processes they created (new `processes.created_by_omadia_user_id`, stamped by
   `write_process` from the turn; the bounded service never lets a plugin choose it), and their

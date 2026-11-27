@@ -93,9 +93,30 @@ ENV PLUGIN_MANIFEST_DIR=/app/plugin-manifests
 # chown step. ~2 MB, single static binary.
 # `zip` is required by the boilerplate's scripts/build-zip.mjs which the
 # Builder pipeline spawns to package generated agents.
+# `sudo` is the stdio MCP user switch (#2306 / ADR-0270), see below.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends gosu zip \
+ && apt-get install -y --no-install-recommends gosu zip sudo \
  && rm -rf /var/lib/apt/lists/*
+
+# stdio MCP servers (#2306 / ADR-0270) run as their own system user, never as
+# `node`: a different UID cannot read the middleware's /proc/<pid>/environ
+# (VAULT_KEY, DATABASE_URL, provider keys) nor the 0700 /data. The sudoers rule
+# lets `node` start any command as `omadia-mcp` only (no root, no password);
+# SETENV is what lets `sudo -E` hand the row's config env over through execve
+# instead of argv. `runcwd=~` starts the child in its own writable home (npx
+# cache). `!use_pty`: the MCP stdio pipes must stay pipes.
+# `/home/node` is closed too (defense in depth: npm cache, CLI state of the
+# middleware user).
+RUN useradd --system --user-group --create-home --home-dir /home/omadia-mcp \
+      --shell /usr/sbin/nologin omadia-mcp \
+ && chmod 0700 /home/omadia-mcp /home/node \
+ && printf '%s\n' \
+      'Defaults:node !use_pty, !lecture, runcwd=~' \
+      'node ALL=(omadia-mcp) NOPASSWD:SETENV: ALL' \
+      > /etc/sudoers.d/omadia-mcp \
+ && chmod 0440 /etc/sudoers.d/omadia-mcp \
+ && visudo -c -q
+ENV MCP_STDIO_RUN_AS=omadia-mcp
 
 # Subscription-CLI backends (#309): optionally bundle the official Claude CLI so
 # a single-operator self-host can run agents on a subscription (Claude Pro/Max)
@@ -206,7 +227,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Also create an empty /app/skills so SKILLS_DIR points at an existing dir
 # even when the deployment ships no domain skill bundles. (No /data/memory —
 # memory is Postgres- or RAM-backed, there is no on-disk memory store.)
-RUN mkdir -p /data /app/skills && chown -R node:node /data /app
+# /data is 0700 (#2306): only `node` reads platform state, not a stdio child.
+RUN mkdir -p /data /app/skills && chown -R node:node /data /app && chmod 0700 /data
 
 EXPOSE 8080
 

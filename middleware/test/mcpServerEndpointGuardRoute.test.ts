@@ -64,6 +64,7 @@ interface Harness {
 async function makeHarness(
   opts: {
     stdioEnabled?: boolean;
+    stdioIsolation?: AgentBuilderRouterOptions['mcpStdioIsolation'];
     rows?: ReadonlyArray<Record<string, unknown>>;
     registries?: ReadonlyArray<Record<string, unknown>>;
   } = {},
@@ -97,6 +98,7 @@ async function makeHarness(
     getGraphStore: () => graph as never,
     getRegistry: () => undefined,
     ...(opts.stdioEnabled !== undefined ? { mcpStdioEnabled: opts.stdioEnabled } : {}),
+    ...(opts.stdioIsolation ? { mcpStdioIsolation: opts.stdioIsolation } : {}),
     auditMcpStdioServerSaved: (entry) => {
       audits.push({ ...entry });
       return Promise.resolve();
@@ -226,6 +228,25 @@ describe('MCP outbound host guard + stdio switch — routes (#1341 / #1342)', ()
       endpoint: 'https://{tenant}.example.com/mcp',
     });
     assert.equal(res.status, 200);
+  });
+
+  it('GET /mcp-servers reports stdioIsolated and a failing probe as stdioIsolationError (#2306)', async () => {
+    h = await makeHarness();
+    let body = (await (await fetch(`${h.baseUrl}/mcp-servers`)).json()) as Record<string, unknown>;
+    assert.equal(body['stdioIsolated'], false);
+    assert.equal('stdioIsolationError' in body, false);
+    await h.close();
+    h = await makeHarness({
+      stdioIsolation: { runAsUser: 'omadia-mcp', probe: () => Promise.resolve('sudo: unknown user omadia-mcp') },
+    });
+    body = (await (await fetch(`${h.baseUrl}/mcp-servers`)).json()) as Record<string, unknown>;
+    assert.equal(body['stdioIsolated'], true);
+    assert.equal(body['stdioIsolationError'], 'sudo: unknown user omadia-mcp');
+    await h.close();
+    h = await makeHarness({ stdioIsolation: { runAsUser: 'omadia-mcp', probe: () => Promise.resolve(null) } });
+    body = (await (await fetch(`${h.baseUrl}/mcp-servers`)).json()) as Record<string, unknown>;
+    assert.equal(body['stdioIsolated'], true);
+    assert.equal('stdioIsolationError' in body, false);
   });
 
   it('POST /mcp-servers refuses stdio with 400 stdio_disabled when MCP_STDIO_ENABLED=false', async () => {

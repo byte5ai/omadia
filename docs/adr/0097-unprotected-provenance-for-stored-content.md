@@ -45,7 +45,8 @@ unprotected).
   passes `excludeUnprotected` (#1507).
 - **Derived memory.** A `MemorableKnowledge` stamped `unprotected` or linked `DERIVED_FROM`
   an unprotected Turn is skipped by the memory, excerpt and durable recall legs; a plan
-  whose Turn is unknown is dropped (#1536).
+  whose Turn is unknown is dropped (#1536). A memory derived from an unprotected Turn is
+  stamped at write time, so the mark survives the Turn's deletion (#2278).
 - **Notes.** A note the `memory` tool writes in an unprotected turn carries the line
   `<!-- omadia:unprotected -->` (`noteProvenance.ts`); the namespacers refuse it to a turn
   with a handle. Delete, rename and overwrite still work.

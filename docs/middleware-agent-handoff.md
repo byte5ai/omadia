@@ -2625,7 +2625,9 @@ unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_chan
 
 **Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
 liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
-Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0116,
+Formular und beim Katalog-Connect), `stdioIsolated` (#2306: `MCP_STDIO_RUN_AS` gesetzt; die
+stdio-Hinweise in Formular und Katalog richten sich danach) und bei gescheiterter Probe
+`stdioIsolationError` (Grund) und pro Server `lastScanAt`/`lastScanError` (Migration 0116,
 geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
 `POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
 `transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`
@@ -5762,6 +5764,7 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 | Variable | Wirkung |
 |---|---|
 | `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Der Compose-Stack setzt `false` (`middleware/compose.defaults.env`, ADR-0211, #1914): ein stdio-Kind läuft unter dem Middleware-User und kann `/proc/1/environ` (`VAULT_KEY`, `DATABASE_URL`) und `/data` lesen. Wieder einschalten mit `MCP_STDIO_ENABLED=true` in `middleware/.env`. |
+| `MCP_STDIO_RUN_AS` | Optional, POSIX-Benutzername (#2306, ADR-0270). Jedes stdio-MCP-Kind startet über `sudo -n -E -H -u <user> --`; das Image setzt `omadia-mcp`, legt den System-User an und liefert die sudoers-Regel (`node ALL=(omadia-mcp) NOPASSWD:SETENV: ALL`, `!use_pty`, `runcwd=~`). Das Kind läuft unter eigener UID: kein Lesen von `/proc/1/environ` (`VAULT_KEY`, `DATABASE_URL`, Provider-Keys) und kein Zugriff auf `/data` (Entrypoint setzt `0700`). Gesetzt und der Wechsel klappt nicht (Probe `sudo … -- true`, Erfolg gecacht, Fehler 30 s): Connect wird mit `code: stdio_isolation_unavailable` abgewiesen (Discover → 502 `mcp_discover_failed`), kein Prozess, kein Fallback. Ungesetzt (from-source, Desktop): Kind läuft unter dem Middleware-User. Die Env des Kinds ist immer bereinigt: SDK-Basis + `LANG`/`LC_ALL`/`LC_CTYPE`/`TZ` + Config-Env der Zeile (`stdioLaunch`). Ein `/bin/sh`-Shim setzt `umask 077` und pro Server einen eigenen npm-Cache (`$HOME/.npm-cache/<sha256(id)[:16]>`). Alle stdio-Server teilen den einen User und können gegenseitig ihre Config-Werte lesen (Restrisiko ADR-0270). Netz und CPU teilt das Kind weiter mit der Middleware. `GET /mcp-servers` meldet `stdioIsolationError`, wenn die Probe scheitert. |
 | `REGISTRY_URLS` | JSON-Liste `[{name,url,token?}]` der Plugin-Registries (Hub-Quellen). Wird **nur beim ersten Boot** gelesen (#1483): `seedRegistriesOnFirstBoot` schreibt die Liste nach `platform_settings` → `registry.list`; danach verwaltet Admin · Registries sie, und eine geleerte Liste bleibt über Neustarts leer. Ungesetzt → `hub.omadia.ai`; `'[]'` → Instanz ohne Registry (ZIP-Upload geht weiter). DB-loser Boot seedet weiterhin bei jedem Start. |
 | `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
@@ -7027,7 +7030,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 - **MCP Welle 6 — Reste (2026-11-27):** #2312 Per-User-OAuth-Connect für Kanal-Nutzer ohne
   omadia-Login (braucht Kanal-Flow + Owner-Entscheidung zum Link-Risiko, ADR-0175); MCP-Bilder
-  auch für Sub-Agenten/CLI/Public MCP (ADR-0272); stdio-Kinder teilen einen OS-User (ADR-0270, kommt mit PR #2322).
+  auch für Sub-Agenten/CLI/Public MCP (ADR-0272); stdio-Kinder teilen einen OS-User (ADR-0270).
+- **Kanal-Konto-Links (W35, ADR-0280) — Reste (#2324):** Origin-Kanaltyp pro Plugin prüfen statt Adapter-Attestierung; Deaktivieren eines Kontos entknüpft seine
+  Kanal-Identitäten nicht (Turns laufen bis zum Unlink weiter als Konto-Cluster); Slack, Discord
+  und WhatsApp sollten `CoreApi.channelIdentityLinks` statt reiner Allow-Listen nutzen;
+  Cross-Channel-Memory (`docs/cross-channel-memory.md`) entscheidet, ob ein verknüpftes Konto die
+  Memory-Tiers des Web-Kontos sieht.
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
   pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
@@ -12027,6 +12035,27 @@ Ersetzt den Platzhalter aus #2007.
   `StepEffects`-Implementierung muss `meta.preview` selbst beachten. Der
   stabile System-Prompt beschreibt die Tools weiter, nur der per-Turn-Hint
   widerspricht ihm.
+
+## Welle 6 · W35: Kanal-Konto an omadia-Konto binden (#1995, ADR-0225, ADR-0280, 2026-11-27)
+
+- **`CoreApi.channelIdentityLinks`** (channel-sdk 0.3.19, optional, feature-detected;
+  Kernel: `src/channels/channelIdentityLinks.ts`, gebunden pro Plugin in `scopedCoreApi.ts`):
+  `listLinkableAccounts(cookie)` (aktive `users`), `offerLink(cookie, {channelType, userId})`
+  (Einmal-Angebot im Speicher, ≤ 15 min, Akteur = Operator aus dem Cookie),
+  `redeemLink({channelType, channelUserId, offerId})` (Kanal löst mit dem vom Plattform-Update
+  bestätigten Absender ein), `linkOf`, `unlink(cookie, …)`. `channelUserId` ist immer die
+  `ChatTurnInput.userId` der Turns (Telegram `telegram:<id>`). Fehlergründe `no_session`,
+  `unknown_user`, `unsupported_channel`, `unknown_offer`, `not_linked`, `unavailable`.
+  Audit `channel_identity.link`/`.unlink` vor der Graph-Änderung; ohne Audit-Store kein Angebot.
+- **KG:** `linkChannelIdentity` (plugin-api 1.107.0, kernel-only, beide Backends) hängt die
+  `ChannelIdentity` an den Cluster von `web:<users.id>` und setzt `linkedUserId/linkedBy/linkedAt`;
+  Unlink → frischer 1:1-Cluster. `resolveOrCreateChannelIdentity` liefert `linkedUserId`.
+- **Turn:** `resolveTurnOwnerIdentity` löst den über `origin` genannten Absender eines
+  Plugin-Kanal-Turns einmal auf; nur verknüpft laufen `resolvedOmadiaUserId`, Principal und
+  `mcpUserKey` (`channelTurnMcpUserKey`) auf dem Konto-Cluster. Run-Trace-Owner nutzt dieselbe
+  Auflösung (`originClusterUserId`).
+- **Offen:** deaktiviertes Konto entknüpft nicht automatisch (ADR-0280, akzeptiert); Slack/Discord/
+  WhatsApp nutzen die Fähigkeit noch nicht (§13).
 
 ## Welle 5 · W15-17: Kanal-Seams, Antwortsprache, Fast-Lane-Übergabe (2026-11-26)
 
