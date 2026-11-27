@@ -98,6 +98,9 @@ export interface NativeToolRegistration {
    *  (`ToolRegistrationOptions.piiFields`), handed to the Privacy Shield with
    *  every interned result of this tool. */
   readonly piiFields?: readonly ToolPIIField[];
+  /** #2338 / ADR-0299 — the effect the plugin declared at registration
+   *  (`ToolRegistrationOptions.sideEffects`); wins over the manifest. */
+  readonly sideEffects?: 'read' | 'write' | 'none';
   /**
    * #1346 — per-turn availability (`ToolRegistrationOptions.isAvailable`).
    * Read through {@link isOfferedThisTurn}, never directly. Absent ⇒ offered.
@@ -158,6 +161,8 @@ export interface NativeToolRegistrationOptions {
   writeCapabilities?: readonly WriteCapability[];
   /** Spec 2042 §5.10 — see `NativeToolRegistration.piiFields`. */
   piiFields?: readonly ToolPIIField[];
+  /** #2338 — see `NativeToolRegistration.sideEffects`. */
+  sideEffects?: 'read' | 'write' | 'none';
   /** #1346 — see `NativeToolRegistration.isAvailable`. */
   isAvailable?: () => boolean;
 }
@@ -186,6 +191,8 @@ export interface NativeToolHandlerRegistrationOptions {
   writeCapabilities?: readonly WriteCapability[];
   /** Spec 2042 §5.10 — see `NativeToolRegistration.piiFields`. */
   piiFields?: readonly ToolPIIField[];
+  /** #2338 — see `NativeToolRegistration.sideEffects`. */
+  sideEffects?: 'read' | 'write' | 'none';
   /** #1346 — see `NativeToolRegistration.isAvailable`. Gates the promptDoc
    *  on this path (there is no spec to hide). */
   isAvailable?: () => boolean;
@@ -235,6 +242,7 @@ export class NativeToolRegistry {
             ? { writeCapabilities: options.writeCapabilities }
             : {}),
           ...(options.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
+          ...(options.sideEffects !== undefined ? { sideEffects: options.sideEffects } : {}),
           ...(options.isAvailable !== undefined
             ? { isAvailable: options.isAvailable }
             : {}),
@@ -281,6 +289,7 @@ export class NativeToolRegistry {
         ? { writeCapabilities: options.writeCapabilities }
         : {}),
       ...(options.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
+      ...(options.sideEffects !== undefined ? { sideEffects: options.sideEffects } : {}),
       ...(options.isAvailable !== undefined
         ? { isAvailable: options.isAvailable }
         : {}),

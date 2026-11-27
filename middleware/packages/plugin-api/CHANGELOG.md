@@ -8,6 +8,18 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.111.0 — 2026-11-27
+
+Additive.
+
+### Added
+
+- **`ToolRegistrationOptions.sideEffects?`** (`'read' | 'write' | 'none'`; ADR-0299, #2338): what calling
+  the tool does to its system, decided at activation, for a tool whose effect depends on the instance's
+  configuration. Wins over the manifest's `capabilities[].side_effects` for that tool; a declared
+  `writeCapabilities` still counts as `write`. Diagrams declares `none` only while its Kroki renderer is
+  internal.
+
 ## 1.110.0 — 2026-11-27
 
 Additive.

@@ -188,6 +188,32 @@ changelog.
   failed image load or on a click after expiry; a refusal shows a localized notice (en + de).
   Teams cards and other channels keep expiring links.
 
+### Fixed — Office export in a web chat, false self-correction after a masked replay (W32 follow-up) (2026-11-27)
+
+- **#2338 — Office is no integration egress (ADR-0298).** `create_xlsx` and `create_docx`
+  declared no tool effect, so the discretion integration egress checked them like a write. A web
+  chat turn that carried any label from another conversation of the same person (recall, memory)
+  refused every export with `integration_undeclared`; Telegram turns without such a label worked.
+  The Office manifest now declares `capabilities[].side_effects: "none"`: Office renders
+  in-process, and the file reaches the person only with the answer, which the people egress
+  checks. Every other undeclared tool is still checked like a write.
+- **#2338 — Diagrams follows its Kroki endpoint (ADR-0299, owner decision).** `render_diagram`
+  sends its source, chart data included, to `kroki_base_url`. An internal renderer (loopback,
+  private address, `.internal`/`.flycast`/compose name, or the new setup field `kroki_internal`)
+  counts as a reader inside the instance, and the tool declares `none` through the new
+  `ToolRegistrationOptions.sideEffects` (plugin-api 1.111.0, Diagrams 0.2.6). `kroki.io` and other
+  external endpoints keep the write-like check, so a turn with another conversation's label renders
+  no diagram there. The boot line says `kroki=… internal|external`. Known gap: a withheld
+  streamed answer leaves the tool outputs (the signed link included) in the client's tool trace
+  (#2342).
+- **#2341 — a masked replayed answer comes with a kernel note.** A channel replays the agent's own
+  earlier answer in `priorTurns`; it reaches the model masked (ADR-0095), so names the agent wrote
+  (here: historical persons, detected by C1) come back as pseudonyms, and the model "corrected" a
+  correct earlier answer in an unrelated turn. When a replayed answer or the recalled chat context
+  crossed the wire with masked spans, the turn's system hint (and on the CLI path a
+  `System Hint` line) now says that placeholders in earlier answers are the shield's and must not
+  be corrected (`replayedAnswerNote.ts`). The note is data-free; the masking itself is unchanged.
+
 ### Fixed — CI middleware job no longer cancelled at 25 minutes (2026-11-27)
 
 - The `middleware (lint + typecheck + test)` job ran 17–21 minutes after the memory-ACL suites of

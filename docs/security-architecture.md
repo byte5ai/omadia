@@ -1271,7 +1271,7 @@ of the turn carries all of it.
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b) | `guardIntegrationEgress`, before the call runs |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b). A tool whose input and output leave the instance only with the answer (Office `create_xlsx`/`create_docx`) declares `none`: the answer's people egress gates its file (#2338, ADR-0298). Diagrams declares its effect at activation (`ToolRegistrationOptions.sideEffects`, ADR-0299): `none` only while its Kroki endpoint is internal (private address or name, or the setup field `kroki_internal`; never `kroki.io`), else checked like a write, since the source and chart data go to Kroki. Gap: a withheld streamed answer leaves the tool outputs in the client's trace (#2342) | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
 at disclosure level `none` a consultation is regenerated without memory and without
@@ -2601,7 +2601,11 @@ requests, and only there, the shield acts on four kinds of text:
   earlier context (`maskedContextSpans`, #1541) and never as masked in the
   user's message. It fails closed like prompt masking (below): a
   failing C1 falls back to C0, and a detection failure or a surviving value
-  blocks the turn (`PromptMaskBlockedError`).
+  blocks the turn (`PromptMaskBlockedError`). When a replayed answer (or the
+  recalled chat context) crossed the wire with masked spans, the turn gets a
+  data-free kernel note that placeholders in its earlier answers are the
+  shield's and are no reason to correct them (#2341,
+  `replayedAnswerNote.ts`, CLI path included).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
   upload, the user messages a channel replays in `priorTurns`, live steering text

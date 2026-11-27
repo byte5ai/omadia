@@ -150,6 +150,15 @@ setup:
         de: "Tigris Secret Access Key"
       required: true
 
+# #2338 (ADR-0298) — what the tools do to their system: the file goes only into
+# this turn's answer, so the answer's people egress decides who gets it, not the
+# integration egress (an undeclared tool is checked like a write).
+capabilities:
+  - id: "create_xlsx"
+    side_effects: "none"
+  - id: "create_docx"
+    side_effects: "none"
+
 playbook:
   when_to_use: |
     Datei-Erzeugung on-demand: Excel-Tabellen (.xlsx) und Word-Dokumente

@@ -64,6 +64,7 @@ import {
   callerPrivacyTools,
   withCallerPrivacyDispatch,
 } from './cliCallerPrivacy.js';
+import { REPLAYED_ANSWER_MASKED_NOTE } from './replayedAnswerNote.js';
 import {
   OMADIA_MCP_SERVER_NAME,
   OMADIA_MCP_TOOL_PREFIX,
@@ -1228,6 +1229,8 @@ async function raceRecallDeadline<T>(
 interface ResolvedCliHistory {
   readonly turns: readonly CliPriorTurn[];
   readonly available: boolean;
+  /** #2341 — a replayed answer reaches the child with masked spans. */
+  readonly answersMasked?: boolean;
 }
 
 /** #2303 — the outputs a CLI turn's tools produced, for the `done` event. */
@@ -1800,6 +1803,8 @@ export class CliChatAgent implements ChatAgent {
     input: ChatTurnInput,
     priorTurns: readonly CliPriorTurn[],
     recalledContext?: string,
+    /** #2341 — a replayed answer or the recall was masked: say why its names look different. */
+    replayMasked = false,
   ): string {
     const lines: string[] = [];
 
@@ -1836,6 +1841,11 @@ export class CliChatAgent implements ChatAgent {
     // data-free note only, the fast lane's raw output stays out of the prompt.
     if (input.fastLaneCall !== undefined) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(fastLaneCliHint(input.fastLaneCall))}`);
+    }
+
+    // #2341 — kernel prose, data-free (`replayedAnswerNote.ts`).
+    if (replayMasked) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(REPLAYED_ANSWER_MASKED_NOTE)}`);
     }
 
     // #2317 (ADR-0278) — the conversation's data block (routine deliveries).
@@ -2003,6 +2013,7 @@ export class CliChatAgent implements ChatAgent {
     }
 
     const masked: CliPriorTurn[] = [];
+    let answersMasked = false;
     try {
       for (const turn of usable) {
         const userMessage = await maskReplayedText(privacy, turn.userMessage);
@@ -2013,6 +2024,7 @@ export class CliChatAgent implements ChatAgent {
           );
           return { turns: [], available: false };
         }
+        if (assistantAnswer !== turn.assistantAnswer) answersMasked = true;
         masked.push({ userMessage, assistantAnswer });
       }
     } catch (error) {
@@ -2024,7 +2036,7 @@ export class CliChatAgent implements ChatAgent {
       });
       return { turns: [], available: false };
     }
-    return { turns: masked, available };
+    return { turns: masked, available, answersMasked };
   }
 
   /**
@@ -2493,7 +2505,9 @@ export class CliChatAgent implements ChatAgent {
 
       // We send one fully composed plain-text prompt so the child process stays stateless and
       // deterministic for tests; replaying prior turns here mirrors the CLI's single-shot mode.
-      child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled));
+      // #2341 — a masked replayed answer or a masked recall block gets the note.
+      const replayMasked = history.answersMasked === true || wireRecalled !== recalled.text;
+      child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled, replayMasked));
 
       while (true) {
         while (lineQueue.length > 0) {

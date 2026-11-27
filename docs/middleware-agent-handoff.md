@@ -11810,7 +11810,16 @@ Leserkreis, Offenlegungsstufe).
     `writeCapabilities` (#542) oder MCP ohne `readOnlyHint` (gegen alle Labels
     geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, seit dem
     Contract-Schritt (S3b) wie `write` gegen alle Labels geprüft. Der Kern liefert die Deklaration über
-    `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen);
+    `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen).
+    Ein Tool, dessen Ein- und Ausgabe die Instanz nur mit der Antwort verlassen (Office
+    `create_xlsx`/`create_docx`), deklariert `none`; seine Datei prüft der Antwort-Ausgang
+    unten mit (#2338, ADR-0298). Diagrams deklariert beim Aktivieren
+    (`ToolRegistrationOptions.sideEffects`, ADR-0299): `none` nur bei internem Kroki
+    (private Adresse oder Name, `.flycast`/`.internal`/Compose-Name, oder Setup-Feld
+    `kroki_internal`; `kroki.io` nie), sonst wie `write`, denn Quelle und Chart-Daten gehen
+    an Kroki.
+    Offen: eine zurückgehaltene gestreamte Antwort lässt die Tool-Ausgaben (samt
+    signiertem Link) im Tool-Trace des Clients (#2342);
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
     Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile

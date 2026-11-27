@@ -2662,6 +2662,7 @@ readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
 readonly piiFields?: readonly ToolPIIField[];
+readonly sideEffects?: 'read' | 'write' | 'none';
 readonly isAvailable?: () => boolean;
 }
 export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
