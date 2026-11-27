@@ -25,7 +25,7 @@ import { columnsOf, createDataActionRunner, extractRows, toTableData } from '../
 import { createKernelExecutors, NOTHING_TO_SAY, triggerTurnHint } from '../src/triggers/kernelExecutors.js';
 import { parseQuietHours, quietUntil, recipientKey } from '../src/triggers/proactiveGate.js';
 import type { TriggerStore } from '../src/triggers/triggerStore.js';
-import { conversationIdOf } from '../src/triggers/triggerTools.js';
+import { conversationIdOf, triggerSummary } from '../src/triggers/triggerTools.js';
 import type { Trigger } from '../src/triggers/types.js';
 
 const trigger = (over: Partial<Trigger> = {}): Trigger => ({
@@ -328,5 +328,20 @@ describe('#2082 routine owner messages', () => {
     assert.match(routineTexts.renewal(routineLang(undefined), 'Bericht', until, 'UTC'), /läuft am 20\.12\.2026, 23:30 aus/);
     assert.equal(routineTexts.paused('en', 'budget'), 'The routine was paused: its budget is used up.');
     assert.equal(routineTexts.paused('de', 'something new'), 'Die Routine wurde angehalten.');
+  });
+});
+
+describe('#2339 trigger confirmation', () => {
+  it('names the firing time in the trigger zone, so the agent can tell the person when it fires', () => {
+    const s = triggerSummary(trigger({ kind: 'wake_at', intervalSeconds: null, fireAt: new Date('2026-11-27T10:48:00Z'), timezone: 'Europe/Berlin' }));
+    assert.equal(s['at'], '2026-11-27T10:48:00.000Z');
+    assert.equal(s['atLocal'], '2026-11-27 11:48 (Europe/Berlin)');
+    assert.equal(s['timezone'], 'Europe/Berlin');
+  });
+
+  it('a trigger without zone reads UTC', () => {
+    const s = triggerSummary(trigger({ kind: 'wake_at', intervalSeconds: null, fireAt: new Date('2026-11-27T10:48:00Z') }));
+    assert.equal(s['atLocal'], '2026-11-27 10:48 (UTC)');
+    assert.equal(s['timezone'], 'UTC');
   });
 });

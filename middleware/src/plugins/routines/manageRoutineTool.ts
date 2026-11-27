@@ -8,12 +8,13 @@ import { turnContext } from '@omadia/orchestrator';
 import { z } from 'zod';
 
 import { formatInTimeZone, nextCronRun, resolveTimeZone, UTC_ZONE } from '../../scheduler/zonedCron.js';
-import { DEFAULT_ROUTINE_TIMEOUT_MS, MIN_ROUTINE_TIMEOUT_MS } from './routineRunControl.js';
+import { DEFAULT_ROUTINE_TIMEOUT_MS, MIN_ROUTINE_TIMEOUT_MS, RoutineRunInProgressError } from './routineRunControl.js';
 import {
   RoutineNameConflictError,
   type Routine,
 } from './routineStore.js';
 import {
+  RoutineNotActiveError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,
@@ -56,7 +57,7 @@ export const ROUTINE_NO_CONTEXT_ERROR =
   'created, listed or changed from here. The Routines page can view, pause ' +
   'or delete existing routines.';
 
-const ActionSchema = z.enum(['create', 'list', 'pause', 'resume', 'renew', 'delete']);
+const ActionSchema = z.enum(['create', 'list', 'pause', 'resume', 'renew', 'delete', 'run_now']);
 const ListFilterSchema = z.enum(['all', 'active', 'paused']);
 
 const ManageRoutineInputSchema = z.object({
@@ -137,7 +138,8 @@ export const manageRoutineToolSpec = {
     '**Aktionen:**\n' +
     '- `create` — neue Routine. Pflicht: `name` (eindeutig pro User), `cron` (5-Feld: Min Std DOM Mon DOW), `prompt` (was der Agent zur Trigger-Zeit ausführen soll). Optional: `timeoutMs` (Default 10 min = 600000). Eine Routine schreibt immer in die aktuelle Unterhaltung des Users.\n' +
     '- `list` — alle Routinen des aktuellen Users (aktiv + pausiert).\n' +
-    '- `pause` / `resume` / `renew` / `delete` — Pflicht: `id` aus einer vorigen `list`-Antwort. `renew` verlängert eine Routine um einen weiteren Zeitraum (wenn der User das auf die Nachfrage vor dem Ablauf wünscht).\n\n' +
+    '- `pause` / `resume` / `renew` / `delete` — Pflicht: `id` aus einer vorigen `list`-Antwort. `renew` verlängert eine Routine um einen weiteren Zeitraum (wenn der User das auf die Nachfrage vor dem Ablauf wünscht).\n' +
+    '- `run_now` — Pflicht: `id`. Führt die Routine jetzt einmal aus (ihr eigener Prompt, wie ein geplanter Lauf); das Ergebnis kommt als Zustellung in ihre Unterhaltung. Nutze das bei „führe die Routine jetzt aus“, statt einen Wecker zu stellen oder ihre Arbeit selbst nachzubauen. Abgelehnt, solange ein Lauf noch läuft oder die Routine pausiert ist.\n\n' +
     '**Laufzeit:** Jede Routine läuft bis zu ihrer Frist (`until`, Standard 30 Tage). Vor dem Ablauf fragt der Kernel den User, ob sie weiterlaufen soll; danach ist sie pausiert, bis sie fortgesetzt oder verlängert wird.\n\n' +
     '**Cron-Regeln:**\n' +
     '- Standard 5-Feld-Format nur mit Zahlen, `*`, `,`, `-`, `/`. Beispiele: `0 9 * * 1` (Montag 9:00), `*/30 * * * *` (alle 30min), `0 8 1 * *` (Monatlich am 1.). Nicht erlaubt: `@daily` u.ä., `?`, `L`/`W`/`#`, Wochentags-/Monatsnamen, Muster, die nie oder nur einmal feuern.\n' +
@@ -151,7 +153,7 @@ export const manageRoutineToolSpec = {
     properties: {
       action: {
         type: 'string',
-        enum: ['create', 'list', 'pause', 'resume', 'renew', 'delete'],
+        enum: ['create', 'list', 'pause', 'resume', 'renew', 'delete', 'run_now'],
         description: 'Welche Operation auf die Routinen ausgeführt wird.',
       },
       name: {
@@ -172,7 +174,7 @@ export const manageRoutineToolSpec = {
       id: {
         type: 'string',
         description:
-          'UUID einer existierenden Routine. Pflicht bei `pause`, `resume`, `delete`.',
+          'UUID einer existierenden Routine. Pflicht bei `pause`, `resume`, `renew`, `delete`, `run_now`.',
       },
       timeoutMs: {
         type: 'integer',
@@ -253,6 +255,8 @@ export class ManageRoutineTool {
           return await this.handleRenew(args);
         case 'delete':
           return await this.handleDelete(args);
+        case 'run_now':
+          return await this.handleRunNow(args);
       }
     } catch (err) {
       return formatError(err);
@@ -391,6 +395,23 @@ export class ManageRoutineTool {
     });
   }
 
+  /**
+   * #2339 — run a routine's prompt once now, like the trigger route: refused
+   * at once while a run is in flight or the routine cannot run; the result
+   * arrives in the routine's conversation like a scheduled run's.
+   */
+  private async handleRunNow(args: ManageRoutineInput): Promise<string> {
+    if (!args.id) return 'Error: `run_now` requires `id`.';
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const routine = await this.runner.startManualRun(args.id, actorScope(ctx));
+    return JSON.stringify({
+      action: 'run_started',
+      routine: this.summarise(routine),
+      note: 'The run delivers its answer into the routine\'s conversation when it finishes; do not repeat its work here.',
+    });
+  }
+
   private async handleDelete(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `delete` requires `id`.';
     const ctx = this.resolveContext();
@@ -486,6 +507,10 @@ function formatError(err: unknown): string {
     return `Error: ${err.message}`;
   }
   if (err instanceof RoutineNotFoundError) {
+    return `Error: ${err.message}`;
+  }
+  // #2339 — `run_now` refusals: paused, or a run already in flight.
+  if (err instanceof RoutineNotActiveError || err instanceof RoutineRunInProgressError) {
     return `Error: ${err.message}`;
   }
   if (err instanceof UnknownChannelError) {

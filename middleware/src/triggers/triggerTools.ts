@@ -13,6 +13,7 @@ import { checkFlow, fieldClassesFromList } from '@omadia/orchestrator';
 
 import type { NativeToolSpec } from '@omadia/plugin-api';
 
+import { formatInTimeZone, UTC_ZONE } from '../scheduler/zonedCron.js';
 import { conversationIdOf, type RecipientGrant } from './recipientGrants.js';
 import type { TriggerEnvelope } from './triggerPolicy.js';
 import type { CreateTriggerResult, TriggerService } from './triggerService.js';
@@ -30,6 +31,8 @@ export interface TriggerToolTurn {
   readonly userId: string;
   readonly channel: string;
   readonly conversationRef: unknown;
+  /** #2339 — the person's zone, else the instance's: a trigger's default zone. */
+  readonly timezone?: string;
   /** The conversation's discretion as this turn has it (INV-9): its context
    *  key and everything the turn read. Null outside a labelled turn. */
   readonly discretion: () => Promise<TriggerDiscretion | null>;
@@ -105,7 +108,7 @@ export const triggerToolSpecs: Record<TriggerToolName, NativeToolSpec> = {
   wake_at: {
     name: 'wake_at',
     description:
-      'One-shot wakeup at a time, e.g. "three working days before month end, look at the open expense reports". Fires once, then it is gone.',
+      'One-shot wakeup at a time, e.g. "three working days before month end, look at the open expense reports". Fires once, then it is gone. The result names `atLocal`, the firing time in the person\'s zone: tell them that time. To run one of the person\'s routines now, use manage_routine `run_now` instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -124,7 +127,7 @@ export const triggerToolSpecs: Record<TriggerToolName, NativeToolSpec> = {
       properties: {
         interval: { type: 'string', description: "Interval like '5m', '1h', '1d'." },
         cron: { type: 'string', description: 'Alternative to interval: a 5-field cron pattern.' },
-        timezone: { type: 'string', description: 'IANA zone for cron, e.g. Europe/Berlin.' },
+        timezone: { type: 'string', description: "IANA zone for cron, e.g. Europe/Berlin. Default: the person's zone." },
         max_runs: { type: 'integer', minimum: 1 },
         ...COMMON,
       },
@@ -161,9 +164,10 @@ export function triggerSummary(t: Trigger): Record<string, unknown> {
     context: t.contextKind,
     until: t.until.toISOString(),
     ...(t.eventId ? { event: t.eventId } : {}),
-    ...(t.fireAt ? { at: t.fireAt.toISOString() } : {}),
+    ...(t.fireAt ? { at: t.fireAt.toISOString(), atLocal: formatInTimeZone(t.fireAt, t.timezone ?? UTC_ZONE) } : {}),
     ...(t.intervalSeconds ? { everySeconds: t.intervalSeconds } : {}),
-    ...(t.cron ? { cron: t.cron, timezone: t.timezone ?? 'UTC' } : {}),
+    ...(t.cron ? { cron: t.cron } : {}),
+    timezone: t.timezone ?? UTC_ZONE,
     runs: t.runs,
     ...(t.maxRuns !== null ? { maxRuns: t.maxRuns } : {}),
     actions: t.actions.map((a) => (a.type === 'check' ? `check:${a.check}` : a.type)),
@@ -247,6 +251,7 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
       deliveryRef: turn.conversationRef,
       discretion: await turn.discretion(),
       createdBy: `agent:${turn.agentSlug} for ${turn.tenant}/${turn.userId}`,
+      ...(turn.timezone ? { timezone: turn.timezone } : {}),
     };
     // Criterion 24 — an explicit target is one of the agent's recipient
     // grants, named by id: the conversation reference comes from the grant,

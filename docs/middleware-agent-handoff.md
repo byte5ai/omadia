@@ -12085,6 +12085,18 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   24 h, max. 3; ein anderer Agent im selben Chat sieht sie nicht);
   `wrapChatAgentWithConversationContext` (vor dem Fast-Path) füllt `conversationContextHint`.
   Keine Plugin-Änderung nötig.
+- **Trigger-Zone (#2339, ADR-0297):** Ein Agent-Trigger ohne eigene `timezone` bekommt die
+  Zone des Users aus dem Turn (`userTimeZone`), sonst `PROACTIVE_TIMEZONE`
+  (`TriggerEnvelope.timezone`, gesetzt in `wiring.ts` `currentTurn`). Darin rendern
+  `{{now}}`/`{{until}}` und läuft ein `wake_every`-Cron. Die Tool-Antwort nennt `timezone`
+  immer und bei `wake_at` `atLocal` (Feuerzeit in dieser Zone).
+- **Lesbare Trigger-Bestätigung (#2339, ADR-0297):** Die Trigger-Tools stehen in
+  `INTERN_FIELD_EXEMPT_TOOLS`: Id, Zeiten, Zustand und Kosten gehen im Klartext ans Modell;
+  `purpose`, `lastOutcome`, `pausedBecause` und Ziel-`label` werden zurückgehalten.
+- **`manage_routine` `run_now` (#2339):** `RoutineRunner.startManualRun` prüft wie
+  `POST /routines/:id/trigger` (Eigentümer, aktiv, kein Lauf in Arbeit, Agent, Chat-Agent),
+  antwortet sofort und startet den Lauf losgelöst vom fragenden Turn
+  (`AsyncResource.bind` beim Bau des Runners); das Ergebnis kommt als Zustellung.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 

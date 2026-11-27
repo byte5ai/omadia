@@ -126,11 +126,22 @@ export function isInternExemptTool(toolName: string): boolean {
  * Keep this map as narrow as {@link INTERN_EXEMPT_TOOLS}: only kernel tools
  * whose result shape the kernel itself writes.
  */
+/** #2339 — the kernel's trigger tools (`middleware/src/triggers/triggerTools.ts`). */
+const TRIGGER_TOOL_NAMES = ['on_event', 'wake_at', 'wake_every', 'list_triggers', 'cancel_trigger'] as const;
+const TRIGGER_WITHHELD_FIELDS: readonly string[] = ['purpose', 'lastOutcome', 'pausedBecause', 'label'];
+
 export const INTERN_FIELD_EXEMPT_TOOLS: ReadonlyMap<string, readonly string[]> = new Map([
   // The user's own routines: `prompt` and `lastRunError` are free text; the
   // `_pendingRoutineList` sidecar repeats prompts and is read from the raw
   // result by the smart-card path, never by the model.
   ['manage_routine', ['prompt', 'lastRunError', '_pendingRoutineList']],
+  // #2339 — the agent's own triggers (`triggerTools.ts`): id, kind, times with
+  // their zone, state, runs and cost are kernel state the model must confirm
+  // to the person ("fires at 11:48"). The purpose the model wrote (run on the
+  // restored input, so it may carry real names), the last outcome and pause
+  // reason (may quote a failed tool's error) and an operator's target label
+  // are withheld.
+  ...TRIGGER_TOOL_NAMES.map((name): [string, readonly string[]] => [name, TRIGGER_WITHHELD_FIELDS]),
 ]);
 
 /** True when a tool's result reaches the model as a projected clear copy. */

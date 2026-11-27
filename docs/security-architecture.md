@@ -3217,7 +3217,8 @@ These tool results skip the digest:
   for its `list_datasets` and `get_schema` operations
   (`INTERN_EXEMPT_OPERATIONS`, ADR-0197); `query_rows` stays interned.
 - **Field-exempt tools** (#1768, ADR 0241). `INTERN_FIELD_EXEMPT_TOOLS` (same
-  file, pinned by the same test) lists `manage_routine` only. Its JSON result
+  file, pinned by the same test) lists `manage_routine` and, since #2339, the
+  trigger tools (below). Its JSON result
   reaches the model in clear minus the keys the list names (`prompt`,
   `lastRunError`, the smart-card sidecar `_pendingRoutineList`), removed at
   every depth by `fieldExemptModelCopy`. Everything else in it is the user's
@@ -3227,6 +3228,14 @@ These tool results skip the digest:
   orchestrator and sub-agent seams re-mask echoed values (#1544);
   `ToolDispatchService` does not, like for exempt tools. The public MCP
   endpoint refuses the tool (`isPubliclyServableTool`, §ADR 0142).
+  Since #2339 (ADR-0297) the agent's trigger tools (`on_event`, `wake_at`,
+  `wake_every`, `list_triggers`, `cancel_trigger`) are field-exempt too: id,
+  kind, state, times with their zone (`atLocal`), cron, event id, action
+  types, runs and cost reach the model in clear; `purpose` (written on the
+  restored input, so it may carry real names), `lastOutcome`, `pausedBecause`
+  and a target's operator `label` are withheld. The same seam rules apply:
+  `ToolDispatchService` does not re-mask echoed values, the public MCP
+  endpoint refuses the tools.
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,

@@ -183,10 +183,35 @@ describe('privacyInternPolicy', () => {
 });
 
 describe('#1768 / ADR 0241 — field-level interning exemption', () => {
-  it('lists manage_routine only, withholding its free text', async () => {
+  it('lists manage_routine and the trigger tools (#2339), withholding their free text', async () => {
     const { INTERN_FIELD_EXEMPT_TOOLS } = await import('@omadia/orchestrator/dist/privacyInternPolicy.js');
-    assert.deepEqual([...INTERN_FIELD_EXEMPT_TOOLS.keys()], ['manage_routine']);
+    const { TRIGGER_TOOL_NAMES } = await import('../src/triggers/triggerTools.js');
+    assert.deepEqual([...INTERN_FIELD_EXEMPT_TOOLS.keys()], ['manage_routine', ...TRIGGER_TOOL_NAMES]);
     assert.equal(isInternExemptTool('manage_routine'), false, 'not exempt as a whole');
+    for (const name of TRIGGER_TOOL_NAMES) {
+      assert.equal(isInternExemptTool(name), false, `${name} is not exempt as a whole`);
+      assert.deepEqual(INTERN_FIELD_EXEMPT_TOOLS.get(name), ['purpose', 'lastOutcome', 'pausedBecause', 'label']);
+    }
+  });
+
+  it('#2339 — a trigger confirmation reaches the model readable, without its purpose', async () => {
+    const { fieldExemptModelCopy } = await import('@omadia/orchestrator/dist/privacyInternPolicy.js');
+    const raw = JSON.stringify({
+      created: {
+        id: 't1', kind: 'wake_at', purpose: 'Erinnerung für Max Mustermann', state: 'active',
+        at: '2026-11-27T10:48:00.000Z', atLocal: '2026-11-27 11:48 (Europe/Berlin)', timezone: 'Europe/Berlin',
+        lastOutcome: 'failed: max@example.com unreachable',
+      },
+    });
+    const copy = fieldExemptModelCopy('wake_at', raw);
+    assert.ok(copy);
+    const parsed = JSON.parse(copy) as { created: Record<string, unknown> };
+    assert.equal(parsed.created['id'], 't1');
+    assert.equal(parsed.created['atLocal'], '2026-11-27 11:48 (Europe/Berlin)');
+    assert.doesNotMatch(copy, /Mustermann|example\.com/);
+    const list = fieldExemptModelCopy('list_triggers', JSON.stringify({ triggers: [], targets: [{ id: 'g1', channel: 'teams', label: 'HR Team Anna' }] }));
+    assert.ok(list);
+    assert.doesNotMatch(list, /Anna/);
   });
 
   it('hands the operational state over in clear and drops prompt/lastRunError at every depth', async () => {
@@ -216,5 +241,6 @@ describe('#1768 / ADR 0241 — field-level interning exemption', () => {
   it('keeps a field-exempt tool off the public MCP endpoint (ADR 0142)', async () => {
     const { isPubliclyServableTool } = await import('../src/mcp/publicMcpPrivacy.js');
     assert.equal(isPubliclyServableTool('manage_routine'), false);
+    assert.equal(isPubliclyServableTool('wake_at'), false);
   });
 });

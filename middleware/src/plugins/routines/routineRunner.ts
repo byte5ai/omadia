@@ -1,3 +1,4 @@
+import { AsyncResource } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
 
 import type {
@@ -11,6 +12,7 @@ import { turnContext, today, webAccountOrigin } from '@omadia/orchestrator';
 import { meterUsageCost, runInExecutionContext } from '@omadia/usage-telemetry';
 import {
   SYSTEM_SPEAKER,
+  ToolRefusalError,
   type AgentSpeaker,
   type AnswerEmitter,
   type JobHandler,
@@ -380,6 +382,14 @@ export class RoutineRunner {
   private readonly disposers = new Map<string, () => void>();
   /** #1748 — one run per routine in flight, cron and manual alike. */
   private readonly inFlight = new InFlightRuns();
+  /**
+   * #2339 — runs `fn` in the context the runner was built in (boot, outside
+   * any turn), not the caller's. Build the runner outside a turn's
+   * AsyncLocalStorage scope, or its runs would inherit that scope.
+   */
+  private readonly detached = AsyncResource.bind((fn: () => void): void => {
+    fn();
+  });
   private started = false;
 
   constructor(opts: RoutineRunnerOptions) {
@@ -460,6 +470,42 @@ export class RoutineRunner {
     // Re-read so caller gets the updated last_run_* fields.
     const updated = await this.store.get(id);
     return updated ?? routine;
+  }
+
+  /**
+   * #2339 — `manage_routine` `run_now`: the trigger route's checks, answered
+   * at once (not found or not owned, not active, already running, agent
+   * gone, no chat agent), then the run starts in the background like the
+   * route's. Returns the routine the run was started for.
+   */
+  async startManualRun(id: string, scope: RoutineActorScope): Promise<Routine> {
+    const routine = await this.store.get(id);
+    if (!routine || !ownedBy(routine, scope)) throw new RoutineNotFoundError(id);
+    if (routine.status !== 'active') throw new RoutineNotActiveError(id, routine.name, routine.status);
+    const agentProblem = this.agentProblemOf(routine);
+    if (agentProblem !== undefined) throw new ToolRefusalError(agentProblem);
+    if (!this.chatAgentAvailable(routine.agentSlug ?? null)) {
+      throw new ToolRefusalError('no chat agent can run this routine right now (its orchestrator is gone or no LLM key is configured)');
+    }
+    // The run's slot is taken here, before answering: a second run_now (a
+    // parallel tool call) or a cron fire in between is refused or skipped,
+    // never told "started" for a run that then does not happen.
+    const own = this.inFlight.acquire(id);
+    if (!own) throw new RoutineRunInProgressError(id);
+    // Outside the calling turn: the run is its own unattended turn (ADR
+    // 0242), as a cron fire or the trigger route's run is, and must not
+    // inherit the asking turn's context.
+    this.detached(() => {
+      const timeout = timeoutSignal(effectiveTimeoutMs(routine.timeoutMs));
+      void this.runOnce(routine, timeout.signal, 'manual', own)
+        .catch((err: unknown) => {
+          this.log(`[routines] run_now of ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        })
+        .finally(() => {
+          timeout.clear();
+        });
+    });
+    return routine;
   }
 
   /**
@@ -825,8 +871,10 @@ export class RoutineRunner {
     routine: Routine,
     signal: AbortSignal,
     trigger: RoutineRunTrigger = 'cron',
+    /** #2339 — a slot the caller already took (`startManualRun`). */
+    held?: AbortController,
   ): Promise<void> {
-    const own = this.inFlight.acquire(routine.id);
+    const own = held ?? this.inFlight.acquire(routine.id);
     if (!own) {
       if (trigger === 'manual') throw new RoutineRunInProgressError(routine.id);
       this.log(`[routines/runner] routine ${routine.id} ('${routine.name}') still running; ${trigger} firing skipped`);

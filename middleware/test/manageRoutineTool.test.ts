@@ -7,7 +7,9 @@ import {
   ManageRoutineTool,
   type ManageRoutineContext,
 } from '../src/plugins/routines/manageRoutineTool.js';
+import { RoutineRunInProgressError } from '../src/plugins/routines/routineRunControl.js';
 import {
+  RoutineNotActiveError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,
@@ -74,6 +76,7 @@ interface StubRunnerOptions {
   pauseImpl?: (id: string) => Promise<Routine>;
   resumeImpl?: (id: string) => Promise<Routine>;
   deleteImpl?: (id: string) => Promise<boolean>;
+  runNowImpl?: (id: string) => Promise<Routine>;
 }
 
 function stubRunner(opts: StubRunnerOptions = {}): {
@@ -101,6 +104,11 @@ function stubRunner(opts: StubRunnerOptions = {}): {
       calls.push({ method: 'resumeRoutine', args: [id] });
       if (opts.resumeImpl) return opts.resumeImpl(id);
       return fakeRoutine({ id, status: 'active' });
+    },
+    async startManualRun(id: string, scope: unknown) {
+      calls.push({ method: 'startManualRun', args: [id, scope] });
+      if (opts.runNowImpl) return opts.runNowImpl(id);
+      return fakeRoutine({ id });
     },
     async deleteRoutine(id: string) {
       calls.push({ method: 'deleteRoutine', args: [id] });
@@ -494,5 +502,40 @@ describe('ManageRoutineTool — wave 5 contract (#1743 #1750 #1751 #1767)', () =
     const { manageRoutineToolSpec } = await import('../src/plugins/routines/manageRoutineTool.js');
     assert.equal('targetEmail' in manageRoutineToolSpec.input_schema.properties, false);
     assert.doesNotMatch(manageRoutineToolSpec.description, /targetEmail/);
+  });
+});
+
+describe('#2339 — manage_routine run_now', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+
+  it('starts the routine under the caller\'s scope and confirms the start', async () => {
+    const { runner, calls } = stubRunner();
+    const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
+    const out = await tool.handle({ action: 'run_now', id: ID });
+    assert.deepEqual(calls, [{ method: 'startManualRun', args: [ID, { kind: 'channel-user', tenant: TENANT, userId: USER }] }]);
+    const parsed = JSON.parse(out) as { action: string; routine: { id: string } };
+    assert.equal(parsed.action, 'run_started');
+    assert.equal(parsed.routine.id, ID);
+  });
+
+  it('needs an id and a conversation', async () => {
+    const { runner, calls } = stubRunner();
+    assert.match(await new ManageRoutineTool({ runner, resolveContext: () => ctx }).handle({ action: 'run_now' }), /^Error: `run_now` requires `id`/);
+    assert.match(await new ManageRoutineTool({ runner, resolveContext: () => undefined }).handle({ action: 'run_now', id: ID }), /^Error/);
+    assert.equal(calls.length, 0);
+  });
+
+  it('says why a run is refused: already running, paused, unknown', async () => {
+    const refusals: Array<[Error, RegExp]> = [
+      [new RoutineRunInProgressError(ID), /already running/],
+      [new RoutineNotActiveError(ID, 'demo', 'paused'), /is paused; resume it/],
+      [new RoutineNotFoundError(ID), /not found/],
+    ];
+    for (const [err, pattern] of refusals) {
+      const { runner } = stubRunner({ runNowImpl: () => Promise.reject(err) });
+      const out = await new ManageRoutineTool({ runner, resolveContext: () => ctx }).handle({ action: 'run_now', id: ID });
+      assert.match(out, /^Error: /);
+      assert.match(out, pattern);
+    }
   });
 });

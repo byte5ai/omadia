@@ -20,6 +20,7 @@ import type { AuditEntryInput } from '../auth/adminAuditLog.js';
 import { systemAuditActor } from '../auth/adminAuditLog.js';
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
 import { isOwnBotAuthor } from './ownBot.js';
+import { resolveTimeZone } from '../scheduler/zonedCron.js';
 import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
 import { WEB_ROUTINE_CHANNEL } from '../plugins/routines/webChatProactiveSender.js';
 import { createDataActionRunner, type ReadToolsOf } from './dataActions.js';
@@ -133,6 +134,8 @@ function currentTurn(deps: TriggerWiringDeps): TriggerToolTurn | undefined {
     userId: ctx.userId,
     channel: ctx.channel,
     conversationRef: ctx.conversationRef,
+    // #2339 — {{now}} and a cron read in the person's zone, like routines (ADR 0240).
+    timezone: resolveTimeZone(turnContext.current()?.userTimeZone, deps.recipientDefaults.timezone),
     discretion: async () => {
       const state = currentDiscretion();
       // No labelled turn (the claude-cli runtime): nothing was labelled.
