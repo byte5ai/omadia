@@ -211,6 +211,15 @@ export const ConfigSchema = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(true),
+  // #2306 / ADR-0270 — OS user every stdio MCP child runs as, through
+  // `sudo -n -E -H -u <user>`. The container image sets `omadia-mcp` (own UID,
+  // no access to the 0700 data directory or the middleware's /proc environ).
+  // Set: a stdio connect is refused (`stdio_isolation_unavailable`) when the
+  // switch does not work — never a silent fallback. Unset (from-source,
+  // desktop): the child runs as the middleware's user; its env is scrubbed
+  // either way. An empty value means unset.
+  // Same grammar as `MCP_STDIO_RUN_AS_PATTERN` (@omadia/orchestrator).
+  MCP_STDIO_RUN_AS: optionalNonEmpty(z.string().regex(/^[a-z_][a-z0-9_-]{0,31}$/)),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback

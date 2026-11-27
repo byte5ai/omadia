@@ -50,6 +50,28 @@ changelog.
   ADR-0289 Linear channel as a third plugin with one Linear app per agent (#1031),
   ADR-0290 credential broker as a per-agent granted capability (#778).
 
+### Security — stdio MCP servers run as their own OS user (#2306, ADR-0270) (2026-11-27)
+
+- Every stdio MCP child now gets a scrubbed environment: the SDK's safe base, `LANG`/`LC_ALL`/
+  `LC_CTYPE`/`TZ` and the row's config env, never the middleware's process env
+  (`stdioLaunch`, `packages/harness-orchestrator/src/mcp/stdioIsolation.ts`).
+- New ENV **`MCP_STDIO_RUN_AS`**: starts each child through `sudo -n -E -H -u <user> --`. The
+  image creates the system user `omadia-mcp`, installs `sudo` with a rule that lets `node` start
+  commands as that user only (`NOPASSWD:SETENV`, `!use_pty`, `runcwd=~`) and sets
+  `MCP_STDIO_RUN_AS=omadia-mcp`. The entrypoint sets `/data` to `0700` on every start. A child can
+  no longer read `/proc/<pid>/environ` of the middleware (VAULT_KEY, DATABASE_URL, …) or `/data`.
+- Fail closed: with `MCP_STDIO_RUN_AS` set, the connect guard probes the switch
+  (`sudo … -- true`); a failure refuses the connect with the new guard code
+  `stdio_isolation_unavailable` (Discover → 502), no child is started.
+- `GET /api/v1/operator/mcp-servers` reports `stdioIsolated`; the stdio hints in `/admin/mcp`
+  (form + catalog card) follow it (en + de).
+- A `/bin/sh` shim gives each stdio server its own npm cache (`$HOME/.npm-cache/<hash>`,
+  `umask 077`). All stdio servers share the one user and can read each other's config values
+  (accepted, ADR-0270). `/home/node` is `0700`; on Fly the entrypoint restricts `/.fly/api` to root
+  when present. The list route adds `stdioIsolationError` when the probe fails.
+- Compose keeps `MCP_STDIO_ENABLED=false` (ADR-0211); ADR-0211's trust model is superseded in part
+  by ADR-0270.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn
