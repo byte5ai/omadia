@@ -254,7 +254,8 @@ describe('#1096 promotion paths decline tail-only Turns in SQL', () => {
       tenantId: 't1',
       kg,
       turnId: 'turn:s:2026-09-22T08:01:00.000Z',
-      userId: 'user-1',
+      // ADR-0190 — a person (uuid); a non-person owner stops before any query.
+      userId: '12345678-1234-4234-8234-123456789abc',
       threshold: 0.4,
       fallbackAssistantAnswer: 'ok',
       log: () => {},

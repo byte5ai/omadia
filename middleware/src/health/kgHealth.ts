@@ -179,6 +179,13 @@ export async function probeGraphPool(
  * client counts as off and gets its own warning. `undefined` keeps the
  * registry-only projection (callers that have no service registry at hand).
  */
+/**
+ * #1822 — what recall without vectors means for a user: the full-text leg
+ * matches a stored turn only on a shared content word.
+ */
+const KEYWORD_ONLY_RECALL =
+  'recall from earlier chats is keyword-only and finds a stored fact only when the question shares one of its words (a paraphrase finds nothing)';
+
 export function buildKgHealth(
   registry: InstalledRegistry,
   gate?: EmbeddingGateStatus,
@@ -254,7 +261,7 @@ export function buildKgHealth(
         ? describeMissingClient(registry)
         : providerConfigured && gateBlocked
         ? describeGateBlock(gate)
-        : 'embeddings disabled: semantic recall, the durable tier and process-reuse are all inactive (FTS-only) — set OLLAMA_BASE_URL / enable the embeddings overlay, or install an alternative embeddingClient provider',
+        : `embeddings disabled: semantic recall, the durable tier and process-reuse are all inactive — ${KEYWORD_ONLY_RECALL}; set OLLAMA_BASE_URL / enable the embeddings overlay, or install an alternative embeddingClient provider`,
     );
   }
   if (backend === 'inmemory' && embeddings) {
@@ -368,6 +375,6 @@ function describeGateBlock(gate: EmbeddingGateStatus | undefined): string {
   return (
     `embeddings disabled by the model/dimension gate [${reason}]: ${models}${detail} — ` +
     'no vectors are being written, so semantic recall, the durable tier and ' +
-    'process-reuse are all inactive (FTS-only)'
+    `process-reuse are all inactive — ${KEYWORD_ONLY_RECALL}`
   );
 }

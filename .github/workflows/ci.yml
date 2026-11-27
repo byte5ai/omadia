@@ -378,8 +378,10 @@ jobs:
           # 790 → 795 with the batched neighbour read (kgNeighborsOfType.pg,
           # 2 in-memory + 3 Neon tests).
           # 795 → 799: ADR-0255 adds one graphPool probe to each of the four
-          # Neon sweeps.
-          PG_TEST_FLOOR: '799'
+          # Neon sweeps. 799 → 806 with W03 recall/memorables: memorableLifecycle.pg
+          # (3 Neon tests, ADR-0190), recallFtsOrQuery1822.pg (3),
+          # correctedInsight1863.pg (1).
+          PG_TEST_FLOOR: '806'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

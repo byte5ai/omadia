@@ -64,6 +64,9 @@ function mapErrorToHttp(err: unknown): { status: number; code: string } {
         return { status: 404, code: 'inconsistency.not_found' };
       case 'already_resolved':
         return { status: 409, code: 'inconsistency.already_resolved' };
+      // ADR-0190 (#1862) — the side the resolution keeps was deleted.
+      case 'keeper_missing':
+        return { status: 409, code: 'inconsistency.keeper_missing' };
       case 'not_an_owner':
         return { status: 403, code: 'inconsistency.not_an_owner' };
     }

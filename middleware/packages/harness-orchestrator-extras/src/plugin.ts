@@ -159,6 +159,10 @@ export interface OrchestratorExtrasPluginHandle {
   close(): Promise<void>;
 }
 
+/** ADR-0190 — auto-merge resolves only from this cosine (near-exact). */
+const AUTO_MERGE_DEFAULT_THRESHOLD = 0.98;
+/** ADR-0190 — with auto-merge on, pairs are flagged for review from here. */
+const AUTO_MERGE_FLAG_FLOOR = 0.9;
 /**
  * #2240 / ADR-0215 — where extras' provider comes from: the kernel pool when
  * the host publishes one (always in production), else this plugin's own vault
@@ -703,14 +707,16 @@ export async function activate(
   // order: capture-filter → inconsistency-trigger → merge-trigger
   // (outermost). Cosine-only, no Anthropic dependency. Always active
   // when embeddingClient is wired.
-  // Slice 13 — AUTOMATIC dedup. When enabled (default on), the merge detector
-  // RESOLVES high-confidence duplicate MK pairs itself (retires the duplicate;
-  // durable `manuallyAuthored` nodes are never deleted) instead of only
-  // flagging for an operator — so re-learned knowledge stops accumulating on
-  // ANY deployment without a manual cleanup pass. Aggressive default 0.90 so
-  // paraphrased re-statements also merge. The detector's flag floor is lowered
-  // to the same threshold so sub-0.95 near-dups actually surface to be merged.
-  // Disable with kg_auto_merge_enabled=false (reverts to flag-only at 0.95).
+  // Slice 13 — AUTOMATIC dedup, narrowed by ADR-0190 (#1835). When enabled
+  // (default on), the merge detector flags pairs from cosine 0.90 and
+  // RESOLVES only near-exact ones itself: cosine >= kg_auto_merge_threshold
+  // (default 0.98) AND the same text on both sides, retiring only a
+  // machine-made copy nobody corrected (never a hand-saved, user-corrected or
+  // durable entry), audited as `system:auto-merge` with the cosine. Any
+  // textual change (date, name, verdict) stays an open pair. Switch: the
+  // manifest field `kg_auto_merge_enabled` (seeded on install); the env var
+  // KG_AUTO_MERGE_ENABLED only for an install whose config lacks the field.
+  // Off → flag-only at 0.95 (legacy).
   const autoMergeEnabledRaw =
     ctx.config.get<unknown>('kg_auto_merge_enabled') ??
     process.env['KG_AUTO_MERGE_ENABLED'];
@@ -720,18 +726,19 @@ export async function activate(
       : autoMergeEnabledRaw === false;
   const autoMergeThreshold = parseNumberOrDefault(
     ctx.config.get<unknown>('kg_auto_merge_threshold'),
-    0.9,
+    AUTO_MERGE_DEFAULT_THRESHOLD,
   );
+  const mergeFlagFloor = Math.min(AUTO_MERGE_FLAG_FLOOR, autoMergeThreshold);
   const mergeCandidateDetector = createMergeCandidateDetector({
     graph: inconsistencyWrappedKg,
     embeddingClient: resolveEmbeddingClient,
     ...(autoMergeDisabled
       ? {}
-      : { autoMergeThreshold, minSimilarity: autoMergeThreshold }),
+      : { autoMergeThreshold, minSimilarity: mergeFlagFloor }),
     log: (msg) => { console.error(msg); },
   });
   ctx.log(
-    `[harness-orchestrator-extras] auto-merge ${autoMergeDisabled ? 'off (flag-only @0.95)' : `on (resolve >= ${autoMergeThreshold.toFixed(2)}, durable-protected)`}`,
+    `[harness-orchestrator-extras] auto-merge ${autoMergeDisabled ? 'off (flag-only @0.95)' : `on (flag >= ${mergeFlagFloor.toFixed(2)}, resolve >= ${autoMergeThreshold.toFixed(2)} + same numbers, machine-made copies only)`}`,
   );
   const disposeMergeCandidateDetector = ctx.services.provide(
     MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
@@ -827,6 +834,18 @@ export async function activate(
       tenantId: bulkPromotionTenantId,
       kg: wrappedKg,
       ...(significanceScorer ? { scorer: significanceScorer } : {}),
+      // ADR-0190 — the live path's excerpt rule, for stored turns: masked
+      // through the stored-text scope like the scorer above.
+      ...(llm
+        ? {
+            excerptExtractor: createHaikuPalaiaExcerptExtractor({
+              llm,
+              model: factModel,
+              log: (msg) => { console.error(msg); },
+              privacy: outsideTurnPrivacy,
+            }),
+          }
+        : {}),
       log: (msg) => { console.error(msg); },
     });
     disposeBulkPromotion = ctx.services.provide(
@@ -834,7 +853,7 @@ export async function activate(
       bulkPromotion,
     );
     ctx.log(
-      `[harness-orchestrator-extras] bulkPromotion ready (scorer=${significanceScorer ? 'on' : 'off'}, tenant=${bulkPromotionTenantId})`,
+      `[harness-orchestrator-extras] bulkPromotion ready (scorer=${significanceScorer ? 'on' : 'off'}, excerpt=${llm ? 'required' : 'off'}, tenant=${bulkPromotionTenantId})`,
     );
   } else {
     ctx.log(

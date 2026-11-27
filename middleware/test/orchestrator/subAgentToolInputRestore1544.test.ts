@@ -2,9 +2,8 @@
  * #1544 — the sub-agent half: a domain tool's sub-agent model reads the
  * prompt placeholders (its question came from the parent model), but its inner
  * data tools run on the user's values, and what they echo reaches the
- * sub-agent's model with the placeholder again. Intern-exempt self tools
- * (`memory`) keep the placeholder: what they store is read back in clear in
- * later turns. The privacy handle is a stub over a one-entry map; the real
+ * sub-agent's model with the placeholder again. `memory` notes are restored
+ * too and re-masked when read (#1841, ADR-0191). The privacy handle is a stub over a one-entry map; the real
  * guard's methods have their own test (`promptMaskToolInputRestore1544.test.ts`).
  */
 
@@ -66,6 +65,15 @@ function handle(): PrivacyTurnHandle {
   return {
     restoreToolInputValues: (text: string) => text.split(PLACEHOLDER).join(REAL),
     remaskPromptValues: (text: string) => text.split(REAL).join(PLACEHOLDER),
+    // #1841 — masking on: `memory` notes restore with the full map.
+    maskUserPrompt: async (text: string) => ({
+      outcome: 'masked' as const,
+      maskedText: text.split(REAL).join(PLACEHOLDER),
+      spans: [],
+      degraded: false,
+    }),
+    restorePromptPseudonyms: async (text: string) => text.split(PLACEHOLDER).join(REAL),
+    countUnresolvedSurrogates: async (text: string) => (text.includes(PLACEHOLDER) ? 1 : 0),
     checkBypass: () => undefined,
     // Interning stand-in that echoes the raw result, so the test sees what
     // the re-mask makes of an echo.
@@ -118,9 +126,10 @@ describe('#1544 — sub-agent inner tools run on the user values', () => {
     assert.ok(wire.includes(`viewed /memories/${PLACEHOLDER}.md`), 'the echo carries the placeholder');
   });
 
-  it('leaves an intern-exempt self tool (memory) on the placeholder', async () => {
+  it('stores a memory note with the user value and re-masks what it reads (#1841)', async () => {
     const { inputs, wire } = await run('memory');
-    assert.deepEqual(inputs, [{ path: `/memories/${PLACEHOLDER}.md` }]);
+    assert.deepEqual(inputs, [{ path: `/memories/${REAL}.md` }]);
     assert.ok(!wire.includes('Falkenstein'));
+    assert.ok(wire.includes(`viewed /memories/${PLACEHOLDER}.md`));
   });
 });

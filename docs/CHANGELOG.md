@@ -1068,6 +1068,101 @@ Contract: ADR-0230 (Proposed).
   descriptors, which store the hint flat; it now reads both.
 - ADR-0205 (Proposed) supersedes ADR-0008's "dropped on a failed tool call" rule.
 
+### Fixed — memory notes keep their meaning under prompt masking (ADR-0191) (2026-11-26)
+
+- **A note no longer reads as a fact about another term (#1841).** With `mask_user_prompt`
+  on, the `memory` tool stored notes with the turn's placeholders, and the next turn mints
+  the same placeholder for a different value. Every string of a `memory` input is now
+  restored with the turn's full map before the handler runs (refused when a placeholder
+  cannot be mapped back); every `memory` result and the prefetched `/memories` index are
+  masked through the reading turn's map (withheld when masking blocks). A note from before
+  the fix that carries a placeholder the reading turn minted is withheld with a notice.
+  Masking off is unchanged. Owner decision taken on the sweep's recommendation, reversible
+  (`memoryNoteSurrogates.ts`, orchestrator, `LocalSubAgent`, `ToolDispatchService`).
+
+### Fixed — memorable knowledge lifecycle: deleted stays deleted, safe auto-merge (ADR-0190) (2026-11-26)
+
+- **Deleted, discarded and merged-away entries stay gone (#1819).** `deleteMemory` and the
+  operator's owner-less delete (`deleteOwnerlessMemory`, ADR-0185) share one node-delete
+  helper on both graph backends, which marks each source turn `promotionRetired` and closes
+  the entry's open pairs; live and bulk promotion skip
+  such turns (`reason=retired`). Bulk promotion now creates entries like live
+  auto-promotion: excerpt required when an extractor is installed (masked through the
+  stored-text privacy scope), `origin_agent` from the turn's qualified scope, member
+  owners kept.
+- **Public API turns no longer block bulk promotion (#1864).** Turns whose user is no
+  omadia user (`key:<keyId>`) are left out of the candidate list and the "eligible"
+  count; promotion skips them as `no-person-owner` instead of failing on the owner schema.
+  The result has a new `skipped` count (also on `/admin/bulk-promote`, en+de); final
+  skips retire the turn.
+- **Auto-merge only merges near-exact copies (#1835).** New manifest switch
+  `kg_auto_merge_enabled` (Agent Runtime Extras, default on; `KG_AUTO_MERGE_ENABLED`
+  only on installs whose config has no value for the field). Pairs are flagged from
+  cosine 0.90; the job resolves only cosine ≥ 0.98 (`kg_auto_merge_threshold`) with the
+  same text on both sides (case, whitespace and punctuation ignored), and only retires a
+  machine-made copy nobody corrected — hand-saved, user-corrected (`corrected_at`) and
+  durable entries are never deleted. The audit row
+  names `system:auto-merge` with the cosine (plugin-api 1.105.0
+  `AclMutationOptions.systemActor`), `resolved_by` is null. `/admin/duplicates` intro
+  describes this (en+de).
+- **Pairs close with their entry (#1862).** Deleting an entry dismisses its open
+  contradiction and duplicate pairs (`closed_reason: memory_deleted`). Resolving a pair
+  in favour of a side that no longer exists answers 409 `*.keeper_missing` and deletes
+  nothing; the detail pages disable those buttons and say why.
+- **Contradiction verdicts are no longer lost (#1861).** Judge output cap 200 → 500
+  tokens; a failed or unparseable verdict leaves the entry unchecked so a later bulk
+  sweep retries. Each lost pass is counted (`inconsistency_lost_verdicts`,
+  `last_inconsistency_attempt_at`); the bulk queue takes never-attempted entries first,
+  and after 3 lost passes (`INCONSISTENCY_MAX_LOST_VERDICTS`, plugin-api) the entry is
+  marked checked with `inconsistency_check_outcome: verdict_lost`, so a pair that never
+  gets a verdict no longer blocks newer entries.
+
+### Fixed — recall quality (2026-11-26)
+
+- **Full-text recall matches content words, not every word (#1822).** Without
+  embeddings, turn recall (`searchTurns`), the lexical leg of hybrid turn search and
+  process recall built `plainto_tsquery(<whole message>)`, which ANDs every word, so a
+  question only found a stored fact when the turn contained "wann", "der" and "seine"
+  too. Both graph backends now OR-match the message's content terms (plugin-api
+  `buildRecallTsQuery`: lowercase letter/digit runs split like the `simple` parser,
+  German/English function words dropped, max 16), ranked by `ts_rank_cd`. A message
+  without a content term ("ok") has no lexical leg and recalls nothing. The `/health`
+  warning without embeddings now says that recall is keyword-only and misses
+  paraphrases.
+- **Recall under prompt masking finds turns about masked values (#1869).** With
+  `mask_user_prompt` on, the orchestrator handed the retriever the pseudonymised message,
+  so terms, the query embedding and the full-text query searched for
+  `PLATZHALTER-CUSTOM-1` and missed every stored turn (stored with real values) about it.
+  Every recall leg now searches with the real message; the relevance judge, a model call,
+  reads the wire variant (`AssembleForBudgetInput.judgeMessage`), and the recalled block is
+  still masked through the turn map before the model sees it.
+  `docs/security-architecture.md` (embeddings) updated: the recall query is embedded as
+  typed, like the stored turns it is matched against.
+- **Trust rules name the headings the chat path renders (#1856).** The orchestrator's
+  trust rules and rule 9 named `## Früher besprochene Entitäten` / `## Inhaltlich ähnliche
+  Turns`, while the chat path renders cross-chat hits under `## Inhaltlich verwandte Turns`.
+  The retriever now exports `RECALL_HEADINGS` (`@omadia/orchestrator-extras`); the
+  renderers and the prompt rules both use it, and the test-only `build` path renders the
+  same headings.
+- **A corrected memory wins over older turns and notes (#1863).** Recalled insights
+  rendered as `- kind: summary (score …)` without a date, so the model ranked a user's
+  correction below the older turn that still held the old value. Both graph backends now
+  stamp `corrected_at` when a person changes an entry's kind, summary or rationale
+  (`updateMemorableKnowledge`; significance-only patches do not), recall renders
+  `(vom Nutzer korrigiert am <Tag>; score …)` or `(Stand <Tag>; score …)`, and the
+  orchestrator's trust rules state that a corrected entry is the user's latest word and
+  outranks older turns, notes and insights with another value. A user edit does not set
+  `manually_authored` (ADR-0190: that flag means operator-curated, durable tier).
+- **Knowledge-graph priorities take effect as offered (#1820).** `/admin/kg-priorities`
+  pre-filled the agent id `orchestrator-default`, which no agent runs under; it now offers
+  the installed agents (`GET /api/v1/operator/agents`, preselecting the instance's default
+  agent; free text only when the list is unavailable). The route accepted `turn:` and
+  `Session::` ids, but Session nodes are `session:<scope>` and recall matched only turn
+  ids: it now accepts `turn:` and `session:` (the `Session::` form is refused), and the
+  retriever applies a session entry to every turn of that session, a turn entry winning
+  over its session's. Existing `Session::` rows stay listed and can be removed; they never
+  applied.
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

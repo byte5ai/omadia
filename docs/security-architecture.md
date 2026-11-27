@@ -2576,9 +2576,22 @@ requests, and only there, the shield acts on four kinds of text:
   search for a masked term finds it; a top-level MCP grant counts as such a
   tool. Kept on the surrogates: a domain tool that runs a sub-agent (its
   input is a question for a model; the sub-agent's inner data tools are
-  restored in turn) and the intern-exempt self tools (`memory`, stored
-  processes), whose stored text is read back in clear in later turns that no
-  longer know the value. Every tool result text a model gets, digests,
+  restored in turn) and the intern-exempt stored-process tools, whose stored
+  text is read back in clear in later turns that no longer know the value.
+  **`memory` notes (#1841, ADR-0191, `memoryNoteSurrogates.ts`):** a
+  surrogate is unique within one turn only, so a note stored with one turn's
+  placeholder read as a fact about another value in a later turn. With
+  `mask_user_prompt` on, every string of a `memory` input is restored with
+  the turn's full map before the handler runs (a surrogate restore cannot map,
+  or a throwing restore, refuses the call), and every `memory` result and the
+  prefetched `/memories` index are masked through the reading turn's map
+  (`maskUserPrompt`, origin `context`; blocked ⇒ withheld). A stored text that
+  carries a surrogate the reading turn minted (a note from before the fix) is
+  withheld with a notice. Residuals: an old note's pool person name the reading
+  turn did not mint is not recognisable; and because notes now hold real values,
+  a value the reading turn's mask does not detect (a C1 name seen in the prompt
+  context but not in the note, or a turn degraded to C0 after a C1 outage)
+  reaches the model in clear — the same residual as recalled turns. Every tool result text a model gets, digests,
   bypassed results and errors included, is masked again with the turn's
   known values (`remaskPromptValues`: case-insensitive, whitespace in the
   value also matching `-`/`_`), and because restore only ever puts in a
@@ -3281,7 +3294,7 @@ Tests: `test/securityPosture579.test.ts`,
 **Every other model call sends its text as it is.** A model request that runs
 neither under the turn's handle nor through a memory job's mask reaches its
 provider as its caller built it, with prompt masking on or off: `mask_user_prompt` reaches none of the texts
-below (the embedded recall query in the last entry aside), and the shield
+below, and the shield
 masks text only, so it reads no image block. In-tree these are:
 
 - **Operator backfill and the scratch-promotion reaper, without a guard.**
@@ -3323,9 +3336,15 @@ masks text only, so it reads no image block. In-tree these are:
   (`@omadia/embedding-adapter-openai`, default endpoint
   `https://api.openai.com`), stored turns and memories, a raw MCP result the
   ingestion above stored included, are embedded at that provider as stored,
-  real values included (`neonKnowledgeGraph.ts`). Only the recall query is
-  the turn's wire text (`retrievePriorContext`), so it alone follows
-  `mask_user_prompt`. The memory jobs above mask what they send to a model,
+  real values included (`neonKnowledgeGraph.ts`). Since #1869 the recall
+  query is the user's real message too (`retrievePriorContext`): term
+  extraction, the query embedding and the full-text query must match turns
+  stored with real values, and a pseudonym query missed every turn about a
+  masked value. The provider therefore sees the message as typed, the same
+  values it already embedded when the earlier turn was stored. Only the
+  relevance judge, a model call, gets the wire variant (`judgeMessage`), and
+  the recalled block is masked through the turn map before the model reads
+  it. The memory jobs above mask what they send to a model,
   not what they embed: the inconsistency detector embeds the memory it
   checks, and the Teams topic detector the messages it compares, as stored.
   The Ollama sidecar and the local adapter embed in-tenant.

@@ -510,9 +510,11 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   }
   markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
+    opts?: { verdictLost?: boolean },
   ): Promise<void> {
     return this.inner.markMemorableKnowledgeInconsistencyChecked(
       memorableKnowledgeNodeId,
+      opts,
     );
   }
   listMergeCandidates(

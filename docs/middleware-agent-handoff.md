@@ -5447,6 +5447,33 @@ auf `unverified` herab. Nur `OdooEntity`/`ConfluencePage` — Plugin-Namespaces
 (`PluginEntity`) sind über `findEntities` nicht erreichbar. Begründung und
 Grenzen: `docs/security-architecture.md` §7c.
 
+### MemorableKnowledge-Lebenszyklus (ADR-0190, #1819/#1835/#1861/#1862/#1864)
+
+- **Retired Turns.** `deleteMemory` (Löschen auf `/memories`, Verwerfen im Chat,
+  aufgelöste Widerspruchs-/Duplikat-Paare, Auto-Merge) setzt auf jedem Quell-Turn
+  `properties.promotionRetired = { at, reason }`. Live- und Bulk-Promotion überspringen
+  solche Turns (`reason=retired`); ein manueller Save bleibt möglich.
+- **Ein Promotion-Pfad.** `createBulkPromotionService` bekommt einen eigenen
+  Excerpt-Extractor (Stored-Text-Privacy-Scope) und setzt `excerptRequired`,
+  `originAgent` (aus `<agentSlug>::…` der Turn-Scope) und die Member-Owner wie der
+  Live-Pfad. Turns ohne Personen-Owner (`key:<id>`, Public API) sind keine Kandidaten.
+  Ergebnis `promotePhase.skipped` zählt bewusst ausgelassene Turns.
+- **Auto-Merge** (`kg_auto_merge_enabled`, Default an; `kg_auto_merge_threshold`
+  Default 0.98, Flag-Floor 0.90): löst nur Paare mit gleichem Text (Kind/Summary/
+  Rationale ohne Groß-/Kleinschreibung, Leerraum, Satzzeichen) und entfernt nur
+  maschinell erzeugte, nicht von einer Person korrigierte Einträge (`created_by`
+  `auto:`/`system:`/`scratch-reaper`, kein `corrected_at`). `KG_AUTO_MERGE_ENABLED`
+  greift nur, wenn die Config das Feld nicht enthält (Installationen von vor dem Feld). Audit als `system:auto-merge` über
+  `AclMutationOptions.systemActor` (nil-UUID + Label, `resolved_by: null`).
+- **Paare.** Löschen schließt offene `Inconsistency`/`MergeCandidate`/
+  `ExcerptMergeCandidate`-Paare (`closed_reason: memory_deleted`); eine Auflösung, die
+  eine gelöschte Seite behalten würde, wirft `keeper_missing` (HTTP 409).
+- **Widerspruchs-Judge:** `maxTokens` 500; verlorene Verdicts lassen
+  `last_inconsistency_check_at` ungesetzt und zählen `inconsistency_lost_verdicts`
+  hoch (`last_inconsistency_attempt_at`; Queue: nie versuchte Einträge zuerst). Nach
+  3 verlorenen Läufen (`INCONSISTENCY_MAX_LOST_VERDICTS`) gilt der Eintrag als geprüft
+  mit `inconsistency_check_outcome: 'verdict_lost'`.
+
 ### Structured Datasets — CSV Import (#430)
 
 Separate Ablage neben dem eigentlichen Graph — bewusst KEINE Graph-Node-
@@ -5626,6 +5653,11 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
 | `USAGE_FX_DISABLED` | `true` schaltet den Abruf des EZB-Tageskurses für die EUR-Ansicht des Kosten-Dashboards ab (`GET www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`, ohne Credentials, höchstens alle 6 h). Default aus — für air-gapped oder egress-beschränkte Installationen. Ohne Kurs bleibt das Dashboard in USD. Siehe Abschnitt Usage-Telemetrie, Lesepfad. |
 
+### Auto-Merge von Memory-Duplikaten (ADR-0190, #1835)
+
+| Variable | Wirkung |
+|---|---|
+| `KG_AUTO_MERGE_ENABLED` | Fallback für den Manifest-Schalter `kg_auto_merge_enabled` der Agent Runtime Extras. Gelesen wird die Variable nur, wenn die gespeicherte Plugin-Config das Feld **nicht** enthält (Installationen von vor dem Feld); eine frische Installation bekommt den Manifest-Default `true` in die Config, danach entscheidet der Schalter in der Admin-UI. `false` = Duplikate werden nur gelistet (ab cosine 0.95), nie automatisch aufgelöst. Unset und Feld fehlt = an. |
 ### Env-Variablen, die Plugin-Settings seeden (#1858, ADR-0193)
 
 | Variable | Wirkung |

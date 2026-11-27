@@ -522,9 +522,12 @@ export interface KnowledgeGraph {
   /**
    * Slice 9.5 — list `MemorableKnowledge` external_ids that still need a
    * bulk inconsistency-check pass: embedding column populated AND no
-   * `last_inconsistency_check_at` marker on the row. Ordered by
-   * `created_at` ascending (oldest first — most likely source of
-   * historical conflicts that predate Slice 9). Clamped to [1, 200].
+   * `last_inconsistency_check_at` marker on the row. Ordered by the last
+   * lost-verdict attempt (`last_inconsistency_attempt_at`, never-attempted
+   * first — ADR-0190, so entries whose verdicts keep getting lost do not
+   * hold the head of the queue), then `created_at` ascending (oldest first —
+   * most likely source of historical conflicts that predate Slice 9).
+   * Clamped to [1, 200].
    * Returns external_ids (`mk:<uuid>`), not internal uuids, so callers
    * can feed them straight into `inconsistencyDetector.detectFor()`.
    */
@@ -546,9 +549,18 @@ export interface KnowledgeGraph {
    * of every successful run (whether 0 or N Inconsistencies were
    * created) so the bulk-job dedupes correctly. Idempotent: re-writing
    * the marker just refreshes the timestamp.
+   *
+   * ADR-0190 (#1861) — with `{ verdictLost: true }` the pass lost at least
+   * one verdict: the provider records an attempt instead
+   * (`inconsistency_lost_verdicts` + 1, `last_inconsistency_attempt_at`)
+   * and only sets the marker, with `inconsistency_check_outcome:
+   * 'verdict_lost'`, once {@link INCONSISTENCY_MAX_LOST_VERDICTS} attempts
+   * were lost — so a pair that never gets a verdict stops costing model
+   * calls on every sweep.
    */
   markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
+    opts?: { verdictLost?: boolean },
   ): Promise<void>;
   /**
    * Slice 10 — list near-duplicate-candidate markers visible to the
@@ -1139,6 +1151,14 @@ export interface RecalledInsight {
    *  insights render at full length (not the fuzzy cap) so the agent can
    *  trust recalled schema instead of re-discovering it via tools. */
   durable?: boolean;
+  /** #1863 — the date (`YYYY-MM-DD`) of the entry's latest content: the
+   *  day a user corrected it, else the day it was created. Rendered next to
+   *  the insight so the model can order it against older turns and notes. */
+  asOf?: string;
+  /** #1863 — true when a person edited the entry's content
+   *  ({@link MEMORY_CORRECTED_AT_PROP}). Such an entry is the user's latest
+   *  word on its subject. */
+  correctedByUser?: boolean;
 }
 
 /** What the cross-session probe surfaced this turn. Empty arrays when a leg
@@ -1159,6 +1179,37 @@ export interface MemorableKnowledgeUpdate {
    *  leave it untouched; a string to set/replace. */
   rationale?: string | null;
   significance?: number;
+}
+
+/**
+ * #1863 — the MemorableKnowledge property (ISO timestamp) both bundled
+ * providers stamp when `updateMemorableKnowledge` changes the entry's kind,
+ * summary or rationale. Only people edit entries (the PATCH route), so its
+ * presence means "corrected by the user"; recall renders it, and the prompt
+ * lets a corrected entry outrank older turns and notes. A significance-only
+ * patch does not stamp it.
+ */
+export const MEMORY_CORRECTED_AT_PROP = 'corrected_at';
+
+/**
+ * ADR-0190 (#1861) — after this many bulk passes that each lost a
+ * contradiction verdict, an entry is marked checked with
+ * `inconsistency_check_outcome: 'verdict_lost'` instead of being retried.
+ */
+export const INCONSISTENCY_MAX_LOST_VERDICTS = 3;
+
+/**
+ * #1863 — whether `patch` changes the content (kind, summary, rationale) of
+ * an entry whose current properties are `current`.
+ */
+export function isMemorableContentCorrection(
+  current: Readonly<Record<string, unknown>>,
+  patch: MemorableKnowledgeUpdate,
+): boolean {
+  if (patch.kind !== undefined && patch.kind !== current['kind']) return true;
+  if (patch.summary !== undefined && patch.summary !== current['summary']) return true;
+  if (patch.rationale === null) return current['rationale'] !== undefined;
+  return patch.rationale !== undefined && patch.rationale !== current['rationale'];
 }
 
 export interface SessionFilter {
@@ -1690,7 +1741,25 @@ export interface AclMutationOptions {
   actorChannelIdentityId?: string;
   /** Optional rationale shown in the audit trail. */
   reason?: string;
+  /**
+   * ADR-0190 — the mutation is a kernel job's decision, not the person's
+   * (`system:<job>`, e.g. `system:auto-merge`). Audit only: authorisation
+   * still checks `actorOmadiaUserId`, but the audit row names the job (nil
+   * actor uuid, `actor_channel_identity_id` = this label) and a resolved
+   * pair carries `resolved_by: null` instead of the person's id.
+   */
+  systemActor?: string;
 }
+
+/** ADR-0190 — the actor uuid an audit row carries when a kernel job acted. */
+export const SYSTEM_AUDIT_ACTOR_UUID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * ADR-0190 — Turn property that keeps a turn out of auto and bulk promotion
+ * once a memorable knowledge entry derived from it was deleted, discarded or
+ * merged away, or the turn proved unpromotable. Value: `{ at, reason }`.
+ */
+export const PROMOTION_RETIRED_PROP = 'promotionRetired';
 
 /**
  * Danger-Zone bulk-purge selector for MemorableKnowledge. `tenantId` is

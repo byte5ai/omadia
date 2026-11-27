@@ -9,7 +9,7 @@ import type {
   KnowledgeGraph,
   TurnSearchHit,
 } from '@omadia/plugin-api';
-import { turnNodeId } from '@omadia/plugin-api';
+import { sessionNodeId, turnNodeId } from '@omadia/plugin-api';
 
 // ---------------------------------------------------------------------------
 // MockGraph — minimal KnowledgeGraph stand-in. The assembler only touches
@@ -267,6 +267,35 @@ describe('ContextRetriever.assembleForBudget', () => {
     // Only b should be included.
     assert.equal(result.included.length, 1);
     assert.equal(result.included[0]?.turnId, b.turnId);
+  });
+
+  it('#1820 — a session entry applies to every turn of that session; a turn entry wins', async () => {
+    const a1 = ftsHit('s-a', '2026-05-01T08:00:00Z', { userMessage: 'a1', assistantAnswer: 'x' }, 0.7);
+    const a2 = ftsHit('s-a', '2026-05-01T09:00:00Z', { userMessage: 'a2', assistantAnswer: 'x' }, 0.65);
+    const b = ftsHit('s-b', '2026-05-02T08:00:00Z', { userMessage: 'b', assistantAnswer: 'x' }, 0.6);
+    const graph = makeMockGraph({ ftsHits: [a1, a2, b] });
+    const priorities = new FakeAgentPriorities([
+      rec(sessionNodeId('s-a'), 'block'),
+      // The turn entry overrides its session's block.
+      rec(a2.turnId, 'boost', 1.5),
+    ]);
+    const retr = new ContextRetriever(graph, {}, undefined, priorities);
+
+    const result = await retr.assembleForBudget({
+      userMessage: 'find',
+      agentId: 'agent-test',
+      budget: { tokens: 1000 },
+    });
+
+    assert.deepEqual(
+      result.excluded.filter((e) => e.reason === 'agent-blocked').map((e) => e.turnId),
+      [a1.turnId],
+    );
+    assert.deepEqual(
+      result.included.map((h) => h.turnId).sort(),
+      [a2.turnId, b.turnId].sort(),
+    );
+    assert.equal(result.included.find((h) => h.turnId === a2.turnId)?.reason, 'agent-boost');
   });
 
   it('agent-boost — weight=2.0 lifts a 0.3 hit above an unboosted 0.5 hit', async () => {

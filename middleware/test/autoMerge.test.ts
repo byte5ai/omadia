@@ -8,8 +8,8 @@ import { createMergeCandidateDetector } from '@omadia/orchestrator-extras';
 // Slice 13 · automatic dedup. The merge detector, when given an
 // autoMergeThreshold, RESOLVES high-confidence duplicate MK pairs itself
 // (retires the duplicate) instead of only flagging. Safety: a durable
-// (manuallyAuthored) node is never deleted; both-durable is left alone; else
-// the older node wins.
+// (manuallyAuthored) or hand-saved node is never deleted; two of them are
+// left alone; two machine-made copies: the older node wins (ADR-0190).
 
 const VEC: number[] = [1, 0, 0, 0]; // every seeded MK shares it ⇒ cosine ≈ 1
 
@@ -27,7 +27,8 @@ async function seedMk(
   const created = await kg.createMemorableKnowledge({
     kind: 'reference',
     summary,
-    createdBy: 'web:bob',
+    // ADR-0190 — the "fuzzy" side is a machine-made (auto-promoted) copy.
+    createdBy: durable ? 'web:bob' : 'auto:bob',
     involvedOmadiaUserIds: [],
     aclOwners: ['bob'],
     ...(durable ? { manuallyAuthored: true } : {}),

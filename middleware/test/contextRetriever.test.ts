@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   ContextRetriever,
+  RECALL_HEADINGS,
   extractCandidateTerms,
 } from '@omadia/orchestrator-extras';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
@@ -123,7 +124,8 @@ describe('ContextRetriever', () => {
       userId: 'user-1',
     });
     assert.ok(text.includes('BÄR GmbH'));
-    assert.ok(text.includes('Frühere') || text.includes('ähnliche') || text.includes('Früher'));
+    // #1856 — the cross-chat sections carry the headings the trust rules name.
+    assert.ok(text.includes(RECALL_HEADINGS.relatedTurns));
   });
 
   it('returns empty text when no context exists', async () => {

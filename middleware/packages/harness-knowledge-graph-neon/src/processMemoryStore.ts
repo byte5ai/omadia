@@ -15,6 +15,7 @@ import {
   PROCESS_DEDUP_DEFAULT_THRESHOLD,
   PROCESS_TITLE_REGEX,
   buildProcessId,
+  buildRecallTsQuery,
 } from '@omadia/plugin-api';
 
 import { captureGateEpoch, type GateEpochReader } from './gateEpoch.js';
@@ -500,13 +501,17 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       }
     }
     const queryLit = queryEmbedding ? vectorLiteral(queryEmbedding) : null;
+    // #1822 — OR query over content terms (null: no lexical leg). Without an
+    // embedding either, nothing can match.
+    const ftsQuery = buildRecallTsQuery(trimmedQuery);
+    if (queryLit === null && ftsQuery === null) return [];
     const scopeFilter = input.scope ?? null;
 
     // Param map:
     //  $1 query embedding (nullable vector literal)
     //  $2 tenant_id
     //  $3 scope filter (nullable)
-    //  $4 ftsQuery
+    //  $4 ftsQuery (nullable) — OR tsquery from buildRecallTsQuery
     //  $5 limit
     //  $6 excludeUnprotected (#1540)
     //  $7 agentScopePrefix (nullable) — the default agent also owns the
@@ -528,14 +533,17 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
             WHEN (1 - (embedding <=> $1::vector)) <> (1 - (embedding <=> $1::vector)) THEN 0
             ELSE 1 - (embedding <=> $1::vector)
           END AS cosine_sim,
-          COALESCE(
-            ts_rank_cd(
-              to_tsvector('simple',
-                coalesce(title, '') || ' ' || coalesce(steps::text, '')),
-              plainto_tsquery('simple', $4)
-            ),
-            0
-          ) AS bm25_raw
+          CASE
+            WHEN $4::text IS NULL THEN 0
+            ELSE COALESCE(
+              ts_rank_cd(
+                to_tsvector('simple',
+                  coalesce(title, '') || ' ' || coalesce(steps::text, '')),
+                to_tsquery('simple', $4)
+              ),
+              0
+            )
+          END AS bm25_raw
           FROM processes
          WHERE tenant_id = $2
            AND ($3::text IS NULL OR scope = $3)
@@ -545,9 +553,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
              OR ($7::text = 'default::' AND strpos(scope, '::') = 0))
            AND (
              ($1::text IS NOT NULL AND embedding IS NOT NULL)
-             OR to_tsvector('simple',
-                  coalesce(title, '') || ' ' || coalesce(steps::text, ''))
-                @@ plainto_tsquery('simple', $4)
+             OR ($4::text IS NOT NULL
+               AND to_tsvector('simple',
+                     coalesce(title, '') || ' ' || coalesce(steps::text, ''))
+                   @@ to_tsquery('simple', $4))
            )
       ),
       normalised AS (
@@ -581,7 +590,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       queryLit,
       this.tenantId,
       scopeFilter,
-      trimmedQuery,
+      ftsQuery,
       limit,
       input.excludeUnprotected === true,
       input.agentScopePrefix ?? null,

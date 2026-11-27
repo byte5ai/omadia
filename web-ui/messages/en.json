@@ -6323,7 +6323,9 @@
     "startRun": "Start bulk job",
     "resultTitle": "Result ({duration} ms)",
     "scorePhaseTitle": "Phase 1 · SCORE",
-    "promotePhaseTitle": "Phase 2 · PROMOTE"
+    "promotePhaseTitle": "Phase 2 · PROMOTE",
+    "skipped": "skipped",
+    "skippedHint": "Left alone on purpose, not failed: an entry from this turn was deleted, discarded or merged away, no person owns the turn (Public API), the excerpt was missing, or the answer was agent narration. Retired and ownerless turns are not offered again."
   },
   "adminUpdate": {
     "title": "Update",
@@ -6542,7 +6544,7 @@
   "adminDuplicates": {
     "list": {
       "title": "Memory · Possible Duplicates",
-      "intro": "Memories that are semantically almost identical. The “Memories” tab shows MK pairs (cosine ≥ 0.95), the “Excerpts” tab shows Palaia excerpt pairs (cosine ≥ 0.97). Clicking an entry opens the side-by-side view with a resolve button.",
+      "intro": "Memories that are semantically almost identical. The “Memories” tab shows MK pairs (cosine ≥ 0.90 while auto-merge is on, ≥ 0.95 while it is off), the “Excerpts” tab shows Palaia excerpt pairs (cosine ≥ 0.97). Auto-merge (setting “Auto-merge duplicates” of Agent Runtime Extras, on by default) resolves only near-exact pairs by itself (cosine ≥ 0.98 and the same text) and only retires an automatically saved copy nobody corrected; the audit trail names the system and the score. Entries saved or corrected by hand are never deleted automatically, and they stay here as open pairs. Deleting a memory closes its open pairs. Clicking an entry opens the side-by-side view with a resolve button.",
       "tabs": {
         "memories": "Memories",
         "excerpts": "Excerpts (Palaia)"
@@ -6605,6 +6607,7 @@
       },
       "openMemory": "View memory →",
       "memoryUnavailable": "Memory not accessible (deleted or no owner).",
+      "keeperMissing": "One side of this pair no longer exists or is not accessible to you. Keeping it is not possible, so the options that would delete the other side are off.",
       "memoryA": "Memory A",
       "memoryB": "Memory B",
       "status": "Status",
@@ -6708,6 +6711,7 @@
       },
       "openMemory": "View memory →",
       "memoryUnavailable": "Memory not accessible (deleted or no owner).",
+      "keeperMissing": "One side of this pair no longer exists or is not accessible to you. Keeping it is not possible, so the options that would delete the other side are off.",
       "memoryA": "Memory A",
       "memoryB": "Memory B",
       "severity": "Severity",
@@ -6771,7 +6775,7 @@
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
     "agentIdLabel": "Agent ID",
-    "agentIdPlaceholder": "de.byte5.agent.calendar or orchestrator-default",
+    "agentIdPlaceholder": "Agent slug, e.g. default",
     "load": "Load",
     "newEntryTitle": "New entry",
     "weightIgnoredTitle": "weight ignored for block",
@@ -6786,7 +6790,12 @@
     "colWeight": "Weight",
     "colReason": "Reason",
     "colUpdated": "Updated",
-    "add": "Add"
+    "agentOption": "{name} ({slug})",
+    "agentIdHint": "Recall looks priorities up under the slug of the agent that answers the chat.",
+    "entryPlaceholder": "turn:SCOPE:TIME or session:SCOPE",
+    "entryHint": "A turn entry applies to that turn; a session entry (session:SCOPE, as in the graph) applies to every turn of that session.",
+    "add": "Add",
+    "remove": "Remove"
   },
   "adminDatasets": {
     "title": "Knowledge · Datasets",
