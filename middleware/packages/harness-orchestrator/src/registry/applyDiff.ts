@@ -454,6 +454,14 @@ export function personaSkillsFor(
   }));
 }
 
+/** #1870 — an order-independent key of a policy; absent reads as the default. */
+function modelPolicyKey(policy: ModelPolicy | undefined): string {
+  const p = policy ?? DEFAULT_MODEL_POLICY;
+  const refKey = (v: ModelPolicy['primary'] | ModelPolicy['fallback']): string =>
+    isModelRef(v) ? `${v.provider}:${v.model}:${v.effort ?? ''}` : v;
+  return `${refKey(p.primary)}|${refKey(p.fallback)}`;
+}
+
 function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] {
   const reasons: string[] = [];
   // #978 — `privacy_profile` is deliberately NOT a rebuild reason. The value is
@@ -468,6 +476,12 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
     JSON.stringify(newAgent.modelRouting ?? null)
   ) {
     reasons.push('model_routing');
+  }
+  // #1870 — the model policy (primary, effort, fallback) is applied only when
+  // the agent is built. Without this reason a policy save was stored, reported
+  // as saved and shown in the UI, while the running agent kept its old model.
+  if (modelPolicyKey(oldAgent.modelPolicy) !== modelPolicyKey(newAgent.modelPolicy)) {
+    reasons.push('model_policy');
   }
   // #914 — the authored behaviour text IS the opening section of this Agent's
   // system prompt, so changing it is runtime-relevant. Without this reason the

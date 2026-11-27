@@ -221,7 +221,8 @@ export const RENDER_TOOL_SPEC: V4ToolSpec = {
     'sensitive-masked fields (names, e-mails): the server fills in their ' +
     'real values for the authorised user. For a sorted ranking / top-N, set ' +
     '`rankColumn` (e.g. "Rang") to prepend a 1-based rank column. The ' +
-    'rendered answer never returns through you.',
+    'rendered answer never returns through you. Several renders in one turn ' +
+    'are all shown to the user, in call order.',
   inputSchema: {
     type: 'object',
     properties: {

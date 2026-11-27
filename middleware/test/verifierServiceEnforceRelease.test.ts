@@ -113,3 +113,25 @@ describe('VerifierService.chatStream — enforce releases without a verdict carr
     assert.equal(doneOf(events)?.answer, notice);
   });
 });
+
+describe('#1877 — a model_unavailable notice passes the verifier unchecked', () => {
+  const notice = {
+    code: 'model_unavailable' as const,
+    text: 'Pia kann gerade nicht antworten.',
+    locale: 'de',
+  };
+  for (const mode of ['shadow', 'enforce'] as const) {
+    it(`${mode}: chat() answers with the system notice, the pipeline is never asked`, async () => {
+      const h = createVerifierHarness({
+        mode,
+        results: [{ answer: notice.text, toolCalls: 0, iterations: 0, systemNotice: notice }],
+        verdicts: [approved()],
+      });
+      const answer = await h.service.chat({ userMessage: 'Hallo', sessionScope: 's-n' });
+      assert.equal(answer.systemNotice?.code, 'model_unavailable');
+      assert.equal(answer.speaker?.kind, 'system');
+      assert.equal(answer.text, notice.text);
+      assert.equal(h.verifyInputs.length, 0);
+    });
+  }
+});

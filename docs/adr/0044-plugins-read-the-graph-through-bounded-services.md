@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0256](0256-memorystore-plugins-change-only-declared-owned-trees.md) (`memoryStore@1` trees); refined by [ADR-0255](0255-granted-graphpool-covers-only-the-plugins-own-tables.md) (`graphPool` table guard) and [ADR-0257](0257-recall-and-curation-services-are-boundary-only.md) (recall and curation services)
 
 - **Date:** 2026-11-25
 - **Deciders:** Owner (Marcel), plan approved on 2026-11-25. It closes the residuals

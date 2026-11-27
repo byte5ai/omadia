@@ -158,6 +158,10 @@ export interface WirePublicMcpDeps {
    *  `resolveDispatcher` is not supplied. */
   readonly nativeToolRegistry?: NativeToolRegistry;
   readonly log?: (msg: string) => void;
+  /** The running build's version (`resolveAppVersion()`), served as the MCP
+   *  `serverInfo.version` (#1952). Absent ⇒ `unknown`, the same word `/health`
+   *  uses, never a made-up `0.0.0`. */
+  readonly appVersion?: string;
 
   // ── Test seams. Production supplies none of these. ────────────────────────
   // Each one substitutes an INFRASTRUCTURE dependency (a pool, a vault, the
@@ -387,6 +391,7 @@ export function mountPublicMcp(app: Express, requireAuth: RequestHandler, deps: 
       privacy:
         deps.privacy ?? makePrivacyProvider(deps.getPrivacyService ?? (() => undefined)),
       serverName: PUBLIC_MCP_SERVER_NAME,
+      serverVersion: deps.appVersion ?? 'unknown',
       // #700 — the MRTR `requestState` key for 2026-07-28 callers. Vault-backed
       // so every instance behind the load balancer verifies what any other one
       // minted; without a vault the endpoint falls back to a per-process key

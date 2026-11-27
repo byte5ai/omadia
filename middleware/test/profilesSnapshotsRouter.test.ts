@@ -9,6 +9,7 @@ import { after, describe, it } from 'node:test';
 import express from 'express';
 
 import type { AuditEntryInput } from '../src/auth/adminAuditLog.js';
+import { DraftStore } from '../src/plugins/builder/draftStore.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { createProfilesRouter } from '../src/routes/profiles.js';
@@ -120,6 +121,7 @@ function makeStorageStub(initialLiveKnowledge: string[] = []): {
 }
 
 interface SnapshotStubConfig {
+  rollbackKnowledge?: Array<{ filename: string; content: Buffer }>;
   detail?: SnapshotDetail;
   /** When set, getSnapshot returns this regardless of id. Set null to force 404. */
   override?: SnapshotDetail | null;
@@ -195,7 +197,7 @@ function makeSnapshotStub(cfg: SnapshotStubConfig): SnapshotService {
           bundle_hash: cfg.detail.bundleHash,
         },
         agentMd: Buffer.from('# Restored\n', 'utf8'),
-        knowledge: [
+        knowledge: cfg.rollbackKnowledge ?? [
           { filename: 'knowledge/style.md', content: Buffer.from('s', 'utf8') },
         ],
         plugins: [],
@@ -282,6 +284,9 @@ async function startHarness(opts: {
   withSnapshot?: boolean;
   withAudit?: boolean;
   initialLiveKnowledge?: string[];
+  rollbackKnowledge?: Array<{ filename: string; content: Buffer }>;
+  draftStore?: DraftStore;
+  onDraftRestored?: (userEmail: string, draftId: string) => void;
 }): Promise<Harness> {
   const tmpDir = mkdtempSync(join(tmpdir(), 'snap-routes-'));
   const registry = new InMemoryInstalledRegistry();
@@ -299,10 +304,13 @@ async function startHarness(opts: {
             detail: opts.detail,
             ...(opts.override !== undefined ? { override: opts.override } : {}),
             ...(opts.diffOverride !== undefined ? { diffOverride: opts.diffOverride } : {}),
+            ...(opts.rollbackKnowledge ? { rollbackKnowledge: opts.rollbackKnowledge } : {}),
           }),
         }
       : {}),
     ...(opts.withAudit !== false ? { auditLog: audit.log as never } : {}),
+    ...(opts.draftStore ? { draftStore: opts.draftStore } : {}),
+    ...(opts.onDraftRestored ? { onDraftRestored: opts.onDraftRestored } : {}),
   });
 
   const app = express();
@@ -531,6 +539,100 @@ describe('/api/v1/profiles/:id/snapshot[s] routes', () => {
       assert.deepEqual(after.diverged_assets, ['agent.md']);
     } finally {
       await local.close();
+    }
+  });
+
+  it('#1788: rollback of a Builder draft restores its spec and slots and rebuilds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'snap-draft-'));
+    const draftStore = new DraftStore({ dbPath: join(dir, 'd.db') });
+    await draftStore.open();
+    const draft = await draftStore.create('op@example.com', 'Weather');
+    await draftStore.update('op@example.com', draft.id, {
+      spec: { ...draft.spec, description: 'after snapshot' },
+      slots: { 'toolkit-impl': 'new code' },
+    });
+    const detail = { ...makeDetail(), profileId: draft.id };
+    const restored: string[] = [];
+    const local = await startHarness({
+      detail,
+      draftStore,
+      onDraftRestored: (u, d) => restored.push(`${u}/${d}`),
+      rollbackKnowledge: [
+        {
+          filename: 'knowledge/spec.json',
+          content: Buffer.from(JSON.stringify({ ...draft.spec, description: 'at snapshot' })),
+        },
+        {
+          filename: 'knowledge/slots.json',
+          content: Buffer.from(JSON.stringify({ 'toolkit-impl': 'old code' })),
+        },
+        { filename: 'knowledge/style.md', content: Buffer.from('s', 'utf8') },
+      ],
+    });
+    try {
+      const res = await fetch(
+        `${local.baseUrl}/api/v1/profiles/${draft.id}/rollback/${detail.snapshotId}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      );
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { draft_restored?: { spec: boolean; slots: boolean } };
+      assert.deepEqual(body.draft_restored, { spec: true, slots: true });
+      const after = await draftStore.findById(draft.id);
+      assert.equal(after!.spec.description, 'at snapshot');
+      assert.deepEqual(after!.slots, { 'toolkit-impl': 'old code' });
+      assert.deepEqual(restored, [`op@example.com/${draft.id}`]);
+      // spec.json / slots.json went into the draft, not into knowledge.
+      assert.deepEqual(
+        local.storage.setKnowledgeFile.map((w) => w.filename),
+        ['style.md'],
+      );
+    } finally {
+      await local.close();
+      await draftStore.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#1788: a rollback never reverts another operator\'s draft (ADR-0058)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'snap-draft-'));
+    const draftStore = new DraftStore({ dbPath: join(dir, 'd.db') });
+    await draftStore.open();
+    const draft = await draftStore.create('someone-else@example.com', 'Weather');
+    await draftStore.update('someone-else@example.com', draft.id, {
+      spec: { ...draft.spec, description: 'after snapshot' },
+      slots: { 'toolkit-impl': 'new code' },
+    });
+    const detail = { ...makeDetail(), profileId: draft.id };
+    const restored: string[] = [];
+    const local = await startHarness({
+      detail,
+      draftStore,
+      onDraftRestored: (u, d) => restored.push(`${u}/${d}`),
+      rollbackKnowledge: [
+        {
+          filename: 'knowledge/spec.json',
+          content: Buffer.from(JSON.stringify({ ...draft.spec, description: 'at snapshot' })),
+        },
+        {
+          filename: 'knowledge/slots.json',
+          content: Buffer.from(JSON.stringify({ 'toolkit-impl': 'old code' })),
+        },
+        { filename: 'knowledge/style.md', content: Buffer.from('s', 'utf8') },
+      ],
+    });
+    try {
+      const res = await fetch(
+        `${local.baseUrl}/api/v1/profiles/${draft.id}/rollback/${detail.snapshotId}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      );
+      assert.equal(res.status, 404);
+      const after = await draftStore.findById(draft.id);
+      assert.equal(after!.spec.description, 'after snapshot');
+      assert.deepEqual(restored, []);
+    } finally {
+      await local.close();
+      await draftStore.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

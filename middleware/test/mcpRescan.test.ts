@@ -40,7 +40,11 @@ describe('rescanAllMcpServers (#463)', () => {
     const persisted: Array<{ id: string; count: number }> = [];
     const pruned: Array<{ id: string; keep: string[] }> = [];
     const bumps: string[] = [];
+    const scans: Array<{ id: string; error: string | null }> = [];
     const graph = {
+      recordMcpServerScan: async (id: string, error: string | null) => {
+        scans.push({ id, error });
+      },
       listMcpServers: async () => [server(GOOD, 'good', 'enabled'), server(DEAD, 'dead', 'enabled'), server(OFF, 'off', 'disabled')],
       upsertMcpToolVerdict: async (row: McpToolVerdictRow) => {
         upserted.push(row);
@@ -84,5 +88,54 @@ describe('rescanAllMcpServers (#463)', () => {
     // The policy refresh at the end picked up the newly-risky tool:
     assert.equal(isMcpGrantBlocked(GOOD, 'evil'), true);
     assert.equal(isMcpGrantBlocked(GOOD, 'sum'), false);
+    // #1916 — both outcomes are stamped on the row; the disabled server is not.
+    assert.deepEqual(scans, [
+      { id: GOOD, error: null },
+      { id: DEAD, error: 'Error: connection refused' },
+    ]);
+  });
+
+  it('a failing outcome stamp neither aborts the sweep nor fails a good scan (#1916)', async () => {
+    const graph = {
+      listMcpServers: async () => [server(GOOD, 'good', 'enabled')],
+      upsertMcpToolVerdict: async () => {},
+      setMcpDiscoveredTools: async () => {},
+      pruneMcpToolVerdicts: async () => {},
+      bumpMcpGrantEpoch: async () => 0,
+      bumpSkillBindingEpoch: async () => 0,
+      listMcpToolVerdicts: async () => [],
+      listMcpToolVerdictAcks: async () => [],
+      recordMcpServerScan: async () => {
+        throw new Error('column does not exist');
+      },
+    } as unknown as AgentGraphStore;
+    const manager = {
+      listTools: async () => [{ name: 'sum', description: 'Adds numbers.' }],
+    } as unknown as Pick<McpManager, 'listTools'>;
+    const result = await rescanAllMcpServers(graph, manager, () => {});
+    assert.equal(result.scannedServers, 1);
+    assert.equal(result.failures.length, 0);
+  });
+
+  it('redacts the server\'s stored secrets out of a failure message (#1912)', async () => {
+    const scans: Array<string | null> = [];
+    const graph = {
+      listMcpServers: async () => [server(DEAD, 'dead', 'enabled')],
+      listMcpToolVerdicts: async () => [],
+      listMcpToolVerdictAcks: async () => [],
+      recordMcpServerScan: async (_id: string, error: string | null) => {
+        scans.push(error);
+      },
+    } as unknown as AgentGraphStore;
+    const manager = {
+      listTools: async () => {
+        throw new Error('fetch failed for https://x/mcp?key=sk-live-1234567890');
+      },
+    } as unknown as Pick<McpManager, 'listTools'>;
+    const result = await rescanAllMcpServers(graph, manager, () => {}, {
+      secretsFor: async () => ['sk-live-1234567890'],
+    });
+    assert.doesNotMatch(result.failures[0]?.error ?? '', /sk-live-1234567890/);
+    assert.doesNotMatch(scans[0] ?? '', /sk-live-1234567890/);
   });
 });

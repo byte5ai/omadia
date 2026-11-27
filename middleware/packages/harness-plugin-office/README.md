@@ -2,7 +2,7 @@
 
 Deterministic `.xlsx` / `.docx` generation from JSON descriptors, persisted to
 Tigris under a content-addressed key and delivered to channels via signed
-`/documents` URLs. Mirrors the `@omadia/diagrams` artifact pipeline: bytes live
+`/documents/dl/<key>` URLs. Mirrors the `@omadia/diagrams` artifact pipeline: bytes live
 in object storage, never in the LLM context; the tool returns a compact URL +
 metadata.
 
@@ -12,6 +12,17 @@ metadata.
 |---|---|
 | `create_xlsx` (native tool) | Descriptor → workbook with typed columns, number formats, cross-sheet + per-row formulas. Formulas are stored without cached values and computed by the application that opens the file (see [Formulas](#formulas)). |
 | `create_docx` (native tool) | Descriptor → document with headings, paragraphs, bullets, tables. |
+
+## Download links need a grant
+
+The signed links are served under the public path `/documents/dl`. Until an
+operator grants it (Store → Headless Office → **Grants**), every link answers
+`404 public_path.not_granted`, logged in or not; the env auto-install creates no
+grant. The signing secret lives in the plugin's vault and is rotated through the
+setup field "HMAC secret for signed file URLs" (`DIAGRAM_URL_SECRET` is read only
+on the first boot). In `type`d columns, `create_xlsx` converts only ISO dates
+(`YYYY-MM-DD`) and plain decimals; other values stay text and are listed under
+`cellsKeptAsText` in the tool result.
 
 ## Determinism
 

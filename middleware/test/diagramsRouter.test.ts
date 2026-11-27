@@ -70,6 +70,26 @@ describe('/diagrams router', () => {
     await new Promise<void>((resolve) => server.close(() => { resolve(); }));
   });
 
+  it('#1964 — an expired link opened in a browser gets a readable page; other clients keep plain text', async () => {
+    const url = signUrl({ key: KEY, secret: SECRET, ttlSec: -10, publicBaseUrl: baseUrl });
+    const browser = await fetch(url, { headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' } });
+    assert.equal(browser.status, 403);
+    assert.match(browser.headers.get('content-type') ?? '', /text\/html/);
+    const html = await browser.text();
+    assert.match(html, /Link abgelaufen/);
+    assert.match(html, /neu zu erstellen/);
+    const image = await fetch(url, { headers: { accept: 'image/*' } });
+    assert.equal(image.status, 403);
+    assert.equal(await image.text(), 'invalid or expired signature');
+  });
+
+  it('#1964 — a missing file opened in a browser gets a readable 404 page', async () => {
+    const url = signUrl({ key: MISSING_KEY, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl });
+    const res = await fetch(url, { headers: { accept: 'text/html' } });
+    assert.equal(res.status, 404);
+    assert.match(await res.text(), /Datei nicht gefunden/);
+  });
+
   it('serves the PNG bytes for a valid signed URL', async () => {
     const url = signUrl({
       key: KEY,

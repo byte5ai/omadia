@@ -206,6 +206,11 @@ export function toSemanticAnswer(
   r: ChatTurnResult,
   disclosure?: ApplyAiDisclosureContext,
 ): SemanticAnswer {
+  // #1877 — a turn that did not run answers as the management layer: the
+  // notice text, speaker `system`, nothing else (no disclosure, no badge).
+  if (r.systemNotice) {
+    return { text: r.systemNotice.text, speaker: { kind: 'system' }, systemNotice: r.systemNotice };
+  }
   // Inline images (diagrams) and downloadable files (office docs) flow into
   // one channel-agnostic attachment array. Diagrams keep their `image` kind;
   // file attachments carry `kind: 'file'` so connectors render a download.

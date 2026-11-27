@@ -418,8 +418,12 @@ export function createPluginContext(
       // tears down the connection pool core writes user data through. Applied
       // here, at the plugin-facing seam, so core's own
       // `serviceRegistry.get('graphPool')` keeps the real object.
+      // ADR-0255 — a plugin that is not bundled gets the table guard on top:
+      // its statements may not name the kernel's tables.
       if (resolved !== undefined && POOL_SHAPED_CAPABILITIES.has(name)) {
-        return borrowPool(resolved as Pool, agentId) as T;
+        return borrowPool(resolved as Pool, agentId, {
+          guardStatements: catalogEntry?.origin !== 'bundled',
+        }) as T;
       }
       // ADR-0044 — `knowledgeGraph`, `processMemory` and `memoryStore` come in
       // their bounded form: turn reads within the turn's graph boundary, none
@@ -428,7 +432,13 @@ export function createPluginContext(
       // A provider reading back its own registration holds the object anyway.
       const holdsRaw = rawGraphServices || serviceRegistry.providedBy(agentId, name);
       return resolved !== undefined && !holdsRaw
-        ? boundGraphService(name, resolved, agentId, extractEntitySystems(agentId, catalog))
+        ? boundGraphService(
+            name,
+            resolved,
+            agentId,
+            extractEntitySystems(agentId, catalog),
+            catalogEntry?.plugin.permissions_summary.memory_trees ?? [],
+          )
         : resolved;
     },
     // #795 — the accessor an `optional_requires:` entry is consumed
@@ -1508,6 +1518,8 @@ export function createPluginMcpAccessor(
           // plugin-attributed call resolve as an unknown caller: `unresolved` in
           // the audit trail, no token, and a `per_user` server failing closed.
           ...(current?.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
+          // ADR-0206 — an unattended run stays unattended in `ctx.mcp`.
+          ...(current?.mcpUnattended ? { mcpUnattended: true } : {}),
           mcpCallerKind: 'plugin',
           mcpCallerId: pluginId,
         },

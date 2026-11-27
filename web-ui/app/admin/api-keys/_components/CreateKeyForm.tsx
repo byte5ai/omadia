@@ -32,8 +32,9 @@ const SCOPE_HELP_KEYS: Readonly<Record<string, string>> = {
   '*': 'wildcard',
 };
 
-/** Mirrors the backend's `mcp:write:<tool>` tool segment. */
-const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_-]*$/;
+/** Mirrors the backend's `mcp:write:<tool>` tool segment
+ *  (`isValidMcpWriteToolName`, #1940): tool names keep upper case. */
+const TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 const MIN_RATE_LIMIT = 1;
 const MAX_RATE_LIMIT = 6000;

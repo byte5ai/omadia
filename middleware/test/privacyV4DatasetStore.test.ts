@@ -204,14 +204,63 @@ describe('parseToolResult', () => {
     assert.equal(r.rows[0]?.name, 'Anna');
   });
 
-  it('an Odoo [id,"label"] sibling stays a column; a nested sibling is dropped; a metadata key never broadcasts', () => {
+  it('an Odoo [id,"label"] sibling stays a column; an empty sibling is ignored; a metadata key never broadcasts', () => {
     const r = parseToolResult(
-      { total: 1, partner_id: [7, 'ACME'], meta: { y: 1 }, rows: [{ name: 'Anna', n: 1 }] },
+      {
+        total: 1,
+        partner_id: [7, 'ACME'],
+        meta: {},
+        warnings: [],
+        rows: [{ name: 'Anna', n: 1 }],
+      },
       100_000,
     );
     assert.equal(r.rows.length, 1);
     assert.deepEqual(r.rows[0], { partner_id: [7, 'ACME'], name: 'Anna', n: 1 });
     assert.deepEqual(r.envelope, { itemsPath: 'rows', values: { total: 1 } });
+  });
+
+  it('keeps a result with a nested sibling as one nested row — the weather shape (#1728)', () => {
+    const weather = {
+      found: true,
+      location: { name: 'Hamburg', region: 'Hamburg', country: 'Germany' },
+      current: { temperature: 13.7, feels_like: 12.3, wind_speed: 14 },
+      other_matches: [
+        { name: 'Hamburg', region: 'New York', country: 'United States' },
+        { name: 'Hamburg', region: 'Iowa', country: 'United States' },
+      ],
+      source: 'open-meteo',
+    };
+    const r = parseToolResult(JSON.stringify(weather), 100_000);
+    assert.equal(r.shape, 'nested');
+    assert.equal(r.rows.length, 1);
+    assert.deepEqual(r.rows[0], weather, 'location and current reach the dataset');
+    assert.equal(r.envelope, undefined);
+    // The same result without the list was already one nested row.
+    const { other_matches: _list, ...noList } = weather;
+    const r2 = parseToolResult(JSON.stringify(noList), 100_000);
+    assert.equal(r2.shape, 'nested');
+    assert.deepEqual(r2.rows[0], noList);
+  });
+
+  it('a non-record array sibling (tags) also keeps the result as one nested row', () => {
+    const r = parseToolResult(
+      { tags: ['a', 'b'], rows: [{ name: 'Anna' }] },
+      100_000,
+    );
+    assert.equal(r.rows.length, 1);
+    assert.deepEqual(r.rows[0], { tags: ['a', 'b'], rows: [{ name: 'Anna' }] });
+    assert.equal(r.envelope, undefined);
+  });
+
+  it('totalMatched is envelope metadata, never a per-row column (#1848)', () => {
+    const r = parseToolResult(
+      { rows: [{ id: 1 }, { id: 2 }], totalMatched: 1000 },
+      100_000,
+    );
+    assert.equal(r.rows.length, 2);
+    assert.deepEqual(r.rows[0], { id: 1 });
+    assert.deepEqual(r.envelope, { itemsPath: 'rows', values: { totalMatched: 1000 } });
   });
 
   it('interns an empty array as zero rows', () => {

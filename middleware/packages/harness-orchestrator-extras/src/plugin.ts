@@ -105,9 +105,8 @@ import {
  *   - `llm_provider`             optional → explicit provider assignment for
  *                                the background features (OM-102). Unset ⇒
  *                                inherit the orchestrator's, then `anthropic`.
- *   - `anthropic_api_key`        optional → LAST credential in the OM-102
- *                                chain; no longer the on/off switch for
- *                                FactExtractor + TopicDetector
+ *   (No key field of its own since ADR-0215: provider keys live in the
+ *   kernel scope and are read through the kernel provider pool.)
  *   - `fact_extractor_model`     default 'claude-haiku-4-5-20251001'
  *   - `topic_classifier_model`   default 'claude-haiku-4-5-20251001'
  *   - `topic_upper_threshold`    default 0.55
@@ -158,6 +157,26 @@ const DEFAULT_CAPTURE_VISIBILITY: Visibility = 'team';
 
 export interface OrchestratorExtrasPluginHandle {
   close(): Promise<void>;
+}
+
+/**
+ * #2240 / ADR-0215 — where extras' provider comes from: the kernel pool when
+ * the host publishes one (always in production), else this plugin's own vault
+ * scope (legacy hosts, unit tests).
+ */
+function extrasProviderSource(
+  ctx: PluginContext,
+  catalog: LlmProviderCatalog | undefined,
+): { readonly label: string; readonly pool: Pick<LlmProviderPool, 'get' | 'usable'> } {
+  const kernelPool = ctx.services.getOptional<LlmProviderPool>('llmProviderPool');
+  if (kernelPool) return { label: 'kernel-pool', pool: kernelPool };
+  return {
+    label: 'plugin-scope',
+    pool: createLlmProviderPool({
+      getSecret: (k: string) => ctx.secrets.get(k),
+      ...(catalog !== undefined ? { catalog } : {}),
+    }),
+  };
 }
 
 export async function activate(
@@ -220,26 +239,25 @@ export async function activate(
   // Read ONCE, here, on purpose. A change to the orchestrator's `llm_provider`
   // rebuilds this plugin (and then the orchestrator, which captures the
   // services published below eagerly) through `reactivateAfterProviderWrite`
-  // in the kernel's `src/platform/providerDependents.ts` (#1076). Do not add a
+  // in the kernel's `src/platform/providerDependents.ts` (#1076); so does a
+  // config write to a provider plugin, e.g. its base URL (#1891). Do not add a
   // lazy per-call lookup instead: the orchestrator would keep holding the
   // instances built here, so a lookup inside them could never be the whole fix.
   //
-  // Credential sources, in order. This plugin's OWN vault scope first — that
-  // is where `anthropic_api_key` has always lived. The kernel pool (reading
-  // the orchestrator's scope, sharing its circuit breaker) is the fallback
-  // that makes the orchestrator's assignment actually usable here.
-  const ownProviderPool = createLlmProviderPool({
-    getSecret: (k: string) => ctx.secrets.get(k),
-    ...(llmProviderCatalog !== undefined
-      ? { catalog: llmProviderCatalog }
-      : {}),
-  });
-  // Does THIS plugin still hold its own Anthropic key? If so it outranks the
-  // inherited assignment (see `ProviderCandidateInput.ownScopeAnthropic`):
-  // migrating an install that pays for a key onto the operator's personal
-  // subscription quota is not a change a bugfix gets to make silently.
-  // `usable()` memoises inside the pool, so the later `get` is free.
-  const ownScopeAnthropic = await ownProviderPool
+  // #2240 / ADR-0215 — ONE credential source: the kernel provider pool, which
+  // reads the kernel's vault scope (the keys under LLM access) and shares the
+  // orchestrator's circuit breaker. The kernel publishes it at boot, before
+  // any plugin activates, so the eager read is safe (the same justification
+  // the orchestrator records for `llmProviderPool`). Only a host without a
+  // pool (legacy hosts, unit tests) falls back to this plugin's own scope.
+  const providerSource = extrasProviderSource(ctx, llmProviderCatalog);
+  // OM-102 precedence, unchanged: does this install hold an Anthropic key?
+  // If so it outranks the inherited assignment (see
+  // `ProviderCandidateInput.ownScopeAnthropic`): moving an install that pays
+  // for a key onto the operator's personal subscription quota is not a change
+  // a bugfix gets to make silently. Since ADR-0215 "this install's key" is
+  // the kernel scope's. `usable()` memoises, so the later `get` is free.
+  const ownScopeAnthropic = await providerSource.pool
     .usable(DEFAULT_EXTRAS_PROVIDER_ID)
     .catch(() => false);
   const providerCandidates = buildProviderCandidates({
@@ -249,23 +267,8 @@ export async function activate(
       ? { orchestrator: orchestratorProviderRaw }
       : {}),
   });
-  // Eager resolution is safe for all three optional services above despite the
-  // `getOptional` ordering caveat (an optional dependency creates no
-  // activation edge, so a PLUGIN-provided one may not have activated yet):
-  // these are provided by the KERNEL at boot, before any plugin activates —
-  // the same justification the orchestrator records for `llmProviderPool`.
-  const kernelProviderPool =
-    ctx.services.getOptional<LlmProviderPool>('llmProviderPool');
   const providerSources: readonly ProviderSource[] = [
-    { label: 'plugin-scope', get: (id) => ownProviderPool.get(id) },
-    ...(kernelProviderPool
-      ? [
-          {
-            label: 'kernel-pool',
-            get: (id: string) => kernelProviderPool.get(id),
-          },
-        ]
-      : []),
+    { label: providerSource.label, get: (id) => providerSource.pool.get(id) },
   ];
   // Resolved once per activate(); see the #1076 note at the
   // `installedPluginConfigReader` read above for why that is correct.

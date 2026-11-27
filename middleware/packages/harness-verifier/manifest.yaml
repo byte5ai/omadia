@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/verifier"
   name: "Answer Verifier"
-  version: "0.1.1"
+  version: "0.2.0"
   kind: "system-module"
   domain: "core.verifier"
   description:
@@ -13,7 +13,7 @@ identity:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
       url: "https://omadia.ai"
-  license: "Proprietary"
+  license: "MIT"
   categories:
     - "infrastructure"
     - "verification"
@@ -71,18 +71,12 @@ requires:
 # any failure, the LLM judges as before.
 optional_requires:
   - "decisionModel@1"
+  # #2240 / ADR-0215 — the kernel provider pool: the verifier's provider is
+  # built from the kernel's vault scope, like the orchestrator's and extras'.
+  - "llmProviderPool@1"
 
 setup:
   fields:
-    - key: "anthropic_api_key"
-      label:
-        en: "Anthropic API Key"
-        de: "Anthropic-API-Key"
-      type: "secret"
-      required: false
-      help:
-        en: "Optional legacy fallback — 'not set yet' is normal. The verifier uses the Anthropic key from LLM access (Admin → LLM access), and that key takes precedence: a key entered here is read only when LLM access holds no Anthropic key, so it cannot bill the verifier to a separate account. Without any key for the verifier's provider the plugin does not publish `verifier@1` and answers go out unchecked. (type: secret — stored in the vault, not in installed.json.)"
-        de: "Optionaler Legacy-Fallback — 'noch nicht gesetzt' ist normal. Der Verifier nutzt den Anthropic-Key aus dem LLM-Zugang (Admin → LLM-Zugang), und dieser Key hat Vorrang: Ein hier eingetragener Key wird nur gelesen, wenn der LLM-Zugang keinen Anthropic-Key hat — er kann den Verifier also nicht auf ein eigenes Konto abrechnen. Ohne jeden Key für den Provider des Verifiers publiziert das Plugin kein `verifier@1`, und Antworten gehen ungeprüft raus. (type: secret — im Vault gespeichert, nicht in installed.json.)"
     - key: "verifier_enabled"
       label:
         en: "Verifier Enabled"
@@ -199,5 +193,6 @@ integrations:
   - id: "anthropic_api"
     kind: "http"
     target: "Anthropic Claude API (Haiku-LLM für ClaimExtractor + EvidenceJudge)"
-    auth_from: "anthropic_api_key"
+    # ADR-0215: no `auth_from` — this plugin has no key field of its own; the
+    # key lives in the kernel scope (LLM access), read through the kernel pool.
     docs: "https://docs.anthropic.com/en/api/messages"

@@ -30,6 +30,7 @@ import type {
 } from '../api/admin-v1.js';
 import { PLUGIN_KINDS, TOOL_SIDE_EFFECTS } from '../api/admin-v1.js';
 import { isKernelReservedSystem } from '../platform/kernelNodeNamespaces.js';
+import { isDeclarableMemoryTree } from '../platform/memoryTrees.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
 import { readArchetypeManifest, type ArchetypeManifestDescriptor } from './archetypeManifest.js';
 import { readAgentTemplates, type AgentTemplate } from './agentTemplateManifest.js';
@@ -1036,6 +1037,12 @@ export function extractPermissions(
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),
+    // ADR-0256 — a plugin's own top-level `/memories` trees. A name that is
+    // private, `core` or an operator `_*` tree is dropped here, so the
+    // summary the operator sees is what the plugin can change.
+    memory_trees: extractStringArray(memory?.['trees'])
+      .map((tree) => tree.toLowerCase())
+      .filter(isDeclarableMemoryTree),
     graph_reads: extractStringArray(graph?.['reads']),
     graph_writes: extractStringArray(graph?.['writes']),
     network_outbound: extractStringArray(network?.['outbound']),

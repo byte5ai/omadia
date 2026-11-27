@@ -16,6 +16,11 @@ import { generate } from './codegen.js';
  */
 export async function renderManifestPreview(
   skeleton: AgentSpecSkeleton,
+  /** The draft's slot code (`draft.slots`). #1726 — the Builder stores slots
+   *  on the draft, not in `spec.slots`; without them every required slot is
+   *  "missing" and codegen throws, so the preview passes them like the
+   *  build does. */
+  slots: Readonly<Record<string, string>> = {},
 ): Promise<string> {
   let parsed;
   try {
@@ -30,7 +35,7 @@ export async function renderManifestPreview(
       ...msg.split('\n').map((line) => `#   ${line}`),
     ].join('\n');
   }
-  const out = await generate({ spec: parsed });
+  const out = await generate({ spec: parsed, slots: { ...slots } });
   const manifestBuf = out.get('manifest.yaml');
   if (!manifestBuf) {
     return '# manifest.yaml not produced by template';

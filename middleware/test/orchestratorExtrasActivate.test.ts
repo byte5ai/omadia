@@ -269,3 +269,42 @@ describe('OM-102 — orchestrator-extras activate() model wiring', () => {
     assert.deepEqual(coercionLogs(served.logs), []);
   });
 });
+
+// ── #2240 / ADR-0215 — the kernel pool is the only credential source ────────
+
+describe('#2240 — orchestrator-extras reads provider keys only through the kernel pool', () => {
+  it('ignores a key left in its own vault scope when the kernel pool has none', async () => {
+    const fake = fakePluginContext({
+      config: {},
+      secrets: { 'provider:anthropic/api_key': 'sk-ant-own-scope' },
+      services: {
+        knowledgeGraph: {},
+        installedPluginConfigReader: orchestratorAssigned(undefined),
+        llmProviderPool: kernelPoolServing([]),
+        embeddingClient: {},
+      },
+    });
+    const handle = await activate(fake.ctx);
+    try {
+      const status = fake.provided.get('memoryFeatureStatus') as MemoryFeatureStatus | undefined;
+      assert.equal(status?.factExtractor, 'disabled');
+      assert.equal(status?.providerId, undefined);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('keeps the OM-102 precedence: an Anthropic key under LLM access outranks the inherited CLI', async () => {
+    const { provided, handle } = await activateWith({
+      installedPluginConfigReader: orchestratorAssigned(CLI),
+      llmProviderPool: kernelPoolServing(['anthropic', CLI]),
+      embeddingClient: {},
+    });
+    try {
+      const status = provided.get('memoryFeatureStatus') as MemoryFeatureStatus | undefined;
+      assert.equal(status?.providerId, 'anthropic');
+    } finally {
+      await handle.close();
+    }
+  });
+});

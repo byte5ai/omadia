@@ -13,7 +13,7 @@ identity:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
       url: "https://omadia.ai"
-  license: "Proprietary"
+  license: "MIT"
   categories:
     - "infrastructure"
     - "storage"

@@ -241,7 +241,8 @@ function* genericCandidates(type: string): Generator<string> {
   }
 }
 
-function surrogateCandidates(type: string): Generator<string> {
+/** The per-type surrogate stream (exported for the table masker, #1867). */
+export function surrogateCandidates(type: string): Generator<string> {
   switch (type) {
     case 'person':
       return personCandidates();

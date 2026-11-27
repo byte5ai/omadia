@@ -148,7 +148,14 @@ describe('publicPaths — public MCP endpoint allowlist', () => {
    */
   it('does NOT widen the bypass to sub-paths under the endpoint', () => {
     assert.equal(isPublic(`${PUBLIC_MCP_PATH}/admin`), false);
-    assert.equal(isPublic(`${PUBLIC_MCP_PATH}/`), false);
+    assert.equal(isPublic(`${PUBLIC_MCP_PATH}//`), false);
+  });
+
+  // #1952 — one trailing slash is the same route; the express mount already
+  // routes it there, so the session gate must not answer it with "no session".
+  it('admits exactly one trailing slash', () => {
+    assert.equal(isPublic(`${PUBLIC_MCP_PATH}/`), true);
+    assert.equal(isPublic(`${PUBLIC_MCP_PATH}/?x=1`), true);
   });
 
   it('does NOT widen the bypass to sibling /api/v1/mcp* routes', () => {

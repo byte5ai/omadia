@@ -159,7 +159,7 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
     assert.match(body, /privacy masking did not run/);
   });
 
-  it('refuses an unmasked ERROR result — `isError` is not a licence to skip masking', async (t) => {
+  it('serves an unmasked ERROR result only as a generic tool error, never its text (#1937)', async (t) => {
     const h = await start(
       options({
         dispatchers: {
@@ -176,7 +176,10 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
     const res = await h.post(callToolRequest(TOOL), { token: KEY_TOKEN });
     const body = await res.text();
     assert.doesNotMatch(body, /sensitive\.person@customer\.example/);
-    assert.match(body, /privacy masking did not run/);
+    assert.doesNotMatch(body, /privacy masking/);
+    const parsed = JSON.parse(body) as { result?: { isError?: boolean; content?: { text: string }[] } };
+    assert.equal(parsed.result?.isError, true, 'a tool error stays a tool error');
+    assert.match(parsed.result?.content?.[0]?.text ?? '', /reported an error/);
   });
 
   it('refuses when the dispatcher never installs the handle at all (no `withPrivacy`)', async (t) => {

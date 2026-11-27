@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import type {
+  PreviewActivateOptions,
   PreviewHandle,
   PreviewToolDescriptor,
 } from '../../src/plugins/builder/previewRuntime.js';
@@ -27,11 +28,21 @@ function makeTool(
   };
 }
 
+/** Handles the orchestrator's stub activation returns, by rev. */
+const handlesByRev = new Map<number, PreviewHandle>();
+const activations: PreviewActivateOptions[] = [];
+async function activate(opts: PreviewActivateOptions): Promise<PreviewHandle> {
+  activations.push(opts);
+  const handle = handlesByRev.get(opts.rev);
+  if (!handle) throw new Error(`no stub handle for rev ${String(opts.rev)}`);
+  return handle;
+}
+
 function makeHandle(
   rev: number,
   tools: ReadonlyArray<PreviewToolDescriptor>,
 ): PreviewHandle {
-  return {
+  const handle = {
     draftId: 'd-1',
     agentId: 'de.byte5.agent.test',
     rev,
@@ -39,7 +50,16 @@ function makeHandle(
     previewDir: '/tmp/preview-stub',
     routeCaptures: [],
     close: async () => undefined,
-  };
+  } as unknown as PreviewHandle;
+  handlesByRev.set(rev, handle);
+  return handle;
+}
+
+const ZIP = Buffer.from('PK-fake');
+
+/** Registers the stub handle; contributes nothing to the smoke target. */
+function registered(_handle: PreviewHandle): Record<string, never> {
+  return {};
 }
 
 const fixtureSpec = {
@@ -88,9 +108,9 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
   });
 
   it('emits running synchronously and ok asynchronously after invocations finish', async () => {
-    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
     const handle = makeHandle(1, [makeTool('noop', async () => 'done')]);
-    orchestrator.attemptSmoke({ handle, userEmail, draftId });
+    orchestrator.attemptSmoke({ rev: handle.rev, zipBuffer: ZIP, userEmail, draftId });
 
     // 'running' must be visible immediately (sync emit).
     assert.equal(events.length, 1);
@@ -112,12 +132,12 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
   });
 
   it('retains the last smoke outcome for get_build_status pull (Issue #227)', async () => {
-    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
     // No smoke yet → no snapshot.
     assert.equal(orchestrator.getLastSmokeStatus(draftId), undefined);
 
     const handle = makeHandle(3, [makeTool('noop', async () => 'done')]);
-    orchestrator.attemptSmoke({ handle, userEmail, draftId });
+    orchestrator.attemptSmoke({ rev: handle.rev, zipBuffer: ZIP, userEmail, draftId });
 
     // `running` is retained synchronously (mirrors the sync emit).
     const running = orchestrator.getLastSmokeStatus(draftId);
@@ -134,10 +154,10 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
   });
 
   it('dedups by (draftId, rev) — second attempt at same rev is a no-op', async () => {
-    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
     const handle = makeHandle(7, [makeTool('noop', async () => 'done')]);
-    orchestrator.attemptSmoke({ handle, userEmail, draftId });
-    orchestrator.attemptSmoke({ handle, userEmail, draftId });
+    orchestrator.attemptSmoke({ rev: handle.rev, zipBuffer: ZIP, userEmail, draftId });
+    orchestrator.attemptSmoke({ rev: handle.rev, zipBuffer: ZIP, userEmail, draftId });
     await new Promise((r) => setTimeout(r, 30));
     const runningEvents = events.filter(
       (e) => e.type === 'runtime_smoke_status' && e.phase === 'running',
@@ -146,15 +166,19 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
   });
 
   it('runs again when rev advances', async () => {
-    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
     orchestrator.attemptSmoke({
-      handle: makeHandle(1, [makeTool('noop', async () => 'done')]),
+      rev: 1,
+      zipBuffer: ZIP,
+      ...registered(makeHandle(1, [makeTool('noop', async () => 'done')])),
       userEmail,
       draftId,
     });
     await new Promise((r) => setTimeout(r, 30));
     orchestrator.attemptSmoke({
-      handle: makeHandle(2, [makeTool('noop', async () => 'done')]),
+      rev: 2,
+      zipBuffer: ZIP,
+      ...registered(makeHandle(2, [makeTool('noop', async () => 'done')])),
       userEmail,
       draftId,
     });
@@ -166,13 +190,15 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
   });
 
   it('emits failed with reason=tool_failures when a tool throws', async () => {
-    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
     orchestrator.attemptSmoke({
-      handle: makeHandle(1, [
+      rev: 1,
+      zipBuffer: ZIP,
+      ...registered(makeHandle(1, [
         makeTool('boom', async () => {
           throw new Error('upstream API died');
         }),
-      ]),
+      ])),
       userEmail,
       draftId,
     });
@@ -189,11 +215,13 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
   });
 
   it('emits failed with reason=activate_failed when the draft is missing', async () => {
-    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
     // Use a different draftId that doesn't exist in the store.
     bus.subscribe('ghost-draft', (e) => events.push(e));
     orchestrator.attemptSmoke({
-      handle: makeHandle(1, [makeTool('noop', async () => 'ok')]),
+      rev: 1,
+      zipBuffer: ZIP,
+      ...registered(makeHandle(1, [makeTool('noop', async () => 'ok')])),
       userEmail,
       draftId: 'ghost-draft',
     });
@@ -206,5 +234,47 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
       assert.equal(terminal.reason, 'activate_failed');
       assert.match(terminal.activateError ?? '', /not found/);
     }
+  });
+
+  it('#1778: smokes a stub activation of the build (smokeMode, stub secrets), never the warm handle', async () => {
+    await store.update(userEmail, draftId, {
+      spec: {
+        ...fixtureSpec,
+        setup_fields: [{ key: 'api_token', type: 'secret', label: 'Token', required: true }],
+      } as never,
+    });
+    activations.length = 0;
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
+    const handle = makeHandle(11, [makeTool('noop', async () => 'done')]);
+    orchestrator.attemptSmoke({ rev: handle.rev, zipBuffer: ZIP, userEmail, draftId });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(activations.length, 1);
+    assert.equal(activations[0]!.smokeMode, true);
+    assert.equal(activations[0]!.zipBuffer, ZIP);
+    assert.deepEqual(activations[0]!.secretValues, { api_token: 'smoke-test' });
+  });
+
+  it('#1778: never calls a tool the spec declares as writing', async () => {
+    await store.update(userEmail, draftId, {
+      spec: {
+        ...fixtureSpec,
+        tools: [{ id: 'create_order', description: 'w', input: { type: 'object' }, side_effects: 'write' }],
+      } as never,
+    });
+    let called = false;
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus, activate });
+    const handle = makeHandle(12, [
+      makeTool('create_order', async () => {
+        called = true;
+        return 'created';
+      }),
+    ]);
+    orchestrator.attemptSmoke({ rev: handle.rev, zipBuffer: ZIP, userEmail, draftId });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(called, false);
+    const terminal = orchestrator.getLastSmokeStatus(draftId);
+    assert.equal(terminal?.phase, 'ok');
+    assert.equal(terminal?.reason, 'writes_skipped');
+    assert.equal(terminal?.results?.[0]?.status, 'skipped');
   });
 });

@@ -21,6 +21,7 @@ import {
   type TurnSearchHit,
   isEvidencedPlanStepDone,
 } from '@omadia/plugin-api';
+import { parseRecordingTranscript, renderUserLine } from './recordingTranscriptRender.js';
 
 import type {
   RecallCandidate,
@@ -1642,7 +1643,7 @@ function renderContext(input: RenderInput): string {
   if (input.verbatimTurns.length > 0) {
     push('## Letzte Turns in diesem Chat');
     for (const t of input.verbatimTurns) {
-      const chunk = `- [${t.time}]\n  Nutzer: ${truncate(t.userMessage, 600)}\n  Assistent: ${truncate(t.assistantAnswer, 1200)}`;
+      const chunk = `- [${t.time}]\n  ${renderUserLine(t.userMessage, 600, 'Nutzer')}\n  Assistent: ${truncate(t.assistantAnswer, 1200)}`;
       if (!push(chunk)) break;
     }
   }
@@ -1860,12 +1861,18 @@ const COMPACT_ASSISTANT_CHARS = 40;
 function renderHitChunk(hit: CandidateHit, compactMode: boolean): string {
   const time = hit.time;
   if (compactMode) {
-    const u = truncate(hit.userMessage, COMPACT_USER_CHARS);
+    const recording = parseRecordingTranscript(hit.userMessage);
+    const u =
+      recording === undefined
+        ? truncate(hit.userMessage, COMPACT_USER_CHARS)
+        : `(Aufnahme) ${truncate(recording.text, COMPACT_USER_CHARS)}`;
     const a = truncate(hit.assistantAnswer, COMPACT_ASSISTANT_CHARS);
     return `- [${time}] ${u} … ${a}`;
   }
-  return `- [${time}]\n  Nutzer: ${truncate(hit.userMessage, 600)}\n  Assistent: ${truncate(hit.assistantAnswer, 1200)}`;
+  return `- [${time}]\n  ${renderUserLine(hit.userMessage, 600, 'Nutzer')}\n  Assistent: ${truncate(hit.assistantAnswer, 1200)}`;
 }
+
+
 
 function pickReason(c: CandidateHit): AssembledHitReason {
   // Multiplier reasons override origin in the audit so the operator sees

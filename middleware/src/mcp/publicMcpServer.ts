@@ -91,6 +91,7 @@ import {
   type McpInputRequiredResult,
 } from './publicMcpInputRequired.js';
 import type { PublicMcpKeyBinding, PublicMcpKeyBindingStore } from './publicMcpKeyBindings.js';
+import { createPublicMcpUsageTracker, usageStatusForCall } from './publicMcpUsage.js';
 import {
   flattenInputResponses,
   toEmbeddedInputRequests,
@@ -267,6 +268,19 @@ function unavailableToolMessage(name: string): string {
 }
 
 /**
+ * What a caller reads when a tool reported an error (#1937): an MCP tool result
+ * with `isError: true`, never the tool's own error text. That text can quote
+ * the data the tool failed on, and this endpoint serves no tool-error text
+ * (ADR-0142, as amended by ADR-0212). The call log row names the outcome.
+ */
+export function toolReportedErrorMessage(name: string): string {
+  return (
+    `Tool \`${name}\` reported an error. Its error text is not served over this endpoint; ` +
+    'the operator can find the call in the MCP audit log.'
+  );
+}
+
+/**
  * The handler context fields the 2026-07-28 leg reads (#700).
  *
  * Typed structurally and read defensively: both are absent on the ORIGINAL
@@ -308,6 +322,9 @@ export class PublicMcpServer {
   /** Memoised so a generated fallback key stays stable for this process —
    *  minting per request would refuse every retry, including its own. */
   private resolvedCodec?: Promise<RequestStateCodec<PublicMcpRequestState>>;
+
+  /** #1936 — the key's usage-log entry for each request. */
+  private readonly usage = createPublicMcpUsageTracker();
 
   constructor(private readonly deps: PublicMcpServerDeps) {}
 
@@ -504,6 +521,8 @@ export class PublicMcpServer {
       return;
     }
 
+    this.usage.track(principal, res);
+
     // ── era routing (#700) ──────────────────────────────────────────────────
     // Two SDK generations serve this one path, and the protocol era of the
     // request decides which — never configuration, and never a per-deployment
@@ -576,7 +595,7 @@ export class PublicMcpServer {
     const mcp = new McpServer(
       {
         name: this.deps.serverName ?? 'omadia-public-mcp',
-        version: this.deps.serverVersion ?? '0.0.0',
+        version: this.deps.serverVersion ?? 'unknown',
       },
       { capabilities: { tools: {} } },
     );
@@ -764,7 +783,7 @@ export class PublicMcpServer {
     const mcp = new ModernMcpServer(
       {
         name: this.deps.serverName ?? 'omadia-public-mcp',
-        version: this.deps.serverVersion ?? '0.0.0',
+        version: this.deps.serverVersion ?? 'unknown',
       },
       {
         capabilities: { tools: {} },
@@ -888,6 +907,7 @@ export class PublicMcpServer {
     principal: ApiKeyPrincipal,
   ): Promise<{ name: string; description: string; inputSchema: unknown }[]> {
     if (!hasScope(principal.scopes, MCP_LIST_SCOPE)) {
+      this.usage.note(principal, 'forbidden');
       // An error, not an empty list: "not scoped for mcp:list" leaks no tool
       // names, and an integrator debugging a misconfigured key deserves to be
       // able to tell a scope problem from an empty allowlist.
@@ -1128,12 +1148,16 @@ export class PublicMcpServer {
     const options: ToolDispatchOptions = {
       caller: {
         principal: principal.keyId,
+        principalKind: 'api_key',
         scopes: principal.scopes,
         requestId: scope.turnId,
       },
       // Applied by the dispatch layer to write-capable tools ONLY, and only
       // when an idempotency store is wired. Advisory — see the README.
       ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+      // #1938 — a binding write is a write for idempotency too, not only for
+      // the scope, the budget and the log.
+      ...(isWrite ? { treatAsWrite: true } : {}),
       // The masking assertion, moved to where it can also stop a bad body being
       // CACHED. Running it only after `dispatch()` returned was too late: the
       // idempotency store had already retained an unmasked result, so the first
@@ -1203,7 +1227,7 @@ export class PublicMcpServer {
         result.isError !== true,
         result.isError === true ? 'tool reported an error' : null,
       );
-      return result;
+      return this.servable(name, result, gate);
     } catch (error) {
       // EVERY failure lands exactly one row, and the bookkeeping is a flag
       // rather than "is it an McpError".
@@ -1334,6 +1358,7 @@ export class PublicMcpServer {
       gate !== undefined &&
       result.origin !== 'dispatcher' &&
       result.replayed !== true &&
+      !isToolReportedError(result) &&
       !gate.masked()
     ) {
       throw new McpError(
@@ -1341,6 +1366,22 @@ export class PublicMcpServer {
         'privacy masking did not run for this tool result — the result was discarded rather than returned unmasked',
       );
     }
+  }
+
+  /**
+   * The body this endpoint may return for `result` (#1937). A tool-reported
+   * error under the gate is answered with `toolReportedErrorMessage` and its
+   * own text dropped, so the exemption in `assertMaskingCrossed` never serves
+   * unmasked bytes. Without a gate (no provider, masking deliberately not
+   * required) the result goes out unchanged, as every other result does there.
+   */
+  private servable(
+    name: string,
+    result: ToolDispatchResult,
+    gate: PublicMcpPrivacyGate | undefined,
+  ): ToolDispatchResult {
+    if (gate === undefined || !isToolReportedError(result)) return result;
+    return { content: toolReportedErrorMessage(name), isError: true, origin: 'dispatcher' };
   }
 
   private async withTimeout(
@@ -1380,6 +1421,7 @@ export class PublicMcpServer {
     startedAt: number,
     write: boolean,
   ): void {
+    this.usage.note(principal, usageStatusForCall(ok, error));
     if (!this.deps.audit) return;
     try {
       this.deps.audit({
@@ -1401,4 +1443,14 @@ export class PublicMcpServer {
       console.warn(`[public-mcp] audit sink threw: ${String(err)}`);
     }
   }
+}
+
+/**
+ * A result the tool marked as its own error: the dispatcher flags a returned
+ * `Error:` text or an MCP connect prompt `isError` with `origin: 'tool'`
+ * (`fromToolError`). An idempotency replay is not one: error results are never
+ * retained, so a replayed body was a success.
+ */
+function isToolReportedError(result: ToolDispatchResult): boolean {
+  return result.isError === true && result.origin !== 'dispatcher' && result.replayed !== true;
 }

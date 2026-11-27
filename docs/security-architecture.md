@@ -45,7 +45,10 @@ Benefits:
   client, and removing the Anthropic key revokes the shared host
   `anthropicClient`/`llm` live (falling back to `ANTHROPIC_API_KEY` if set,
   otherwise to an unauthenticated client). After a deletion the kernel pool
-  and the orchestrator stop using the key immediately. Two limits remain:
+  and the orchestrator stop using the key immediately; since ADR-0215 the
+  verifier and orchestrator-extras read the same kernel scope through the
+  kernel pool, and a key change under LLM access rebuilds them too (§8).
+  Two limits remain:
   the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
   and on installs whose vault key was seeded from that env var at first boot
   it is the same key, so host consumers (plan-runner gate, Teams, builder)
@@ -122,13 +125,29 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | Binary resolution (#1085) | Every spawn site — chat turn, completion provider, and the CLI sub-agents (`ask_<slug>`, agent builder, preview chat) — resolves the binary through the kernel's `resolveCliBin()` — `<CLI_TOOLS_DIR>/bin/claude` (default `<PLATFORM_DATA_DIR>/cli-tools`) when a runtime install put one there, else the bare name from PATH. Previously they spawned the bare name while the version badge, the login flow and the "Install now" button all used the resolved path, so an operator could install a CLI ≥ 2.1.248 through the UI and every turn kept running the older image binary — including the `--restricted` version probe above, which then dropped the flag against a deployment the UI reported as up to date. The rule is published as the `cliBinaryResolver` kernel service (`optional_requires` in the orchestrator manifest) because `@omadia/orchestrator` cannot import the app layer; kernel-side callers share `src/platform/cliBinary.ts` (`resolveClaudeCliBin()`). Absent, every site falls back to PATH. Resolution runs **per turn / per completion**, so an install takes effect on the next turn rather than the next restart, and the spawn log names the resolved path. Credentials are unaffected either way: both binaries read the same `CLAUDE_CONFIG_DIR`. The candidate must be executable (`X_OK`, which follows symlinks) and is made absolute, because every spawn runs in a temp `cwd` where a relative path would not resolve; otherwise PATH. **Trust consequence:** the install dir is now the binary every turn executes, so its writers — the authenticated `POST /api/v1/admin/cli-backends/:id/install` and anything with write access to the data volume — choose the binary the gate wraps. That route accepts any strict-semver version, so a runtime install below 2.1.248 drops `--restricted` for turns exactly as an old image pin does; the spawn log's `restrictedFlag` shows it. Like any kernel service, `cliBinaryResolver` can be swapped with `ctx.services.replace` by a plugin that declares it under `requires`/`optional_requires` (the #788 gate treats `replace` like `get`); that is no escalation over in-process plugin code, but if such a plugin activates before the orchestrator (which resolves the service once, in `activate()`), it chooses the binary for every chat turn, so a manifest declaring this service deserves review. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
-### No Privacy Shield on this path — chat history and graph recall are replayed (#1087, #1391)
+### Privacy Shield on this path (ADR-0195, #2239) — chat history and graph recall are replayed (#1087, #1391)
 
-"Privacy guard" in the list above does not mean the CLI child receives masked
-data. Only the in-process orchestrator installs a per-turn privacy handle, so on
-the subscription-CLI path the live user message, tool results, the replayed chat
-history (#1087) and the knowledge-graph recall (#1391) reach the vendor
-unmasked. `CliChatAgent` replays the newest completed turns of the session into
+Since ADR-0195 a CLI turn on an instance with a privacy guard runs through its
+own per-turn privacy handle (`Orchestrator.cliTurnPrivacy`, installed by
+`CliChatAgent.captureTurnContext` / `installPrivacy` on the turn context). The
+live user message and steering hint (under `mask_user_prompt`), the recalled
+context and the replayed history are masked before the spawn; every loopback
+tool result is interned by `ToolDispatchService` through the handle, with the v4
+verb and render tools served over the same loopback server; a data tool's input
+gets its prompt surrogates restored and every result is re-masked (#1544). The
+streamed text is restored on the way out (`StreamSurrogateRestorer`, a surrogate
+split across chunks restores whole), the final answer takes the server render
+and the restore, and the receipt rides the `done`. A blocked mask ends the turn
+before the spawn. A guarded turn without a handle (none could be built, or
+`OMADIA_PRIVACY_FORCE_GUARDED` without a running guard) is refused before the
+spawn. A CLI sub-agent asked inside a guarded turn masks through the calling
+turn's handle and returns its answer unrestored; the Builder and preview-chat
+CLI sub-agents are operator jobs outside the shield, refused only under the org
+policy (ADR-0196).
+
+Without a privacy guard (an unguarded instance) the paragraphs below describe
+what reaches the vendor: the live user message, tool results, the replayed chat
+history (#1087) and the knowledge-graph recall (#1391) go out unmasked. `CliChatAgent` replays the newest completed turns of the session into
 the child's stdin prompt — as many as the operator's `context_tail_size`
 (default 10, the `ContextRetriever`'s `tailSize`) — truncated to 600 characters
 per question and 1,200 per answer, with role markers neutralised so replayed
@@ -775,12 +794,24 @@ This keeps the supply chain explicit:
   (`toolIdempotency.ts`, `ToolDispatchService`). A restart, a second instance
   or an expired or evicted record executes the write again, so the key is a
   retry-safety mitigation and does not make a write run at most once
-  (`src/mcp/README.md`, Idempotency). Without a key, the MCP client may retry
-  the call once after a transport failure. On the chat path a verifier
-  re-entry replays every external call the first run recorded and executes
-  none of them again (a sub-agent whose data the shield interned runs again,
-  with its own calls replayed, §7c); a turn without that replay ledger keeps
-  the same single retry, so an MCP write whose reply was lost can run twice.
+  (`src/mcp/README.md`, Idempotency). Without a key, the MCP client re-sends
+  a call whose answer was lost (timeout, dropped connection, HTTP 5xx) only
+  when its server declares the tool `readOnlyHint` or `idempotentHint`, or
+  when the server provably never ran it (failed connect, session 404); any
+  other such call returns "outcome unknown" (ADR-0205). On the chat path a
+  verifier re-entry replays every external call the first run recorded and
+  executes none of them again (a sub-agent whose data the shield interned runs
+  again, with its own calls replayed, §7c). A server that wrongly declares a
+  write tool idempotent can still get it twice.
+- MCP delegation (ADR-0206). A `per_user` OAuth-protected server receives no
+  request at all from a caller without a user identity (`blockedReason`); a
+  server without OAuth has no per-user credential and is called as before.
+  Routines record the creating turn's MCP identity (session OAuth key or
+  attested channel identity, never a client header) in `routines.mcp_user_key`
+  and act as their owner, also when an operator fires one by hand. Unattended
+  callers (workflows, routines, triggers) never start an OAuth flow and never
+  park an input request; they get a typed `auth_required` / `input_required`
+  failure.
   Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).
@@ -1059,8 +1090,12 @@ The surfaces that boundary must cover, and how each one does:
   across users or agents are kernel-only; `findEntities` in a context-bound
   turn keeps synced master data and entities a visible turn captured; the
   private `/memories` trees (`orchestrators`, `contexts`, `sessions`,
-  `chat-sessions`) and loose root files are never reachable, and the `_*`
-  trees are read-only; plan reads and writes reach only the turn's own
+  `chat-sessions`, `_plugin-trees`) and loose root files are never reachable,
+  `core` and the `_*` trees are read-only, and a plugin reads and changes only
+  the top-level trees its manifest declares (`permissions.memory.trees`) and
+  owns: the first plugin to use a tree owns it, recorded in
+  `/memories/_plugin-trees/<tree>.json`; `pairings` stays channel-telegram's
+  through a dated legacy row (ADR-0256, #2232); plan reads and writes reach only the turn's own
   conversation, process writes only this agent's scopes, entity and fact
   writes only the plugin's declared `graph.entity_systems` (ADR-0167;
   a plugin that declares none writes no entity or fact, ADR-0169, #2244;
@@ -1071,11 +1106,24 @@ The surfaces that boundary must cover, and how each one does:
   is kernel-only for plugins: its reads take any viewer id, and `recluster`
   rebuilds every account's topics. Only the
   bundled providers and boundary implementers (`orchestrator`,
-  `orchestrator-extras`) hold the raw services. `graphPool` stays an
-  operator-granted SQL capability (C7). Residuals: sibling recall and
-  curation services are still raw (#2231); shared top-level `/memories`
-  trees are writable by every declaring plugin (#2232); plugin SQL on
-  kernel tables (#2230).
+  `orchestrator-extras`) hold the raw services. The recall and curation
+  services (`contextRetriever`, `sessionBriefing`, `palaiaExcerpt`, the
+  `bulk*` review services, `inconsistencyDetector`, `mergeCandidateDetector`,
+  `nudgeProviders`, `graphLifecycle`) resolve only
+  for those implementers; `entityRefBus@1` is publish-only for every other
+  plugin (ADR-0257, #2231). `graphPool` stays an operator-granted SQL
+  capability (C7); for a plugin that is not bundled every statement on the
+  borrowed pool passes `sqlTableGuard.ts` first: a statement naming a kernel
+  table (`kernelSqlRelations.ts`, checked against every kernel migration by a
+  test) is refused, as are dollar-quoted bodies, `DO`, `CREATE FUNCTION`,
+  SQL-text functions, `standard_conforming_strings`/`set_config`, `pg_stats`,
+  `LISTEN`/`NOTIFY`, submittables and another plugin's `plg_` namespace; a
+  query config is copied before it runs, and the pool's listeners, `options`
+  and internals are hidden from `get` and reflection (ADR-0255, #2230).
+  Residuals: the guard reads names, not meaning (unlisted extension
+  functions); and it does not contain a hostile in-process upload, which can
+  read the connection string from its environment — the operator's grant
+  stays the bound.
 - **Curated memory:** under `members`, `acl_owners ⊇ audience`, or an
   operator-authored row. "Operator-authored" means `manually_authored` and a
   `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
@@ -1401,7 +1449,12 @@ one rule about what counts as a runtime.
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored
 in object storage and served via HMAC-signed URLs with a short TTL
-(default: 3600s). The signing secret is a vault entry, not a config value.
+(default: 3600s, the same for the env auto-install and a Store install). The
+signing secret is a vault entry, not a config value: `DIAGRAM_URL_SECRET` is
+copied into the Diagrams and Office vaults once, on the boot that auto-installs
+them, and is not read again. **Rotation** is a new value in each plugin's setup
+field (Store → Diagrams / Headless Office); both plugins hold their own copy,
+so rotate both (#1975).
 
 URLs are scoped to a tenant prefix so that bucket browsing does not reveal
 other tenants' keys.
@@ -2080,6 +2133,9 @@ came in:
 |---|---|---|
 | Chat turn (`Orchestrator`, privacy provider installed) | The turn's handle, inherited through `turnContext` | Withheld or redacted at every seam, receipted |
 | Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a refusal for a returned `Error:` text |
+| Loopback MCP for the subscription CLI | The CLI turn's own handle (ADR-0195); a CLI sub-agent in a guarded turn inherits the caller's through `turnContext` | Withheld or redacted at every seam, receipted |
+
+| Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a generic `isError` result without the tool's text for a returned `Error:` text (ADR-0212) |
 | Loopback MCP for the subscription CLI | None (§3a, #1087) | Raw — see Residuals |
 | Any path without a privacy provider | None | Raw (parity) |
 
@@ -2184,12 +2240,12 @@ finalized.
   when `mask_user_prompt` is on, and a `blocked` outcome refuses the call. The
   answer is restored before the plugin reads it. Outside a turn (jobs, routes)
   the request still goes out as the plugin built it.
-- The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
-  loopback dispatcher runs without a privacy handle, so both carriers pass raw
-  there. Since ADR-0017 was enforced for it, a CLI turn is therefore refused
-  whenever a privacy guard is installed, not only under the org clamp
-  (`CliChatAgent.refusedByPolicy`, `CLI_PRIVACY_GUARD_ACTIVE_LOG`); the CLI
-  runs unmasked only on an instance without a guard.
+- The subscription-CLI path runs under the turn's own privacy handle since
+  ADR-0195 (§3a, #2239), so both carriers take the same seams as in-process. A
+  guarded CLI turn that gets no handle is refused before the spawn
+  (`CLI_PRIVACY_GUARD_ACTIVE_LOG`); the CLI runs unmasked only on an instance
+  without a guard, and the Builder/preview CLI sub-agents run as operator jobs
+  outside the shield (ADR-0196).
 - C0 detects no names; C1 does when it is configured. Without C1 a returned
   error keeps a name that stands in running prose, or in a record the
   classifier does not recognise as one: positional fields
@@ -2523,8 +2579,8 @@ requests, and only there, the shield acts on four kinds of text:
   restore runs only when the provider implements both methods (privacy guard
   0.13.0); an older provider keeps giving tools the surrogates. Residuals: a
   tool that echoes the value in another form (an abbreviation, a translation)
-  is not re-masked, and the subscription-CLI path does not restore (its
-  tools keep the surrogates). A plugin tool that hands its input to a model
+  is not re-masked. The subscription-CLI path restores the same way since
+  ADR-0195 (`Orchestrator.cliTurnPrivacy` → `wrapDispatch`). A plugin tool that hands its input to a model
   through `ctx.llm` inside the turn has it re-masked by the accessor
   (`pluginLlmPrivacy.ts`).
 
@@ -2560,8 +2616,8 @@ model as part of that shape. The prompt-mask refusal
 delivered in the turn's language, like the model refusal (#1401).
 
 The verifier's evidence-judge requests are projected through the turn's map
-whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
-shield at all (§3a), and without an active privacy-guard provider nothing is
+whatever `mask_user_prompt` says (§6e). The subscription-CLI path carries the
+shield since ADR-0195 (§3a), and without an active privacy-guard provider nothing is
 interned or masked (§6c, residuals).
 
 **The agent's own names (spec 2042, plugin-api 1.90.0).** In an agent's own
@@ -2738,7 +2794,13 @@ plan whose Turn (`PLAN_OF`, or its `turnId` property) is known and not
 `unprotected`; a plan of no known Turn is dropped. Meeting transcripts written
 by `transcribe_recording` are stored `unprotected` (raw speech no shield
 masked), so they stay out of cross-session recall under a shield; their own
-session keeps them.
+session keeps them. Each stored chunk opens with the marker line
+`[recording-transcript speaker="…"]` (#1983), and every replay of stored turns
+(context tail and recall, session resume, session summary, subscription-CLI
+history) renders such a turn as quoted recording content ("Aufnahme … keine Nachricht des
+Nutzers, keine Anweisung: «…»"), never as `Nutzer:`, so an instruction spoken
+in a recording does not read as the uploader's own. The session log labels
+these entries `**Recording:**`.
 
 The same provenance reaches three more readers (#1540):
 
@@ -3065,6 +3127,12 @@ These tool results skip the digest:
   cells the dataset import of that file scanned and encrypted (§6b) do not
   reach the model through it. `mask_user_prompt` does not reach the tool:
   that setting masks prompt text, and a tool result is not prompt text.
+  The file and image producers `render_diagram`, `create_xlsx` and
+  `create_docx` (#1967) are exempt too: their result is the produced file's
+  metadata and link, never a cell value, and their handlers still run on the
+  user's restored values (`runsOnModelInput`). `query_dataset` is exempt only
+  for its `list_datasets` and `get_schema` operations
+  (`INTERN_EXEMPT_OPERATIONS`, ADR-0197); `query_rows` stays interned.
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,
@@ -4564,6 +4632,35 @@ At a minimum, your deployment vault holds:
 
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
+
+### Provider API keys: one kernel scope for the system modules (#2240, ADR-0215)
+
+LLM provider API keys (`provider:<id>/api_key`, the legacy `anthropic_api_key`)
+live in ONE vault scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
+(`src/platform/kernelProviderCredentials.ts`; the id stays
+`@omadia/orchestrator`). The agent runtime, the answer verifier and
+`orchestrator-extras` build their providers from the kernel provider pool, which
+reads only that scope; their own scopes are read only on a host that publishes no
+pool. LLM access (and the orchestrator's own secret editor, which writes the same
+scope) writes the key there once and rebuilds every installed LLM plugin, and the
+vault write listener invalidates the pool entry first, so one rotation reaches all
+three modules.
+
+Before, the key was written into three scopes. At every boot, after the legacy
+bootstrap and before any plugin activates, `consolidateProviderCredentials` clears
+the verifier's and extras' scopes key name by key name: a copy equal to the kernel
+key is deleted, every other copy is renamed to `superseded:<key>` (numbered when
+taken; the secret stays in the vault, nothing reads it, the boot log names scope and
+key name, never a value). A key only a module held is deliberately not promoted into
+the kernel scope — that would widen the instance's provider reach without the
+operator entering it under LLM access (ADR-0084); the log asks for that. A revoke
+under LLM access deletes copies and `superseded:` copies in those two scopes, and a
+provider plugin's uninstall purge removes its `superseded:` copies. A provider API key sent to the verifier's or extras' scope through the
+per-plugin editor is refused (`400 runtime.provider_key_in_kernel_scope`) instead
+of being stored where nothing reads it. Residual: an install that ran extras on a
+dedicated Anthropic key now runs it on the key under LLM access; the OAuth token
+fan-out and the back-compat `/setup` key seed still write copies into the module
+scopes (never read by the modules).
 
 ### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
 
@@ -7359,10 +7456,29 @@ Endpoints that come from a registry catalog are not operator configuration and
 keep the stricter untrusted rule (`assertUntrustedEndpointSafe`,
 `mcpRegistryClient.ts`): `https` only, and no private or loopback host either.
 
-**stdio trust model.** For transport `stdio` the endpoint is a command line.
-The middleware splits it and starts it as its own child process, so it runs as
-the middleware's OS user with the same filesystem and network access. That is
-the same power the admin who saves it already has. Catalog imports only write
+**Static headers and API keys (ADR-0210, #1912).** An admin can give an
+http/sse server static request headers. A header marked secret is stored on
+the row only as its `{header_<name>}` placeholder; the value lives in the Vault
+(`@omadia/mcp-config`) and is filled in per call, like every secret config
+field, which now works in the endpoint as well. No route returns a secret
+value: the header list reports `secretSet` only. Removing a header or a
+placeholder deletes its Vault secret. A secret placed in the endpoint URL can
+still be quoted by an upstream or transport error message; a header avoids
+that. Deleting a server deletes its config secrets.
+
+**stdio trust model (ADR-0211, #1914).** For transport `stdio` the endpoint is
+a command line. The middleware splits it and starts it as its own child
+process, so it runs as the middleware's OS user with the same filesystem and
+network access. Its own environment is minimal (the SDK defaults plus the
+server's config values), but that is not a boundary: the middleware is PID 1
+under the same user, so the child can read `/proc/1/environ` (`VAULT_KEY`,
+`CREDENTIAL_KEYCHAIN_KEY`, `DATABASE_URL`, provider keys) and the data
+directory (`/data/.dev-vault.key` when no `VAULT_KEY` is set). With those it
+can decrypt every stored secret. A stdio server is therefore inside the
+middleware's trust domain; for a command the admin typed that is the admin's
+own power, for a catalog entry it is third-party npm code with the same
+access. The add-server form and the catalog card of a stdio entry say so.
+Catalog imports only write
 `npx -y -- <package>` and check the package name against a strict npm-name
 grammar (`NPM_NAME_RE`); a manual entry accepts any command. Saving a stdio
 server writes a log line with its id, name and source (manual or catalog), not
@@ -7374,8 +7490,10 @@ catalog import, with
 `400 {"error":"mcp_stdio_disabled","code":"stdio_disabled"}`, and an existing
 stdio row is refused at connect time (Discover → `502` with
 `code: stdio_disabled`, re-scans, runtime calls) without starting a process.
-The default is `true`, so existing installations keep working unchanged.
-Whether the Compose stack should ship with stdio off is an open decision.
+The built-in default is `true`, so from-source runs, the desktop app and
+existing deployments keep working unchanged. The docker-compose stack ships
+with `MCP_STDIO_ENABLED=false` in `middleware/compose.defaults.env`; an operator
+who wants stdio servers sets `true` in `middleware/.env` (ADR-0211).
 
 **Residual risks.**
 
@@ -7396,6 +7514,10 @@ Whether the Compose stack should ship with stdio off is an open decision.
 - With stdio on, an admin can run any command in the middleware container.
   Restricting manual stdio entries to the catalog grammar unless the operator
   opts in to free command lines is deferred.
+- With stdio on, every stdio server (and every catalog package it pulls) can
+  read the middleware's keys and so every stored secret (accepted, ADR-0211).
+  Isolating stdio children (separate UID, hidden `/proc`, no `/data`) is the
+  open follow-up.
 ## 10q. The admin audit trail: one actor rule, one read route (#1315, #1347)
 
 `admin_audit` is append-only; nothing in the code updates or deletes a row.
@@ -7470,7 +7592,9 @@ A provider plugin's API key is not stored in the plugin's own vault namespace.
 The settings page and `POST /admin/providers/:id/verify` write
 `provider:<id>/api_key` and `provider:<id>/verified_at` (OAuth providers also
 `provider:<id>/oauth_*`) into the three LLM scopes `@omadia/orchestrator`,
-`@omadia/verifier` and `@omadia/orchestrator-extras`. Uninstall's
+`@omadia/verifier` and `@omadia/orchestrator-extras`. Since ADR-0215 the API key
+itself is written to the kernel scope (`@omadia/orchestrator`) only (§8); the
+purge still covers all three scopes for copies written before. Uninstall's
 `vault.purge(pluginId)` never reached them, so the key outlived the plugin and a
 reinstall under the same id inherited it without the operator entering one.
 

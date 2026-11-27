@@ -32,12 +32,15 @@ import {
   refreshPreview,
   streamPreviewTurn,
 } from '../../../../_lib/api';
-import type {
-  BuildErrorRow,
-  CodegenIssueRow,
-  PreviewStreamEvent,
-  SetupField,
-  TranscriptEntry,
+import {
+  isSmokeToolFailure,
+  type BuildErrorRow,
+  type CodegenIssueRow,
+  type PreviewStreamEvent,
+  type RuntimeSmokeReason,
+  type RuntimeSmokeToolStatus,
+  type SetupField,
+  type TranscriptEntry,
 } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
 import { humanizeProviderError } from '../../../../_lib/providerErrorMessage';
@@ -95,11 +98,11 @@ export interface AgentStuckSnapshot {
 export interface RuntimeSmokeSnapshot {
   phase: 'running' | 'ok' | 'failed';
   buildN: number;
-  reason?: 'ok' | 'activate_failed' | 'tool_failures' | 'no_tools';
+  reason?: RuntimeSmokeReason;
   activateError?: string;
   results?: ReadonlyArray<{
     toolId: string;
-    status: 'ok' | 'timeout' | 'threw' | 'validation_failed';
+    status: RuntimeSmokeToolStatus;
     durationMs: number;
     errorMessage?: string;
   }>;
@@ -650,9 +653,8 @@ function RuntimeSmokeStrip({
 }): React.ReactElement | null {
   const t = useTranslations('builder.preview.chat.smoke');
   const total = snap.results?.length ?? 0;
-  const failed = snap.results?.filter(
-    (r) => r.status === 'threw' || r.status === 'timeout',
-  ).length ?? 0;
+  const failed = snap.results?.filter((r) => isSmokeToolFailure(r.status)).length ?? 0;
+  const skipped = snap.results?.filter((r) => r.status === 'skipped').length ?? 0;
 
   let icon: React.ReactNode;
   let toneClass: string;
@@ -669,8 +671,11 @@ function RuntimeSmokeStrip({
       'border-[color:var(--success)]/30 bg-[color:var(--success)]/8 text-[color:var(--success)]';
     if (snap.reason === 'no_tools') {
       label = t('okNoTools', { buildN: snap.buildN });
+    } else if (snap.reason === 'writes_skipped') {
+      label = t('okWritesSkipped', { buildN: snap.buildN, count: total });
     } else {
-      label = t('okTools', { buildN: snap.buildN, count: total });
+      label = t('okTools', { buildN: snap.buildN, count: total - skipped });
+      if (skipped > 0) label += t('writesSkippedSuffix', { count: skipped });
     }
   } else {
     icon = <XCircle className="size-3" aria-hidden />;
@@ -703,7 +708,7 @@ function RuntimeSmokeStrip({
         {snap.phase === 'failed' && snap.results && snap.results.length > 0 ? (
           <ul className="mt-1 space-y-0.5 text-[11px] text-[color:var(--fg-muted)]">
             {snap.results
-              .filter((r) => r.status !== 'ok' && r.status !== 'validation_failed')
+              .filter((r) => isSmokeToolFailure(r.status))
               .slice(0, 5)
               .map((r) => (
                 <li key={r.toolId}>

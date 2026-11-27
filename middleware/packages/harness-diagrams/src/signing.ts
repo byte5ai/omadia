@@ -9,8 +9,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  *          secret, and revoking one route's public-path grant must not leave
  *          its files reachable through the other route.
  *
- * The secret lives in DIAGRAM_URL_SECRET and never leaves the process. Rotate
- * by setting a new value — in-flight URLs become invalid immediately.
+ * The secret lives in the plugin's vault (`diagram_url_secret`; the env
+ * auto-install copies DIAGRAM_URL_SECRET there once) and never leaves the
+ * process. Rotate through the plugin's setup field — in-flight URLs become
+ * invalid immediately. Changing DIAGRAM_URL_SECRET after the first boot does
+ * nothing (#1975).
  */
 
 /** The route this module signs for; part of every signed payload. */

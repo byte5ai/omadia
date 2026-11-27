@@ -229,6 +229,16 @@ export interface SheetRename {
   readonly written: string;
 }
 
+/** #1971 — a cell of a typed column whose value was not in an accepted
+ *  format and stays text. Address only: the value may be dataset data the
+ *  model never saw. */
+export interface CellKeptAsText {
+  readonly sheet: string;
+  /** A1 address, e.g. `B3`. */
+  readonly cell: string;
+  readonly type: ColumnType;
+}
+
 /** Raw render output before persistence. */
 export interface RenderResult {
   readonly buffer: Buffer;
@@ -240,6 +250,8 @@ export interface RenderResult {
   readonly rowsWritten: number;
   /** xlsx only: the sheets whose name changed, in sheet order. */
   readonly renamedSheets?: readonly SheetRename[];
+  /** xlsx only: typed cells whose value stays text (#1971). */
+  readonly cellsKeptAsText?: readonly CellKeptAsText[];
 }
 
 /** Payload carried inside the `NativeToolAttachment` (kind: `'file'`) that the
@@ -263,6 +275,8 @@ export interface OfficeArtifact {
   readonly rowsWritten: number;
   /** xlsx only: the sheets whose name changed, in sheet order. */
   readonly renamedSheets?: readonly SheetRename[];
+  /** xlsx only: typed cells whose value stays text (#1971). */
+  readonly cellsKeptAsText?: readonly CellKeptAsText[];
   /** True when the content-addressed object already existed in Tigris. */
   readonly cacheHit: boolean;
 }

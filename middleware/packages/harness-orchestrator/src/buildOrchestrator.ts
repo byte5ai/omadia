@@ -1304,6 +1304,7 @@ export function buildOrchestratorForAgent(
       // A channel turn's routine has to name this Agent, see `initRoutines`.
       agentSlug: config.agentId,
     });
+    const cliModel = config.model.replace(/-cli$/, '') || 'sonnet';
     return {
       orchestrator,
       bundle: {
@@ -1318,10 +1319,12 @@ export function buildOrchestratorForAgent(
           // A refusal under OMADIA_PRIVACY_FORCE_GUARDED is worded in the
           // turn's language, by the same rule as the in-process notices.
           noticeLocale: (input) => orchestrator.noticeLocale(input),
-          // ADR-0017 — the CLI cannot mask, so a turn is refused while a
-          // privacy guard runs (not only under the org policy).
+          // ADR-0195 — a guarded turn runs through its own privacy handle
+          // (masks, interning, v4 tools, restore, receipt); one that gets no
+          // handle is refused (fail closed), as under the org policy.
           privacyGuarded: () => deps.privacyGuard() !== undefined,
-          model: config.model.replace(/-cli$/, '') || 'sonnet',
+          turnPrivacy: (input, turnId) => orchestrator.cliTurnPrivacy(input, turnId, cliModel),
+          model: cliModel,
           // #1391 — persist every successful CLI turn like an in-process one
           // (session log + graph nodes, facts, excerpt, auto-promotion,
           // `onAfterTurn`), so Memory and recall stop being blank here.

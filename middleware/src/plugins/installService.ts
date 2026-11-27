@@ -334,6 +334,9 @@ export class InstallService {
         'install.missing_dependencies',
         `plugin requires these parents to be installed first: ${missingParents.join(', ')}`,
         409,
+        // #1973 — the drawer names them; the message alone is replaced by
+        // the localized help line.
+        { missing: missingParents },
       );
     }
 
