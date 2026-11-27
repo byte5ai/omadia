@@ -7073,7 +7073,8 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Memory-ACL automatisch prüfbar machen (Plan in 7 Schritten, ein PR pro Schritt).** Ziel:
   Jede Änderung, die einem Nutzer Memory zeigt, das ihm nicht zusteht, macht CI rot.
   Schritt 0 (#2179): Postgres-Beine der Memory-Suiten laufen in CI, Namens-Guard
-  `test:pg:names`, `PG_TEST_FLOOR` auf 721. Offen:
+  `test:pg:names`, `PG_TEST_FLOOR` auf 721. Die Schritte 1–6 sind gebaut (4 und 5: #2323,
+  6: Mutationsnachweis, `docs/testing/memory-acl-mutation-record.md`):
   1. Zugriffsmatrix als Code (`middleware/test/memoryAccess/`): eine gesäte Welt mit Canary
      pro Item und einem handgeschriebenen Orakel für `off`/`enforce`/`enforce-strict`/`members`.
   2. ACL-Contract-Suite über In-Memory und Postgres. Heute prüft keine Postgres-Suite
@@ -7086,6 +7087,10 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   5. Lifecycle-Invarianten (Promotion, Reaper, Merge, GC, Purge, Owner-Entfernung) mit Fake-Clock
      und fast-check.
   6. Mutationsnachweis (Prädikate einzeln löschen, Stryker nightly), Exfiltrations-Korpus.
+  Offen: die als `todo` geführten Lecks #2333 (Plugin-`listPlansForScope` unter Shield) und
+  #2334 (Plugin-`processMemory` `get`/`history`/`edit` unter Shield), dazu die Testlücken #2340
+  (keine User- und Fact-Items in der Welt; kein Test markiert einen Turn erst nach der Promotion
+  als ungeschützt).
   Bekannte Test-Infrastruktur-Bugs: #2185 (`roleChangeAudit775.pg` löscht `admin_audit`
   ohne Migrationszeile), #2186 (Orb-Setup scheitert am CUDA-Download von `onnxruntime-node`).
 
