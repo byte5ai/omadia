@@ -124,7 +124,6 @@ import {
   type EmbeddingClient,
   normalizeDatasetUuid,
   PROMOTION_RETIRED_PROP,
-  SYSTEM_AUDIT_ACTOR_UUID,
   buildRecallTsQuery,
   isMemorableContentCorrection,
   INCONSISTENCY_MAX_LOST_VERDICTS,
@@ -6435,7 +6434,7 @@ function auditActorOf(actor: AclMutationOptions): {
 } {
   if (actor.systemActor) {
     return {
-      actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+      actorOmadiaUserId: SYSTEM_ACTOR_OMADIA_USER_ID,
       actorChannelIdentityId: actor.systemActor,
     };
   }

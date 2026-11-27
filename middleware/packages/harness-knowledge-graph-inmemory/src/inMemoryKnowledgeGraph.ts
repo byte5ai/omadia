@@ -119,7 +119,6 @@ import {
   type TurnIngestResult,
   type TurnSearchHit,
   PROMOTION_RETIRED_PROP,
-  SYSTEM_AUDIT_ACTOR_UUID,
   extractRecallSearchTerms,
   isMemorableContentCorrection,
   INCONSISTENCY_MAX_LOST_VERDICTS,
@@ -1469,7 +1468,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       memoryExternalId: memorableKnowledgeNodeId,
       ...(actor.systemActor
         ? {
-            actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+            actorOmadiaUserId: SYSTEM_ACTOR_OMADIA_USER_ID,
             actorChannelIdentityId: actor.systemActor,
           }
         : {

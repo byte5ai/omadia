@@ -19,6 +19,12 @@ Additive.
   `User` cluster. Kernel-only in the bounded graph services; a user purge uses it to reach the
   per-channel context trees of every identity and the person's accounts.
 
+### Deprecated
+
+- **`SYSTEM_AUDIT_ACTOR_UUID`** (#2297): now an alias of `SYSTEM_ACTOR_OMADIA_USER_ID` (same nil
+  UUID); use `SYSTEM_ACTOR_OMADIA_USER_ID` for every system actor in audit rows. Removed with the
+  next major.
+
 ## 1.106.0 — 2026-11-26
 
 Additive.

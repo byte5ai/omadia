@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — one system actor constant for audit rows (#2297) (2026-11-27)
+
+- `SYSTEM_ACTOR_OMADIA_USER_ID` is the one nil-UUID actor for system writes in audit rows
+  (ADR-0185, ADR-0190); `SYSTEM_AUDIT_ACTOR_UUID` is a deprecated alias of it (plugin-api
+  **1.107.0**) and no kernel code uses it any more. Same value, so stored audit rows and filters
+  are unchanged.
+
 ### Fixed — a user purge covers all linked identities and ends web sessions (#2292, #2293, ADR-0262) (2026-11-27)
 
 - The `user` axis now reads every channel identity of the person's cluster

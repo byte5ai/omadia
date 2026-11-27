@@ -1732,7 +1732,7 @@ actorChannelIdentityId?: string;
 reason?: string;
 systemActor?: string;
 }
-export declare const SYSTEM_AUDIT_ACTOR_UUID = "00000000-0000-0000-0000-000000000000";
+export declare const SYSTEM_AUDIT_ACTOR_UUID: typeof SYSTEM_ACTOR_OMADIA_USER_ID;
 export declare const PROMOTION_RETIRED_PROP = "promotionRetired";
 export interface MemorableKnowledgePurgeFilter {
 tenantId: string;
