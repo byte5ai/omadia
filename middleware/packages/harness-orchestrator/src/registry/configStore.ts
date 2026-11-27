@@ -308,7 +308,7 @@ export interface ChannelBindingInput {
 /**
  * #2315 (ADR-0277) — the replace-style agent config writes that carry an
  * `expected_revision`, each with its own counter (`agents.config_revisions`,
- * migration 0120). `identity` keeps its own revision (ADR-0216).
+ * migration 0121). `identity` keeps its own revision (ADR-0216).
  */
 export const AGENT_CONFIG_RESOURCES = [
   'plugins',

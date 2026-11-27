@@ -11995,14 +11995,14 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   vergeben), antwortet `POST /api/chat[/stream]` mit `503 agent_unavailable`, `reason:
   'agent_deleted'` (Option `agentIdForSlug`). Der Web-Chat zeigt das Recovery-Banner
   (`unavailableReplacedBody`) und setzt Pin und Auswahl beim Neu-Zuordnen zurück.
-- **Revisionen der Agent-Config-Writes (#2315, ADR-0277, Migration 0120):** `PUT /:slug/plugins`,
+- **Revisionen der Agent-Config-Writes (#2315, ADR-0277, Migration 0121):** `PUT /:slug/plugins`,
   `/bindings`, `/model-policy`, `/context-memory`, `/fast-lane`, `/agent-to-agent`,
   `/availability` nehmen optional `expected_revision`; ein Zähler pro Ressource in
   `agents.config_revisions`, `ConfigStore.claimConfigRevision` vor dem ersten Write. Stale →
   `409 config_revision_conflict` (mit `resource`). GETs und Writes liefern `revision`;
   `GET /:slug/config-revisions` liefert alle Zähler. Web-UI
   sendet es aus den vier Detail-Panels.
-- **Zustellungs-Kontext als eigenes Feld (#2317, ADR-0278, channel-sdk 0.3.19):**
+- **Zustellungs-Kontext als eigenes Feld (#2317, ADR-0278, channel-sdk 0.3.20):**
   `ChatTurnInput.conversationContextHint` trägt den Block aus `routineDeliveriesHint`; kein
   Fast-Path-Pass-Through-Grund; maskiert wie `extraSystemHint`, aber bei Block/Fehler fällt nur
   der Block aus dem Turn (`wireConversationContextHint`, CLI `maskContextOrDrop`).

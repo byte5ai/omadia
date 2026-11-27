@@ -30,7 +30,7 @@ the delivery block reach the model without either?
 ## Considered Options
 
 - **A — A separate optional field `ChatTurnInput.conversationContextHint`** (channel-sdk
-  0.3.19): not a fast-path pass-through reason; masked like the caller hint, dropped from the
+  0.3.20): not a fast-path pass-through reason; masked like the caller hint, dropped from the
   turn when masking fails
 - **B — Keep `extraSystemHint`, exempt it in the fast path by content and catch the mask
   error there** (the hint then mixes data with instructions; a verifier correction appended

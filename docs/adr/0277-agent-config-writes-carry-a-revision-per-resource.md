@@ -36,7 +36,7 @@ token, and how is it checked?
 
 Chosen option: **A**.
 
-- Migration 0120 adds `agents.config_revisions jsonb NOT NULL DEFAULT '{}'`; a missing key
+- Migration 0121 adds `agents.config_revisions jsonb NOT NULL DEFAULT '{}'`; a missing key
   is revision 0. Resources: `plugins`, `bindings`, `model_policy`, `context_memory`,
   `fast_lane`, `agent_to_agent`, `availability` (`AGENT_CONFIG_RESOURCES`).
 - `ConfigStore.claimConfigRevision(agentId, resource, expected?)` moves the counter by one in
@@ -71,7 +71,7 @@ Chosen option: **A**.
 
 ## More Information
 
-`middleware/migrations/0120_agent_config_revisions.sql`,
+`middleware/migrations/0121_agent_config_revisions.sql`,
 `middleware/packages/harness-orchestrator/src/registry/configStore.ts`,
 `middleware/src/routes/operatorAgents.ts` (`splitExpectedRevision`, `claimRevision`),
 `web-ui/app/_lib/agents.ts` (`revisionField`).

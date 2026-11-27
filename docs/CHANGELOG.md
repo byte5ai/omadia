@@ -100,7 +100,7 @@ channel plugin changes. Routines created before this change get no context.
 ### Fixed — a routine delivery no longer disables the fast path or blocks a chat's turns (#2317, ADR-0278) (2026-11-27)
 
 The chat's recent routine deliveries now travel as `ChatTurnInput.conversationContextHint`
-(channel-sdk 0.3.19) instead of `extraSystemHint`. The fast path no longer passes such turns
+(channel-sdk 0.3.20) instead of `extraSystemHint`. The fast path no longer passes such turns
 through for 24 hours, and a delivery whose text cannot be masked is left out of the turn
 instead of failing every turn of the chat until it leaves the window.
 
@@ -108,8 +108,8 @@ instead of failing every turn of the chat until it leaves the window.
 
 `PUT /api/v1/operator/agents/:slug/{plugins,bindings,model-policy,context-memory,fast-lane,agent-to-agent,availability}`
 accept an optional `expected_revision`; a save based on an older revision is refused with
-`409 config_revision_conflict` and nothing is written. Migration **0120**
-(`0120_agent_config_revisions.sql`) adds `agents.config_revisions` (one counter per resource).
+`409 config_revision_conflict` and nothing is written. Migration **0121**
+(`0121_agent_config_revisions.sql`) adds `agents.config_revisions` (one counter per resource).
 The web UI's model policy, context memory, fast lane and agent-to-agent panels send it.
 
 ### Fixed — a web chat of a deleted agent no longer reaches the new agent with its slug (#2314, ADR-0276) (2026-11-27)

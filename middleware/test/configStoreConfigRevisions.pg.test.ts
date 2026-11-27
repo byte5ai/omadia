@@ -3,7 +3,7 @@
  * Postgres: one counter per resource, a stale `expected` refused, and of two
  * concurrent writes based on the same revision exactly one passes.
  *
- * Applies the ACTUAL migration 0120 (twice) on a minimal `agents` table in its
+ * Applies the ACTUAL migration 0121 (twice) on a minimal `agents` table in its
  * own schema; skips cleanly when no test Postgres is reachable.
  */
 import { strict as assert } from 'node:assert';
@@ -31,7 +31,7 @@ const MIGRATION = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   'migrations',
-  '0120_agent_config_revisions.sql',
+  '0121_agent_config_revisions.sql',
 );
 const SCHEMA = `cfgrev_${String(process.pid)}`;
 const AGENT = '11111111-1111-4111-8111-111111111111';
