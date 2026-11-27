@@ -149,6 +149,11 @@ export type TestCase = z.infer<typeof TestCaseSchema>;
 //   spec.label       → manifest.label   (else: humanized key)
 //   spec.help        → manifest.help    (else: spec.description)
 //   spec.placeholder → manifest.placeholder (passthrough; no fallback)
+const SetupTranslationSchema = z.object({
+  en: z.string().trim().min(1),
+  de: z.string().trim().min(1),
+}).strict();
+
 const SetupFieldSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9_]*$/),
@@ -171,8 +176,11 @@ const SetupFieldSchema = z
     default: z.unknown().optional(),
     enum_values: z.array(z.string()).optional(),
     label: z.string().optional(),
+    label_localized: SetupTranslationSchema.optional(),
     placeholder: z.string().optional(),
     help: z.string().optional(),
+    help_localized: SetupTranslationSchema.optional(),
+    enum_labels: z.record(z.string(), SetupTranslationSchema).optional(),
     // Spec 005 (#371) — `type:'oauth'` only. `provider` references an
     // `oauth_providers[].id`; `scopes` are requested at flow time.
     provider: z.string().optional(),

@@ -84,7 +84,7 @@ export function registerBuilderIssueReportingRoutes(
       const draft = await deps.store.load(email, draftId);
       if (!draft) return sendJson(res, 404, { code: 'builder.draft_not_found' });
 
-      const body = (req.body ?? {}) as { value?: unknown; cancel?: unknown };
+      const body = (req.body ?? {}) as { value?: unknown; answer?: unknown; cancel?: unknown };
       if (body.cancel === true) {
         const ok = deps.userChoice.cancel({ draftId, choiceId });
         return sendJson(res, ok ? 200 : 404, {
@@ -92,7 +92,11 @@ export function registerBuilderIssueReportingRoutes(
           ...(ok ? {} : { code: 'builder.user_choice_not_found' }),
         });
       }
-      if (typeof body.value !== 'string' || body.value.length === 0) {
+      const answer = typeof body.answer === 'string' ? body.answer.trim() : '';
+      const selection = body.answer === undefined
+        ? typeof body.value === 'string' && body.value.length > 0 ? { value: body.value } : null
+        : body.value === undefined && answer.length > 0 && answer.length <= 2000 ? { answer } : null;
+      if (!selection) {
         return sendJson(res, 400, {
           code: 'builder.user_choice_invalid_value',
         });
@@ -100,7 +104,7 @@ export function registerBuilderIssueReportingRoutes(
       const ok = deps.userChoice.resolve({
         draftId,
         choiceId,
-        value: body.value,
+        ...selection,
       });
       return sendJson(res, ok ? 200 : 404, {
         ok,

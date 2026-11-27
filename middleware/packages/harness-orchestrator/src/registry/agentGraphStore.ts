@@ -961,7 +961,9 @@ export class AgentGraphStore {
     } catch (err) {
       if (isUniqueViolation(err, 'agent_subagents_parent_agent_id_name_key')) {
         throw new ConfigValidationError(
-          `sub-agent "${input.name}" already exists for this agent`,
+          `A helper named "${input.name}" already exists for this agent`,
+          'config.helper_name_exists',
+          { name: input.name },
         );
       }
       throw err;
@@ -2427,6 +2429,8 @@ export class AgentGraphStore {
       if (isUniqueViolation(err, 'mcp_servers_name_key')) {
         throw new ConfigValidationError(
           `MCP server "${input.name}" already exists`,
+          'config.mcp_server_name_exists',
+          { name: input.name },
         );
       }
       throw err;

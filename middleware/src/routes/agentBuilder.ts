@@ -925,8 +925,10 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
         const kind = str(req.query['kind']);
-        await deleteEdge(l, decodeURIComponent(str(req.params.id)), kind,
+        await deleteEdge(l, agent, str(req.params.id), kind,
           options.recordAudit ? (entry) => auditMutation(req, entry) : undefined);
         await reload(l);
         res.status(204).end();
@@ -3776,7 +3778,7 @@ async function assertHelperGrantHeldByAgent(
     (s) => s.id === subAgentId && s.parentAgentId === agent.id,
   );
   if (!helper) {
-    throw new ConfigValidationError(`sub-agent ${subAgentId} does not belong to agent "${agent.slug}"`);
+    throw new ConfigValidationError(`Helper ${subAgentId} does not belong to agent "${agent.slug}"`);
   }
   if (grant.toolKind === 'mcp') {
     const agentGrants = (await l.graph.listAllToolGrants()).filter((g) => g.agentId === agent.id);
@@ -3851,6 +3853,10 @@ async function createEdge(
     }
     case 'tool_grant': {
       assertArchetypeAllows(agent, 'tool_grant');
+      if (target.startsWith('mcp:') ||
+          (target.startsWith('tool:mcp:') && config['toolKind'] !== 'mcp')) {
+        throw new ConfigValidationError('Grant an individual MCP tool from the toolbox.', 'config.mcp_tool_required');
+      }
       const onAgent = source.startsWith('agent:');
       const subAgentId = onAgent ? null : idAfter(source, 'subagent');
       const toolKind = (config['toolKind'] as 'native' | 'mcp') ?? 'native';
@@ -3918,6 +3924,7 @@ async function createEdge(
 
 async function deleteEdge(
   l: Live,
+  agent: AgentRow,
   id: string,
   kind: string,
   audit?: (entry: Omit<AuditEntryInput, 'actor'>) => Promise<void>,
@@ -3974,6 +3981,15 @@ async function deleteEdge(
     case 'schedule':
       await l.graph.deleteSchedule(id.slice('schedule:'.length));
       return;
+    case 'persona_skill': {
+      const prefix = `persona_skill:${agent.id}:`;
+      const skillId = id.slice(prefix.length);
+      if (!id.startsWith(prefix) || !isUuid(skillId)) {
+        throw new ConfigValidationError('The working mode is not attached to this agent.');
+      }
+      await l.graph.removePersonaSkill(agent.id, skillId);
+      return;
+    }
     default:
       throw new ConfigValidationError(`unknown edge kind "${kind}"`);
   }
@@ -4332,7 +4348,12 @@ function fail(res: Response, err: unknown): void {
     return;
   }
   if (err instanceof ConfigValidationError) {
-    res.status(409).json({ error: 'config_validation', message: err.message });
+    res.status(409).json({
+      error: 'config_validation',
+      code: err.reason ?? 'config_validation',
+      message: err.message,
+      ...(err.params ? { params: err.params } : {}),
+    });
     return;
   }
   res.status(500).json({ error: 'internal', message: msg(err) });

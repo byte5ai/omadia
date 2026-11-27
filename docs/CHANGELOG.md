@@ -51,6 +51,57 @@ changelog.
   generatedObjects@1`).
 - Not tracked: files from before this change and records outside a turn — the bucket lifecycle
   rule stays required as the backstop; dataset deletion does not reach exports made from it.
+
+### Fixed — Builder workspace editors (2026-11-26)
+
+- The spec editor saves the latest textarea value after a pause or on blur
+  (#1734). Setup fields buffer text locally, confirm the current server spec
+  before committing, and retain the other locale when a translated label is
+  edited (#1735, ADR-0239).
+- The Simple view explains missing model access and unfinished plugins in
+  operator language (#1793).
+- The workspace reloads required slots and editor types when a template
+  changes. Publish requires a successful build for the selected template
+  (#1805, ADR-0230). New drafts start with the local `tool` layout and can
+  switch to `integration` when an external client is required (#1780,
+  ADR-0064).
+
+### Fixed — Builder localization (2026-11-26)
+
+- The Plugin Builder and Agent Builder use the selected language for template
+  text, persona axes, draft names, and resume or manifest-preview errors.
+- Codegen emits bilingual maps for setup labels, help, and enum labels. Existing
+  drafts with single-language text keep that text (#1798, ADR-0239).
+
+### Fixed — Agent Builder canvas configuration (2026-11-26)
+
+- Canvas deletions list the affected configuration, ask for confirmation, and
+  reload the server graph after completion or a partial failure (#1799, #1800).
+- The canvas omits the inactive Channel palette action, rejects direct MCP-server
+  grants, supports detaching a working mode, and explains configuration conflicts
+  (#1802, ADR-0238).
+
+### Fixed — Builder publishing and Store actions (2026-11-26)
+
+- Publish links to the plugin's Store page for activation and explicit agent grants,
+  reports activation failures, and lets the operator confirm a downgrade (#1732,
+  #1784, #1785). Unknown activation errors have one headline (#1796).
+- The publish dialog reviews the generated manifest against the available installed
+  version and shows its permissions (#1797, ADR-0237).
+- Store detail offers Builder edits and spec proposals when the operator owns a
+  source draft. Standalone template proposals remain available for plugins that
+  expose templates (#1794).
+
+### Fixed — Builder preview turns and choice cards (2026-11-26)
+
+- Preview model calls carry turn and draft-session IDs. The usage page counts Builder
+  and preview calls against the same draft (#1741).
+- The preview shows a localized model refusal, preserves the declined outcome on
+  reload, and omits declined requests from later model input (#1810, ADR-0236).
+- Builder choice cards accept free text and can be dismissed. They expire after five
+  minutes, and Stop cancels the pending question in either workspace view (#1803,
+  ADR-0235).
+
 ### Fixed — routines: deliveries, cleanup and the routines page (W23, 2026-11-26)
 
 - **Deliveries in the web chat** (#1755, #1756, #1766, #1775): the next turn of a chat gets its

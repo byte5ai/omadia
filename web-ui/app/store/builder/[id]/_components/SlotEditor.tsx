@@ -41,6 +41,7 @@ const MonacoEditor = dynamic(
 
 interface SlotEditorProps {
   draftId: string;
+  templateId: string;
   /** Server-canonical slot map. The editor mirrors this whenever the user
    *  is not actively typing into the matching slot. */
   slots: Record<string, string>;
@@ -98,6 +99,7 @@ const LANGUAGE = 'typescript';
  */
 export function SlotEditor({
   draftId,
+  templateId,
   slots,
   templateSlots,
   onPrefillBuilderChat,
@@ -216,18 +218,26 @@ export function SlotEditor({
     [flush, slots],
   );
 
-  // B.6-11: per-draft Monaco lib bundle. Fetched once on draft change;
-  // applied via addExtraLib inside onMonacoMount AND re-applied via a
-  // useEffect when libs land after Monaco has already mounted (race-safe).
-  const [libs, setLibs] = useState<BuilderLib[]>([]);
+  // Register the types for the current template without remounting the editor.
+  const [libBundle, setLibBundle] = useState<{
+    draftId: string;
+    templateId: string;
+    libs: BuilderLib[];
+  }>();
+  const libs = libBundle?.draftId === draftId && libBundle.templateId === templateId
+    ? libBundle.libs
+    : undefined;
   const monacoRef = useRef<unknown>(null);
+  const extraLibs = useRef<Array<{ dispose: () => void }>>([]);
   // Editor instance ref for setModelMarkers (B.6-13.2).
   const editorRef = useRef<unknown>(null);
   useEffect(() => {
     let alive = true;
     void getDraftLibs(draftId)
       .then((res) => {
-        if (alive) setLibs(res.libs);
+        if (alive && res.template === templateId) {
+          setLibBundle({ draftId, templateId, libs: res.libs });
+        }
       })
       .catch(() => {
         // Non-fatal — Cmd+Click + autocomplete just won't work.
@@ -235,31 +245,34 @@ export function SlotEditor({
     return () => {
       alive = false;
     };
-  }, [draftId]);
+  }, [draftId, templateId]);
+
+  const releaseLibs = useCallback(() => {
+    for (const lib of extraLibs.current) lib.dispose();
+    extraLibs.current = [];
+  }, []);
 
   const applyLibs = useCallback((monaco: unknown, items: BuilderLib[]): void => {
     interface MonacoLibsNS {
       languages: {
         typescript: {
           typescriptDefaults: {
-            addExtraLib: (content: string, filePath: string) => void;
+            addExtraLib: (content: string, filePath: string) => { dispose: () => void };
           };
         };
       };
     }
     const m = monaco as MonacoLibsNS;
-    for (const lib of items) {
-      m.languages.typescript.typescriptDefaults.addExtraLib(
-        lib.content,
-        lib.path,
-      );
-    }
-  }, []);
+    releaseLibs();
+    extraLibs.current = items.map((lib) =>
+      m.languages.typescript.typescriptDefaults.addExtraLib(lib.content, lib.path),
+    );
+  }, [releaseLibs]);
 
   useEffect(() => {
-    if (libs.length === 0 || !monacoRef.current) return;
-    applyLibs(monacoRef.current, libs);
-  }, [libs, applyLibs]);
+    if (libs && monacoRef.current) applyLibs(monacoRef.current, libs);
+    return releaseLibs;
+  }, [libs, applyLibs, releaseLibs]);
 
   const onMonacoMount = useCallback((editor: unknown, monaco: unknown) => {
     interface MonacoKeysNS {
@@ -279,7 +292,7 @@ export function SlotEditor({
     // addExtraLib if the fetch resolved before the editor mounted.
     monacoRef.current = monaco;
     editorRef.current = editor;
-    if (libs.length > 0) applyLibs(monaco, libs);
+    if (libs) applyLibs(monaco, libs);
   }, [flush, libs, applyLibs]);
 
   // Compute the active slot's `target_file` so we can filter the global

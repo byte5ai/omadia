@@ -1,4 +1,4 @@
-import { parseAgentSpec } from './agentSpec.js';
+import { canonicalTemplateId, parseAgentSpec } from './agentSpec.js';
 import { build as runBuildSandbox } from './buildSandbox.js';
 import type { BuildResult } from './buildSandbox.js';
 import type { BuildQueue } from './buildQueue.js';
@@ -108,6 +108,7 @@ export interface BuildStatusSnapshot {
   /** Monotonic build counter for the build this snapshot describes; absent
    *  when the build failed before a counter was assigned (spec / codegen). */
   buildN?: number;
+  templateId?: string;
   /** Number of tsc errors on a `tsc`-phase failure. */
   errorCount?: number;
   /** Short failure reason / message. Absent on success. */
@@ -187,6 +188,7 @@ export class BuildPipeline {
               status: 'ok',
               phase: 'complete',
               buildN: result.buildN,
+              templateId: canonicalTemplateId(result.draft.spec.template ?? 'integration'),
               builtAt: new Date().toISOString(),
             }
           : {
@@ -247,6 +249,7 @@ export class BuildPipeline {
       status: 'ok',
       phase: 'complete',
       buildN,
+      ...(last?.buildN === buildN && last.templateId ? { templateId: last.templateId } : {}),
       missingSetupKey: key,
       builtAt: new Date().toISOString(),
     });

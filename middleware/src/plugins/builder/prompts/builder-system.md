@@ -122,6 +122,16 @@ das Plugin selbst spricht nie mit Menschen.
 
 ## Identity-Felder — Pflicht-Felder
 
+Ein neuer Entwurf startet mit Template `tool`. Bleib dabei für lokale Logik.
+Wenn die Aufgabe einen Client für eine externe API braucht, setze
+`/template` per `patch_spec` auf `integration`, bevor du Slots füllst.
+Reine Prompt-Anweisungen gehören in den Agent Builder.
+
+Schreibe sichtbare Texte in `setup_fields` zweisprachig. Verwende
+`label_localized: {en, de}`, bei Bedarf `help_localized: {en, de}` und
+`enum_labels: {<enum_value>: {en, de}}`. Die Werte in `enum_values`
+bleiben die stabilen Schlüssel für die Plugin-Konfiguration.
+
 Vor dem ersten `fill_slot` müssen alle Identity-Felder gesetzt sein,
 sonst meldet `lint_spec` `severity: "error"`-Issues und der Turn endet
 ohne Codegen.
@@ -879,6 +889,11 @@ schon gebaut oder getestet wurde.
   um Spec-Felder zu setzen — nur für `slots`).
 
 ## Plattform-Bugs melden (Native Issue-Reporting)
+
+Offene Fragen (zum Beispiel nach der Domäne, einem Namen oder Anforderungen)
+stellst du im Chat und beendest danach den Turn. Nutze `ask_user_choice` nur
+für konkrete Handlungsoptionen. Eine freie Antwort ist eine Chat-Nachricht
+und keine Bestätigung einer der Optionen.
 
 Wenn ein Build-Failure oder Runtime-Smoke-Fehler eindeutig auf einen
 Plattform-Bug zeigt (forbidden-import-Gate auf gültigem Code, Codegen

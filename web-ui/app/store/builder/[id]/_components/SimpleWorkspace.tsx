@@ -7,6 +7,7 @@ import { MessageCircleHeart, Sparkles, Wand2 } from 'lucide-react';
 import { cn } from '../../../../_lib/cn';
 import type { BuilderModelId, Draft } from '../../../../_lib/builderTypes';
 
+import type { BuilderChoice } from './BuilderChoiceCard';
 import { effectivePluginKind } from './pluginKind';
 import { PreviewChatPane, type BuildStatusSnapshot } from './PreviewChatPane';
 import { SimpleIntakePane } from './SimpleIntakePane';
@@ -19,16 +20,9 @@ interface SimpleWorkspaceProps {
    *  stays in sync with the Extended view. */
   onBuildStatus: (status: BuildStatusSnapshot) => void;
   /** Shared `ask_user_choice` card hoisted by the Workspace bus. */
-  pendingUserChoice?: {
-    choiceId: string;
-    question: string;
-    options: ReadonlyArray<{
-      value: string;
-      label: string;
-      description?: string;
-    }>;
-  } | null;
-  onUserChoiceResolved?: () => void;
+  pendingUserChoice?: BuilderChoice | null;
+  onUserChoiceResolved?: (choiceId: string) => void;
+  onOpenPreviewModel?: () => void;
   /** Issue #224 — lifts the intake pane's in-flight flag so the Workspace
    *  can lock the view toggle while a build reply streams. */
   onIntakeStreamingChange?: (streaming: boolean) => void;
@@ -69,6 +63,7 @@ export function SimpleWorkspace({
   onBuildStatus,
   pendingUserChoice,
   onUserChoiceResolved,
+  onOpenPreviewModel,
   onIntakeStreamingChange,
   onPreviewStreamingChange,
 }: SimpleWorkspaceProps): React.ReactElement {
@@ -144,6 +139,7 @@ export function SimpleWorkspace({
               initialTranscript={draft.previewTranscript}
               setupFields={spec.setup_fields ?? []}
               onBuildStatus={onBuildStatus}
+              onOpenPreviewModel={onOpenPreviewModel}
               {...(onPreviewStreamingChange
                 ? { onStreamingChange: onPreviewStreamingChange }
                 : {})}

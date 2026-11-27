@@ -47,8 +47,8 @@ export function ManifestDiffSidebar({
     try {
       const { manifest } = await fetchBuilderManifestPreview(draftId);
       setYamlText(manifest);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('previewError'));
+    } catch {
+      setError(t('previewError'));
     } finally {
       setPending(false);
     }

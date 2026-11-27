@@ -33,6 +33,7 @@ type Input = z.infer<typeof InputSchema>;
 
 type Result =
   | { ok: true; value: string }
+  | { ok: true; answer: string }
   | { ok: false; reason: 'cancelled' | 'timeout' | 'unavailable' };
 
 export const askUserChoiceTool: BuilderTool<Input, Result> = {
@@ -45,7 +46,9 @@ export const askUserChoiceTool: BuilderTool<Input, Result> = {
     'use as a substitute for chat questions — chat is cheaper and faster ' +
     'when the operator can express the answer in plain language. The values ' +
     'in `options[].value` are the strings the agent will read back; choose ' +
-    'short, stable identifiers.',
+    'short, stable identifiers. If the operator types their own reply, the ' +
+    'tool returns answer instead of value. Treat it as chat input; it never ' +
+    'counts as selecting a confirmation option.',
   input: InputSchema,
   async run(input, ctx) {
     if (!ctx.userChoice) {
@@ -57,7 +60,9 @@ export const askUserChoiceTool: BuilderTool<Input, Result> = {
       options: input.options,
     });
     const outcome = await result;
-    if (outcome.ok) return { ok: true, value: outcome.value };
+    if (outcome.ok) {
+      return 'value' in outcome ? { ok: true, value: outcome.value } : { ok: true, answer: outcome.answer };
+    }
     return { ok: false, reason: outcome.reason === 'timeout' ? 'timeout' : 'cancelled' };
   },
 };

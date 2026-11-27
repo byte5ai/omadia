@@ -43,11 +43,13 @@ describe('DraftStore', () => {
     assert.equal(draft.spec.version, '0.1.0');
   });
 
-  it('falls back to "Neuer Agent" on blank names', async () => {
+  it('uses the new plugin name and local tool layout for blank drafts', async () => {
     const a = await store.create('alice@example.com', '');
     const b = await store.create('alice@example.com', '   ');
-    assert.equal(a.name, 'Neuer Agent');
-    assert.equal(b.name, 'Neuer Agent');
+    assert.equal(a.name, 'New plugin');
+    assert.equal(b.name, 'New plugin');
+    assert.equal(a.spec.template, 'tool');
+    assert.equal(b.spec.template, 'tool');
   });
 
   it('isolates drafts between users', async () => {

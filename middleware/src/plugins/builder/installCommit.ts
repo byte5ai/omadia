@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import type { DraftStore } from './draftStore.js';
+import type { Draft } from './types.js';
 import { BuildPipelineError, type BuildPipeline } from './buildPipeline.js';
 import { CodegenError } from './codegen.js';
 import {
@@ -7,8 +9,10 @@ import {
   type IngestFailureStatus,
 } from '../ingestErrorContract.js';
 import type {
+  DowngradeConfirmation,
   IngestFailure,
   IngestResult,
+  InstalledManifestReview,
   PackageUploadService,
 } from '../packageUploadService.js';
 import type { WorkaroundStateStore } from './workaroundStateStore.js';
@@ -46,7 +50,13 @@ export interface InstallDraftDeps {
 export interface InstallDraftInput {
   userEmail: string;
   draftId: string;
+  review?: { fingerprint: string; installed: InstalledManifestReview };
+  downgradeConfirmation?: DowngradeConfirmation;
   onPackageIngested?: (result: Extract<IngestResult, { ok: true }>) => Promise<void>;
+}
+
+export function publishReviewFingerprint(draft: Pick<Draft, 'spec' | 'slots'>): string {
+  return createHash('sha256').update(JSON.stringify([draft.spec, draft.slots])).digest('hex');
 }
 
 export type InstallFailureReason =
@@ -58,6 +68,7 @@ export type InstallFailureReason =
   | 'conflict'
   | 'too_large'
   | 'manifest_invalid'
+  | 'activation_failed'
   | 'ingest_failed';
 
 export interface InstallSuccess {
@@ -65,6 +76,7 @@ export interface InstallSuccess {
   publishedAgentId: string;
   version: string;
   packageBytes: number;
+  activated?: true;
 }
 
 export interface InstallFailure {
@@ -123,6 +135,14 @@ export async function installDraft(
   // Step 3: ingest into PackageUploadService.
   const success = pipelineResult.buildResult;
   const draft = pipelineResult.draft;
+  if (input.review && input.review.fingerprint !== publishReviewFingerprint(draft)) {
+    return {
+      ok: false,
+      reason: 'conflict',
+      code: 'builder.install_review_stale',
+      message: 'The draft contents changed after the publish review.',
+    };
+  }
   const filename = buildOriginalFilename(draft);
 
   let ingestResult: IngestResult;
@@ -131,6 +151,11 @@ export async function installDraft(
       fileBuffer: success.zip,
       originalFilename: filename,
       uploadedBy: userEmail,
+      ...(input.review ? { reviewedInstallation: input.review.installed } : {}),
+      ...(input.downgradeConfirmation ? {
+        allowDowngrade: true,
+        downgradeConfirmation: input.downgradeConfirmation,
+      } : {}),
     });
   } catch (err) {
     log(
@@ -150,6 +175,20 @@ export async function installDraft(
     return mapIngestFailure(ingestResult);
   }
   await input.onPackageIngested?.(ingestResult);
+
+  if (ingestResult.activation?.ok === false || ingestResult.activation_error !== undefined) {
+    return {
+      ok: false,
+      reason: 'activation_failed',
+      code: 'builder.activation_failed',
+      message: ingestResult.activation?.error ?? ingestResult.activation_error ?? 'Plugin activation failed',
+      details: {
+        errorCode: ingestResult.activation?.error_code,
+        pluginId: ingestResult.plugin_id,
+        version: ingestResult.version,
+      },
+    };
+  }
 
   // Step 4: mark draft as published + pin published_agent_id.
   await deps.draftStore.update(userEmail, draftId, {
@@ -191,6 +230,7 @@ export async function installDraft(
     publishedAgentId: ingestResult.plugin_id,
     version: ingestResult.version,
     packageBytes: ingestResult.package.zip_bytes,
+    ...(ingestResult.activated ? { activated: true } : {}),
   };
 }
 

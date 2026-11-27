@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import { createAuditLogger } from '../plugins/builder/audit.js';
 import { BuilderAuditAction } from '../plugins/builder/auditActions.js';
-import type { DraftStore } from '../plugins/builder/draftStore.js';
+import { StaleDraftSpecError, type DraftStore } from '../plugins/builder/draftStore.js';
 import {
   formatViolations as formatLintViolations,
   validateSpec,
@@ -64,7 +64,7 @@ export function registerBuilderEditRoutes(
     const draftId = readId(req);
     if (!draftId) return sendJson(res, 400, { code: 'builder.invalid_id', message: 'missing :id' });
 
-    const body = (req.body ?? {}) as { patches?: unknown };
+    const body = (req.body ?? {}) as { patches?: unknown; expectedSetupFields?: unknown };
     if (!Array.isArray(body.patches) || body.patches.length === 0) {
       return sendJson(res, 400, {
         code: 'builder.invalid_patches',
@@ -89,6 +89,15 @@ export function registerBuilderEditRoutes(
         message: `kein Draft mit id '${draftId}'`,
       });
     }
+    const guardedSetupEdit = body.expectedSetupFields !== undefined;
+    const staleSetupFields = () => sendJson(res, 409, {
+      code: 'builder.setup_fields_changed',
+      message: 'The setup fields changed while the edit was being saved.',
+    });
+    if (guardedSetupEdit &&
+        JSON.stringify(body.expectedSetupFields) !== JSON.stringify(draft.spec.setup_fields ?? [])) {
+      return staleSetupFields();
+    }
 
     let nextSpec: AgentSpecSkeleton;
     try {
@@ -110,8 +119,17 @@ export function registerBuilderEditRoutes(
       });
     }
 
-    const updated = await deps.draftStore.update(email, draftId, { spec: nextSpec });
-    if (updated && !isDeepStrictEqual(draft.spec, updated.spec)) {
+    let updated;
+    try {
+      updated = await deps.draftStore.update(email, draftId, { spec: nextSpec }, guardedSetupEdit ? draft.spec : undefined);
+    } catch (err) {
+      if (err instanceof StaleDraftSpecError) return staleSetupFields();
+      throw err;
+    }
+    if (!updated) {
+      return sendJson(res, 404, { code: 'builder.draft_not_found', message: 'Draft not found.' });
+    }
+    if (!isDeepStrictEqual(draft.spec, updated.spec)) {
       await audit.log(draftId, email, BuilderAuditAction.SPEC_EDITED, {
         operationCount: patches.length,
       });

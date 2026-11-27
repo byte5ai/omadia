@@ -73,6 +73,7 @@ export type PreviewStreamEvent =
       type: 'build_status';
       phase: 'building' | 'ok' | 'failed';
       buildN?: number;
+      templateId?: string;
       reason?: string;
       /** #1809 — `ok` whose preview waits for this test credential. */
       missingSetupKey?: string;
@@ -193,6 +194,7 @@ export function registerBuilderPreviewRoutes(
           type: 'build_status',
           phase: 'ok',
           buildN: handle.rev,
+          ...(handle.templateId ? { templateId: handle.templateId } : {}),
         });
 
         const iterator = deps.previewChatService.runTurn({
@@ -241,6 +243,7 @@ export function registerBuilderPreviewRoutes(
             type: 'build_status',
             phase: 'ok',
             ...(last?.buildN !== undefined ? { buildN: last.buildN } : {}),
+            ...(last?.templateId ? { templateId: last.templateId } : {}),
             missingSetupKey: missingKey,
           });
           write({
@@ -384,6 +387,7 @@ export function registerBuilderPreviewRoutes(
           phase: 'ok',
           buildN: handle.rev,
           agentId: handle.agentId,
+          ...(handle.templateId ? { templateId: handle.templateId } : {}),
         });
         return;
       }
@@ -416,6 +420,7 @@ export function registerBuilderPreviewRoutes(
         phase: 'ok',
         buildN: last.buildN,
         warm: false,
+        ...(last.templateId ? { templateId: last.templateId } : {}),
         ...(last.missingSetupKey !== undefined
           ? { missingSetupKey: last.missingSetupKey }
           : {}),

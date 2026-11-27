@@ -26,6 +26,7 @@ import type {
 export interface PreviewBuildResult {
   zipBuffer: Buffer;
   rev: number;
+  templateId?: string;
   /** Non-secret setup-field values from the draft. */
   configValues: Readonly<Record<string, unknown>>;
   /** Secret setup-field values (in-memory only, never persisted). */
@@ -124,6 +125,7 @@ export class PreviewCache {
       zipBuffer: built.zipBuffer,
       draftId: opts.draftId,
       rev: built.rev,
+      ...(built.templateId ? { templateId: built.templateId } : {}),
       configValues: built.configValues,
       secretValues: built.secretValues,
     });

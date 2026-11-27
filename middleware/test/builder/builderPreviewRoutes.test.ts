@@ -42,15 +42,19 @@ function makeFakeHandle(opts: {
   draftId: string;
   rev: number;
   agentId?: string;
+  templateId?: string;
   routeCaptures?: PreviewHandle['routeCaptures'];
 }): PreviewHandle {
   return {
     draftId: opts.draftId,
     agentId: opts.agentId ?? `agent-${opts.draftId}`,
     rev: opts.rev,
+    ...(opts.templateId ? { templateId: opts.templateId } : {}),
     previewDir: `/tmp/preview-${opts.draftId}`,
     toolkit: { tools: [] },
     routeCaptures: opts.routeCaptures ?? [],
+    jobCaptures: [],
+    statusReports: [],
     close: async () => {},
   };
 }
@@ -82,7 +86,7 @@ function makeFakePipeline(opts: {
   // tests can exercise the GET /preview/status fallback to it.
   const lastStatus = new Map<
     string,
-    { status: 'ok' | 'failed'; buildN?: number; errorCount?: number; reason?: string }
+    { status: 'ok' | 'failed'; buildN?: number; errorCount?: number; reason?: string; templateId?: string }
   >();
   const fake = {
     run: async (input: { userEmail: string; draftId: string }) => {
@@ -141,7 +145,8 @@ function makeFakePipeline(opts: {
           },
         };
       }
-      lastStatus.set(input.draftId, { status: 'ok', buildN });
+      const templateId = draft.spec.template;
+      lastStatus.set(input.draftId, { status: 'ok', buildN, ...(templateId ? { templateId } : {}) });
       return {
         buildN,
         draft,
@@ -169,6 +174,7 @@ interface RouteHarness {
   cache: PreviewCache;
   chatService: PreviewChatService;
   scheduler: PreviewRebuildScheduler;
+  pipeline: BuildPipeline;
   buildCalls: () => Array<{ userEmail: string; draftId: string }>;
   setSession: (email: string | null) => void;
   close: () => Promise<void>;
@@ -203,6 +209,7 @@ async function startHarness(opts: {
     return makeFakeHandle({
       draftId: activateOpts.draftId,
       rev: activateOpts.rev,
+      ...(activateOpts.templateId ? { templateId: activateOpts.templateId } : {}),
       ...(opts.fakeHandle ?? {}),
     });
   };
@@ -330,6 +337,7 @@ async function startHarness(opts: {
     cache,
     chatService,
     scheduler,
+    pipeline: fakePipeline.pipeline,
     buildCalls: fakePipeline.buildCalls,
     setSession,
     close,
@@ -752,14 +760,30 @@ describe('builder preview routes', () => {
         { method: 'POST' },
       );
       assert.equal(refresh.status, 200);
+      const warm = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/status`,
+      );
+      const warmBody = await warm.json() as { buildN: number; templateId?: string };
+      assert.equal(warmBody.templateId, 'tool');
+      const publishBuild = await harness.pipeline.run({
+        userEmail: 'alice@example.com', draftId: draft.id, kind: 'install',
+      });
+      assert.ok(publishBuild.buildN > warmBody.buildN);
+      const warmAfterPublish = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/status`,
+      );
+      const warmAfterPublishBody = await warmAfterPublish.json() as typeof warmBody;
+      assert.equal(warmAfterPublishBody.buildN, warmBody.buildN);
+      assert.equal(warmAfterPublishBody.templateId, 'tool');
       // Saving a test credential makes the warm preview stale.
       harness.cache.invalidate('alice@example.com', draft.id);
       const res = await fetch(
         `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/status`,
       );
-      const body = (await res.json()) as { phase: string; warm?: boolean };
+      const body = (await res.json()) as { phase: string; warm?: boolean; templateId?: string };
       assert.equal(body.phase, 'ok');
       assert.equal(body.warm, false);
+      assert.equal(body.templateId, 'tool');
     });
   });
 

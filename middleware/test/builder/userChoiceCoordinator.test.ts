@@ -68,6 +68,23 @@ describe('UserChoiceCoordinator', () => {
     assert.deepEqual(outcome, { ok: true, choiceId: 'fixed-choice', value: 'b' });
   });
 
+  it('returns free text separately from a confirmation option', async () => {
+    const { events, coord } = setupTracked();
+    const { choiceId, result } = coord.create({
+      draftId: 'draft-1',
+      question: 'pick',
+      options: [
+        { value: 'report', label: 'Report' },
+        { value: 'skip', label: 'Skip' },
+      ],
+    });
+    const answer = { choiceId, answer: 'report' };
+    assert.equal(coord.resolve({ ...answer, draftId: 'draft-2' }), false);
+    assert.equal(coord.resolve({ ...answer, draftId: 'draft-1' }), true);
+    assert.deepEqual(await result, { ok: true, ...answer });
+    assert.deepEqual(events.at(-1), { type: 'user_choice_resolved', choiceId, value: null });
+  });
+
   it('rejects unknown choiceIds', () => {
     const { coord } = setupTracked();
     coord.create({

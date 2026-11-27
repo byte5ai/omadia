@@ -341,7 +341,7 @@
         "agent": "Agent",
         "subagent": "Helfer",
         "skill": "Skill",
-        "tool": "Tool",
+        "tool": "Werkzeug",
         "mcp": "MCP-Server",
         "schedule": "Zeitplan",
         "tools": "Tools",
@@ -414,13 +414,13 @@
         "platformDefault": "(Plattform-Standard: {model})",
         "effectiveModel": "Aktiv: {model}",
         "modelPolicy": "Policy: {primary} · Fallback {fallback}.",
-        "modelPolicyAuto": "Auto",
+        "modelPolicyAuto": "Automatisch",
         "modelPolicyNone": "keiner",
         "modelPolicyEdit": "Auf der Agenten-Seite bearbeiten →",
         "skillBody": "Skill-Inhalt (Markdown)",
         "skillFileReadOnly": "Datei-basierter Skill — hier schreibgeschützt.",
         "transport": "Transport",
-        "endpoint": "Endpoint",
+        "endpoint": "Endpunkt",
         "cron": "Cron",
         "timezone": "Zeitzone",
         "helperExplain": "Ein Helfer gehört intern zu diesem Agenten: Er erledigt einen Teil der Arbeit des Agenten auf einem eigenen, oft günstigeren Modell, nutzt nur Tools, die der Agent selbst hat, und wird Menschen gegenüber nie genannt. Seine Antwort ist die Arbeit des Agenten.",
@@ -436,6 +436,24 @@
         "helper_model_not_allowed": "Die Modellrichtlinie des Agenten erlaubt sein Modell nicht. Jede Anfrage an ihn wird deshalb mit dem Grund unten abgelehnt. Wähle das Modell des Agenten oder ein günstigeres.",
         "helper_name_conflict": "Sein Tool-Name kollidiert mit einem anderen Helfer oder Tool dieses Agenten, deshalb wird er nicht angeboten. Wähle einen anderen Namen.",
         "reason": "Grund: {reason}"
+      },
+      "configError": "Die Konfiguration wurde abgelehnt.",
+      "configErrorDetail": "Die Konfiguration wurde abgelehnt. {detail}",
+      "configErrors": {
+        "helper_name_exists": "Ein Helfer mit dem Namen {name} ist für diesen Agenten bereits vorhanden.",
+        "mcp_server_name_exists": "Ein MCP-Server mit dem Namen {name} ist bereits vorhanden.",
+        "mcp_tool_required": "Ziehe ein einzelnes MCP-Werkzeug aus der Werkzeugliste auf den Agenten oder Helfer."
+      },
+      "delete": {
+        "confirm": "Folgendes aus der Agentenkonfiguration entfernen?\n\n{summary}",
+        "items": {
+          "channel_bind": "Kanalzuordnung für {name} lösen",
+          "subagent": "Helfer {name} und seine Werkzeugfreigaben löschen",
+          "skill": "Skill {name} vom Helfer lösen",
+          "tool_grant": "Werkzeugfreigabe für {name} entfernen",
+          "schedule": "Zeitplan {name} löschen",
+          "persona_skill": "Arbeitsmodus {name} lösen"
+        }
       },
       "apiError": "Fehler {status}",
       "persona": {
@@ -518,6 +536,8 @@
     }
   },
   "selfExtension": {
+    "sourceDraftMissing": "Für dieses Plugin gibt es in deinem Konto keinen Builder-Entwurf.",
+    "proposalFailed": "Der Vorschlag zur Selbst-Erweiterung konnte nicht eingereicht werden.",
     "intro": "Schlage eine Selbst-Erweiterung für dieses installierte Plugin vor: füge Tools oder Capabilities per Spec-Patch hinzu. Der Escalation-Guard lehnt jede Rechte-Ausweitung automatisch ab — ein Plugin kann sich keine Rechte selbst geben, die es nicht ohnehin schon hat.",
     "composeTitle": "Neuer Vorschlag",
     "rationalePlaceholder": "Warum wird diese Erweiterung benötigt?",
@@ -3534,6 +3554,12 @@
     "detailPackageMissingHint": "Dieses Plugin ist zugewiesen, aber sein Paket ist auf dieser Instanz nicht installiert, also läuft es nicht. Installiere das Paket im Store neu (die Canvas-Pakete kommen aus byte5ai/omadia-ui-support) oder hänge das Plugin ab."
   },
   "builder": {
+    "choice": {
+      "answerLabel": "Eigene Antwort",
+      "send": "Antwort senden",
+      "dismiss": "Schließen",
+      "failed": "Deine Antwort konnte nicht gespeichert werden. Versuche es erneut."
+    },
     "issueReport": {
       "kicker": "Core-Bug an omadia melden",
       "publicWarning": "Dieser Text geht in das <strong>öffentliche</strong> Repo. Secrets und personenbezogene Daten wurden automatisch entfernt — bitte vor dem Anlegen prüfen.",
@@ -3607,11 +3633,13 @@
         "errorUnknown": "Unbekannter Fehler — bitte erneut versuchen.",
         "errorProviderGeneric": "Der Plugin Builder konnte den KI-Dienst gerade nicht erreichen. Bitte versuch es gleich noch einmal.",
         "errorChoiceFailed": "Auswahl konnte nicht gespeichert werden.",
+        "errorStopFailed": "Der Turn konnte nicht gestoppt werden. Versuche es erneut.",
         "errorChoiceFailedMessage": "Auswahl konnte nicht gespeichert werden: {message}"
       }
     },
     "workspace": {
-      "backToDrafts": "Drafts",
+      "previewModelLabel": "Vorschau",
+      "backToDrafts": "Entwürfe",
       "publish": "Bereitstellen",
       "viewModeAriaLabel": "Ansicht wählen",
       "viewModeSimple": "Einfach",
@@ -3623,36 +3651,36 @@
       "statusPublished": "Bereitgestellt",
       "statusArchived": "Archiviert",
       "tabOverview": "Übersicht",
-      "tabSpec": "Spec",
+      "tabSpec": "Spezifikation",
       "tabSlots": "Slots",
       "tabSkills": "Skills",
       "tabVersions": "Versionen",
       "paneChat": "Builder-Chat",
       "paneEditor": "Editor",
-      "panePreview": "Preview",
-      "paneUiSurfaces": "UI-Surfaces",
+      "panePreview": "Vorschau",
+      "paneUiSurfaces": "Oberflächen",
       "editorTabMissingAria": "{count} fehlt",
       "mobilePaneAriaLabel": "Workspace-Pane wählen",
       "mobilePaneChat": "Chat",
       "mobilePaneEditor": "Editor",
-      "mobilePanePreview": "Preview",
+      "mobilePanePreview": "Vorschau",
       "mobilePaneUi": "UI",
       "mobilePaneMissingAria": "{count} Pflicht-Felder fehlen",
       "installBuildMustSucceed": "Letzter Build muss erfolgreich sein",
       "installEditorWarnings": "{count, plural, one {# Editor-Warnung} other {# Editor-Warnungen}}",
       "installMissingCredentials": "{count, plural, one {# fehlende Test-Credential} other {# fehlende Test-Credentials}}",
-      "templateLabel": "Template",
+      "templateLabel": "Vorlage",
       "templateUnknown": "(unbekanntes Template)",
       "templateTooltipEnabled": "Template wechseln (verlustfrei — nur Slots / Tools / depends_on sind template-spezifisch)",
       "templateTooltipDisabled": "Template-Wechsel deaktiviert — der Draft hat bereits Slots, Tools oder `depends_on`-Einträge, die beim Switch verloren gingen. Lege einen neuen Draft an oder lösche die betreffenden Felder zuerst.",
       "modelSwitchAria": "{label}-Modell wechseln",
-      "autoFixLabel": "Auto-Fix",
-      "autoFixOn": "on",
-      "autoFixOff": "off",
+      "autoFixLabel": "Automatische Korrektur",
+      "autoFixOn": "an",
+      "autoFixOff": "aus",
       "autoFixTitleOn": "Auto-Fix aktiv: Build/Smoke-Failures triggern automatisch einen Builder-Turn",
       "autoFixTitleOff": "Auto-Fix aus: Failures zeigen nur den \"Fix mit Builder\"-Button",
       "autoFixKindBuild": "Build",
-      "autoFixKindSmoke": "Smoke",
+      "autoFixKindSmoke": "Funktionstest",
       "autoFixRunning": "Auto-Fix läuft (#{buildN} · {kind})",
       "autoFixStoppedTitle": "Auto-Fix nach {count} identischen {kind}-Fehlern gestoppt",
       "autoFixStoppedBody": "Der Plugin Builder kommt mit derselben Fehlerklasse nicht weiter. Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell oder schalte den Toggle wieder ein, sobald du eingegriffen hast.",
@@ -3662,7 +3690,7 @@
       "buildBusReconnecting": "verbindet neu",
       "buildWaitingForCredential": "wartet auf Test-Zugangsdaten {key}",
       "buildBusIdle": "inaktiv",
-      "buildSse": "SSE {status}",
+      "buildSse": "Ereignisstream {status}",
       "buildErrorsHeading": "{count} TypeScript-Fehler",
       "buildErrorsHeadingWithBuild": "{count} TypeScript-Fehler · build #{buildN}",
       "buildErrorsCloseAria": "Fehlerliste schließen",
@@ -3672,7 +3700,11 @@
       "kindIntegration": "Integration",
       "kindTool": "Tool",
       "kindIntegrationHint": "Plugin-Art: Integration — ein externes System mit Zugangsdaten. Wird Agenten einzeln freigegeben.",
-      "kindToolHint": "Plugin-Art: Tool — lokale Logik ohne externes System. Wird Agenten einzeln freigegeben."
+      "kindToolHint": "Plugin-Art: Tool — lokale Logik ohne externes System. Wird Agenten einzeln freigegeben.",
+      "codegenModelLabel": "Codegenerierung",
+      "installSlotsLoading": "Der Builder lädt die Anforderungen der Vorlage.",
+      "installSlotsUnavailable": "Die Anforderungen der Vorlage konnten nicht geladen werden. Lade den Entwurf neu und versuche es erneut.",
+      "installIncompleteSimple": "Dem Plugin fehlen noch erforderliche Bestandteile. Bitte den Builder, es fertigzustellen, und starte anschließend eine Vorschau."
     },
     "tools": {
       "form": {
@@ -3684,7 +3716,7 @@
         "inputSchema": "Input-Schema",
         "schemaModeLabel": "Schema-Modus",
         "tabForm": "Formular",
-        "tabRawJson": "Raw JSON",
+        "tabRawJson": "JSON-Quelltext",
         "saveAsTemplate": "Als Template speichern",
         "saved": "gespeichert",
         "templateNamePrompt": "Template-Name",
@@ -3714,7 +3746,7 @@
         "inputLabel": "Eingabe",
         "preview": "Vorschau",
         "previewEmpty": "Eingabe einfügen, um die Vorschau zu sehen.",
-        "invalidJson": "Eingabe ist kein gültiges JSON. YAML wird im B.11+ Cleanup unterstützt.",
+        "invalidJson": "Die Eingabe enthält ungültiges JSON.",
         "collisionNote": "Kollisionen werden übersprungen — bestehende Tools bleiben unverändert.",
         "confirmImport": "Import bestätigen",
         "collisionBadge": "Kollision",
@@ -3727,11 +3759,11 @@
         "titlePrefix": "Test",
         "subtitle": "Direkter Aufruf gegen die aktuelle Preview-Instanz.",
         "closeModal": "Modal schließen",
-        "inputHeading": "Input",
+        "inputHeading": "Eingabe",
         "resultHeading": "Ergebnis",
         "dismissHint": "Esc oder Klick außerhalb schließt das Modal.",
         "saveTestCase": "Als Test-Case speichern",
-        "run": "Run",
+        "run": "Ausführen",
         "unknownError": "Unbekannter Fehler",
         "emptyInput": "Tool akzeptiert leeres Input — Run drücken.",
         "selectPlaceholder": "— wählen —",
@@ -3744,7 +3776,65 @@
         "closeModal": "Modal schließen",
         "empty": "Keine Templates verfügbar.",
         "personalBadge": "Mein",
-        "deleteTemplate": "Template {label} löschen"
+        "deleteTemplate": "Template {label} löschen",
+        "curated": {
+          "rest-get-list": {
+            "label": "REST GET (Liste)",
+            "blurb": "GET /resource mit Seitengröße und Cursor.",
+            "description": "Listet Ressourcen einer REST-API mit optionalem Filter.",
+            "fields": {
+              "limit": "Höchstzahl der zurückgegebenen Einträge.",
+              "cursor": "Cursor aus der vorherigen Antwort.",
+              "filter": "Suchtext."
+            }
+          },
+          "rest-post-create": {
+            "label": "REST POST (Erstellen)",
+            "blurb": "POST /resource mit JSON-Daten und Idempotenzschlüssel.",
+            "description": "Erstellt eine REST-Ressource mit einem Idempotenzschlüssel.",
+            "fields": {
+              "payload": "JSON-Daten für die Ressource.",
+              "idempotency_key": "Schlüssel zur Deduplizierung. Verwende möglichst eine UUID."
+            }
+          },
+          "graphql-query": {
+            "label": "GraphQL-Abfrage",
+            "blurb": "GraphQL-POST mit Abfrage und Variablen.",
+            "description": "Führt eine GraphQL-Abfrage aus.",
+            "fields": {
+              "query": "GraphQL-Abfrage mit Variablen.",
+              "variables": "Namen und Werte der GraphQL-Variablen."
+            }
+          },
+          "kg-lookup": {
+            "label": "Knowledge-Graph-Abfrage",
+            "blurb": "Beziehungen nach Subjekt und Prädikat abfragen.",
+            "description": "Sucht Beziehungen im Knowledge Graph.",
+            "fields": {
+              "subject": "Name der Entität oder kanonische Entitäts-URI.",
+              "predicate": "Beziehungstyp. Leer lassen, um alle Typen einzubeziehen."
+            }
+          },
+          "memory-read": {
+            "label": "Gedächtnis lesen",
+            "blurb": "Einen Gedächtniseintrag des Agenten anhand seines Schlüssels lesen.",
+            "description": "Liest einen Gedächtniseintrag des Agenten.",
+            "fields": {
+              "key": "Schlüssel des Eintrags. Groß- und Kleinschreibung beachten."
+            }
+          },
+          "memory-write": {
+            "label": "Ins Gedächtnis schreiben",
+            "blurb": "Einen Eintrag im Gedächtnis des Agenten schreiben oder ersetzen.",
+            "description": "Schreibt oder ersetzt einen Gedächtniseintrag des Agenten.",
+            "fields": {
+              "key": "Schlüssel des Eintrags. Groß- und Kleinschreibung beachten.",
+              "value": "Textwert. Strukturdaten als JSON übergeben.",
+              "ttl_seconds": "Mit null Sekunden bleibt der Eintrag dauerhaft gespeichert."
+            }
+          }
+        },
+        "personalDescription": "Eigene Vorlage"
       },
       "schema": {
         "collapseConstraints": "Constraints einklappen",
@@ -3760,7 +3850,7 @@
         "booleanNoConstraints": "Boolean — keine zusätzlichen Constraints.",
         "objectNestedHint": "Object — verschachtelte Properties unten editieren.",
         "allowedValues": "Erlaubte Werte",
-        "patternRegexLabel": "pattern (regex)",
+        "patternRegexLabel": "Muster (Regex)",
         "removeValue": "Wert {value} entfernen",
         "valueEnterPlaceholder": "Wert + Enter",
         "itemType": "Item-Typ",
@@ -3769,7 +3859,7 @@
         "jsonParseError": "JSON-Parse-Fehler",
         "jsonModeHint": "Direkter JSON-Schema-Modus. Beim Wechsel zur Formular-Ansicht werden nicht-unterstützte Patterns (oneOf, $ref, polymorphic) read-only.",
         "noProperties": "Keine Properties — Tool akzeptiert leeres Input-Objekt.",
-        "addProperty": "Property"
+        "addProperty": "Eigenschaft"
       },
       "testResult": {
         "error": "Fehler",
@@ -3799,7 +3889,8 @@
         "llmAccessMissing": "Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).",
         "turnInProgress": "Auf diesem Draft läuft noch ein Builder-Turn. Deine Nachricht wurde nicht gesendet; der laufende Turn wird unten angezeigt.",
         "turnTimeout": "Der Builder-Turn hat zu lange gedauert und wurde gestoppt.",
-        "stopFailed": "Der Turn konnte auf dem Server nicht gestoppt werden: {message}"
+        "stopFailed": "Der Turn konnte auf dem Server nicht gestoppt werden: {message}",
+        "resumeExhausted": "Der Builder konnte die Verbindung zu diesem Turn nicht wiederherstellen. Lade den Entwurf neu, um den aktuellen Stand zu sehen."
       },
       "inputLabel": "Builder-Nachricht",
       "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
@@ -3809,7 +3900,7 @@
         "idle": "Beschreibe, was das Plugin tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
       },
       "button": {
-        "stop": "Stop",
+        "stop": "Stoppen",
         "send": "Senden",
         "stopping": "Wird gestoppt …"
       },
@@ -3820,7 +3911,7 @@
         "awaitingChoice": "wartet auf deine Auswahl"
       },
       "turnStats": {
-        "live": "Turn live",
+        "live": "Turn läuft",
         "last": "Letzter Turn",
         "toolTime": "{seconds} s Tool-Zeit"
       },
@@ -3832,9 +3923,9 @@
     "preview": {
       "chat": {
         "agentLabel": "Vorschau: neutraler Entwurfs-Agent nur mit diesem Plugin",
-        "credentials": "Credentials",
+        "credentials": "Zugangsdaten",
         "credentialsTooltip": "Test-Credentials für die Preview verwalten",
-        "rebuild": "Rebuild",
+        "rebuild": "Neu bauen",
         "rebuildSuccess": "Rebuild #{buildN} ✓ — Preview ist bereit",
         "inputLabel": "Preview-Nachricht",
         "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
@@ -3842,9 +3933,9 @@
           "inflight": "Der Vorschau-Agent antwortet …",
           "idle": "Teste das Plugin. Enter zum Senden."
         },
-        "stop": "Stop",
+        "stop": "Stoppen",
         "send": "Senden",
-        "streamLive": "Stream live",
+        "streamLive": "Stream läuft",
         "error": {
           "connectionLost": "Verbindung verloren: {message}",
           "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
@@ -3862,7 +3953,7 @@
         },
         "empty": {
           "title": "Teste das Plugin mit dem Vorschau-Agenten.",
-          "body": "Ein neutraler Entwurfs-Agent hat nur die Tools dieses Plugins. Spec + Slots werden vor jedem Turn neu kompiliert, falls etwas geändert wurde."
+          "body": "Probiere die Werkzeuge dieses Plugins aus. Änderungen fließen in die nächste Vorschau ein."
         },
         "smoke": {
           "running": "smoke #{buildN} läuft …",
@@ -3874,6 +3965,8 @@
           "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
         },
+        "declined": "Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt.",
+        "previewModelSettings": "Einstellungen für das Vorschau-Modell",
         "replyMarker": "Vorschau"
       },
       "secrets": {
@@ -3933,13 +4026,13 @@
           "name": "Name",
           "author": "Autor",
           "version": "Version",
-          "template": "Template",
+          "template": "Vorlage",
           "category": "Kategorie",
-          "domain": "Domain",
+          "domain": "Domäne",
           "tools": "Tools",
           "slots": "Slots",
           "setupFields": "Setup-Felder",
-          "outbound": "Outbound",
+          "outbound": "Ausgehende Verbindungen",
           "description": "Beschreibung",
           "kind": "Art"
         },
@@ -3970,7 +4063,14 @@
           "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Plugin Builder fragen) — dann hier auswählen.",
           "scopes": "Scopes",
           "scopesPlaceholder": "kommagetrennt, z.B. profile, email"
-        }
+        },
+        "fieldKey": "Feldschlüssel",
+        "fieldLabel": "Bezeichnung",
+        "fieldType": "Feldtyp",
+        "fieldRequired": "Pflichtfeld",
+        "fieldDescription": "Hinweise zur Einrichtung",
+        "saveConflict": "Die Einrichtungsfelder haben sich geändert. Prüfe den aktuellen Stand und versuche es erneut.",
+        "saveFailed": "Das Einrichtungsfeld konnte nicht gespeichert werden."
       }
     },
     "slots": {
@@ -4009,7 +4109,7 @@
         "title": "Persona-Vorlage auswählen",
         "close": "Schließen",
         "role": "Rolle: {role}",
-        "customLabel": "Custom",
+        "customLabel": "Individuell",
         "customDescription": "Keine Vorlage anwenden — eigene Achsen verwenden.",
         "cancel": "Abbrechen",
         "apply": "Anwenden",
@@ -4028,11 +4128,11 @@
             "description": "Kreative Brand Voice mit strategischem Denken."
           },
           "researchAnalyst": {
-            "label": "Research Analyst",
+            "label": "Rechercheanalyst",
             "description": "Gründliche Recherche mit strukturierter Aufbereitung."
           },
           "softwareEngineer": {
-            "label": "Software Engineer",
+            "label": "Softwareentwickler",
             "description": "Teamorientierter Entwickler mit klarem Kommunikationsstil."
           },
           "teamLead": {
@@ -4042,7 +4142,7 @@
         }
       },
       "boundaries": {
-        "heading": "Boundaries",
+        "heading": "Grenzen",
         "selectedCount": "{count} ausgewählt",
         "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, ersetzt, was du hier festlegst, dessen Wert für dieses Feld: Eigene Grenzen ersetzen seine Standard-Grenzen, eine eigene Stufe der Schmeichel-Bremse ersetzt seine Standard-Stufe. Nur Felder, die du hier offen lässt, kommen vom Quality Guard.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
@@ -4209,10 +4309,10 @@
     "uiSurfaces": {
       "editor": {
         "adminUi": {
-          "title": "Admin UI",
+          "title": "Admin-Oberfläche",
           "subtitle": "Ein iframe in der Store-Detail, operator-only. Für Daten-Pflege die nicht aus der API kommt.",
           "toggleLabel": "Admin UI bereitstellen",
-          "toggleHelp": "Plugin mountet eine HTML-Page unter <code>admin_ui_path</code>. Web-UI embed sie als <code>&lt;iframe&gt;</code> auf der Store-Detail-Seite nach Install.",
+          "toggleHelp": "Das Plugin stellt unter <code>admin_ui_path</code> eine HTML-Seite bereit. Nach der Installation zeigt der Store sie in einem <code>iframe</code> an.",
           "pathLabel": "Pfad (absolut, endet auf <code>index.html</code>)",
           "bodyLabel": "Admin-UI-Body (HTML)",
           "bodyHint": "Inhalt zwischen den Marker-Regions. inline style + script erlaubt.",
@@ -4221,7 +4321,7 @@
           "stubEditHint": "Editier diesen Block via fill_slot('admin-ui-body', ...) oder direkt im Workspace."
         },
         "dashboardPages": {
-          "title": "Dashboard Pages",
+          "title": "Dashboard-Seiten",
           "subtitle": "Browser-/Teams-Tab-rendernde Routes. Für end-user-facing Anzeigen (PR-Inbox, KPIs, Listen)."
         }
       },
@@ -4236,7 +4336,7 @@
         "fields": {
           "routeIdLabel": "Route-ID (slug)",
           "routeIdHelp": "Lowercase, Bindestriche erlaubt. Bestimmt Slot-Keys + Filename.",
-          "pathLabel": "Path",
+          "pathLabel": "Pfad",
           "pathHelp": "Relativ zum Plugin-Mount. Endgültig: /p/<id><path>.",
           "tabLabelLabel": "Tab-Label (Teams Hub)",
           "tabLabelHelp": "Max 24 Zeichen. Wird in Teams-Tab + Hub-Card angezeigt.",
@@ -4271,12 +4371,12 @@
           "help": "SSR + Client-Side-Hydration via esm.sh-Importmap. Setze auf true wenn dein Component <code>useState</code>, <code>onClick</code> o.ä. nutzt. Root-Element MUSS <code>data-omadia-page=\"{routeId}\"</code> tragen."
         },
         "componentSlot": {
-          "label": "Component (TSX, default-export)",
-          "hint": "Props: { data: unknown; fetchError: string | null }"
+          "label": "Komponente (TSX, Standardexport)",
+          "hint": "Eigenschaften sind data (unknown) und fetchError (string oder null)."
         },
         "renderSlot": {
           "label": "Render-Slot (renderRoute-Callback-Body)",
-          "hint": "Return: HtmlFragment (e.g. htmlDoc({ title, body }))"
+          "hint": "Gibt ein HtmlFragment aus htmlDoc mit Titel und Inhalt zurück."
         },
         "itemTemplate": {
           "heading": "Item-Template (Path-Interpolation: <code>item.feldname</code>)",
@@ -4337,8 +4437,8 @@
       "relDaysAgo": "vor {count, plural, one {# Tag} other {# Tagen}}",
       "detailTemplate": "Vorlage: {template}",
       "detailAxes": "{count, plural, one {# Achse} other {# Achsen}}",
-      "detailCustomNotes": "Custom notes",
-      "detailSycophancy": "Sycophancy: {value}",
+      "detailCustomNotes": "Eigene Hinweise",
+      "detailSycophancy": "Zustimmungsneigung: {value}",
       "detailPresets": "{count, plural, one {# Preset} other {# Presets}}",
       "detailCustom": "{count} Custom",
       "detailOperations": "{count, plural, one {# Operation} other {# Operationen}}",
@@ -4352,12 +4452,12 @@
       "colBy": "Von",
       "colNote": "Notiz",
       "colStatus": "Status",
-      "diffVsLive": "Diff vs. Live",
-      "deployReady": "Deploy-ready",
-      "rollback": "Rollback",
+      "diffVsLive": "Mit laufender Version vergleichen",
+      "deployReady": "Bereit zur Veröffentlichung",
+      "rollback": "Version zurücksetzen",
       "downloadPlugin": "Plugin",
       "downloadPluginTitle": "Plugin-ZIP — direkt installierbar via /install/packages/upload",
-      "downloadBundle": "Bundle",
+      "downloadBundle": "Entwurfspaket",
       "downloadBundleTitle": "Profile-Bundle — für cross-instance-Migration via /api/v1/profiles/import-bundle",
       "toastMarkedDeployReady": "Als deploy-ready markiert",
       "toastNoDiff": "Kein Unterschied seit letztem Snapshot",
@@ -4376,7 +4476,7 @@
       "noDifferences": "Keine Unterschiede.",
       "colPath": "Pfad",
       "colSnapshot": "Snapshot",
-      "colLive": "Live",
+      "colLive": "Laufende Version",
       "rollbackConfirmTitle": "Rollback bestätigen",
       "rollbackBodyPrefix": "Live-",
       "rollbackBodySuffix": " + Knowledge-Dateien, die Spec des Drafts und sein Slot-Code werden auf den Snapshot-Stand zurückgesetzt. Ein Snapshot von vor der Slot-Code-Erfassung stellt nur die Spec wieder her. Plugin-Pins bleiben unverändert.",
@@ -4389,9 +4489,8 @@
       "publishTitle": "Plugin bereitstellen",
       "closeModalAria": "Modal schließen",
       "closeAria": "Schließen",
-      "diffGateEyebrow": "Bereitstellungs-Diff-Gate",
-      "publishLeadPrefix": "Diese Surface wird in die Plugin-Registry deiner Instanz geschrieben. Nach „Bereitstellen“ ist",
-      "publishLeadSuffix": "kann Agenten in deinem Tenant freigegeben werden — nicht öffentlich.",
+      "publishLeadPrefix": "Beim Bereitstellen wird",
+      "publishLeadSuffix": "in den Store übertragen. Installiere ein neues Plugin dort und wähle aus, welche Agenten es nutzen dürfen.",
       "back": "Zurück",
       "publishing": "Stelle bereit …",
       "succeeded": "Erfolgreich",
@@ -4401,8 +4500,8 @@
       "kvName": "Name",
       "kvVersion": "Version",
       "kvCategory": "Kategorie",
-      "kvDomain": "Domain",
-      "kvTemplate": "Template",
+      "kvDomain": "Domäne",
+      "kvTemplate": "Vorlage",
       "kvDescription": "Beschreibung",
       "sectionTools": "Tools",
       "toolsCount": "{count, plural, one {# Tool} other {# Tools}}",
@@ -4433,20 +4532,36 @@
       "hintSpecInvalid": "Die Spec hat ein Schema-Problem. Prüfe Pflichtfelder im Spec-Editor.",
       "hintTooLarge": "Reduziere Slot-Inhalte oder Asset-Größen — der Server-Limit ist erreicht.",
       "bumpInvalidSemver": "Version '{version}' ist kein Semver — manuell anpassen im Spec-Editor.",
-      "bumpAndPublish": "Version anheben ({current} → {next}) + Bereitstellen",
+      "bumpAndPublish": "Version erhöhen ({current} → {next}) und prüfen",
       "retry": "Erneut versuchen",
       "typescriptErrors": "{count, plural, one {# TypeScript-Fehler} other {# TypeScript-Fehler}}",
       "codegenIssues": "{count, plural, one {# Codegen-Issue} other {# Codegen-Issues}}",
       "successHeading": "Plugin bereitgestellt",
-      "successBody": "ist in deiner Instanz verfügbar. Weiterleitung läuft …",
       "conflictLabel": "Konflikt",
       "dismissConflictAria": "Konflikt-Hinweis ausblenden",
       "manifestPreviewOpenAria": "Manifest-Vorschau öffnen",
       "manifestPreviewRefreshAria": "Manifest-Vorschau aktualisieren",
       "manifestPreviewCloseAria": "Manifest-Vorschau schließen",
       "manifestPreviewLoading": "# (Vorschau wird geladen)",
-      "previewError": "Preview-Fehler",
-      "kvKind": "Art"
+      "previewError": "Die Manifest-Vorschau konnte nicht geladen werden.",
+      "kvKind": "Art",
+      "manifestComparison": "Manifest-Vergleich",
+      "manifestReview": "Manifest prüfen",
+      "compareVersion": "Vergleich mit der installierten Version {version}.",
+      "baselineUnavailable": "Das Manifest der installierten Version {version} ist nicht verfügbar. Unten steht das Manifest des Entwurfs.",
+      "manifestUnavailable": "Das Manifest des Entwurfs konnte nicht geladen werden. Prüfe den Entwurf oder versuche es erneut.",
+      "loadingManifest": "Manifest des Entwurfs wird geladen …",
+      "added": "Hinzugefügt",
+      "removed": "Entfernt",
+      "changed": "Geändert",
+      "generatedFeatures": "Generierte externe Lesezugriffe und UI-Routen des Entwurfs",
+      "downgradeHeading": "Älter als die installierte Version",
+      "confirmDowngrade": "Downgrade auf {version}",
+      "activationFailed": "Das Paket wurde bereitgestellt, aber die neue Version ist nicht gestartet.",
+      "successActivated": "wurde bereitgestellt und aktiviert. Verwalte die Freigaben für Agenten im Store.",
+      "successNeedsInstall": "wurde im Store bereitgestellt. Installiere oder aktiviere das Plugin dort und gib es anschließend für die gewünschten Agenten frei.",
+      "openStore": "Plugin im Store öffnen",
+      "reviewStale": "Der Entwurf oder die installierte Version hat sich geändert. Lade den Manifest-Vergleich vor dem Bereitstellen neu."
     },
     "common": {
       "missingCountAria": "{count} fehlt",
@@ -4497,12 +4612,12 @@
         "footerStamp": "omadia · Plugin Builder"
       },
       "detail": {
-        "metaTitle": "Workspace · Plugin Builder · omadia",
+        "metaTitle": "Arbeitsbereich · Plugin Builder · omadia",
         "error": {
           "label": "Fehler",
           "loadFailed": "Workspace konnte nicht geladen werden.",
           "unknown": "Unbekannter Fehler",
-          "draftPrefix": "Draft",
+          "draftPrefix": "Entwurf",
           "backToList": "Zurück zur Draft-Liste"
         }
       },
@@ -4516,7 +4631,7 @@
         "cancel": "Abbrechen",
         "rename": "Umbenennen",
         "delete": "Löschen",
-        "workspace": "Workspace",
+        "workspace": "Arbeitsbereich",
         "restore": "Wiederherstellen",
         "export": {
           "label": "Export",
@@ -4542,7 +4657,9 @@
       "create": {
         "label": "Neues Plugin",
         "pending": "Wird angelegt…",
-        "quotaReachedTooltip": "Draft-Quota erreicht — lösche bestehende, bevor du einen neuen anlegst."
+        "quotaReachedTooltip": "Draft-Quota erreicht — lösche bestehende, bevor du einen neuen anlegst.",
+        "defaultName": "Neues Plugin",
+        "failed": "Der Plugin-Entwurf konnte nicht erstellt werden."
       },
       "import": {
         "button": "Bundle importieren",
@@ -4569,7 +4686,7 @@
         }
       },
       "quota": {
-        "label": "Drafts",
+        "label": "Entwürfe",
         "almostFull": "bald voll",
         "limitReached": "Limit erreicht",
         "tooltip": "{used} von {cap} aktiven Drafts, Warnung ab {warnAt}"
@@ -5233,9 +5350,10 @@
       "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert."
     },
     "editFromStore": {
+      "sourceDraftMissing": "Für dieses Plugin gibt es in deinem Konto keinen Builder-Entwurf.",
+      "cloneFailed": "Der Builder-Entwurf konnte nicht geöffnet werden.",
       "cloning": "Klone Draft …",
       "editInBuilder": "Im Builder bearbeiten",
-      "hintSourceNotFound": "Der Original-Draft des Builders existiert nicht mehr (gelöscht oder von einem anderen Operator installiert). Reverse-Codegen aus der installierten manifest.yaml kommt erst in B.7.",
       "hintQuotaExceeded": "Lösch bestehende Drafts unter „Drafts“, bevor du diesen klonst."
     },
     "requiresWizard": {

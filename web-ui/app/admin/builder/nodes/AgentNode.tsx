@@ -1,6 +1,8 @@
 'use client';
 
 import type { NodeProps } from '@xyflow/react';
+import { useTranslations } from 'next-intl';
+import { isSeededAgentDescription } from '../../../_lib/agents';
 import { NodeShell } from './NodeShell';
 import type { AgentNodeData } from './types';
 
@@ -9,12 +11,13 @@ export function AgentNodeView({
   selected,
 }: NodeProps & { data: AgentNodeData }): React.ReactElement {
   const { agent, labels } = data;
+  const t = useTranslations('operatorAgents');
   const routing = agent.modelRouting;
   return (
     <NodeShell
       kind="agent"
       title={agent.name}
-      subtitle={agent.description}
+      subtitle={isSeededAgentDescription(agent.description) ? t('seededDescription') : agent.description}
       badge={labels['agent']}
       selected={selected}
       hasTarget

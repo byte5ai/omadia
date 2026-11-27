@@ -31,6 +31,7 @@ export interface TranscriptEntry {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  status?: 'declined';
 }
 
 /**
@@ -194,13 +195,9 @@ export interface DraftSummary {
 
 export function emptyAgentSpec(): AgentSpecSkeleton {
   return {
-    // Default to the integration template: most fresh drafts call an
-    // external API and start from there. The boilerplate's
-    // `ctx.secrets.require('API_TOKEN')` + `ctx.config.require('base_url')`
-    // give the operator concrete setup-field anchors to fill in via the
-    // SecretsDrawer; the `tool` template (local logic, no external
-    // system) is one click away in the Workspace header.
-    template: 'integration',
+    // A blank draft has no external system. The Builder chooses the
+    // integration template when the operator's request calls for a client.
+    template: 'tool',
     id: '',
     name: '',
     version: '0.1.0',

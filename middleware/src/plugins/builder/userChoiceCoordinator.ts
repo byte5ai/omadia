@@ -41,13 +41,19 @@ export interface ChoiceResolution {
   value: string;
 }
 
+export interface ChoiceFreeAnswer {
+  ok: true;
+  choiceId: string;
+  answer: string;
+}
+
 export interface ChoiceCancellation {
   ok: false;
   choiceId: string;
   reason: 'cancelled' | 'timeout' | 'unknown';
 }
 
-export type ChoiceOutcome = ChoiceResolution | ChoiceCancellation;
+export type ChoiceOutcome = ChoiceResolution | ChoiceFreeAnswer | ChoiceCancellation;
 
 interface PendingEntry {
   choice: PendingChoice;
@@ -57,14 +63,14 @@ interface PendingEntry {
 export interface UserChoiceCoordinatorOptions {
   bus: SpecEventBus;
   /** Timeout after which a pending choice resolves to `timeout`.
-   *  Default 30 minutes — long enough that the operator can step away. */
+   *  Default five minutes. */
   timeoutMs?: number;
   /** ID generator override (tests). */
   generateId?: () => string;
   now?: () => number;
 }
 
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class UserChoiceCoordinator {
   private readonly bus: SpecEventBus;
@@ -118,6 +124,7 @@ export class UserChoiceCoordinator {
       timer = setTimeout(() => {
         if (this.pending.has(choiceId)) {
           entry.resolve({ ok: false, choiceId, reason: 'timeout' });
+          this.bus.emit(input.draftId, { type: 'user_choice_resolved', choiceId, value: null });
         }
       }, this.timeoutMs);
     });
@@ -142,18 +149,17 @@ export class UserChoiceCoordinator {
   resolve(input: {
     draftId: string;
     choiceId: string;
-    value: string;
-  }): boolean {
+  } & ({ value: string } | { answer: string })): boolean {
     const entry = this.pending.get(input.choiceId);
     if (!entry) return false;
     if (entry.choice.draftId !== input.draftId) return false;
-    const allowed = entry.choice.options.some((o) => o.value === input.value);
-    if (!allowed) return false;
-    entry.resolve({ ok: true, choiceId: input.choiceId, value: input.value });
+    if ('value' in input && !entry.choice.options.some((o) => o.value === input.value)) return false;
+    const response = 'value' in input ? { value: input.value } : { answer: input.answer };
+    entry.resolve({ ok: true, choiceId: input.choiceId, ...response });
     this.bus.emit(input.draftId, {
       type: 'user_choice_resolved',
       choiceId: input.choiceId,
-      value: input.value,
+      value: 'value' in input ? input.value : null,
     });
     return true;
   }

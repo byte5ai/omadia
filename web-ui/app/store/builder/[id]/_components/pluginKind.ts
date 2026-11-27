@@ -26,6 +26,7 @@ export function effectivePluginKind(
 const LEGACY_TEMPLATE_IDS: Readonly<Record<string, string>> = {
   'agent-integration': 'integration',
   'agent-pure-llm': 'tool',
+  'pure-llm': 'tool',
 };
 
 /** The boilerplate id of a draft for display; absent = `integration`. */

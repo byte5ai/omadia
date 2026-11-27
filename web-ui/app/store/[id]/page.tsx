@@ -368,16 +368,12 @@ export default async function PluginDetailPage({
             </Section>
           ) : null}
 
-          {/* Plugin self-extension (operator-gated, non-escalating). Installed
-              plugins only — a proposal is evaluated against the source draft's
-              spec, and an approved one rebuilds + hot-reactivates the plugin.
-              See docs/harness-platform/DESIGN-plugin-self-extension.md. */}
-          {plugin.install_state === 'installed' ? (
+          {detail.has_builder_draft || detail.has_self_extension_templates ? (
             <Section
               label={t('sectionSelfExtension')}
               icon={<Sparkles className="size-4" aria-hidden />}
             >
-              <SelfExtensionPanel agentId={plugin.id} />
+              <SelfExtensionPanel agentId={plugin.id} canEditSpec={detail.has_builder_draft === true} />
             </Section>
           ) : null}
 
@@ -460,7 +456,7 @@ export default async function PluginDetailPage({
         </article>
 
         {/* Sidebar */}
-        <aside className="space-y-8 lg:sticky lg:top-10 lg:self-start">
+        <aside id="install" className="space-y-8 lg:sticky lg:top-10 lg:self-start">
           {/* Spec 2042 §5.10 — an installed plugin of a retired kind runs on
               as legacy; say so, and what replaces it. */}
           {plugin.install_state === 'installed' || plugin.install_state === 'update-available' ? (
@@ -527,11 +523,7 @@ export default async function PluginDetailPage({
               and scrolls it into view. */}
           {adminUiAvailable ? <AdminUiToggle /> : null}
 
-          {/* Edit-from-Store (B.6-3) — only surfaced for installed plugins.
-              Resolves to the source draft owned by the same operator;
-              404 with hint if no source exists (typical: another operator
-              installed it, or the source was hard-deleted). */}
-          {plugin.install_state === 'installed' ? (
+          {detail.has_builder_draft ? (
             <EditFromStoreButton publishedAgentId={plugin.id} />
           ) : null}
 
