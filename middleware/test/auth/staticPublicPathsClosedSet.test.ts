@@ -70,6 +70,12 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
   },
   { path: '/api/auth/callback', why: 'legacy auth prefix' },
   {
+    path: '/api/v1/directory/connect/mcp/srv-1/start',
+    why:
+      'ADR-0301 / #2312 — per-person MCP connect from Teams: every route behind the kernel Teams ' +
+      'SSO gate, plus the /go/<state> redirect to a pending flow; no session is read',
+  },
+  {
     path: '/api/v1/install/oauth/callback',
     why: 'spec-005 kernel OAuth broker callback — self-secures on a signed, single-use state token',
   },

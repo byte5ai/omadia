@@ -39,7 +39,7 @@ export interface DirectoryConnectDeps {
 
 const MAX_PARAM_LENGTH = 4096;
 
-/** Where the kernel mounts these routes (index.ts) — the `startUrl` is absolute on this host. */
+/** Where the kernel mounts these routes (index.ts) — the `startUrl` is a path on this host; the page prefixes its own origin. */
 export const CONNECT_MOUNT = '/api/v1/directory/connect';
 
 const text = (value: unknown): string =>
