@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** Owner (autonomous wave 5, recommendation of the 2026-11-26 recheck);

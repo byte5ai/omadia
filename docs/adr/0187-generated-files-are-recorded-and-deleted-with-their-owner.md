@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (Welle 5, W02; owner decision #1986 taken after the recheck recommendation, reversible)

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** Wave 5 cluster W03-04 (issue #1834), autonomous rollout mandate of 2026-11-23
