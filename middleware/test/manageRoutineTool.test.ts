@@ -244,7 +244,10 @@ describe('ManageRoutineTool — create with targetEmail (cold-start outreach)', 
       ...baseArgs,
       targetEmail: 'someone@byte5.de',
     });
-    assert.match(result, /^Error: not authorized/);
+    // #1751 — no operator can grant this; the error says so instead of
+    // sending the user to ask for it.
+    assert.match(result, /^Error: this deployment cannot send routine messages to other people/);
+    assert.doesNotMatch(result, /operator/);
     assert.equal(calls.length, 0);
   });
 
@@ -432,5 +435,64 @@ describe('ManageRoutineTool — list / pause / resume / delete', () => {
     const payload = JSON.parse(result);
     assert.equal(payload.action, 'not_found');
     assert.equal(payload.id, id);
+  });
+});
+
+
+describe('ManageRoutineTool — wave 5 contract (#1743 #1750 #1751 #1767)', () => {
+  const NOW = new Date('2026-11-26T10:00:00Z');
+  const args = { action: 'create', name: 'morning', cron: '0 9 * * 1-5', prompt: 'summary' };
+
+  it('stores the creator zone, else the instance zone, and names the next run in it', async () => {
+    const seen: CreateRoutineInput[] = [];
+    const { runner } = stubRunner({
+      createImpl: async (input) => {
+        seen.push(input);
+        return fakeRoutine({ cron: input.cron, timezone: input.timezone ?? null });
+      },
+    });
+    const withUserZone = new ManageRoutineTool({
+      runner,
+      resolveContext: () => ({ ...ctx, timeZone: 'America/New_York' }),
+      defaultTimeZone: 'Europe/Berlin',
+      now: () => NOW,
+    });
+    const created = JSON.parse(await withUserZone.handle(args)) as { routine: { timeZone: string; nextRun: string } };
+    assert.equal(seen[0]!.timezone, 'America/New_York');
+    assert.equal(created.routine.timeZone, 'America/New_York');
+    assert.equal(created.routine.nextRun, '2026-11-26 09:00 (America/New_York)');
+
+    const instanceZone = new ManageRoutineTool({
+      runner,
+      resolveContext: () => ctx,
+      defaultTimeZone: 'Europe/Berlin',
+      now: () => NOW,
+    });
+    await instanceZone.handle(args);
+    assert.equal(seen[1]!.timezone, 'Europe/Berlin');
+  });
+
+  it('passes a refusal written for the model through (schedule refused, no saved chat)', async () => {
+    const { ToolRefusalError } = await import('@omadia/plugin-api');
+    const { runner } = stubRunner({
+      createImpl: () => Promise.reject(new ToolRefusalError("cron pattern '0 9 31 2 *' fires never from now on; a routine must recur")),
+    });
+    const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
+    const result = await tool.handle({ ...args, cron: '0 9 31 2 *' });
+    assert.equal(result, "Error: cron pattern '0 9 31 2 *' fires never from now on; a routine must recur");
+  });
+
+  it('describes invalid input briefly instead of dumping zod JSON', async () => {
+    const { runner } = stubRunner();
+    const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
+    const result = await tool.handle({ action: 'create', name: 'x', cron: '0 9 * * *', prompt: 'p', timeoutMs: 5 });
+    assert.match(result, /^Error: invalid manage_routine input — timeoutMs: /);
+    assert.doesNotMatch(result, /[[{]/);
+  });
+
+  it('does not advertise targetEmail to the model', async () => {
+    const { manageRoutineToolSpec } = await import('../src/plugins/routines/manageRoutineTool.js');
+    assert.equal('targetEmail' in manageRoutineToolSpec.input_schema.properties, false);
+    assert.doesNotMatch(manageRoutineToolSpec.description, /targetEmail/);
   });
 });

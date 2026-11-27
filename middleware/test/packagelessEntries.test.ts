@@ -9,6 +9,7 @@
 import { strict as assert } from 'node:assert';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import express from 'express';
@@ -74,6 +75,25 @@ describe('registry entries without a package', () => {
     const none: string[] = [];
     assert.deepEqual(warnPackagelessEntries(registry, [store('@omadia/memory', 'ui-channel', 'de.byte5.legacy')], (m) => none.push(m)), []);
     assert.deepEqual(none, []);
+  });
+
+  it('#1942: names omadia-ui-support for the canvas packages that left the core image', async () => {
+    const registry = await registryOf([
+      { id: '@omadia/ui-orchestrator', status: 'active' },
+      { id: '@omadia/ui-channel', status: 'active' },
+      { id: 'de.byte5.legacy', status: 'active' },
+    ]);
+    const warnings: string[] = [];
+    warnPackagelessEntries(registry, [store()], (m) => warnings.push(m));
+    assert.match(
+      warnings[0]!,
+      /@omadia\/ui-channel, @omadia\/ui-orchestrator ship outside the core image now: install from byte5ai\/omadia-ui-support\./,
+    );
+    assert.ok(!/de\.byte5\.legacy ships/.test(warnings[0]!), 'other entries get no relocation hint');
+
+    const plain: string[] = [];
+    warnPackagelessEntries(await registryOf([{ id: 'de.byte5.legacy', status: 'active' }]), [store()], (m) => plain.push(m));
+    assert.ok(!plain[0]!.includes('omadia-ui-support'));
   });
 });
 
@@ -145,5 +165,26 @@ describe('GET /admin/runtime/installed reports an entry without a package', () =
     } finally {
       await served.close();
     }
+  });
+});
+
+describe('package sources wired in index.ts', () => {
+  // A PLUGIN_DEV_DIR plugin has its package in the local-dev store; every
+  // "has a package?" question must ask that store too, or the agent page,
+  // the runtime list and the boot warning call a running dev plugin
+  // packageless.
+  const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+
+  it('one source list names the uploaded, built-in and local-dev stores', () => {
+    assert.match(
+      source,
+      /const packageSources = \[uploadedPackageStore, builtInPackageStore, localDevPackageStore\]/,
+    );
+  });
+
+  it('every hasPackage / warnPackagelessEntries call uses that list', () => {
+    assert.doesNotMatch(source, /hasPackage\(id, \[/);
+    assert.doesNotMatch(source, /warnPackagelessEntries\(installedRegistry, \[/);
+    assert.equal((source.match(/hasPackage\(id, packageSources\)/g) ?? []).length >= 2, true);
   });
 });

@@ -36,6 +36,108 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routines: deliveries, cleanup and the routines page (W23, 2026-11-26)
+
+- **Deliveries in the web chat** (#1755, #1756, #1766, #1775): the next turn of a chat gets its
+  recent routine deliveries as a labelled block (which routine, when, what it wrote;
+  `routineDeliveryContext.ts`, `routes/chat.ts`), so a follow-up can quote and discuss them
+  instead of denying them. An empty run is detected on the model's own text before the AI
+  disclosure is folded in, so a disclosure line alone is never delivered. The run's Privacy
+  Shield receipt is stored on the delivery (`ChatMessage.privacyReceipt`, server-written
+  only; a client PUT cannot add or change it) and shown like a chat turn's. The routine badge
+  names the delivery time, and a visible chat re-reads its deliveries every minute. The
+  deliveries block covers the last 24 hours, is framed as data, names times in
+  `PROACTIVE_TIMEZONE`, and a client PUT cannot rewrite a delivery's text (ADR 0244).
+- **Cleanup** (#1753, #1757, #1765): deleting a user account deletes their routines (audited
+  as `routines_deleted`, the admin confirmation names the count, `routine_count` on `GET
+  /api/v1/admin/users/:id`). The account resolves to its person's `omadia_user_id` through its
+  `web:<users.id>` identity (`accountRoutineOwner.ts`); a person with another web login keeps
+  the routines. Closing a chat tab asks first and names the routines that deliver
+  into it; deleting an existing web chat pauses them with the reason and removes the chat's markdown
+  transcripts (`/memories/sessions/<id>/`, `sessionTranscriptDir`); `GET
+  /api/chat/sessions/:id/routines` lists them. Deleting a routine removes its transcripts.
+  The run history keeps at most 200 runs per routine and none older than 90 days (pruned on
+  insert).
+- **Routines page** (#1749, #1754, #1758): the DTO names `timeZone`, `nextRunAt` and `until`;
+  rows keep their order (`created_at`); the page shows the next run and deadline in the
+  routine's zone, the agent and an agent problem, run cost and the routine's total, loads more
+  runs (`GET /:id/runs?before=`), polls while a run is in flight with "run now" disabled, and
+  translates headers, statuses (`cancelled`, `silent`), buttons and server errors (route codes
+  mapped, otherwise the server's reason under a localized headline; template save and preview
+  no longer show "… failed: 400", and the preview lists source warnings).
+
+### Fixed — routine runs: cancel, timeout, one run at a time, subscription CLI (W22, 2026-11-26)
+
+- **Run control** (#1746, #1747, #1748, `routineRunControl.ts`): pausing or deleting a routine
+  cancels its run in flight; the run is recorded as the new status `cancelled` (routines
+  migration `0008_routine_runs_cancelled`), not as `timeout`, and nothing is delivered. The
+  status is read once more before delivery, so a pause on another instance also holds. A run
+  deleted mid-flight writes no run row (its history goes with the routine). A cancelled run
+  does not count towards the trigger's circuit breaker. The abort signal reaches the agent
+  turn (`turnContext.abortSignal`, checked at the top of every tool-loop iteration), manual
+  runs get the routine's timeout too, and the timeout floor is 30 s (`manage_routine` rejects
+  less; stored rows below it are raised). One run per routine at a time in a process (across
+  machines only cron is at-most-once, via the trigger lease): `POST
+  /api/v1/routines/:id/trigger` answers `409 routines.run_in_progress` while one is in flight,
+  a cron firing then is skipped, and the routine DTO carries `running`. Resuming an active
+  routine no longer re-arms it.
+- **Subscription CLI** (#1763): a routine on an agent whose tool loop the CLI owns
+  (`ChatAgentBundle.externalToolLoop`) runs through the agent's chat agent instead of the
+  tool-less in-process orchestrator, so it no longer fails on every run. Raw tool results for
+  output templates are captured on that path too; tool calls and iterations are recorded as
+  unknown there.
+- **Time zone and schedule checks** (#1743, #1750, ADR 0240): `middleware/src/scheduler/zonedCron.ts`
+  evaluates cron patterns in a named IANA zone and checks a recurring schedule before it is
+  stored (`checkCronSchedule`: plain 5-field pattern, no `?`, no `@daily`/`L`/`W`/`#`, at
+  least two upcoming runs, minimum gap). A routine stores its zone (routines migration
+  `0009_routines_timezone`): the creator's (`ChatTurnInput.userTimeZone`, now also on the
+  turn context) or `PROACTIVE_TIMEZONE`; its trigger runs in it; rows without one stay UTC.
+  `manage_routine` results name `timeZone` and `nextRun` (`2026-11-27 09:00 (Europe/Berlin)`).
+  Existing routines whose pattern no longer passes are paused on boot with the reason.
+- **`manage_routine` refusals reach the model** (#1767, #1751): schedule refusals, a web
+  routine outside a saved chat and other `ToolRefusalError`s pass `formatError` (ADR 0078)
+  instead of "outcome unknown"; invalid input is a short `field: problem` list, not a zod
+  dump. `targetEmail` is no longer advertised, and its refusal says this deployment cannot
+  message other people instead of sending the user to an operator.
+- **Field-level interning exemption** (#1768, ADR 0241, decided after recommendation,
+  reversible): `manage_routine` results reach the model in clear minus `prompt`,
+  `lastRunError` and the smart-card sidecar (`INTERN_FIELD_EXEMPT_TOOLS`,
+  `fieldExemptModelCopy`, all three dispatch seams); the tool is not served on the public MCP
+  endpoint.
+- **Routines are bound to their agent by id** (#1744, #1745, `routineAgentBinding.ts`, routines
+  migration `0010_routines_agent_id`): a new agent that takes a deleted agent's slug no longer
+  takes over its routines, a routine without an agent never runs on the default agent, and a
+  disabled or deleted agent is named in the run error (no more "configure the LLM API key").
+  Such a routine is paused with the reason when the trigger engine would schedule it, `POST
+  /:id/trigger` answers `409 routines.agent_unavailable`, and the routine DTO carries
+  `agentSlug` and `agentProblem`. Rows from before the migration are bound on their next run.
+  When an agent ends service (disabled, deleted, archetype plugin removed) its active routines
+  are paused with the reason (`EndOfServiceReport.routinesPaused`, `routines_paused` in the
+  agent route response and the audit).
+- **Unattended turns** (#1770, #1771, #1772, ADR 0242): `ChatTurnInput.unattended`
+  (`@omadia/channel-sdk` **0.3.18**), set by the routine runner and the trigger turn executor. Such a turn
+  offers no `ask_user_choice`/`suggest_follow_ups` (in-process and on the subscription CLI), runs no card router, gets a directive to
+  state assumptions instead of asking, and gets no "recent turns" context block (earlier runs
+  are not trusted facts). A routine turn runs outside any routines principal, so a smart-card
+  "run now" inside a chat turn no longer offers `manage_routine` to the run, and the run is
+  told the current time in its zone.
+- **Output templates** (#1759, #1760, #1761): `format: 'html'` and `sections: []` are refused
+  at save and preview (html was stored and then ignored on every run; a stored html template
+  is treated as no template). A static-only template delivers its text without a paid agent
+  turn. A run can stay silent: an answer of `[[nothing]]` (the trigger convention) ends it
+  with the new status `silent` (routines migration `0011_routine_runs_silent`), nothing is
+  delivered, and it does not count towards the breaker. A slot response with a missing slot
+  keeps the slots the model wrote (like the preview) instead of dropping all of them. Data
+  sections report a source that was not called, returned prose instead of JSON rows, or names
+  no list: the renderer returns `warnings`, the preview shows them, and a delivered run
+  records them as `template: …` in its error field.
+- **Routine cost** (#1776, ADR 0243, decided after recommendation, reversible): every run
+  stores its metered model cost (`routine_runs.cost_usd`, routines migration
+  `0012_routine_runs_cost`; a failed turn still counts), `GET /api/v1/routines/:id/runs`
+  returns `costUsd` per run and `totalCostUsd`, and a manual run's cost is booked on the
+  routine's trigger (`TriggerService.bookManualSpend`: spend, monthly budgets, audit row
+  `fired` / `manual_run`), so the operator trigger view shows every run.
+
 ### Fixed — office files, attachments and transcription (Welle 5 W07-08) (2026-11-26)
 
 - **File export follows the agent's grant (#1972).** The Excel offer under a truncated
@@ -574,6 +676,32 @@ changelog.
 - The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
 - The webhook validation fixtures use the graph's JSON object type, resolving a TypeScript error in the test gate.
 
+### Fixed — agent editor: fresh state after save, revision check, Limits tab, German labels (#1873, #1882, #1887, #1889, #1894, #1895, ADR-0216) (2026-11-26)
+
+- **Agent plugin editor reseeds from the stored set (#1873).** After a save on the Plugins tab, the editor remounted before the page refresh and showed the old set. A second "Save" then quietly restored a grant that had just been removed, or removed one that had just been added. `PUT /api/v1/operator/agents/:slug/plugins` now also returns the stored set (`plugins`), and the editor reseeds from it. A cancelled broad-reach confirmation keeps the editor's unsaved edits.
+- **Agent identity: revision check and protection for unsaved edits (#1889, ADR-0216).** `PUT /:slug/identity` accepts an optional `expected_revision`. If the stored identity has moved on, the request is refused with 409 `identity_revision_conflict` (`error` plus `code`/`message`, `current_revision`) and nothing is written. An agent without an identity row now reports `identity.revision: 0`; `expected_revision: 0` means "no identity may exist yet", so two tabs saving an agent's first identity no longer overwrite each other. Requests without the field are not checked. The web UI always sends it and shows a localized "changed elsewhere, reload" message. Avatar upload and removal keep unsaved field edits, removing the avatar asks first, and leaving a detail tab or the page with unsaved changes asks first. No migration: the existing `agent_identities.revision` is used.
+- **Limits tab (#1882, #1894, #1895).** Preset labels show readable text instead of raw keys. The note now says correctly that a value set on the agent replaces the Quality Guard value for that field. The anti-flattery select has a "Not set" option that is distinct from "Off" and saves no level. Any change to the quality block now reloads the registry. The "Own prohibitions" field keeps Enter and spaces while typing and normalizes on blur.
+- **German agent pages (#1887).** German catalogue values on the agent pages were translated. The agent meta lines, plugin kind badges, routing-tester source, privacy profile, persona slider ends and radar axes now come from the catalogue (new `builder.persona.axes.<axis>.{name,left,right}`, `operatorAgents.pluginKinds.*`, `routingTesterVia.*`, `privacyProfiles.*`). `PERSONA_AXIS_LABELS` was removed in favour of `usePersonaAxisCopy`.
+
+### Fixed — operator agent routes: bindings, drain/kill, create errors, Teams notice, missing packages, inspector model (#1879, #1884, #1885, #1901, #1903, #1942) (2026-11-26)
+
+- **Bindings and routing tester refuse unknown channel types** (#1879). `PUT /api/v1/operator/agents/:slug/bindings` answers a new binding under a type no installed channel plugin routes with `400 unknown_channel_type` (`known_channel_types`); the kernel's own web chat type `web` is always accepted; a binding the agent already holds may stay. `POST …/resolve-channel` refuses an unknown type the same way instead of answering "fallback". Migration **0117_channel_api_binding_type** rewrites old `channel-api` bindings with a `key:` key to `@omadia/channel-api` when no binding under the real type holds the same key; such rows routed nothing before and route the API key to the bound agent after the upgrade.
+- **Drain/kill find the agent's web chats** (#1884). A client `PUT /api/chat/sessions/:id` no longer drops the server-owned agent pin (`snapshot`, ADR-0146), which had left drain/kill matching nothing. Both answer `404` for an unknown agent; the agents page asks before a drain and shows how many web chats were released or deleted. A browser that still holds a deleted chat re-creates it (unpinned) on its next load.
+- **Agent create errors** (#1885). A malformed slug is `400 invalid_body` on `slug` (`AGENT_SLUG_RE`, exported by `@omadia/orchestrator`), a taken slug `409 slug_taken`. The form keeps its values until the server confirms, errors are localized with field hints, and the slug `pattern`s compile under the browser's `v` flag.
+- **Agent Builder inspector** names the agent's resolved model, not the Plugin Builder's code-generation model, as the "Main model" default (#1901).
+- **Teams identity form** shows the missing Microsoft 365 connector up front and keeps "Start provisioning" disabled (#1903).
+- **Assigned plugins without a package** are marked `package_missing` in the operator-agents plugin lists and shown as "Package missing" on the agent page; the boot warning names byte5ai/omadia-ui-support for the canvas ids (#1942). The check (agent page, `GET /admin/runtime/installed`, boot warning) asks the uploaded, built-in and local-dev (`PLUGIN_DEV_DIR`) stores, so a local-dev plugin is not called packageless.
+
+### Fixed — agent identity prompt: base identity kept, server-side preview, slider baseline, prompt audit (#1878, #1890, #1893, #1219, ADR-0217) (2026-11-26)
+
+- **Agent identity keeps the platform identity when only limits are set (#1878).** A boundary, character slider or anti-flattery level alone used to replace the platform-wide assistant identity, because the compiled identity text was non-empty. The registry now reads whether behaviour text was authored (`identity_has_own_instructions`). Without it, the compiled sections are appended after the platform identity. The layering lives in `agentIdentityLayers.ts` (`assembleAgentIdentity`). Per-family fallback prompts now also keep the base identity, the name and the description.
+- **Prompt tab shows what the running agent sends (#1890).** `identityPreamble` builds the head of the stable system prompt (identity, language line, answer-size block). `buildSystemPrompt` opens with it and the built agent exposes it as `identityPrompt`. `GET/PUT /api/v1/operator/agents/:slug/identity` return it as `identity_prompt`. The tab's hint (en+de) now describes the real order: Quality Guard rules first, the working mode after the identity, then tools, date and context.
+- **Character sliders measured against the real model (#1893, ADR-0217).** Sliders are target levels against the baseline of the model family the agent runs on. `inferPersonaFamily` (orchestrator package, shared with the fallback switch) maps Fable, the vendor families of `basePersonas.ts` and `unknown` instead of defaulting to Sonnet. "Auto" agents resolve via `OrchestratorRegistry.runModelFor`, and Fable gets an Opus-derived baseline. The identity routes return `persona_baseline`; the editor shows it as the model-default tick and radar reference and puts unset axes on it. Stored prompts of Fable, non-Anthropic and unresolved agents are recompiled on the next boot.
+- **Prompt audit leftovers (#1219).** The session-summary and file-retry prompts are now English, without numeric caps or shouted words, and answer in the conversation's language. `temperature_hint` needed no core change, because #2143 already removed it.
+
+### Fixed — a reused agent slug starts empty (#1881, ADR-0218) (2026-11-26)
+
+- **A reused slug no longer inherits a deleted agent's state (#1881, ADR-0218).** Deleting an agent now moves its memory trees (`/memories/orchestrators/<slug>`, `/memories/contexts/<slug>`, with their discretion labels) under the tombstone's placeholder slug `deleted-<id>`, where the Danger-Zone purge (axis `agent`) still reaches them, and removes the slug's public MCP key bindings. The delete response carries `slug_state`, and the audit records `agent.slug_state_moved`. Graph history cannot be moved, because its external ids embed the scope. So creating an agent (or the first-run agent) with a slug that still has graph history, curated memory, a memory tree or a binding is refused with `409 slug_state_remains` until the old slug is purged; a check that cannot answer gives `503 slug_state_unverifiable`. Residuals (web chat tabs, Quality Guard `agent_overrides`, routines #1745, slug-keyed graph tuning tables) are listed in ADR-0218.
 ### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
 
 - `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the

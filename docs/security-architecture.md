@@ -3119,6 +3119,17 @@ These tool results skip the digest:
   user's restored values (`runsOnModelInput`). `query_dataset` is exempt only
   for its `list_datasets` and `get_schema` operations
   (`INTERN_EXEMPT_OPERATIONS`, ADR-0197); `query_rows` stays interned.
+- **Field-exempt tools** (#1768, ADR 0241). `INTERN_FIELD_EXEMPT_TOOLS` (same
+  file, pinned by the same test) lists `manage_routine` only. Its JSON result
+  reaches the model in clear minus the keys the list names (`prompt`,
+  `lastRunError`, the smart-card sidecar `_pendingRoutineList`), removed at
+  every depth by `fieldExemptModelCopy`. Everything else in it is the user's
+  own routine state, the user-chosen routine **name** included: that name
+  reaches the model unmasked. A result that is not a JSON object or array, and
+  an `Error:` result, are not projected and take the normal path. The
+  orchestrator and sub-agent seams re-mask echoed values (#1544);
+  `ToolDispatchService` does not, like for exempt tools. The public MCP
+  endpoint refuses the tool (`isPubliclyServableTool`, §ADR 0142).
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,
@@ -7403,6 +7414,23 @@ neither the omadia id, an AAD id nor an identity's `<kind>:<id>` (a Teams `29:`
 id without an AAD id) when its run trace was never ingested, since the
 `BELONGS_TO` edge to the user cluster is the only other link. A login after an
 identity purge creates a new cluster with a new omadia user id.
+
+**A deleted agent's state and a reused slug (#1881, ADR-0218).** Memory, graph
+scopes and public MCP key bindings are keyed by the agent's slug, and a delete
+frees the slug. So a delete (`DELETE /api/v1/operator/agents/:slug`, after the
+registry reload) moves `/memories/orchestrators/<slug>` and
+`/memories/contexts/<slug>` under the tombstone's placeholder slug
+(`deleted-<id prefix>`; discretion labels move with the notes) and removes the
+slug's `public_mcp_key_bindings` rows. The moved trees stay purgeable here
+(axis `agent`, selector = the placeholder slug, shown in the delete response
+as `slug_state.moved_to_slug` and in the `agent.slug_state_moved` audit row). The graph
+cannot be moved (its external ids embed the scope), so creating an agent with
+a slug that still has graph history, curated memory (`origin_agent`), a memory
+tree or a binding is refused with `409 slug_state_remains` until it is purged
+here; a check that cannot answer refuses with `503 slug_state_unverifiable`.
+Not covered: web chat tabs of the deleted agent, the Quality Guard's
+`agent_overrides`, routines (#1745), and the graph provider's tuning tables
+keyed by slug (ADR-0218 lists them).
 
 ## 10p. MCP outbound targets and stdio servers (#1341, #1342)
 

@@ -152,7 +152,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, LabelledMemoryStore, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -494,6 +494,7 @@ import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService } from './platform/agentEndOfService.js';
+import { createAgentSlugState } from './platform/agentSlugState.js';
 import { createSystemNoticeOutbox } from './platform/systemNoticeOutbox.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
@@ -671,6 +672,10 @@ import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
 import { createAttachmentByteReader, loopbackOriginFor } from './channels/attachmentByteReader.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
+import { agentEndedText, resolveRoutineAgent } from './plugins/routines/routineAgentBinding.js';
+import { WEB_CHAT_DELETED_PAUSE } from './plugins/routines/webChatProactiveSender.js';
+import { purgeSessionTranscripts } from './plugins/routines/sessionTranscripts.js';
+import { routineOwnerIdsForAccount } from './plugins/routines/accountRoutineOwner.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
@@ -692,7 +697,7 @@ import { ObservedConversationInvites } from './platform/observedConversationInvi
 import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
-import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
+import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver, ChatTurnInput } from '@omadia/channel-sdk';
 import type {
   AgentIdentityProvider,
   ChannelReadinessProvider,
@@ -1231,6 +1236,9 @@ async function main(): Promise<void> {
       `[middleware] local-dev package store loaded (${localDevPackageStore.list().length} packages at ${localDevPackageStore.rootPath()})`,
     );
   }
+  // Every place a plugin's package can live — the catalog reads all three, so
+  // "has no package" must too (a PLUGIN_DEV_DIR plugin is not packageless).
+  const packageSources = [uploadedPackageStore, builtInPackageStore, localDevPackageStore] as const;
 
   // Resolution order on ID collision (PluginCatalog.load applies last-set-
   // wins): Local-Dev > Uploaded > Built-in > PLUGIN_MANIFEST_DIR (examples).
@@ -1437,6 +1445,10 @@ async function main(): Promise<void> {
       await adminAudit?.record(entry);
     },
     emitSystemNotice,
+    // #1744 — an agent that ends service takes its routines with it (paused,
+    // with the reason on the routine), instead of each failing at its next run.
+    pauseRoutinesOf: async (agent, reason) =>
+      (await routinesHandle?.runner.pauseRoutinesOfAgent(agent, agentEndedText(agent.name, reason))) ?? 0,
     log: (m) => console.log(m),
   });
   const facilitationEngineSources = (): FacilitationEngineSources => ({
@@ -2654,7 +2666,7 @@ async function main(): Promise<void> {
   );
   // Entries of the registry whose package is gone are visited by no runtime
   // (each walks the packages), so nothing ever reports them. Once per boot.
-  warnPackagelessEntries(installedRegistry, [uploadedPackageStore, builtInPackageStore], (message) => {
+  warnPackagelessEntries(installedRegistry, packageSources, (message) => {
     console.warn(message);
   });
   // #1070 — the orchestrator (an extension) has now had its chance to provide
@@ -3761,12 +3773,10 @@ async function main(): Promise<void> {
   const routineTriggerScheduler = createRoutineTriggerScheduler({
     service: () => triggersRef.current?.service,
     routines: () => routinesHandle?.store,
-    resolveAgent: (slug) => {
-      // #2055 — no fallback agent: a routine runs as the agent it names.
-      const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-      const agent = slug !== null && slug !== 'default' ? registry?.get(slug)?.agent : undefined;
-      return agent ? { id: agent.id, slug: agent.slug } : undefined;
-    },
+    // #2055 — no fallback agent: a routine runs as the agent it is bound to
+    // (#1745: by id, not by whoever holds its slug now).
+    resolveAgent: (routine) =>
+      resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
     askOwner: async (routine, text) => {
       const sender = routinesHandle?.senderRegistry.get(routine.channel);
       if (!sender) throw new Error(`no proactive sender for channel '${routine.channel}'`);
@@ -3819,6 +3829,17 @@ async function main(): Promise<void> {
         ownBotRefusal(conversationRef, agentSlug, channel, (slug, type) =>
           serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.channelIdentityFor(slug, type)?.channelKey,
         ),
+      // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
+      defaultTimeZone: config.PROACTIVE_TIMEZONE,
+      // #1753 — a deleted routine's transcripts go with it.
+      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1776 — a manual run's cost is booked on the routine's trigger.
+      bookManualRunCost: async (routineId, costUsd) => {
+        await triggersRef.current?.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId });
+      },
+      // #1744 / #1745 — the agent a routine is bound to, by id.
+      resolveAgent: (routine) =>
+        resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
       // #1598 — the routine's own orchestrator, with its plugin grants.
       // #2045 / #2046 — with the agent's emitter and speaker, so a routine's
       // answer passes the same identity guard and carries the same speaker.
@@ -3830,6 +3851,9 @@ async function main(): Promise<void> {
         const speaker = speakerOf(bundle.agent);
         return {
           runTurn: (input) => raw.runTurn(input),
+          // #1763 — on the subscription CLI the tool loop is the CLI's: the
+          // run goes through the agent's chat agent like a chat turn there.
+          ...(bundle.externalToolLoop ? { chat: (input: ChatTurnInput) => bundle.agent.chat(input) } : {}),
           ...(emitter ? { emitter } : {}),
           ...(speaker ? { speaker } : {}),
         };
@@ -4276,6 +4300,8 @@ async function main(): Promise<void> {
     '/api',
     requireAuth,
     createChatRouter({
+      // #1756 — routine delivery times in the instance zone (ADR 0240).
+      timeZone: config.PROACTIVE_TIMEZONE,
       agentResolver,
       legacyChatOwner,
       routeTurn: routeWebTurn,
@@ -4341,7 +4367,22 @@ async function main(): Promise<void> {
   app.use(
     '/api/chat',
     requireAuth,
-    createChatSessionsRouter({ getStore: getChatSessionStore, legacyOwner: legacyChatOwner }),
+    createChatSessionsRouter({
+      getStore: getChatSessionStore,
+      legacyOwner: legacyChatOwner,
+      // #1753 — and removes its markdown transcripts.
+      purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
+      // #1757 — deleting a chat pauses the routines that deliver into it.
+      routines: () => {
+        const runner = routinesHandle?.runner;
+        return runner
+          ? {
+              listForChat: (id) => runner.routinesOfWebChat(id),
+              pauseForChat: (id) => runner.pauseRoutinesOfWebChat(id, WEB_CHAT_DELETED_PAUSE),
+            }
+          : undefined;
+      },
+    }),
   );
 
   // Plugin-contributed navigation. The web-ui shell renders a static nav for
@@ -4711,6 +4752,19 @@ async function main(): Promise<void> {
   const releaseAgentChannelBots = agentChannelIdentities
     ? (agentId: string) => agentChannelIdentities.releaseAll(agentId)
     : undefined;
+  // #1881 (ADR-0218) — a delete moves the slug-keyed memory under the
+  // tombstone (with its discretion labels) and removes the slug's public MCP
+  // key bindings; a create refuses a slug that still has state, because the
+  // graph's scopes cannot be moved. Named here for the same lazy match.
+  const agentSlugState = createAgentSlugState({
+    memoryStore: () => memoryStore,
+    labelMoves: (store, agentSlug) =>
+      new LabelledMemoryStore(store, discretionStore, agentSlug, { labelReads: false }),
+    mcpBindings: () => (graphPool ? createPublicMcpKeyBindingAdminStore(graphPool) : undefined),
+    knowledgeGraph: () => knowledgeGraph,
+    tenantId: graphTenantId,
+    log: (m) => console.warn(m),
+  });
   app.use(
     '/api/v1/operator/agents',
     requireAuth,
@@ -4763,8 +4817,12 @@ async function main(): Promise<void> {
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // #1942 — an assigned plugin whose package is gone shows as such.
+      hasPackage: (id: string) => hasPackage(id, packageSources),
       // #2088 — end of service before a disable or a delete; the audit of both.
       endOfService: agentEndOfService,
+      // #1881 (ADR-0218) — see `agentSlugState` above.
+      slugState: agentSlugState,
       recordAudit: async (entry) => {
         await adminAudit?.record(entry);
       },
@@ -6395,6 +6453,32 @@ async function main(): Promise<void> {
       createAdminUsersRouter({
         userStore,
         audit: adminAudit,
+        // #1765 — a deleted account takes its routines with it.
+        // The account resolves to the person's routine owner ids (their
+        // `omadia_user_id` cluster, when this is their only web login).
+        routines: () => {
+          const runner = routinesHandle?.runner;
+          const ownerIds = (id: string): Promise<string[]> =>
+            graphPool
+              ? routineOwnerIdsForAccount(graphPool, graphTenantId, id, async (other) =>
+                  Boolean(await userStore.findById(other)),
+                )
+              : Promise.resolve([id]);
+          return runner
+            ? {
+                countForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.countRoutinesOfUser(owner);
+                  return n;
+                },
+                deleteForUser: async (id) => {
+                  let n = 0;
+                  for (const owner of await ownerIds(id)) n += await runner.deleteRoutinesOfUser(owner);
+                  return n;
+                },
+              }
+            : undefined;
+        },
         sessions: sessionRevocation,
         loginLimiter: loginGuard.limiter,
         loginDevices: loginGuard.devices,
@@ -6899,7 +6983,7 @@ async function main(): Promise<void> {
       promptContributionRegistry,
       vault: secretVault,
       catalog: pluginCatalog,
-      hasPackage: (id) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
+      hasPackage: (id) => hasPackage(id, packageSources),
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),

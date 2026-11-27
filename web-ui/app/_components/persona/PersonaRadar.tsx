@@ -6,18 +6,18 @@ import { useId } from 'react';
 import { cn } from '../../_lib/cn';
 import {
   ALL_PERSONA_AXES,
-  PERSONA_AXIS_LABELS,
   PERSONA_AXIS_NEUTRAL,
   type PersonaAxes,
 } from '../../_lib/personaTypes';
+import { usePersonaAxisCopy } from './usePersonaAxisCopy';
 
 /**
  * Phase 3 / OB-67 Slice 5 — view-only persona radar.
  *
  * Custom SVG (~80 LOC, no `recharts` per persona-ui-v1.md §13.1). 12-axis
  * polygon — `Math.cos(2π * i / 12)` / `Math.sin(2π * i / 12)`. Unset axes
- * fall back to PERSONA_AXIS_NEUTRAL (50) so the polygon is always
- * closed. Click on an axis label fires `onAxisFocus(axis)` so the parent
+ * fall back to the model baseline (#1893), else PERSONA_AXIS_NEUTRAL (50),
+ * so the polygon is always closed. Click on an axis label fires `onAxisFocus(axis)` so the parent
  * can scroll-into-view the corresponding `<DimensionSlider />` (Phase 3
  * onboarding ergonomics; Phase 4 will hang the family-default polygon
  * underneath).
@@ -40,6 +40,12 @@ export interface PersonaRadarProps {
   /** Optional className passthrough — the parent commonly wants to
    *  align/centre the radar inside its pillar grid. */
   className?: string;
+  /**
+   * #1893 / ADR-0217 — the model's own level per axis. When given, it is the
+   * dotted reference polygon, an unset axis is drawn on it, and the caption
+   * names it "model default". Absent: the scale middle (50).
+   */
+  baseline?: PersonaAxes;
 }
 
 const DEFAULT_SIZE = 240;
@@ -51,8 +57,10 @@ export function PersonaRadar({
   onAxisFocus,
   size = DEFAULT_SIZE,
   className,
+  baseline,
 }: PersonaRadarProps): React.ReactElement {
   const t = useTranslations('builder.persona.radar');
+  const axisCopy = usePersonaAxisCopy();
   const id = useId();
   const titleId = `${id}-title`;
   const cx = size / 2;
@@ -65,7 +73,7 @@ export function PersonaRadar({
   const angle = (i: number) => -Math.PI / 2 + (2 * Math.PI * i) / n;
 
   const points = ALL_PERSONA_AXES.map((axis, i) => {
-    const value = axes?.[axis] ?? PERSONA_AXIS_NEUTRAL;
+    const value = axes?.[axis] ?? baseline?.[axis] ?? PERSONA_AXIS_NEUTRAL;
     const ratio = value / 100;
     const a = angle(i);
     return {
@@ -78,9 +86,9 @@ export function PersonaRadar({
   });
 
   const polygonPoints = points.map((p) => `${p.x},${p.y}`).join(' ');
-  const neutralPolygonPoints = ALL_PERSONA_AXES.map((_axis, i) => {
+  const neutralPolygonPoints = ALL_PERSONA_AXES.map((axis, i) => {
     const a = angle(i);
-    const ratio = PERSONA_AXIS_NEUTRAL / 100;
+    const ratio = (baseline?.[axis] ?? PERSONA_AXIS_NEUTRAL) / 100;
     return `${cx + Math.cos(a) * r * ratio},${cy + Math.sin(a) * r * ratio}`;
   }).join(' ');
 
@@ -129,7 +137,7 @@ export function PersonaRadar({
           );
         })}
 
-        {/* Neutral baseline polygon (50 across all axes, dotted) */}
+        {/* Reference polygon, dotted: the model's own level, else 50 */}
         <polygon
           points={neutralPolygonPoints}
           fill="none"
@@ -161,7 +169,7 @@ export function PersonaRadar({
 
         {/* Axis labels (clickable when onAxisFocus provided) */}
         {points.map((p) => {
-          const label = p.axis;
+          const label = axisCopy(p.axis).name;
           const text = (
             <text
               x={p.labelX}
@@ -202,7 +210,9 @@ export function PersonaRadar({
       </svg>
       <p className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
         {t('comparisonPrefix')}{' '}
-        <span className="opacity-70">{t('comparisonNeutral')}</span>
+        <span className="opacity-70">
+          {baseline ? t('comparisonModelDefault') : t('comparisonNeutral')}
+        </span>
       </p>
     </div>
   );
@@ -216,5 +226,3 @@ export function PersonaRadar({
 export function personaAxisToSliderTestId(axis: string): string {
   return `dimension-slider-${axis}`;
 }
-
-export const PERSONA_AXIS_DESCRIPTIONS = PERSONA_AXIS_LABELS;

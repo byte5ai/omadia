@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
   type KeyboardEvent,
 } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
 import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
@@ -58,6 +58,7 @@ import {
   type Message,
   type SubAgentEvent,
   type ToolEvent,
+  fetchChatRoutines,
 } from '../_lib/chatSessions';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import { dismissSeenTurns, useStreamStore } from '../_lib/streamStore';
@@ -500,12 +501,32 @@ export default function ChatPage(): React.ReactElement {
   // dismissal rule, not just tab clicks — otherwise the tab being left keeps a
   // `done` record and immediately flags itself as unread (issue #286).
   const handleClose = (id: string): void => {
-    // The tab is going away, so no UI can ever surface this record again.
-    // Drop it outright rather than leaving it to occupy one of the store's 12
-    // slots until GC — a run of closes could otherwise evict a still-visible
-    // unread record early. This is display-only; it does not abort the stream.
-    streamStore.dismiss(id);
-    void deleteSession(id);
+    void (async () => {
+      // #1757 — closing a tab deletes the chat for good: ask first, and name
+      // the routines that deliver into it (they are paused with it). An empty
+      // chat without routines goes without asking.
+      const routines = await fetchChatRoutines(id);
+      const session = sessions.find((x) => x.id === id);
+      const hasContent = (session?.messages.length ?? 0) > 0;
+      if (hasContent || routines === null || routines.length > 0) {
+        const question =
+          routines === null
+            ? t('closeChatConfirmRoutinesUnknown')
+            : routines.length > 0
+              ? t('closeChatConfirmWithRoutines', {
+                  count: routines.length,
+                  names: routines.map((r) => r.name).join(', '),
+                })
+              : t('closeChatConfirm');
+        if (!window.confirm(question)) return;
+      }
+      // The tab is going away, so no UI can ever surface this record again.
+      // Drop it outright rather than leaving it to occupy one of the store's 12
+      // slots until GC — a run of closes could otherwise evict a still-visible
+      // unread record early. This is display-only; it does not abort the stream.
+      streamStore.dismiss(id);
+      void deleteSession(id);
+    })();
   };
 
   const handleCreate = (): void => {
@@ -1554,9 +1575,15 @@ function ProactiveBadge({
   proactive: NonNullable<Message['proactive']>;
 }): React.ReactElement {
   const t = useTranslations('chat');
+  const format = useFormatter();
   const label = proactive.routineName
     ? t('proactiveRoutineBadge', { name: proactive.routineName })
     : t('proactiveBadge');
+  // #1755 — when the routine delivered it, in the reader's locale and zone.
+  const deliveredAt = format.dateTime(new Date(proactive.deliveredAt), {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
   // What the text-only web delivery had to drop, named from the marker in
   // the reader's language (the server stores counts, not prose).
   const attachments = proactive.droppedAttachments ?? 0;
@@ -1569,8 +1596,16 @@ function ProactiveBadge({
   }
   return (
     <div className="mb-2 flex flex-col items-start gap-1 text-[11px]">
-      <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
-        {label}
+      <span className="inline-flex items-center gap-2">
+        <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
+          {label}
+        </span>
+        <time
+          dateTime={new Date(proactive.deliveredAt).toISOString()}
+          className="text-[color:var(--fg-muted)]"
+        >
+          {t('proactiveDeliveredAt', { time: deliveredAt })}
+        </time>
       </span>
       {dropped.map((note) => (
         <span key={note} className="text-[color:var(--fg-muted)]">

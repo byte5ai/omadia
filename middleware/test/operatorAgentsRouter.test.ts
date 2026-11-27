@@ -1362,6 +1362,17 @@ describe('createOperatorAgentsRouter', () => {
   });
 
   it('POST / surfaces a ConfigValidationError as HTTP 409', async () => {
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'deleted', name: 'Reserved' }),
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, 'config_validation');
+  });
+
+  it('#1885: POST / answers a taken slug with 409 slug_taken', async () => {
     await store.createAgent({ slug: 'pub', name: 'Pub' });
     const res = await fetch(baseUrl, {
       method: 'POST',
@@ -1369,8 +1380,21 @@ describe('createOperatorAgentsRouter', () => {
       body: JSON.stringify({ slug: 'pub', name: 'Dup' }),
     });
     assert.equal(res.status, 409);
-    const body = (await res.json()) as { error: string };
-    assert.equal(body.error, 'config_validation');
+    assert.deepEqual(await res.json(), { error: 'slug_taken', slug: 'pub', message: 'agent slug "pub" already exists' });
+  });
+
+  it('#1885: POST / answers a malformed slug with 400 on the slug field', async () => {
+    for (const slug of ['p07-x-', '-p07', 'Test X', 'a'.repeat(65)]) {
+      const res = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug, name: 'x' }),
+      });
+      assert.equal(res.status, 400, slug);
+      const body = (await res.json()) as { error: string; issues: Array<{ path: string }> };
+      assert.equal(body.error, 'invalid_body');
+      assert.deepEqual([...new Set(body.issues.map((i) => i.path))], ['slug']);
+    }
   });
 
   it('GET / returns the agent list with runtime memory_scope', async () => {
@@ -1456,6 +1480,18 @@ describe('createOperatorAgentsRouter', () => {
     const remaining = await store.listAgentPlugins(agent.id);
     const ids = remaining.map((p) => p.pluginId).sort();
     assert.deepEqual(ids, ['@omadia/a', '@omadia/b']);
+    // #1873 — the answer carries the stored set, so the editor reseeds from
+    // it instead of from page props a refresh has not replaced yet.
+    const body = (await res.json()) as {
+      plugins: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.deepEqual(
+      body.plugins.map((p) => [p.id, p.enabled]).sort(),
+      [
+        ['@omadia/a', true],
+        ['@omadia/b', false],
+      ],
+    );
   });
 
   it('GET /:slug/plugins reads the assignment (W0c #861)', async () => {
@@ -3917,6 +3953,15 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(registry.invalidateCalls, [
       { slug: 'public', mode: 'kill' },
     ]);
+  });
+
+  it('#1884: POST /:slug/drain and /kill answer 404 for an unknown agent', async () => {
+    for (const mode of ['drain', 'kill']) {
+      const res = await fetch(`${baseUrl}/does-not-exist/${mode}`, { method: 'POST' });
+      assert.equal(res.status, 404);
+      assert.equal(((await res.json()) as { error: string }).error, 'not_found');
+    }
+    assert.deepEqual(registry.invalidateCalls, []);
   });
 
   it('POST /reload triggers a manual registry reload', async () => {
