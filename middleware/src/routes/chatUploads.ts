@@ -7,7 +7,7 @@ import type { StoredTurnAttachment } from '@omadia/channel-sdk';
 import { bindingForRawScope, bindingsEqual } from '@omadia/orchestrator';
 import type { AttachmentBindingStore, ChatSessionStore } from '@omadia/orchestrator';
 
-import { mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
+import { chatSessionRefusal, chatSessionUse, type LegacyChatOwner } from './chatSessionAccess.js';
 
 /**
  * #2336 (ADR-0310) — file uploads of the web chat.
@@ -238,7 +238,7 @@ async function removeUpload(req: Request, deps: ChatUploadDeps): Promise<UploadR
   const storageKey = typeof req.query['storageKey'] === 'string' ? req.query['storageKey'] : '';
   const parsed = parseWebChatUploadKey(storageKey);
   if (!SESSION_ID_RE.test(sessionId) || parsed?.sessionId !== sessionId) return notFound;
-  if (!(await mayUseChatSession(req, deps.getChatSessionStore?.(), sessionId, deps.legacyChatOwner))) {
+  if ((await chatSessionUse(req, deps.getChatSessionStore?.(), sessionId, deps.legacyChatOwner)) !== 'ok') {
     return notFound;
   }
   const uploadOwner = { ownerOmadiaUserId: owner, scope: sessionId };
@@ -262,8 +262,10 @@ async function storeUpload(req: Request, deps: ChatUploadDeps): Promise<WebChatU
     return { status: 400, code: 'chat_upload.empty', message: 'no file or an empty file' };
   }
   const chats = deps.getChatSessionStore?.();
-  if (!(await mayUseChatSession(req, chats, sessionId, deps.legacyChatOwner))) {
-    return { status: 404, code: 'not_found', message: `chat session ${sessionId} not found` };
+  const use = await chatSessionUse(req, chats, sessionId, deps.legacyChatOwner);
+  if (use !== 'ok') {
+    const refusal = chatSessionRefusal(use, sessionId);
+    return { status: refusal.status, code: refusal.error, message: refusal.message };
   }
   // multer decodes the multipart file name as latin1; browsers send UTF-8.
   const fileName = sanitizeUploadFileName(Buffer.from(file.originalname, 'latin1').toString('utf8'));

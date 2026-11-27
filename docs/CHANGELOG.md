@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fix — a new web chat id must be lower case (#2361, ADR-0330) (2026-11-27)
+
+A client-chosen web chat id `ABC` folded to the transcript directory and graph key of a chat
+`abc`, another account's included, because the ownership check allowed every id with no stored
+chat. `PUT /api/chat/sessions/:id` now answers 400 `non_canonical_id` for a new chat whose id is
+not lower case (`ChatSessionStore.saveFromClient` → `NonCanonicalSessionIdError`), and turns,
+steering and uploads go through `chatSessionUse` (`ok` / `not_found` 404 / `non_canonical_id`
+400) instead of `mayUseChatSession`. Stored chats with upper-case ids keep working. The web UI
+already mints lower-case ids. Residuals (a new lower-case id next to a stored upper-case one,
+cross-surface sanitize collisions) are recorded in ADR-0330.
+
 ### Tests — memory-ACL world gets User and Fact items; re-ingest after promotion (#2340) (2026-11-27)
 
 - The memory-ACL test world (`test/memoryAccess/world.ts`) seeds one `User` node per person (canary

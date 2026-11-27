@@ -850,6 +850,8 @@ export {
   ChatSessionNotOwnedError,
   ChatSessionStore,
   InvalidSessionIdError,
+  isCanonicalChatSessionId,
+  NonCanonicalSessionIdError,
   chatSessionOwnedBy,
   chatSessionOwner,
   ServerMirroredSessionError,
