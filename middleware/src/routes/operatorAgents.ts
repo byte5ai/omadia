@@ -7,9 +7,11 @@ import type { AgentTombstone } from '@omadia/orchestrator';
 
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
 import type { AgentEndOfService, EndOfServiceReport } from '../platform/agentEndOfService.js';
+import { hasRemainingSlugState, type AgentSlugState, type SlugStateRetirement } from '../platform/agentSlugState.js';
 
 import { formatPrincipal, parsePrincipal } from '@omadia/channel-sdk';
 import {
+  AGENT_SLUG_RE,
   ChannelResolver,
   ConfigValidationError,
   mcpToolNameFromRef,
@@ -32,6 +34,7 @@ import {
   parseModelRef,
   validateModelPolicy,
   ANSWER_VERBOSITY_LEVELS,
+  UNKNOWN_PERSONA_FAMILY,
   type AgentToAgentMode,
   type ModelPolicyValidationContext,
   type ChatSessionStore,
@@ -39,6 +42,7 @@ import {
   type ContextMemoryMode,
   type AgentRow,
   type OrchestratorRegistry,
+  tombstoneSlug,
 } from '@omadia/orchestrator';
 
 import {
@@ -65,6 +69,7 @@ import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { registeredChannelTypes, unknownChannelTypeBody } from './registeredChannelTypes.js';
 import { isCapabilityPlugin } from '../plugins/capabilityPlugins.js';
 import {
   loadAgentReach,
@@ -134,6 +139,7 @@ import {
   MAX_AVATAR_BYTES,
 } from '../services/agentAvatarIcons.js';
 import {
+  AgentIdentityRevisionConflictError,
   resolveAgentIdentity,
   type AgentIdentityAvatarBytes,
   type AgentIdentityAvatarInput,
@@ -150,7 +156,9 @@ import {
 import {
   agentPersonaFamilies,
   composeForFamilies,
+  type AgentPersonaFamilySource,
 } from '../services/agentIdentityPrompt.js';
+import { personaBaseline } from '../plugins/personaDelta.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -228,7 +236,12 @@ interface AgentPluginCatalogEntry {
  */
 
 const AgentCreateSchema = z.object({
-  slug: z.string().min(1).max(64),
+  // #1885 — a malformed slug is a 400 on the field, not a 409 conflict.
+  slug: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(AGENT_SLUG_RE, 'lowercase letters, digits and hyphens; no hyphen at the start or end'),
   name: z.string().min(1).max(120),
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
@@ -1629,6 +1642,10 @@ const AgentIdentitySchema = z.object({
   // route calls are written against those schemas.
   persona: PersonaConfigSchema.nullish(),
   quality: QualityConfigSchema.nullish(),
+  // #1889 / ADR-0216 — the `identity.revision` the client's form was read
+  // at. A stale one is a 409; absent skips the check (older API clients).
+  // `0` = read before any identity existed: the row must still not exist.
+  expected_revision: z.number().int().nonnegative().optional(),
 });
 
 /** What a write did to the agent's published Teams package. */
@@ -1655,9 +1672,37 @@ interface AgentIdentityProjectionAgent {
  * fallback to render a preview, and that is exactly the duplication
  * `resolveAgentIdentity` exists to prevent.
  */
+/** What the runtime says about an agent's identity, beside the stored rows. */
+export interface AgentIdentityRuntimeView {
+  /** #1890 — the identity head of the system prompt, from the built agent. */
+  readonly identityPrompt: string | null;
+  /** #1893 — the persona family of the model the agent runs on, and that
+   *  family's natural level per axis (what an unset slider means). */
+  readonly personaBaseline: {
+    readonly family: string;
+    readonly axes: Readonly<Record<string, number>>;
+  };
+}
+
+/** The runtime's view of `agent` for {@link projectAgentIdentity}. */
+function identityRuntimeView(
+  registry: OrchestratorRegistry,
+  agent: AgentPersonaFamilySource & { readonly slug: string },
+): AgentIdentityRuntimeView {
+  const family = agentPersonaFamilies(agent, registry.runModelFor(agent))[0] ?? UNKNOWN_PERSONA_FAMILY;
+  return {
+    identityPrompt: registry.get(agent.slug)?.built?.identityPrompt ?? null,
+    personaBaseline: { family, axes: personaBaseline(family) },
+  };
+}
+
+/** ADR-0216 — the projected revision of an agent without an identity row. */
+export const NO_IDENTITY_REVISION = 0;
+
 export function projectAgentIdentity(
   agent: AgentIdentityProjectionAgent,
   identity: AgentIdentityRecord | undefined,
+  runtime?: AgentIdentityRuntimeView,
 ): Record<string, unknown> {
   const resolved = resolveAgentIdentity(identity, {
     name: agent.name,
@@ -1675,7 +1720,10 @@ export function projectAgentIdentity(
       language: identity?.language ?? null,
       persona: identity?.persona ?? null,
       quality: identity?.quality ?? null,
-      revision: identity?.revision ?? 1,
+      // ADR-0216 — 0 = no identity row yet. The stored revision starts at
+      // 1, so a form read before the first save can be told apart from one
+      // read after it (the Teams manifest keeps `resolveAgentIdentity`'s 1).
+      revision: identity?.revision ?? NO_IDENTITY_REVISION,
       avatar:
         identity?.avatar == null
           ? null
@@ -1692,6 +1740,15 @@ export function projectAgentIdentity(
     // result rather than infer it.
     composed_prompt: identity?.composed.text ?? null,
     composed_family: identity?.composed.family ?? null,
+    // #1890 — the assembled identity section exactly as the running agent
+    // speaks it (base identity, compiled sections, description, name,
+    // identity rules, language and answer-size lines). `null` while the agent
+    // is not built (disabled, or the orchestrator is inactive).
+    identity_prompt: runtime?.identityPrompt ?? null,
+    // #1893 / ADR-0217 — sliders are target levels measured against this
+    // baseline; the editor draws it as the "model default" and an unset axis
+    // sits on it.
+    persona_baseline: runtime?.personaBaseline ?? null,
     resolved: {
       display_name: resolved.displayName,
       short_description: resolved.shortDescription,
@@ -1734,6 +1791,12 @@ async function republishTeamsPackage(
 }
 
 export interface OperatorAgentsRouterOptions {
+  /**
+   * #1942 — whether a package store (uploaded or built-in) holds the plugin.
+   * An assigned plugin without one runs nowhere, whatever its row says; the
+   * plugin lists mark it `package_missing`. Absent = not checked.
+   */
+  hasPackage?: ((pluginId: string) => boolean) | undefined;
   /** The channel types of a channel plugin (see `AgentPluginCatalogEntry.channel_types`). */
   channelTypesOf?: ((pluginId: string) => readonly string[]) | undefined;
   /**
@@ -1758,6 +1821,12 @@ export interface OperatorAgentsRouterOptions {
    * tests) = the change happens without it.
    */
   readonly endOfService?: AgentEndOfService;
+  /**
+   * #1881 (ADR-0218) — the state other stores keep under an agent's slug: a
+   * delete moves or removes it, a create refuses a slug that still has some.
+   * Absent (minimal mounts, unit tests) = neither happens.
+   */
+  readonly slugState?: AgentSlugState;
   /** The admin audit; absent = no database for it, the change is logged only. */
   readonly recordAudit?: (entry: AuditEntryInput) => Promise<void>;
   /** A tombstone younger than this needs a typed confirmation to be purged. Default 30. */
@@ -1977,6 +2046,16 @@ async function listPeerChatCandidates(
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** #1881 — what a delete did with the slug-keyed state of the agent. */
+function slugStateDto(retirement: SlugStateRetirement) {
+  return {
+    moved_to_slug: retirement.toSlug,
+    memory_moved: retirement.memoryMoved,
+    mcp_bindings_removed: retirement.mcpBindingsRemoved,
+    failures: retirement.failures,
+  };
+}
+
 /** A tombstone for the operator: when it may be purged without typing its slug. */
 function tombstoneDto(tombstone: AgentTombstone, retentionDays: number) {
   const purgeableFrom = new Date(Date.parse(tombstone.deletedAt) + retentionDays * DAY_MS);
@@ -2016,6 +2095,7 @@ function endOfServiceDto(report: EndOfServiceReport) {
       conversation_id: r.conversationId,
     })),
     system_notices_owed: report.noticesOwed,
+    routines_paused: report.routinesPaused,
   };
 }
 
@@ -2046,6 +2126,41 @@ export function createOperatorAgentsRouter(
     } catch (err) {
       console.error(`[security-audit] ${entry.action} ${entry.target} could not be recorded:`, err instanceof Error ? err.message : String(err));
     }
+  };
+
+  /**
+   * #1881 (ADR-0218) — a new agent must not inherit what an earlier agent
+   * with the same slug left behind (memory, graph history, MCP key bindings).
+   * Answers the refusal and returns true when state is still keyed by `slug`,
+   * or when that cannot be checked.
+   */
+  const refuseSlugWithState = async (res: Response, slug: string): Promise<boolean> => {
+    if (!options.slugState) return false;
+    let remaining;
+    try {
+      remaining = await options.slugState.remaining(slug);
+    } catch (err) {
+      console.error(`[operator-agents] checking the state left under slug '${slug}' failed:`, err instanceof Error ? err.message : String(err));
+      res.status(503).json({
+        error: 'slug_state_unverifiable',
+        slug,
+        message: `could not check whether data of an earlier agent "${slug}" remains; try again`,
+      });
+      return true;
+    }
+    if (!hasRemainingSlugState(remaining)) return false;
+    res.status(409).json({
+      error: 'slug_state_remains',
+      slug,
+      message: `data of an earlier agent "${slug}" remains (memory, conversation history or MCP key bindings); purge it under Danger Zone → memory purge, axis "agent", selector "${slug}", and remove its MCP key bindings, or choose another slug`,
+      remaining: {
+        memory_trees: remaining.memoryTrees,
+        mcp_bindings: remaining.mcpBindings,
+        graph_history: remaining.graphHistory,
+        memorable_knowledge: remaining.memorableKnowledge,
+      },
+    });
+    return true;
   };
 
   const auditAgent = (
@@ -2150,6 +2265,43 @@ export function createOperatorAgentsRouter(
     };
   }
 
+  /** #1879 — the channel types the binding routes accept (`undefined` = not wired, no check). */
+  function channelTypesKnown(): ReadonlySet<string> | undefined {
+    return registeredChannelTypes({
+      catalog: options.getPluginCatalog?.(),
+      installed: options.getInstalledRegistry?.(),
+      channelTypesOf: options.channelTypesOf,
+    });
+  }
+
+  function firstUnknownChannelType(
+    wanted: ReadonlyArray<{ channel_type: string; channel_key: string }>,
+    kept: ReadonlyArray<{ channelType: string; channelKey: string }>,
+  ): ReturnType<typeof unknownChannelTypeBody> | undefined {
+    const known = channelTypesKnown();
+    if (!known) return undefined;
+    const stored = new Set(kept.map((b) => `${b.channelType}|${b.channelKey}`));
+    const offending = wanted.find(
+      (b) => !known.has(b.channel_type) && !stored.has(`${b.channel_type}|${b.channel_key}`),
+    );
+    return offending ? unknownChannelTypeBody(offending.channel_type, known) : undefined;
+  }
+
+  /** An `agent_plugins` row as the plugin lists show it (#1942: plus `package_missing`). */
+  function assignedPluginView(p: { pluginId: string; config: Record<string, unknown>; enabled: boolean }): {
+    id: string;
+    config: Record<string, unknown>;
+    enabled: boolean;
+    package_missing?: boolean;
+  } {
+    return {
+      id: p.pluginId,
+      config: p.config,
+      enabled: p.enabled,
+      ...(options.hasPackage ? { package_missing: !options.hasPackage(p.pluginId) } : {}),
+    };
+  }
+
   function slugParam(req: Request, res: Response): string | undefined {
     const raw = req.params['slug'];
     if (typeof raw !== 'string' || raw.length === 0) {
@@ -2196,6 +2348,18 @@ export function createOperatorAgentsRouter(
   function badRequest(res: Response, err: unknown): void {
     // #2060 — one mapping for every facilitator refusal on this router.
     if (respondFacilitatorRefusal(res, err)) return;
+    // #1889 / ADR-0216 — a write over a revision that moved on since.
+    // `error` for this router's clients, `code`/`message` per ADR-0104.
+    if (err instanceof AgentIdentityRevisionConflictError) {
+      res.status(409).json({
+        error: 'identity_revision_conflict',
+        code: 'operator_agents.identity_revision_conflict',
+        message: err.message,
+        expected_revision: err.expectedRevision,
+        current_revision: err.currentRevision,
+      });
+      return;
+    }
     // #1871 — a policy the host cannot run: a 400 with a code the UI localizes.
     if (err instanceof ModelPolicyRefusedError) {
       res.status(400).json({ error: err.code, message: err.message });
@@ -2329,6 +2493,7 @@ export function createOperatorAgentsRouter(
         actor: auditActorFromRequest(req),
       });
       if (refusedBroadReach(res, gate)) return;
+      if (await refuseSlugWithState(res, agentRef.slug)) return;
       const agent = await live.store.createAgent({
         slug: agentRef.slug,
         name: body.name,
@@ -2463,11 +2628,7 @@ export function createOperatorAgentsRouter(
           // #1033 W4 — what the dashboard card shows as "runs on".
           effective_model: live.registry.get(a.slug)?.built?.effectiveModel ?? null,
           model_policy: parseModelPolicy(a.modelPolicy ?? DEFAULT_MODEL_POLICY),
-          plugins: (pluginsByAgent.get(a.id) ?? []).map((p) => ({
-            id: p.pluginId,
-            config: p.config,
-            enabled: p.enabled,
-          })),
+          plugins: (pluginsByAgent.get(a.id) ?? []).map(assignedPluginView),
           bindings: (bindingsByAgent.get(a.id) ?? []).map((b) => ({
             channel_type: b.channelType,
             channel_key: b.channelKey,
@@ -2586,6 +2747,16 @@ export function createOperatorAgentsRouter(
         throw new ConfigValidationError(`archetype "${archetype}" is not registered on this instance`);
       }
       if (refuseErroredArchetypePlugin(res, archetype)) return;
+      // #1885 — a taken slug has its own code, so the form can say so.
+      if (await live.store.getAgentBySlug(body.slug)) {
+        res.status(409).json({
+          error: 'slug_taken',
+          slug: body.slug,
+          message: `agent slug "${body.slug}" already exists`,
+        });
+        return;
+      }
+      if (await refuseSlugWithState(res, body.slug)) return;
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
@@ -2717,8 +2888,24 @@ export function createOperatorAgentsRouter(
         after: { tombstone: true, deleted_at: tombstone?.deletedAt ?? null },
       });
       await live.registry.reload();
+      // #1881 (ADR-0218) — after the reload, so no runtime of the agent
+      // writes under the old slug any more: its memory moves under the
+      // tombstone's placeholder slug, its MCP key bindings go.
+      const slugState = tombstone
+        ? await options.slugState?.retire(existing.slug, tombstoneSlug(existing.id))
+        : undefined;
+      if (slugState) {
+        await recordAudit({
+          actor,
+          action: 'agent.slug_state_moved',
+          target: `agent:${existing.id}`,
+          before: { slug: existing.slug },
+          after: slugStateDto(slugState),
+        });
+      }
       res.json({
         ok: true,
+        ...(slugState ? { slug_state: slugStateDto(slugState) } : {}),
         ...(tombstone && typeof tombstone.deletedAt === 'string'
           ? { tombstone: tombstoneDto(tombstone, retentionDays()) }
           : {}),
@@ -3022,7 +3209,7 @@ export function createOperatorAgentsRouter(
               quality: identity.quality,
               archetype: archetypeOf(updated),
             },
-            agentPersonaFamilies(updated),
+            agentPersonaFamilies(updated, live.registry.runModelFor(updated)),
           );
           await identityDeps.store.recompose(agent.id, {
             text: compiled.primary.text,
@@ -3205,7 +3392,7 @@ export function createOperatorAgentsRouter(
         return;
       }
       const identity = await deps.store.getByAgentId(agent.id);
-      res.json(projectAgentIdentity(agent, identity));
+      res.json(projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent)));
     } catch (err) {
       badRequest(res, err);
     }
@@ -3318,7 +3505,7 @@ export function createOperatorAgentsRouter(
           quality,
           archetype: archetypeOf(agent),
         },
-        agentPersonaFamilies(agent),
+        agentPersonaFamilies(agent, live.registry.runModelFor(agent)),
       );
       const family = compiled.family;
       const composed = compiled.primary;
@@ -3333,6 +3520,9 @@ export function createOperatorAgentsRouter(
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
+        ...(body.expected_revision !== undefined
+          ? { expectedRevision: body.expected_revision }
+          : {}),
       });
       if (before?.revision !== identity.revision) {
         await auditAgent(req, agent.slug, 'agent.identity_change',
@@ -3374,12 +3564,19 @@ export function createOperatorAgentsRouter(
       // #2043 — the language reaches the built agent (its refusal text) and
       // the engine's profile read, so a change reloads like the name does.
       const languageChanged = (before?.language ?? null) !== language;
+      // #1894 — the quality block also decides what the Quality Guard adds
+      // (`responseGuardProfileFor`), which the built agent reads once. "Not
+      // set" → "off" compiles to the same prompt but switches the guard's
+      // default off, so the composed text alone misses that change.
+      const qualityChanged =
+        JSON.stringify(before?.quality ?? null) !== JSON.stringify(quality);
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
         descriptionChanged ||
         verbosityChanged ||
-        languageChanged
+        languageChanged ||
+        qualityChanged
       ) {
         await live.registry.reload();
       }
@@ -3404,7 +3601,7 @@ export function createOperatorAgentsRouter(
         current.revision,
       );
       res.json({
-        ...projectAgentIdentity(agent, current),
+        ...projectAgentIdentity(agent, current, identityRuntimeView(live.registry, agent)),
         republish,
         // Boundary presets this build could not resolve. A rule that silently
         // stopped applying is worse than one that never existed, so the
@@ -3460,7 +3657,7 @@ export function createOperatorAgentsRouter(
           identity.revision,
         );
         res.json({
-          ...projectAgentIdentity(agent, identity),
+          ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent)),
           republish,
           // Honest about the one case where the upload is only half used.
           outline_derived: derived.outline !== null,
@@ -3496,7 +3693,7 @@ export function createOperatorAgentsRouter(
         before?.revision,
         identity?.revision,
       );
-      res.json({ ...projectAgentIdentity(agent, identity), republish });
+      res.json({ ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent)), republish });
     } catch (err) {
       badRequest(res, err);
     }
@@ -3555,11 +3752,7 @@ export function createOperatorAgentsRouter(
       const plugins = await live.store.listAgentPlugins(existing.id);
       res.json({
         slug: existing.slug,
-        plugins: plugins.map((p) => ({
-          id: p.pluginId,
-          config: p.config,
-          enabled: p.enabled,
-        })),
+        plugins: plugins.map(assignedPluginView),
       });
     } catch (err) {
       badRequest(res, err);
@@ -4817,9 +5010,16 @@ export function createOperatorAgentsRouter(
       }
       if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
+      // #1873 — the stored set, so the editor reseeds from what the server
+      // kept rather than from page props a refresh has not replaced yet.
+      const stored = await live.store.listAgentPlugins(existing.id);
       // S3c — say which held grants were invalid and are gone, so a client
       // that listed one is not left believing it was kept.
-      res.json({ ok: true, ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}) });
+      res.json({
+        ok: true,
+        plugins: stored.map((p) => ({ id: p.pluginId, config: p.config, enabled: p.enabled })),
+        ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}),
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -4842,6 +5042,13 @@ export function createOperatorAgentsRouter(
       // a binding. An empty set stays allowed, so stale rows can be cleared.
       if (body.bindings.length > 0) assertArchetypeAllows(existing, 'channel_binding');
       const current = await live.store.listChannelBindingsForAgent(existing.id);
+      // #1879 — a NEW binding must name a channel type an installed channel
+      // routes; one it keeps may stay (its channel may be uninstalled).
+      const unknownType = firstUnknownChannelType(body.bindings, current);
+      if (unknownType !== undefined) {
+        res.status(400).json(unknownType);
+        return;
+      }
       const desired = new Set(
         body.bindings.map((b) => `${b.channel_type}|${b.channel_key}`),
       );
@@ -4905,61 +5112,37 @@ export function createOperatorAgentsRouter(
     }
   });
 
-  // ── force-invalidate: drain ─────────────────────────────────────────
-  router.post('/:slug/drain', async (req: Request, res: Response) => {
-    const live = svc();
-    if (!live) return unavailable(res);
-    const sessionStore = options.getChatSessionStore();
-    if (!sessionStore) {
-      res.status(503).json({
-        error: 'chat_session_store_unavailable',
-        message: 'chatAgent@1 not published — chatSessionStore unavailable.',
-      });
-      return;
-    }
-    try {
-      const slug = slugParam(req, res);
-      if (!slug) return;
-      const affected = await live.registry.forceInvalidate(
-        slug,
-        'drain',
-        sessionStore,
-      );
-
-      await auditAgent(req, slug, 'agent.sessions_drain', undefined, { affected });
-      res.json({ ok: true, affected });
-    } catch (err) {
-      badRequest(res, err);
-    }
-  });
-
-  // ── force-invalidate: kill ──────────────────────────────────────────
-  router.post('/:slug/kill', async (req: Request, res: Response) => {
-    const live = svc();
-    if (!live) return unavailable(res);
-    const sessionStore = options.getChatSessionStore();
-    if (!sessionStore) {
-      res.status(503).json({
-        error: 'chat_session_store_unavailable',
-        message: 'chatAgent@1 not published — chatSessionStore unavailable.',
-      });
-      return;
-    }
-    try {
-      const slug = slugParam(req, res);
-      if (!slug) return;
-      const affected = await live.registry.forceInvalidate(
-        slug,
-        'kill',
-        sessionStore,
-      );
-
-      await auditAgent(req, slug, 'agent.sessions_kill', undefined, { affected });
-      res.json({ ok: true, affected });
-    } catch (err) {
-      badRequest(res, err);
-    }
-  });
+  // ── force-invalidate: drain / kill ──────────────────────────────────
+  // Both act on the web chats pinned to the agent (ADR-0146): drain drops
+  // the pin and keeps the history, kill deletes the chat. Unknown agents are
+  // a 404, not "0 affected" (#1884).
+  for (const mode of ['drain', 'kill'] as const) {
+    router.post(`/:slug/${mode}`, async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      const sessionStore = options.getChatSessionStore();
+      if (!sessionStore) {
+        res.status(503).json({
+          error: 'chat_session_store_unavailable',
+          message: 'chatAgent@1 not published — chatSessionStore unavailable.',
+        });
+        return;
+      }
+      try {
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        if (!(await live.store.getAgentBySlug(slug))) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const affected = await live.registry.forceInvalidate(slug, mode, sessionStore);
+        await auditAgent(req, slug, `agent.sessions_${mode}`, undefined, { affected });
+        res.json({ ok: true, affected });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    });
+  }
 
   // ── plugin catalog (B3a multi-select source) ────────────────────────
   // Returns the installed-plugin projection the dashboard needs to render
@@ -5027,6 +5210,13 @@ export function createOperatorAgentsRouter(
     if (!live) return unavailable(res);
     try {
       const body = ResolveChannelSchema.parse(req.body);
+      // #1879 — an unknown type would answer "fallback", which reads like a
+      // routing result; it is a typo or a guessed type.
+      const known = channelTypesKnown();
+      if (known && !known.has(body.channel_type)) {
+        res.status(400).json(unknownChannelTypeBody(body.channel_type, known));
+        return;
+      }
       const result = new ChannelResolver({ registry: live.registry }).resolve(
         body.channel_type,
         body.channel_key,

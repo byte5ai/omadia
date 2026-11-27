@@ -269,7 +269,7 @@
         },
         "memoryBackend": {
           "title": "Speicher-Backend",
-          "description": "Memory-Speicher zwischen Dateisystem und Postgres umschalten; Postgres benötigt DATABASE_URL und greift erst nach Neustart."
+          "description": "Memory-Speicher zwischen Postgres und In-Memory (flüchtig) umschalten; Postgres benötigt DATABASE_URL, der Wechsel greift erst nach einem Neustart."
         },
         "embeddingProvider": {
           "title": "Embedding-Provider",
@@ -1801,6 +1801,7 @@
     "composerSendHint": "↵ senden · ⇧↵ neue Zeile",
     "proactiveRoutineBadge": "Geplante Routine · {name}",
     "proactiveBadge": "Geplante Nachricht",
+    "proactiveDeliveredAt": "Zugestellt {time}",
     "proactiveDroppedAttachments": "{count, plural, one {# Anhang} other {# Anhänge}} dieser Routine-Ausgabe {count, plural, one {kann} other {können}} im Web-Chat nicht angezeigt werden.",
     "proactiveDroppedInteractive": "{kind, select, choice {Eine Auswahlkarte} slots {Eine Terminauswahl} topic {Eine Themen-Rückfrage} routine_list {Eine Routinenliste} mcp_input {Ein Eingabeformular} other {Ein interaktives Element}} dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.",
     "resetPartialNotice": "Nur in diesem Browser geleert — der Server war nicht erreichbar und kann diese Unterhaltung noch enthalten, zumindest ihre geplanten Routine-Nachrichten, die hier wieder auftauchen können. Starte den Chat später noch einmal neu, um ihn auch auf dem Server zu leeren.",
@@ -2069,7 +2070,10 @@
         "unavailable": "Der Verifier konnte für diese Antwort nicht laufen, es wurde nichts geprüft.",
         "checkFailed": "Die Prüfungen des Verifiers sind für diese Antwort fehlgeschlagen, es wurde keine Aussage bestätigt."
       }
-    }
+    },
+    "closeChatConfirm": "Diesen Chat schließen? Er wird endgültig gelöscht.",
+    "closeChatConfirmWithRoutines": "Diesen Chat schließen? Er wird endgültig gelöscht, und {count, plural, one {seine Routine {names} wird} other {seine # Routinen ({names}) werden}} pausiert.",
+    "closeChatConfirmRoutinesUnknown": "Diesen Chat schließen? Er wird endgültig gelöscht. Seine Routinen konnten nicht geprüft werden; Routinen, die hierher zustellen, werden pausiert."
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -2319,7 +2323,7 @@
     "createSubmit": "Anlegen",
     "agentsHeading": "Standard-Agenten",
     "agentsEmpty": "Noch keine Agenten. Leg oben einen an.",
-    "agentMeta": "id: {id} · privacy: {privacy} (nicht wirksam) · status: {status} · runtime: {runtime}",
+    "agentMeta": "ID: {id} · Datenschutzprofil: {privacy} (nicht wirksam) · Status: {status} · Laufzeit: {runtime}",
     "detailMetaTitle": "Agent: {slug} · omadia",
     "detailNotFoundMetaTitle": "Agent nicht gefunden · omadia",
     "detailOpenLink": "Details",
@@ -2334,7 +2338,7 @@
       "payload_too_large": "Das Bild ist zu groß — es sind höchstens 2 MB erlaubt.",
       "unsupported_media_type": "Dieser Dateityp geht nicht — erlaubt sind PNG, JPEG und WebP.",
       "agent_graph_store_unavailable": "Die Agent-Registry ist gerade nicht erreichbar. Versuch es gleich nochmal.",
-      "config_validation": "Der Server hat die Plugin-Konfiguration abgelehnt.",
+      "config_validation": "Der Server hat die Änderung abgelehnt, weil ein Wert ungültig ist.",
       "invalid_body": "Der Server hat den Request-Payload abgelehnt.",
       "invalid_slug": "Dieser Agent-Slug ist ungültig.",
       "multi_orchestrator_unavailable": "Die Multi-Agent-Laufzeit ist nicht verfügbar.",
@@ -2344,7 +2348,8 @@
       "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
       "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
       "unknown": "Request fehlgeschlagen: {detail}",
-      "broad_reach_confirmation_required": "Diese Änderung gäbe dem Agenten Zugriff auf alle angebundenen Systeme und braucht deine ausdrückliche Bestätigung."
+      "broad_reach_confirmation_required": "Diese Änderung gäbe dem Agenten Zugriff auf alle angebundenen Systeme und braucht deine ausdrückliche Bestätigung.",
+      "identity_revision_conflict": "Diese Identität wurde an anderer Stelle geändert, seit du sie geöffnet hast. Deine Änderung wurde deshalb nicht gespeichert. Lade neu, um den aktuellen Stand zu sehen, und nimm deine Änderung dann erneut vor."
     },
     "statusEnabled": "aktiviert",
     "statusDisabled": "deaktiviert",
@@ -2355,13 +2360,13 @@
     "actionDelete": "Löschen",
     "actionDrain": "Sessions drainen",
     "actionKill": "Sessions killen",
-    "drainTooltip": "Snapshot auf allen an diesen Agenten gebundenen Sessions leeren — nächster Turn nimmt frische Config aus der Registry",
+    "drainTooltip": "Alle Web-Chats lösen, die an diesen Agenten gebunden sind — der Verlauf bleibt, die nächste Nachricht wählt den Agenten neu",
     "deleteConfirm": "Agent „{slug}“ wirklich löschen? Er geht außer Dienst; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
-    "killConfirm": "Alle Sessions von „{slug}\" killen? History geht verloren.",
+    "killConfirm": "Alle Web-Chats, die an „{slug}“ gebunden sind, auf dem Server löschen? Ihr Verlauf geht verloren. Ein Browser, in dem einer dieser Chats noch offen ist, behält seine eigene Kopie, bis sie dort gelöscht wird.",
     "memoryScopeHeading": "Memory-Scope",
     "memoryScopeEmpty": "Kein Scope (Runtime-Registry nicht aktiv)",
     "pluginsHeading": "Plugins",
-    "bindingsHeading": "Channel-Bindings",
+    "bindingsHeading": "Kanal-Bindungen",
     "save": "Speichern",
     "catalogError": "Plugin-Katalog konnte nicht geladen werden ({message}). Multi-Select fällt auf manuellen Modus zurück.",
     "catalogLoading": "Plugin-Katalog lädt …",
@@ -2372,7 +2377,7 @@
     "memoryReadTooltip": "Memory-Read-Scope dieses Plugins",
     "memoryWriteTooltip": "Memory-Write-Scope dieses Plugins",
     "networkLabel": "Netzwerk:",
-    "configShow": "Config",
+    "configShow": "Konfiguration",
     "configOverrideBadgeTooltip": "Für diesen Agenten überschriebene Felder",
     "pluginConfig": {
       "title": "Konfiguration — {plugin}",
@@ -2384,10 +2389,10 @@
       "resetAll": "Alle Overrides entfernen",
       "filterPlaceholder": "Felder filtern …",
       "filterEmpty": "Kein Feld passt zu diesem Filter.",
-      "badgeSecret": "Secret · Vault",
-      "badgeConfig": "Config",
+      "badgeSecret": "Geheimnis · Tresor",
+      "badgeConfig": "Konfiguration",
       "badgeSecretTitle": "Secret — verschlüsselt im per-Agent-Vault",
-      "badgeConfigTitle": "Config — nicht-sensitiver Wert in der Instanz-Konfiguration",
+      "badgeConfigTitle": "Konfiguration — nicht-sensibler Wert in der Instanz-Konfiguration",
       "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
       "statusOverridden": "überschreibt die Store-Konfiguration",
       "statusFromStore": "aus der Store-Konfiguration",
@@ -2397,18 +2402,18 @@
       "unsavedHint": "Änderungen greifen erst mit „Speichern“ oben."
     },
     "orphanPluginBadge": "nicht mehr installiert",
-    "bindingsAdd": "Binding hinzufügen",
+    "bindingsAdd": "Kanal-Bindung hinzufügen",
     "bindingsRemove": "Entfernen",
-    "bindingsEmpty": "Keine Bindings — nicht adressierte Nachrichten landen beim Standard-Ansprechpartner.",
+    "bindingsEmpty": "Keine Kanal-Bindungen — nicht adressierte Nachrichten landen beim Standard-Ansprechpartner.",
     "routingTesterHeading": "Routing-Tester",
-    "routingTesterHelp": "Frag den Server, welcher Agent einen eingehenden Webhook beantworten würde. Zuerst zählen explizite Bindings, dann der Standard-Agent.",
-    "fieldChannelType": "Channel-Type",
-    "fieldChannelKey": "Channel-Key",
+    "routingTesterHelp": "Frag den Server, welcher Agent einen eingehenden Webhook beantworten würde. Zuerst zählen ausdrückliche Kanal-Bindungen, dann der Standard-Agent.",
+    "fieldChannelType": "Kanaltyp",
+    "fieldChannelKey": "Kanal-Schlüssel",
     "routingTesterSubmit": "Routing prüfen",
     "routingTesterRunning": "Prüfe …",
-    "routingTesterMatched": "→ Agent „{slug}\" (via {via})",
-    "routingTesterNoMatch": "Kein Match — kein Standard-Ansprechpartner greift; der Absender bekäme einen Systemhinweis.",
-    "agentCardSummary": "privacy: {privacy} (nicht wirksam) · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
+    "routingTesterMatched": "→ Agent „{slug}“ (über: {via})",
+    "routingTesterNoMatch": "Kein Treffer — kein Standard-Ansprechpartner greift; der Absender bekäme einen Systemhinweis.",
+    "agentCardSummary": "Datenschutzprofil: {privacy} (nicht wirksam) · Status: {status} · Laufzeit: {runtime} · {plugins} Plugins angehängt · {bindings} Kanal-Bindungen",
     "agentCardModel": "Modell: {primary}{fallback, select, none {} other { · Fallback: {fallback}}}",
     "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sitzungen:",
@@ -2417,17 +2422,17 @@
     "pluginsAttachedHere": "An diesen Agenten angehängt",
     "pluginsAvailableEmpty": "Alle installierten Plugins sind bereits angehängt.",
     "pluginsEnabled": "Angehängt",
-    "pluginsEnabledEmpty": "Drag-and-drop oder „Attach\" benutzen, um Plugins anzuhängen.",
+    "pluginsEnabledEmpty": "Plugins per Drag-and-drop oder mit „Anhängen“ hinzufügen.",
     "orphanPluginsHeading": "Veraltet",
-    "attach": "Attach",
+    "attach": "Anhängen",
     "detach": "Lösen",
     "enabledShort": "aktiv",
     "dragHandle": "Ziehen, um zwischen den Spalten zu bewegen",
-    "dependencyMissingBadge": "Parent fehlt",
-    "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt.",
+    "dependencyMissingBadge": "Basis-Plugin fehlt",
+    "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}“ ab — das Basis-Plugin ist nicht in derselben Spalte angehängt.",
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
-    "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
+    "orphanExplain": "Plugin-IDs, die nicht im aktuellen Katalog stehen: eine umbenannte ID aus einem früheren Seed (etwa de.byte5.agent.* → @omadia/*) oder ein Paket, das nicht mehr installiert ist (die Canvas-Pakete liegen jetzt in byte5ai/omadia-ui-support). Ein fehlendes Paket installierst du im Store neu, wenn du es weiter nutzen willst. Werden beim nächsten „Speichern“ verworfen, außer du markierst sie als „Behalten“.",
     "orphanKeep": "Behalten",
     "seededDescription": "Beim ersten Start automatisch angelegt. Empfängt Channel-Traffic ohne explizite Zuordnung, bis du eine einrichtest.",
     "mcp": {
@@ -2835,16 +2840,17 @@
         "prompt": "Prompt"
       },
       "prompt": {
-        "hint": "Das ist der agenteneigene Teil des System-Prompts, zusammengesetzt aus Verhalten, Charakter-Achsen, Grenzen und Schmeichel-Bremse. In einem Turn können zwei Blöcke davor stehen: der bisherige Gesprächskontext und die Regeln des Quality-Guard-Plugins für alles, was dieser Agent nicht selbst festlegt.",
-        "hintWithFamily": "Das ist der agenteneigene Teil des System-Prompts. Die Charakter-Achsen sind gegen die Grundhaltung der Modellfamilie {family} gerechnet, nur Abweichungen davon werden überhaupt geschrieben. In einem Turn können zwei Blöcke davor stehen: der bisherige Gesprächskontext und die Regeln des Quality-Guard-Plugins für alles, was dieser Agent nicht selbst festlegt.",
+        "hint": "Das ist der Anfang des System-Prompts, so wie der laufende Agent ihn sendet: die Plattform-Identität oder an ihrer Stelle der eigene Verhaltenstext des Agenten, danach Charakter, Grenzen und Schmeichel-Bremse, Beschreibung, Name, Identitätsregeln sowie die Zeilen zu Sprache und Antwortumfang. In einem Turn stehen nur die Regeln des Quality-Guard-Plugins davor. Ein für den Turn gewählter Arbeitsmodus wird direkt nach der Identität eingefügt; Werkzeugbeschreibungen, Datum und der bisherige Gesprächskontext folgen nach diesem Text.",
+        "hintWithFamily": "Das ist der Anfang des System-Prompts, so wie der laufende Agent ihn sendet: die Plattform-Identität oder an ihrer Stelle der eigene Verhaltenstext des Agenten, danach Charakter, Grenzen und Schmeichel-Bremse, Beschreibung, Name, Identitätsregeln sowie die Zeilen zu Sprache und Antwortumfang. Die Charakter-Achsen sind gegen die Grundhaltung der Modellfamilie {family} gerechnet, nur Abweichungen davon werden überhaupt geschrieben. In einem Turn stehen nur die Regeln des Quality-Guard-Plugins davor. Ein für den Turn gewählter Arbeitsmodus wird direkt nach der Identität eingefügt; Werkzeugbeschreibungen, Datum und der bisherige Gesprächskontext folgen nach diesem Text.",
         "stale": "Ungespeicherte Änderungen sind hier noch nicht drin — erst nach dem Speichern.",
-        "empty": "Noch nichts gesetzt. Der Agent nutzt den plattformweiten Standardtext."
+        "empty": "Noch nichts gesetzt. Der Agent nutzt den plattformweiten Standardtext.",
+        "notRunning": "Der Agent läuft gerade nicht. Deshalb steht hier nur sein eigener kompilierter Teil, ohne Plattform-Identität, Name und die Zeilen, die drumherum ergänzt werden."
       },
       "droppedPresets": "Diese Grenzen-Vorlagen kennt der Server nicht (mehr): {ids}",
       "persona": {
         "template": {
           "heading": "Persona-Vorlage",
-          "none": "Keine Persona-Vorlage gewählt — alle Achsen stehen auf neutral.",
+          "none": "Keine Persona-Vorlage gewählt — jede Achse steht auf dem Standard des Modells.",
           "active": "Persona-Vorlage: {name}",
           "choose": "Persona-Vorlage wählen",
           "clear": "Lösen"
@@ -2864,12 +2870,15 @@
         "bounds": {
           "note": "Der Charakter eines Facilitators bleibt innerhalb der Grenzen des Neutralitätsvertrags. Regler, Persona-Vorlagen und Branchen-Presets enden an diesen Grenzen.",
           "axisRange": "Für einen Facilitator erlaubt: {min} bis {max}"
+        },
+        "baseline": {
+          "hint": "Jeder Regler ist die Stufe, die du willst. Der Punkt auf der Spur zeigt, wo das Modell {family} von sich aus steht; in den Prompt kommt nur der Abstand zu diesem Punkt. Eine Achse auf ihrem Punkt oder eine, die du nie bewegt hast, fügt also nichts hinzu."
         }
       },
       "boundaries": {
         "presetsHeading": "Grenzen aus der Bibliothek",
         "presetsHint": "Harte Verbote. Sie landen als eigener Abschnitt im Prompt, unterhalb des Charakters.",
-        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, ersetzt, was du hier festlegst, dessen Wert für dieses Feld: Eigene Grenzen ersetzen seine Standard-Grenzen, eine eigene Stufe der Schmeichel-Bremse ersetzt seine Standard-Stufe. Nur Felder, die du hier offen lässt, kommen vom Quality Guard.",
         "unknownPresets": "Unbekannte Vorlagen bleiben gespeichert, wirken aber nicht: {ids}",
         "categories": {
           "data": "Daten",
@@ -2888,13 +2897,16 @@
           "medium": "Mittel",
           "high": "Stark"
         },
-        "sycophancyFacilitatorHint": "Für einen Facilitator ist die Bremse immer aktiv: Ein Moderator, der einer Stimme schmeichelt, ist parteiisch."
+        "sycophancyFacilitatorHint": "Für einen Facilitator ist die Bremse immer aktiv: Ein Moderator, der einer Stimme schmeichelt, ist parteiisch.",
+        "sycophancyUnset": "Nicht gesetzt (Vorgabe des Quality Guard gilt)"
       },
       "facilitator": {
         "issueOnTab": "{tab}: {issue}",
         "instructionsHint": "Eröffnungsabschnitt des Facilitator-Prompts. Wird beim Speichern gegen den Neutralitätsvertrag geprüft: Text, der Parteinahme, eine Meinung, eine Stimmabgabe oder einen verdeckten Kanal verlangt, wird abgelehnt.",
         "promptNote": "Der Neutralitätsvertrag wird nach diesen Abschnitten einkompiliert und lässt sich von hier aus weder entfernen noch überschreiben."
-      }
+      },
+      "avatarRemoveConfirm": "Das Bild des Agenten entfernen? Teams zeigt dann das Standard-Symbol.",
+      "conflictReload": "Gespeicherte Identität neu laden (verwirft deine Änderungen)"
     },
     "teamsIdentity": {
       "heading": "Teams-Identität",
@@ -3123,7 +3135,7 @@
       },
       "unavailable": {
         "teams": {
-          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Teamliste — trage die ID unten von Hand ein.",
+          "connector_unavailable": "Ohne aktiven Microsoft-365-Connector gibt es keine Teamliste, und nichts lässt sich provisionieren. Installiere und aktiviere zuerst den Connector.",
           "connector_unsupported": "Der installierte Connector kann keine Teams auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die ID unten ein.",
           "sign_in_required": "Für die Teamliste fehlt die Tenant-Anmeldung. Melde dich einmal an oder trage die ID unten ein.",
           "scope_missing": "Die gespeicherte Anmeldung kennt eine Berechtigung nicht, die für die Teamliste nötig ist. Eine erneute Anmeldung schaltet die Liste frei.",
@@ -3134,7 +3146,7 @@
           "not_requested": "Die Team-Liste wurde nicht angefordert."
         },
         "chats": {
-          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Chatliste — trage die ID unten von Hand ein.",
+          "connector_unavailable": "Ohne aktiven Microsoft-365-Connector gibt es keine Chatliste, und nichts lässt sich provisionieren. Installiere und aktiviere zuerst den Connector.",
           "connector_unsupported": "Der installierte Connector kann keine Chats auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die Chat-ID unten ein.",
           "sign_in_required": "Chats lassen sich nur mit einer Tenant-Anmeldung auflisten — Graph bietet dafür keinen App-Zugriff an. Melde dich einmal an oder trage die Chat-ID unten ein.",
           "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht und kann sie nicht nachträglich erneuern. Eine einmalige neue Anmeldung schaltet die Chatliste frei; bis dahin trage die Chat-ID unten ein.",
@@ -3238,7 +3250,8 @@
       "tools": "Werkzeuge",
       "memory": "Memory",
       "engine": "Moderation",
-      "moderation": "Methoden"
+      "moderation": "Methoden",
+      "unsavedLeaveConfirm": "Dieser Tab hat ungespeicherte Änderungen. Trotzdem verlassen und die Änderungen verwerfen?"
     },
     "endOfService": {
       "disabled": "„{name}“ ist deaktiviert.",
@@ -3498,7 +3511,47 @@
       "onHint": "An: schneller und günstiger bei einfachen Abfragen.",
       "offHint": "Aus: Jede Frage läuft durch die volle Agentenschleife.",
       "unavailable": "Diese Art von Agent hat keine Schnellspur."
-    }
+    },
+    "pluginKinds": {
+      "agent": "Agent",
+      "integration": "Integration",
+      "channel": "Kanal",
+      "tool": "Werkzeug",
+      "extension": "Erweiterung"
+    },
+    "routingTesterVia": {
+      "identity": "eigener Bot des Agenten",
+      "explicit": "ausdrücklich genannter Agent",
+      "selection": "Auswahl des Nutzers",
+      "binding": "Kanal-Bindung",
+      "default": "Standard-Agent",
+      "none": "kein Treffer"
+    },
+    "privacyProfiles": {
+      "default": "Standard",
+      "strict": "strikt"
+    },
+    "drainConfirm": "Alle Web-Chats lösen, die an „{slug}“ gebunden sind? Der Verlauf bleibt; die nächste Nachricht in jedem Chat wählt den Agenten neu.",
+    "drainResult": "{count, plural, =0 {An „{slug}“ ist kein Web-Chat gebunden.} one {# Web-Chat von „{slug}“ gelöst.} other {# Web-Chats von „{slug}“ gelöst.}}",
+    "killResult": "{count, plural, =0 {An „{slug}“ ist kein Web-Chat gebunden.} one {# Web-Chat von „{slug}“ gelöscht.} other {# Web-Chats von „{slug}“ gelöscht.}}",
+    "fieldSlugRule": "Kleinbuchstaben, Ziffern und Bindestriche, bis zu 64 Zeichen; kein Bindestrich am Anfang oder Ende.",
+    "apiErrors": {
+      "slugTaken": "Ein Agent mit dem Slug „{slug}“ existiert schon. Wähle einen anderen Slug.",
+      "slugStateRemains": "Von einem früheren Agenten „{slug}“ sind noch Daten vorhanden (Gedächtnis, Gesprächsverlauf oder MCP-Schlüsselzuordnungen). Lösche sie unter Danger Zone → Gedächtnis löschen (Achse „agent“, Auswahl „{slug}“) und entferne seine MCP-Schlüsselzuordnungen, oder wähle einen anderen Slug.",
+      "slugStateUnverifiable": "Konnte nicht prüfen, ob noch Daten eines früheren Agenten „{slug}“ vorhanden sind. Bitte erneut versuchen.",
+      "unknownChannelType": "Kein installierter Kanal nutzt den Kanaltyp „{type}“. Kanaltypen dieser Instanz: {known}.",
+      "invalidFields": "Der Server hat die Eingabe abgelehnt. {fields}",
+      "refused": "Der Server hat die Änderung abgelehnt: {detail}",
+      "fields": {
+        "slug": "Slug: Kleinbuchstaben, Ziffern und Bindestriche, bis zu 64 Zeichen; kein Bindestrich am Anfang oder Ende.",
+        "name": "Name: 1 bis 120 Zeichen.",
+        "description": "Beschreibung: höchstens 2000 Zeichen.",
+        "channel_type": "Kanaltyp: wähle einen der angebotenen Typen.",
+        "channel_key": "Kanal-Schlüssel: 1 bis 500 Zeichen."
+      }
+    },
+    "detailPackageMissing": "Paket fehlt — läuft nicht",
+    "detailPackageMissingHint": "Dieses Plugin ist zugewiesen, aber sein Paket ist auf dieser Instanz nicht installiert, also läuft es nicht. Installiere das Paket im Store neu (die Canvas-Pakete kommen aus byte5ai/omadia-ui-support) oder hänge das Plugin ab."
   },
   "builder": {
     "choice": {
@@ -4091,7 +4144,7 @@
       "boundaries": {
         "heading": "Grenzen",
         "selectedCount": "{count} ausgewählt",
-        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, ersetzt, was du hier festlegst, dessen Wert für dieses Feld: Eigene Grenzen ersetzen seine Standard-Grenzen, eine eigene Stufe der Schmeichel-Bremse ersetzt seine Standard-Stufe. Nur Felder, die du hier offen lässt, kommen vom Quality Guard.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
         "customHint": "Jede als vollständigen Satz formulieren — sie erreicht den Agenten genau so, wie eingegeben.",
@@ -4166,9 +4219,10 @@
         "conflictHint": "Konflikt — siehe Banner."
       },
       "radar": {
-        "title": "Persönlichkeitsprofil",
-        "comparisonPrefix": "Profil im Vergleich zu",
-        "comparisonNeutral": "Neutral (50)"
+        "title": "Persona Radar",
+        "comparisonPrefix": "Persona vs.",
+        "comparisonNeutral": "Skalenmitte (50)",
+        "comparisonModelDefault": "Modell-Standard"
       },
       "conflicts": {
         "sycophancyHighDirectnessLow": "Sycophancy=high erzwingt Devil's-Advocate-Rules; directness ≤ 30 sagt „diplomatisch\". Modell wird eines der beiden ignorieren. Empfehlung: directness ≥ 50 oder sycophancy=medium.",
@@ -4181,74 +4235,74 @@
         "formality": {
           "description": "Du-Form & Umgangssprache vs. Sie-Form & Fachsprache.",
           "name": "Förmlichkeit",
-          "left": "LOCKER",
-          "right": "FÖRMLICH"
+          "left": "Locker",
+          "right": "Förmlich"
         },
         "directness": {
           "description": "Höflichkeitspuffer vs. Kernaussage zuerst.",
           "name": "Direktheit",
-          "left": "DIPLOMATISCH",
-          "right": "DIREKT"
+          "left": "Diplomatisch",
+          "right": "Direkt"
         },
         "warmth": {
           "description": "Sachlich-distanziert vs. empathisch & anerkennend.",
           "name": "Wärme",
-          "left": "DISTANZIERT",
-          "right": "HERZLICH"
+          "left": "Kühl",
+          "right": "Warm"
         },
         "humor": {
           "description": "Ohne Witz vs. spielerisch (sparsam einsetzen).",
           "name": "Humor",
-          "left": "ERNST",
-          "right": "VERSPIELT"
+          "left": "Ernst",
+          "right": "Verspielt"
         },
         "sarcasm": {
           "description": "Ehrlich-direkt vs. ironisch (selten passend).",
           "name": "Sarkasmus",
-          "left": "AUFRICHTIG",
-          "right": "SARKASTISCH"
+          "left": "Aufrichtig",
+          "right": "Sarkastisch"
         },
         "conciseness": {
           "description": "Ausführlich vs. minimaler Wort-Output.",
-          "name": "Kürze",
-          "left": "AUSFÜHRLICH",
-          "right": "KNAPP"
+          "name": "Knappheit",
+          "left": "Ausführlich",
+          "right": "Knapp"
         },
         "proactivity": {
           "description": "Antwortet auf Anfragen vs. schlägt von sich aus vor.",
           "name": "Eigeninitiative",
-          "left": "REAKTIV",
-          "right": "PROAKTIV"
+          "left": "Reaktiv",
+          "right": "Proaktiv"
         },
         "autonomy": {
           "description": "Fragt zurück vs. handelt eigenständig.",
-          "name": "Autonomie",
-          "left": "RÜCKSPRACHE",
-          "right": "EIGENSTÄNDIG"
+          "name": "Selbstständigkeit",
+          "left": "Rückfragend",
+          "right": "Selbstständig"
         },
         "risk_tolerance": {
           "description": "Sicherheits-zuerst vs. Risiko-tolerant.",
           "name": "Risikobereitschaft",
-          "left": "VORSICHTIG",
-          "right": "MUTIG"
+          "left": "Vorsichtig",
+          "right": "Mutig"
         },
         "creativity": {
           "description": "Bewährte Lösungen vs. unkonventionelle Ideen.",
           "name": "Kreativität",
-          "left": "KONVENTIONELL",
-          "right": "EINFALLSREICH"
+          "left": "Konventionell",
+          "right": "Einfallsreich"
         },
         "drama": {
           "description": "Sachlich vs. emotional aufgeladen.",
-          "name": "Ausdruck",
-          "left": "ZURÜCKHALTEND",
-          "right": "DRAMATISCH"
+          "name": "Dramatik",
+          "left": "Zurückhaltend",
+          "right": "Dramatisch"
         },
         "philosophy": {
           "description": "Lösung-orientiert vs. abstrakt-grundsätzlich.",
           "name": "Philosophie",
-          "left": "PRAGMATISCH",
-          "right": "PHILOSOPHISCH"
+          "left": "Pragmatisch",
+          "right": "Philosophisch"
         }
       }
     },
@@ -4958,8 +5012,10 @@
       "signed": "signiert",
       "unsigned": "unsigniert",
       "connectedOk": "Verbindung hergestellt.",
-      "alreadyProvided": "Diese Capability wird bereits von {owner} bereitgestellt. Ein zweiter Provider lässt sich nicht installieren — konfiguriere stattdessen den vorhandenen.",
+      "alreadyProvided": "Diese Capability wird bereits von {owner} bereitgestellt, und aktiv sein darf nur ein Provider. Um stattdessen dieses Plugin zu nutzen, deinstalliere zuerst {owner} und installiere dann dieses.",
       "alreadyProvidedCta": "Provider konfigurieren",
+      "alreadyProvidedCtaEmbedding": "Embedding-Anbieter öffnen",
+      "alreadyProvidedCtaTranscription": "Transkriptions-Anbieter öffnen",
       "connectedError": "Verbindung fehlgeschlagen. Bitte erneut versuchen.",
       "connectedErrorWithReason": "Verbindung fehlgeschlagen ({reason}). Bitte erneut versuchen.",
       "sectionDescription": "Beschreibung",
@@ -5578,7 +5634,7 @@
       "kg": {
         "on": "KG an",
         "off": "KG aus",
-        "onHint": "Erfolgreiche Tool-Ergebnisse dieses Servers werden in deinen Knowledge Graph geschrieben (recallbar, nur für dich sichtbar). Rohwerte nur, wenn der Server zusätzlich unmaskiert ist; sonst ein wertfreier Digest. Klicken, um die Aufnahme zu stoppen.",
+        "onHint": "Erfolgreiche Tool-Ergebnisse dieses Servers werden in deinen Knowledge Graph geschrieben (recallbar, nur für dich sichtbar); fehlgeschlagene Aufrufe nicht. Setzt einen aktiven Privacy Guard voraus. Rohwerte nur, wenn der Server zusätzlich unmaskiert ist; sonst nur Anzahlen, keine Namen oder Werte. Klicken, um die Aufnahme zu stoppen.",
         "offHint": "Tool-Ergebnisse dieses Servers werden NICHT in den Knowledge Graph geschrieben. Klicken, um sie als recallbare, nutzer-eigene Observations aufzunehmen."
       },
       "config": {
@@ -5688,7 +5744,17 @@
       "cimdUnreachable": "Dieser Server würde ein Client-ID-Metadaten-Dokument akzeptieren, aber diese Installation kann keines veröffentlichen, das er abrufen kann. Meist heißt das: omadia ist aus dem Internet nicht erreichbar — bei einer On-Premises-Installation normal, denn der Identity Provider muss das Dokument selbst abrufen.",
       "cimdUnreachableReason": "Grund",
       "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
-      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen."
+      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen.",
+      "connectedShared": "🔓 Autorisiert (gemeinsame Service-Autorisierung)",
+      "discoveryUnavailable": "Die OAuth-Metadaten des Anbieters sind gerade nicht lesbar. Bitte später erneut versuchen.",
+      "discoveryError": "Die OAuth-Konfiguration des Anbieters ist nicht nutzbar: {reason}",
+      "cancel": "Abbrechen",
+      "delegationConfirmTitle": "Eine Autorisierung für alle Aufrufer teilen?",
+      "delegationConfirmBody": "Mit Service-Delegation handelt jeder Chat, jede Routine und jeder Workflow, der diesen Server aufruft, unter einer gemeinsamen Autorisierung (der hier verbundenen) statt unter der eigenen des jeweiligen Nutzers.",
+      "sharedConnectConfirmTitle": "Gemeinsame Autorisierung ersetzen?",
+      "sharedConnectConfirmBody": "Dieser Server nutzt Service-Delegation. Verbinden ersetzt die Autorisierung, die jeder Chat, jede Routine und jeder Workflow nutzt.",
+      "sharedDisconnectConfirmTitle": "Gemeinsame Autorisierung entfernen?",
+      "sharedDisconnectConfirmBody": "Dieser Server nutzt Service-Delegation. Trennen entfernt die Autorisierung für jeden Chat, jede Routine und jeden Workflow."
     },
     "marketplace": {
       "registry": "Registry",
@@ -5871,10 +5937,16 @@
         "empty": "Dieser Server hat keine Tools gemeldet.",
         "match": "Treffer",
         "noDescription": "Keine Beschreibung verfügbar.",
-        "delegationNotice": "Conductor-Läufe haben keinen angemeldeten Benutzer – dieser Server muss unter seiner Service-Identität handeln, bevor ein Workflow seine Tools aufrufen kann. Service-Delegation aktivieren, um fortzufahren.",
+        "delegationNotice": "Conductor-Läufe haben keinen angemeldeten Benutzer – dieser Server muss unter seiner Service-Identität handeln, bevor ein Workflow seine Tools aufrufen kann. Die Umstellung gilt für den ganzen Server: Jeder Chat, jede Routine und jeder Workflow, der ihn aufruft, nutzt dann die eine gemeinsame Autorisierung. Service-Delegation aktivieren, um fortzufahren.",
         "delegationButton": "Service-Delegation aktivieren"
       },
       "initialServerMissing": "Der verbundene Server ist nicht mehr verfügbar – wähle oder erstelle einen."
+    },
+    "routeErrors": {
+      "toolListEmpty": "Der Server hat keine Tools gemeldet. Die bisherige Tool-Liste bleibt erhalten; Discover erneut ausführen, sobald der Server wieder da ist.",
+      "oauthDiscoveryFailed": "Die OAuth-Konfiguration des Anbieters ist nicht nutzbar, daher kann Verbinden nicht starten. Details: {detail}",
+      "delegationConfirmationRequired": "Die Umstellung auf eine gemeinsame Service-Identität muss bestätigt werden. Erneut versuchen und den Dialog bestätigen.",
+      "toolNameCollision": "Zwei Tools dieses Servers bekommen denselben Tool-Namen, daher kann nur eines davon freigegeben werden. Details: {detail}"
     },
     "input": {
       "nameRequired": "Gib einen Namen ein.",
@@ -6258,6 +6330,8 @@
       "dangerHeading": "Gefahrenzone",
       "dangerHelp": "Löschen entfernt das Konto permanent. Das Audit-Log behält den Eintrag. Memory und Daten des Kontos (gemerkte Fakten, Gespräche, Datensätze, Prozesse) werden dabei NICHT gelöscht: zuerst in der Gefahrenzone, Achse User, mit der omadia-User-ID oben purgen.",
       "confirmDelete": "Dieses Konto wirklich löschen? Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
+      "confirmDeleteWithRoutines": "Dieses Konto wirklich löschen? {count, plural, one {Die # Routine wird} other {Die # Routinen werden}} mit ihm gelöscht. Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
+      "confirmDeleteRoutinesUnknown": "Dieses Konto wirklich löschen? Seine Routinen konnten nicht gezählt werden; vorhandene werden mit ihm gelöscht. Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
       "delete": "Nutzer löschen",
       "deleting": "Lösche …",
       "omadiaUserId": "omadia-User-ID: {id} — für den Memory-Purge (Achse User).",
@@ -6347,27 +6421,27 @@
   },
   "adminBulkPromote": {
     "title": "Memory · Bulk-Promotion",
-    "intro": "Scoret historische Turns mit fehlender Significance via Haiku und promotet die hochbewerteten als MemorableKnowledge. Idempotent — Re-Runs machen nur neue Arbeit.",
+    "intro": "Bewertet frühere Turns ohne Bedeutungswert mit Haiku und übernimmt die hoch bewerteten als Memory. Wiederholte Läufe bearbeiten nur, was neu dazugekommen ist.",
     "confirmRun": "Achtung: bis zu {count} Haiku-Calls (~${cost}). Wirklich starten?",
     "noScorerError": "Kein SignificanceScorer verfügbar — ANTHROPIC_API_KEY in der Middleware setzen.",
     "previewTitle": "Vorschau",
     "loading": "lädt…",
     "error": "Fehler: {message}",
-    "turnsWithoutSignificance": "Turns ohne Significance",
-    "eligibleForPromotion": "Eligible für Promotion (≥ {threshold})",
-    "alreadyPromoted": "Bereits promoted",
+    "turnsWithoutSignificance": "Turns ohne Bedeutungswert",
+    "eligibleForPromotion": "Für die Übernahme geeignet (≥ {threshold})",
+    "alreadyPromoted": "Bereits übernommen",
     "scorerAvailable": "Scorer verfügbar",
     "scorerUnavailable": "✗ — ANTHROPIC_API_KEY nicht gesetzt",
     "parametersTitle": "Parameter",
-    "thresholdLabel": "Threshold",
-    "scoreLimitLabel": "Score-Limit",
-    "promoteLimitLabel": "Promote-Limit",
+    "thresholdLabel": "Schwelle",
+    "scoreLimitLabel": "Höchstzahl Bewertungen",
+    "promoteLimitLabel": "Höchstzahl Übernahmen",
     "refreshPreview": "Vorschau aktualisieren",
     "running": "läuft",
     "startRun": "Bulk-Job starten",
     "resultTitle": "Ergebnis ({duration} ms)",
-    "scorePhaseTitle": "Phase 1 · SCORE",
-    "promotePhaseTitle": "Phase 2 · PROMOTE"
+    "scorePhaseTitle": "Schritt 1 · Bewerten",
+    "promotePhaseTitle": "Schritt 2 · Übernehmen"
   },
   "adminUpdate": {
     "title": "Update",
@@ -6603,7 +6677,7 @@
       "unchecked": "ungeprüft",
       "alreadyChecked": "schon geprüft",
       "withoutEmbedding": "ohne Embedding",
-      "limitLabel": "Limit",
+      "limitLabel": "Anzahl",
       "running": "läuft",
       "startBulkDetect": "Bulk-Detect starten",
       "confirmHint": "⚠️ Confirm bei Limit > {limit}",
@@ -6611,18 +6685,23 @@
       "resultTitle": "Ergebnis · {duration} ms",
       "newDuplicates": "neue Duplikate",
       "errors": "Fehler",
-      "statusAll": "alle",
       "loading": "lädt…",
       "refresh": "aktualisieren",
       "error": "Fehler: {message}",
       "emptyMemories": "Keine Duplikat-Kandidaten in dieser Auswahl.",
-      "emptyExcerpts": "Keine Excerpt-Duplikate in dieser Auswahl."
+      "emptyExcerpts": "Keine Excerpt-Duplikate in dieser Auswahl.",
+      "statusFilter": {
+        "open": "offen",
+        "resolved": "erledigt",
+        "dismissed": "verworfen",
+        "all": "alle"
+      }
     },
     "detail": {
       "title": "Duplikat auflösen",
       "loading": "lädt…",
       "error": "Fehler: {message}",
-      "detectorFindingTitle": "Detector-Befund",
+      "detectorFindingTitle": "Befund der Prüfung",
       "cosineSummary": "Cosine-Ähnlichkeit <cosine>{value}</cosine> — Memories sind fast identisch.",
       "resolutionTitle": "Auflösung",
       "reasonLabel": "Begründung (optional, im Audit-Log)",
@@ -6653,7 +6732,7 @@
       "title": "Excerpt-Duplikat auflösen",
       "loading": "lädt…",
       "error": "Fehler: {message}",
-      "detectorFindingTitle": "Detector-Befund",
+      "detectorFindingTitle": "Befund der Prüfung",
       "cosineSummary": "Cosine-Ähnlichkeit <cosine>{value}</cosine> — Excerpts sind fast wörtlich identisch.",
       "resolutionTitle": "Auflösung",
       "reasonLabel": "Begründung (optional, im Audit-Log)",
@@ -6691,14 +6770,14 @@
       "confirmBulkRun": "Bulk-Detect für bis zu {count} Memories starten? Pro Memory bis zu 5 Haiku-Calls — Kosten skalieren mit dem Limit.",
       "bulkDetectAria": "Bulk-Inconsistency-Detect",
       "bulkDetectTitle": "Bulk-Detect",
-      "bulkDetectDescription": "Memories die noch keinen Inconsistency-Check hatten (= aus Zeiten vor Slice 9).",
+      "bulkDetectDescription": "Memories, die noch keine Widerspruchsprüfung hatten (gespeichert, bevor es die Prüfung gab, oder seitdem nicht geprüft).",
       "previewFailed": "Preview fehlgeschlagen: {message}",
       "unchecked": "ungeprüft",
       "alreadyChecked": "schon geprüft",
       "withoutEmbedding": "ohne Embedding",
       "detectorReady": "bereit",
       "detectorNoKey": "kein Key",
-      "limitLabel": "Limit",
+      "limitLabel": "Anzahl",
       "running": "läuft",
       "startBulkDetect": "Bulk-Detect starten",
       "costConfirmHint": "⚠️ Cost-Confirm bei Limit > {limit}",
@@ -6706,17 +6785,23 @@
       "resultTitle": "Ergebnis · {duration} ms",
       "newConflicts": "neue Konflikte",
       "errors": "Fehler",
-      "statusAll": "alle",
       "loading": "lädt…",
       "refresh": "aktualisieren",
       "error": "Fehler: {message}",
-      "empty": "Keine Widersprüche in dieser Auswahl."
+      "empty": "Keine Widersprüche in dieser Auswahl.",
+      "statusFilter": {
+        "open": "offen",
+        "resolved": "erledigt",
+        "dismissed": "verworfen",
+        "all": "alle"
+      },
+      "detectorLabel": "Prüfung"
     },
     "detail": {
       "title": "Konflikt auflösen",
       "loading": "lädt…",
       "error": "Fehler: {message}",
-      "detectorFindingTitle": "Detector-Befund",
+      "detectorFindingTitle": "Befund der Prüfung",
       "resolutionTitle": "Auflösung",
       "reasonLabel": "Begründung (optional, im Audit-Log)",
       "confirmDelete": "Memory wird endgültig gelöscht: \"{summary}\". Fortfahren?",
@@ -6756,11 +6841,11 @@
     "signedOutTitle": "Deine Session ist abgelaufen",
     "signedOutBody": "Diese Endpoints brauchen eine Operator-Session. Melde dich erneut an und lade die Seite neu.",
     "actions": {
-      "decayTitle": "Decay + Rotation ausführen",
+      "decayTitle": "Verfall und Rotation ausführen",
       "decayDescription": "Access-Tracker leeren → decay_score neu berechnen → HOT→WARM→COLD rotieren → erledigte Tasks nach Ablauf der TTL endgültig löschen.",
-      "gcTitle": "GC-Quoten ausführen",
+      "gcTitle": "Aufräumen nach Quoten ausführen",
       "gcDescription": "Eviction pro Scope nach Typ-Gewicht × Decay-Score. Erzwingt hot_max_entries + max_total_chars.",
-      "accessFlushTitle": "Nur Access-Flush ausführen",
+      "accessFlushTitle": "Nur Zugriffe schreiben",
       "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen.",
       "running": "Läuft …",
       "runNow": "Jetzt ausführen"
@@ -6768,13 +6853,13 @@
     "cards": {
       "tierBreakdown": "Verteilung nach Tier",
       "entryTypeBreakdown": "Verteilung nach Eintragstyp",
-      "decayDistribution": "Verteilung der Decay-Scores",
+      "decayDistribution": "Verteilung der Verfallswerte",
       "totalTurns": "Turns gesamt"
     },
     "topScopes": {
-      "heading": "Top-Scopes (nach Turn-Anzahl)",
-      "empty": "Noch keine Scopes erfasst.",
-      "colScope": "Scope",
+      "heading": "Größte Bereiche (nach Anzahl Turns)",
+      "empty": "Noch keine Bereiche erfasst.",
+      "colScope": "Bereich",
       "colTurns": "Turns",
       "colQuota": "Quote",
       "colChars": "Zeichen",
@@ -6782,32 +6867,32 @@
     },
     "lastRuns": {
       "heading": "Letzte Sweep-Läufe",
-      "decay": "Decay",
-      "gc": "GC",
-      "accessFlush": "Access-Flush",
+      "decay": "Verfall",
+      "gc": "Aufräumen",
+      "accessFlush": "Zugriffe geschrieben",
       "neverRun": "in diesem Prozess noch nie gelaufen",
       "updated": "Aktualisiert",
-      "hotToWarm": "HOT → WARM",
-      "warmToCold": "WARM → COLD",
+      "hotToWarm": "HEISS → WARM",
+      "warmToCold": "WARM → KALT",
       "doneTasksDeleted": "Erledigte Tasks gelöscht",
       "durationMs": "Dauer (ms)",
       "scopesAffected": "Betroffene Scopes",
       "evictedByCount": "Nach Anzahl entfernt",
       "evictedByChars": "Nach Zeichen entfernt",
       "flushed": "Geschrieben",
-      "promotedColdToWarm": "COLD → WARM hochgestuft"
+      "promotedColdToWarm": "KALT → WARM hochgestuft"
     },
     "title": "Knowledge-Graph-Lifecycle",
     "intro": "Tier-Rotation, Decay und GC des Knowledge Graphs. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
     "refresh": "Aktualisieren"
   },
   "adminKgPriorities": {
-    "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",
+    "intro": "Block- und Boost-Liste pro Agent für die Zusammenstellung des Kontexts. Block nimmt einen Turn aus dem Recall heraus; Boost multipliziert seine Bewertung mit `weight` (Standard 1,3). Von Hand gespeicherte Einträge (`manuallyAuthored=true`) bekommen zusätzlich einen eigenen Faktor ×1,3 — beide wirken zusammen.",
     "agentIdLabel": "Agent-ID",
     "agentIdPlaceholder": "de.byte5.agent.calendar oder orchestrator-default",
     "load": "Laden",
     "newEntryTitle": "Neuer Eintrag",
-    "weightIgnoredTitle": "weight ignoriert für block",
+    "weightIgnoredTitle": "Gewicht gilt nicht für Block",
     "weightMultiplierTitle": "Score-Multiplikator",
     "empty": "Keine Einträge für diesen Agent.",
     "title": "Knowledge-Graph-Prioritäten",
@@ -6818,7 +6903,8 @@
     "colAction": "Aktion",
     "colWeight": "Gewicht",
     "colReason": "Grund",
-    "colUpdated": "Aktualisiert"
+    "colUpdated": "Aktualisiert",
+    "add": "Hinzufügen"
   },
   "adminDatasets": {
     "title": "Wissen · Datensätze",
@@ -6889,6 +6975,7 @@
     "loadFailed": "Laden fehlgeschlagen: {message}",
     "currentStateTitle": "Aktueller Stand",
     "activeBackend": "Aktives Backend",
+    "savedChoice": "Gespeicherte Auswahl (gilt nach einem Neustart)",
     "envDefault": "Env-Default",
     "activeProvider": "Aktiver Provider",
     "dbUrlSet": "gesetzt",
@@ -6954,7 +7041,8 @@
     "capabilityMissingCredentials": "Der aktive Adapter veröffentlicht keinen Client — er läuft, ist aber nicht konfiguriert (API-Schlüssel oder Base-URL fehlt).",
     "capabilityMissingWeights": "Der aktive Adapter ist der schlüssellose — er braucht weder API-Schlüssel noch Base-URL. Was fehlt, sind die Modellgewichte auf dieser Maschine. Lade sie oben herunter und aktiviere den Anbieter danach neu.",
     "capabilityMissingNoProvider": "Es ist kein Embedding-Anbieter aktiv. Ohne einen laufenden Anbieter gibt es kein Prozessgedächtnis, keine semantische Suche und keine Dublettenerkennung.",
-    "capabilityMissingNotPublished": "Der aktive Adapter hat sich zurückgezogen: seine Modellgewichte liegen vollständig vor, aber er hat keinen Client veröffentlicht. Meist hält ein zweiter Adapter die Capability bereits — deinstalliere ihn oder leere seine Zugangsfelder, dann aktiviere hier neu.",
+    "capabilityMissingNotPublished": "Der aktive Adapter hat sich zurückgezogen: seine Modellgewichte liegen vollständig vor, aber er hat keinen Client veröffentlicht. Es ist mehr als ein Embedding-Anbieter installiert — deinstalliere den anderen oder leere seine Zugangsfelder, dann aktiviere hier neu.",
+    "capabilityMissingWeightsReady": "Die Modellgewichte liegen vollständig vor, aber der Anbieter wurde aktiviert, bevor sie auf der Platte waren, und hat seinen Client deshalb noch nicht veröffentlicht. Aktiviere den Anbieter neu, dann laufen Gedächtnis, semantische Suche und Dublettenerkennung.",
     "widthCollisionTitle": "Breiten-Kollision mit den Vektorspalten",
     "widthCollisionBody": "Das aktive Modell rechnet in {provider} Dimensionen, die Vektorspalten sind {columns} Dimensionen breit. Der Wissensgraph lehnt Vektor-Writes ab, solange das so ist — die Volltextsuche läuft weiter.",
     "widthCollisionEmpty": "Die Spalten sind leer. Ein Umbau auf die passende Breite verwirft deshalb nichts und braucht keinen Anbieter-Wechsel.",
@@ -6970,6 +7058,10 @@
     "reactivateInProgress": "Es läuft bereits eine Änderung am Embedding-Anbieter. Warte, bis sie fertig ist, und lade die Seite neu.",
     "dedupApplied": "Dublettenschwelle des Wissensgraphen auf {value} gesetzt — den Wert, den dieses Modell braucht. Wirksam beim nächsten Start des Wissensgraph-Plugins.",
     "dedupOperatorSet": "Dublettenschwelle unverändert bei {current} gelassen, weil sie gesetzt ist. Für dieses Modell wären {recommended} passend.",
+    "dedupCleared": "Die Dublettenschwelle {previous}, die omadia für das vorherige Modell gesetzt hatte, wurde entfernt. Der Wissensgraph nutzt ab seinem nächsten Start wieder seinen Standardwert.",
+    "dedupProvenanceRecommended": "Dublettenschwelle: {value}, von omadia als Empfehlung für {provider} gesetzt. Sie wird ersetzt oder entfernt, wenn der Anbieter wechselt.",
+    "dedupProvenanceOperator": "Dublettenschwelle: {value}, in der Konfiguration des Wissensgraphen gesetzt. omadia ändert sie nicht.",
+    "dedupProvenanceDefault": "Dublettenschwelle: Standardwert des Wissensgraphen (0.90).",
     "corpusTitle": "Gespeicherter Korpus",
     "corpusModel": "Registriertes Modell",
     "corpusDimensions": "Registrierte Breite",
@@ -6995,7 +7087,10 @@
     "autoMigrateOff": "verboten — bei abweichender Breite bleiben Vektor-Writes blockiert, bis du die Spalten von Hand migrierst; auch von dieser Seite aus",
     "autoMigrateHint": "Beim Neustart passiert das nie: umgebaut wird nur durch einen Wechsel, den du unten bestätigst. Den Hauptschalter findest du in den Plugin-Einstellungen des Knowledge-Graph (auto_migrate_vector_columns).",
     "switchTitle": "Provider wechseln",
-    "noAlternatives": "Es ist kein zweiter embeddingClient@1-Provider installiert. Installiere zuerst einen aus dem Plugin-Store — aktiv sein darf immer nur genau einer.",
+    "noAlternatives": "Es ist kein zweiter embeddingClient@1-Provider installiert, und der Store kann keinen installieren, solange ein Anbieter aktiv ist.",
+    "installableIntro": "Im Store verfügbar: Um auf einen davon zu wechseln, deinstalliere {active} im Store, installiere den neuen Anbieter und komm dann hierher zurück (beim schlüssellosen Anbieter: Modell laden, dann Anbieter neu aktivieren).",
+    "installableIntroNoActive": "Im Store verfügbar: Installiere einen davon und komm dann hierher zurück (beim schlüssellosen Anbieter: Modell laden, dann Anbieter neu aktivieren).",
+    "installableKeyless": "ohne Schlüssel, ohne Server",
     "targetLegend": "Ziel-Provider",
     "widthChangeYes": "ändert die Spaltenbreite ({from}d → {to}d)",
     "widthChangeNo": "behält die aktuelle Spaltenbreite",
@@ -7022,7 +7117,7 @@
     "localModelProgress": "Lädt … {done} von {total} MB ({file})",
     "localModelFailed": "Der Download ist fehlgeschlagen: {message}",
     "localModelReady": "Die Modellgewichte liegen vollständig vor. Beim nächsten Aktivieren des Anbieters veröffentlicht er `embeddingClient@1` — Gedächtnis, semantische Suche und Dublettenerkennung laufen dann.",
-    "localModelThreshold": "Wichtig: Die Cosinus-Skala dieses Modells ist nicht die Voreinstellung des Wissensgraphen. Setze `process_dedup_threshold` auf 0.45 — beim Standardwert 0.90 greift die Dublettenerkennung nie, und zwar ohne Fehlermeldung."
+    "localModelThreshold": "Die Cosinus-Skala dieses Modells ist nicht die Voreinstellung des Wissensgraphen: Es braucht eine Dublettenschwelle von 0.45 statt 0.90. Das Neu-Aktivieren des Anbieters setzt sie, außer du hast einen eigenen Wert gesetzt."
   },
   "graph": {
     "page": {
@@ -7051,20 +7146,20 @@
     "filters": {
       "entities": "Entitäten",
       "entitiesHint": "Odoo · Confluence",
-      "crossRefs": "Cross-Refs",
-      "crossRefsHint": "RELATED · expandiert",
-      "mentions": "Mentions",
+      "crossRefs": "Querverweise",
+      "crossRefsHint": "RELATED · aufgeklappt",
+      "mentions": "Erwähnungen",
       "mentionsHint": "aggregiert pro Session",
-      "trace": "Trace",
-      "traceHint": "Turn · Run · Agent · Tool",
+      "trace": "Ablauf",
+      "traceHint": "Turn · Lauf · Agent · Tool",
       "memories": "Memories",
-      "memoriesHint": "MK + Excerpt + Provenance (2 Hops)",
-      "topics": "Topics",
-      "topicsHint": "Cluster-Knoten + HAS_TOPIC (Slice 11)",
-      "issues": "Issues",
+      "memoriesHint": "Memory + Auszug + Herkunft (2 Schritte)",
+      "topics": "Themen",
+      "topicsHint": "Themen-Cluster und ihre Mitglieder",
+      "issues": "Auffälligkeiten",
       "issuesHint": "Konflikte + Duplikat-Kandidaten",
       "plans": "Pläne",
-      "plansHint": "Plan-DAG der gewählten Session (#133)"
+      "plansHint": "Planschritte der gewählten Session"
     },
     "modes": {
       "graph": "Graph",
@@ -7111,7 +7206,10 @@
       "auditUnreadable": "Audit nicht lesbar: {error}",
       "auditLoading": "lädt Audit-Trail…",
       "auditEmpty": "Keine Audit-Einträge.",
-      "reasonQuoted": "„{reason}“"
+      "reasonQuoted": "„{reason}“",
+      "ownersTab": "Owner ({count})",
+      "auditTab": "Verlauf",
+      "delete": "Löschen"
     },
     "listView": {
       "runTrace": "Run-Trace",
@@ -7141,7 +7239,7 @@
     "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
     "tab": {
       "file": "Datei",
-      "audit": "Audit"
+      "audit": "Verlauf"
     },
     "contexts": {
       "title": "Kontexte",
@@ -7151,7 +7249,7 @@
       "axis": {
         "team": "Teams ({count})",
         "channel": "Kanäle ({count})",
-        "user": "Users ({count})",
+        "user": "Personen ({count})",
         "members": "Personenkreise ({count})"
       },
       "members": {
@@ -7219,10 +7317,18 @@
       "reload": "↻ neu laden",
       "filterAll": "alle",
       "loading": "lädt…",
-      "errorPrefix": "Fehler: {error}",
+      "loadFailed": "Die Erinnerungen konnten nicht geladen werden.",
+      "loadMoreFailed": "Weitere Erinnerungen konnten nicht geladen werden.",
+      "errorDetail": "({detail})",
       "emptyAll": "Noch keine Memories. Erstelle eine via Chat oder POST /api/v1/memory.",
       "emptyKind": "Keine Memories vom Typ „{kind}“. Filter zurücksetzen oder andere Art wählen.",
-      "ownerCount": "{count, plural, one {# Owner} other {# Owner}}"
+      "ownerCount": "{count, plural, one {# Owner} other {# Owner}}",
+      "loadMore": "Mehr laden",
+      "loadingMore": "lädt weitere…",
+      "shownCount": "{count, plural, one {# Eintrag angezeigt} other {# Einträge angezeigt}} — es gibt weitere.",
+      "title": "Memories",
+      "significance": "Bedeutung {value}",
+      "createdBy": "angelegt von {by}"
     },
     "detail": {
       "actions": {
@@ -7231,7 +7337,8 @@
         "shrink": "Owner entfernt",
         "delete": "gelöscht",
         "edit": "bearbeitet",
-        "editExcerpt": "Excerpt bearbeitet"
+        "editExcerpt": "Auszug bearbeitet",
+        "deleteExcerpt": "Auszug gelöscht"
       },
       "sources": {
         "llm": "LLM-extrahiert",
@@ -7255,7 +7362,7 @@
       "excerptsHeading": "Quellen-Snippets",
       "excerptsSubtitle": "Verbatim aus dem ursprünglichen Turn — Provenance-Anker für die Memory.",
       "excerptsUnreadable": "Snippets nicht lesbar: {error}",
-      "excerptsEmpty": "Keine Quellen-Snippets — Memory wurde vor Slice 6.5 gespeichert oder der Extractor lieferte keine Excerpts.",
+      "excerptsEmpty": "Keine Quellen-Auszüge — die Memory wurde gespeichert, bevor Quellen-Auszüge erfasst wurden, oder der Extractor lieferte keine.",
       "excerptCopyTitle": "Snippet in die Zwischenablage kopieren",
       "excerptCopied": "✓ kopiert",
       "excerptCopy": "kopieren",
@@ -7285,7 +7392,11 @@
       "columnLastRun": "Letzter Lauf",
       "columnActions": "Aktionen",
       "emptyTitle": "Noch keine Routinen.",
-      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das <toolName>manage_routine</toolName> Tool und legt sie an."
+      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das <toolName>manage_routine</toolName> Tool und legt sie an.",
+      "columnName": "Name",
+      "columnCron": "Zeitplan",
+      "columnChannel": "Kanal",
+      "columnStatus": "Status"
     },
     "row": {
       "neverRan": "noch nie",
@@ -7309,7 +7420,27 @@
       "columnTrigger": "Auslöser",
       "columnStatus": "Status",
       "columnIterTools": "Iter. · Tools",
-      "columnDetail": "Detail"
+      "columnDetail": "Detail",
+      "timeoutShort": "Timeout {seconds} s",
+      "runsToggle": "Läufe",
+      "refresh": "Aktualisieren",
+      "traceLink": "Ablauf →",
+      "nextRun": "Nächster Lauf: {time}",
+      "zone": "Zeitzone: {zone}",
+      "noNextRun": "Kein nächster Lauf",
+      "until": "Läuft bis {time}",
+      "agent": "Ausgeführt von {slug}",
+      "agentNone": "Kein Agent",
+      "agentProblemTitle": "Kein Agent kann diese Routine ausführen",
+      "running": "Läuft gerade …",
+      "columnCost": "Kosten",
+      "totalCost": "Kosten aller erfassten Läufe: {cost}",
+      "loadMore": "Weitere laden",
+      "fieldTimeZone": "Zeitzone",
+      "fieldNextRun": "Nächster Lauf",
+      "fieldUntil": "Läuft bis",
+      "fieldAgent": "Agent",
+      "historyLoaded": "{count, plural, one {# Lauf angezeigt} other {# Läufe angezeigt}}"
     },
     "trigger": {
       "cron": "Cron",
@@ -7323,7 +7454,14 @@
       "triggerNoticeWeb": "Gestartet — das Ergebnis landet im Chat, in dem die Routine angelegt wurde, und erscheint dort, sobald du den Chat das nächste Mal öffnest oder zu ihm zurückkehrst.",
       "triggerChatUnavailable": "Kein Agent kann diese Routine ausführen: Ihr Agent wurde gelöscht, kein Standard-Ansprechpartner ist gesetzt oder kein LLM-API-Key ist konfiguriert (Admin → Einstellungen).",
       "triggerNotActive": "Diese Routine ist pausiert — erst fortsetzen, dann auslösen. Wurde sie pausiert, weil ihr Chat fehlt: Gibt es den Chat in deinem Browser noch, öffne ihn zuerst; sonst lösche die Routine und lege sie aus einem Chat neu an.",
-      "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
+      "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden.",
+      "pause": "Pausieren",
+      "resume": "Fortsetzen",
+      "delete": "Löschen",
+      "triggerRunning": "Ein Lauf dieser Routine ist gerade aktiv — warte, bis er fertig ist.",
+      "triggerAgentUnavailable": "Kein Agent kann diese Routine ausführen: ihr Agent ist deaktiviert, gelöscht oder wurde ersetzt. Details stehen bei der Routine.",
+      "actionFailed": "Die Aktion ist fehlgeschlagen.",
+      "running": "Läuft …"
     },
     "templateEditor": {
       "heading": "Output Template",
@@ -7354,7 +7492,11 @@
       "slotsNotObject": "slots muss ein JSON-Objekt sein.",
       "slotsJsonBroken": "slots-JSON kaputt: {message}",
       "renderingBusy": "Rendert…",
-      "rendererRejected": "Renderer abgelehnt:"
+      "rendererRejected": "Renderer abgelehnt:",
+      "previewWarningsLabel": "Die Vorschau konnte nicht jeden Datenbereich füllen:",
+      "previewFailed": "Die Vorschau ist fehlgeschlagen.",
+      "saveFailedReason": "Die Vorlage wurde nicht gespeichert.",
+      "previewRun": "Vorschau rendern"
     },
     "runTrace": {
       "empty": "Kein Run-Trace verfügbar (typisch bei Errors vor `runTurn` oder bei älteren Runs vor Aktivierung der Trace-Persistierung).",
@@ -7373,6 +7515,17 @@
       "sectionTrace": "Call-Stack · Run-Trace",
       "noAnswer": "Keine Antwort gespeichert (Run vor Delivery abgebrochen oder fehlgeschlagen).",
       "traceDescription": "Vollständiger agentischer Trace dieses Runs — Iterationen, Agent-Tool-Calls und Aufrufe interner Helfer. Klick auf eine Zeile expandiert / collapse-t den Knoten."
+    },
+    "status": {
+      "active": "Aktiv",
+      "paused": "Pausiert"
+    },
+    "runStatus": {
+      "ok": "OK",
+      "error": "Fehler",
+      "timeout": "Zeitüberschreitung",
+      "cancelled": "Abgebrochen",
+      "silent": "Nichts zu melden"
     }
   },
   "system": {
@@ -7913,7 +8066,8 @@
       "submit": "Agent anlegen",
       "submitting": "Wird angelegt…",
       "failed": "Der Agent konnte nicht angelegt werden: {detail}",
-      "loadFailed": "Die Ersteinrichtung konnte nicht geladen werden: {detail}"
+      "loadFailed": "Die Ersteinrichtung konnte nicht geladen werden: {detail}",
+      "renameHint": "Der Slug wird aus dem Namen gebildet – ein anderer Name ergibt also einen anderen Slug."
     },
     "confirmDefaultTitle": "{agent} zum Default-Agenten machen?",
     "confirmDefaultBody": "{agent} erreicht alle {count} angebundenen Systeme. Als Default-Agent beantwortet er Nachrichten, die an keinen Agenten gerichtet sind; wer schreibt, ohne einen Agenten zu nennen, erreicht damit jedes dieser Systeme. Die Änderung wird im Audit-Log festgehalten.",
@@ -7932,5 +8086,12 @@
     "channelsLabel": "Kanäle (durch Komma getrennt)",
     "channelsPlaceholder": "teams, web",
     "reachesNobody": "Mit diesen Einstellungen erreicht niemand diesen Agenten."
+  },
+  "memoryAudit": {
+    "actor": "Akteur: {actor}",
+    "before": "vorher:",
+    "after": "nachher:",
+    "deleted": "(gelöscht)",
+    "ownersDelta": "Owner {delta}"
   }
 }

@@ -61,6 +61,7 @@ import {
   apiErrorBodyMessage,
   catalogErrorKind,
   mcpGuardCode,
+  mcpRouteErrorKey,
   type CatalogErrorKind,
 } from './mcpErrors';
 import {
@@ -155,6 +156,8 @@ function useMcpErrorText(): (err: unknown) => string {
       // #1955 — the create/registry routes' input refusals.
       const inputKey = mcpInputErrorKey(err);
       if (inputKey) return t(`input.${inputKey}`);
+      const routeKey = mcpRouteErrorKey(err);
+      if (routeKey) return t(`routeErrors.${routeKey}`, { detail: errText(err) });
       return errText(err);
     },
     [t, severityLabel],

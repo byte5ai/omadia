@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   disconnectMcpServer,
   getMcpAuthStatus,
+  setMcpServerDelegation,
   type McpAuthStatus,
   type McpRevocationOutcome,
 } from '@/app/_lib/agentBuilder';
@@ -101,5 +102,62 @@ describe('McpAuthSection disconnect', () => {
   it('says so when the provider did not confirm the revocation', async () => {
     await disconnectWith('failed');
     expect(screen.getByText(/did not confirm that the access is revoked/)).toBeInTheDocument();
+  });
+});
+
+const SWITCH_TO_SERVICE = 'Use a shared service identity';
+
+describe('McpAuthSection delegation and discovery states (W09-10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('#1906 — shows the delegation switch for a server without OAuth', async () => {
+    mockGetAuthStatus.mockResolvedValue(status({ protected: false, delegation: 'per_user' }));
+    renderWithIntl(<McpAuthSection serverId="s1" />);
+    expect(await screen.findByText(SWITCH_TO_SERVICE)).toBeInTheDocument();
+  });
+
+  it('#1933 — switching to service asks first and sends the confirmation', async () => {
+    const mockSet = vi.mocked(setMcpServerDelegation);
+    mockSet.mockResolvedValue({ id: 's1', delegation: 'service' });
+    mockGetAuthStatus.mockResolvedValue(status({ delegation: 'per_user' }));
+    renderWithIntl(<McpAuthSection serverId="s1" />);
+    await userEvent.click(await screen.findByText(SWITCH_TO_SERVICE));
+    expect(mockSet).not.toHaveBeenCalled();
+    expect(screen.getByText('Share one authorization for every caller?')).toBeInTheDocument();
+    const dialogButtons = screen.getAllByRole('button', { name: SWITCH_TO_SERVICE });
+    await userEvent.click(dialogButtons[dialogButtons.length - 1]!);
+    expect(mockSet).toHaveBeenCalledWith('s1', 'service', { confirm: true });
+  });
+
+  it('#1933 — under service the authorization reads as shared, and Disconnect asks first', async () => {
+    mockGetAuthStatus.mockResolvedValue(
+      status({ connected: true, delegation: 'service', sharedAuthorization: true }),
+    );
+    renderWithIntl(<McpAuthSection serverId="s1" showDelegation={false} />);
+    expect(await screen.findByText('🔓 Authorized (shared service authorization)')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(mockDisconnect).not.toHaveBeenCalled();
+    expect(screen.getByText('Remove the shared authorization?')).toBeInTheDocument();
+  });
+
+  it('#1924 — names an unusable provider configuration and drops the placeholders', async () => {
+    mockGetAuthStatus.mockResolvedValue(
+      status({ issuer: null, issuerHost: null, brokered: false, acquisitionMode: 'manual', discoveryError: 'metadata claims a different issuer' }),
+    );
+    renderWithIntl(<McpAuthSection serverId="s1" showDelegation={false} />);
+    expect(
+      await screen.findByText("The OAuth provider configuration can't be used: metadata claims a different issuer"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\?/)).not.toBeInTheDocument();
+  });
+
+  it('#1924 — says the metadata is unreadable right now', async () => {
+    mockGetAuthStatus.mockResolvedValue(status({ issuer: null, issuerHost: null, discoveryUnavailable: true }));
+    renderWithIntl(<McpAuthSection serverId="s1" showDelegation={false} />);
+    expect(
+      await screen.findByText("The provider's OAuth metadata can't be read right now. Try again later."),
+    ).toBeInTheDocument();
   });
 });

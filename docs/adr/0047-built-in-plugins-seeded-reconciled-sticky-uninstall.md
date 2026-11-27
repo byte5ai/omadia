@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0192](0192-saved-memory-backend-choice-wins-on-every-boot.md) (the saved memory-backend choice, not the environment, decides on every boot)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers (recorded retroactively from the code on main); sticky uninstall #1481, version reconcile #1505, install origin #1089, package origin #789/#794, provider collision check OM-87 / #1053

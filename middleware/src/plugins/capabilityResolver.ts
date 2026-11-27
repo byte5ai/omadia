@@ -572,6 +572,22 @@ export function findActiveProviderCollision(
 }
 
 /**
+ * #1814 — the one sentence for a provider collision. The store detail
+ * (`blocking_reasons`) and the install endpoint (409
+ * `install.capability_already_provided`) used to word the same state
+ * differently, and the store's "configure that plugin instead" was wrong
+ * whenever the operator wanted a different provider (the keyless embedding
+ * adapter cannot be reached by configuring the Ollama one). Uninstalling the
+ * current provider first is the step that works in every case.
+ */
+export function describeProviderCollision(collision: {
+  capability: string;
+  ownerId: string;
+}): string {
+  return `capability '${collision.capability}' is already provided by '${collision.ownerId}' — only one provider may be active, so uninstall '${collision.ownerId}' first and then install this one`;
+}
+
+/**
  * The same collision check, but driven by an explicit `provides` list rather
  * than a catalog lookup.
  *

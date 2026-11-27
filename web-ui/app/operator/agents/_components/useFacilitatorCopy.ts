@@ -13,6 +13,7 @@ import {
   parseFacilitatorRefusal,
   type FacilitatorContractIssue,
 } from '../../../_lib/facilitators';
+import { usePersonaAxisCopy } from '../../../_components/persona/usePersonaAxisCopy';
 
 /**
  * #2066 — catalogue copy for the two facilitator refusals.
@@ -64,7 +65,7 @@ export function useFacilitatorIssueText(): (
   issue: FacilitatorContractIssue,
 ) => string {
   const t = useTranslations('operatorAgents.facilitator.issues');
-  const tAxes = useTranslations('builder.persona.axes');
+  const axisCopy = usePersonaAxisCopy();
   return useCallback(
     (issue: FacilitatorContractIssue): string => {
       if (!isFacilitatorIssueRule(issue.rule)) {
@@ -73,13 +74,13 @@ export function useFacilitatorIssueText(): (
       const axis = issueAxis(issue.path);
       if (issue.rule === 'persona_axis_above_bound') {
         return t(issue.rule, {
-          axis: axis ? tAxes(`${axis}.name`) : issue.path,
+          axis: axis ? axisCopy(axis).name : issue.path,
           bound: axis ? (FACILITATOR_PERSONA_MAX[axis] ?? 0) : 0,
         });
       }
       if (issue.rule === 'persona_axis_below_bound') {
         return t(issue.rule, {
-          axis: axis ? tAxes(`${axis}.name`) : issue.path,
+          axis: axis ? axisCopy(axis).name : issue.path,
           bound: axis ? (FACILITATOR_PERSONA_MIN[axis] ?? 0) : 0,
         });
       }
@@ -88,6 +89,6 @@ export function useFacilitatorIssueText(): (
         ? t('withExcerpt', { reason: t(issue.rule), excerpt: issue.excerpt })
         : t(issue.rule);
     },
-    [t, tAxes],
+    [t, axisCopy],
   );
 }

@@ -27,8 +27,11 @@ import type { ConflictSeverity } from '../../_lib/personaConflicts';
  */
 
 export interface DimensionSliderProps {
-  /** Stable axis id (e.g. "directness"). Used as label for a11y. */
+  /** Stable axis id (e.g. "directness"). Test ids; the a11y label when no
+   *  `axisLabel` is given. */
   axis: string;
+  /** #1887 — the localized axis name for the a11y labels. */
+  axisLabel?: string;
   /** Left-end semantic anchor, e.g. "DIPLOMATIC". */
   labelLeft: string;
   /** Right-end semantic anchor, e.g. "DIRECT". */
@@ -55,6 +58,7 @@ export interface DimensionSliderProps {
 
 export function DimensionSlider({
   axis,
+  axisLabel,
   labelLeft,
   labelRight,
   description,
@@ -92,7 +96,7 @@ export function DimensionSlider({
             'shadow-[var(--shadow-sm)]',
           )}
           style={{ left: `${bubbleLeftPct}%` }}
-          aria-label={t('valueLabel', { axis })}
+          aria-label={t('valueLabel', { axis: axisLabel ?? axis })}
         >
           {value}
         </span>
@@ -104,7 +108,7 @@ export function DimensionSlider({
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
           disabled={disabled}
-          aria-label={t('rangeLabel', { axis, labelLeft, labelRight })}
+          aria-label={t('rangeLabel', { axis: axisLabel ?? axis, labelLeft, labelRight })}
           {...(error ? { 'aria-invalid': true } : {})}
           {...(description ? { title: description } : {})}
           className={cn(

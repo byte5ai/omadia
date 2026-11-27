@@ -6,15 +6,15 @@ import {
   resolveMcpCallTimeouts,
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
+import { identityPreamble } from './agentIdentityLayers.js';
+import { inferPersonaFamily } from './personaFamily.js';
 import {
-  buildAnswerVerbosityBlock,
   buildAnswerVerbosityTurnBlock,
   DEFAULT_ANSWER_VERBOSITY,
   parseAnswerVerbosity,
   type AnswerVerbosity,
 } from './answerVerbosity.js';
 import {
-  buildAnswerLanguageRule,
   DEFAULT_ANSWER_LANGUAGE,
   type AnswerLanguage,
 } from './answerLanguage.js';
@@ -67,7 +67,7 @@ import {
   type ScreenOutcome,
 } from './securityScreener.js';
 import { recordScreenOutcome } from './securityScreenMetrics.js';
-import type { EmbeddingClient } from '@omadia/embeddings';
+import type { EmbeddingClientSource } from '@omadia/embeddings';
 import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
@@ -217,11 +217,14 @@ import {
 import { LoopGuard } from './loopGuard.js';
 import {
   TOOLS_OFF_DIRECTIVE,
+  UNATTENDED_DIRECTIVE,
   assertNoToolUseInToolsOffTurn,
   isToolsOffTurn,
+  isUnattendedTurn,
   toolsForTurn,
 } from './toolsOffTurn.js';
 import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
+import { capToolResultText } from './toolResultCap.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import {
   createPrivacyTurnHandle,
@@ -248,6 +251,7 @@ import type {
   CliTurnRecord,
 } from './cliTurnRecord.js';
 import {
+  fieldExemptModelCopy,
   internFailedNotice,
   isInternExemptCall,
   isPromptMaskedUploadCall,
@@ -905,7 +909,7 @@ export interface OrchestratorOptions {
    * `search_turns_semantic` operation is available (embedding-based turn
    * recall). Without a client, the tool still works for FTS + entity lookups.
    */
-  embeddingClient?: EmbeddingClient;
+  embeddingClient?: EmbeddingClientSource;
   /**
    * Optional. When set, every successful turn triggers a fire-and-forget
    * Haiku-based fact extraction; the resulting `Fact` nodes land in the
@@ -2149,6 +2153,7 @@ async function wireExtraSystemHint(
     fixedHint !== undefined && fixedHint.length > 0 ? fixedHint : undefined,
     memoryIndexBlock,
     isToolsOffTurn(input),
+    isUnattendedTurn(input),
   );
 }
 
@@ -2191,12 +2196,17 @@ function composeExtraSystemHint(
   fixedHint?: string,
   memoryIndexBlock?: string,
   toolsOff = false,
+  unattended = false,
 ): string | undefined {
   const parts: string[] = [];
   // #2217 — a tool-less turn says so first, so no later block (fresh check,
   // canvas) reads as an invitation to call a tool.
   if (toolsOff) {
     parts.push(TOOLS_OFF_DIRECTIVE);
+  }
+  // #1770 / ADR 0242 — nobody is present: no questions, assumptions stated.
+  if (unattended) {
+    parts.push(UNATTENDED_DIRECTIVE);
   }
   // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
   // Check (uncached, per turn, static prose that carries no user data), so
@@ -2667,10 +2677,9 @@ function buildSystemPrompt(
   /** #1992 — the operator's fallback answer language (ADR-0220). */
   answerLanguage: AnswerLanguage = DEFAULT_ANSWER_LANGUAGE,
 ): string {
+  // #1890 — identity, language line and the operator's answer-size contract
+  // come from `identityPreamble`, the same text the Prompt tab previews.
   const fileGenerationBlock = hasOfficeFileTools ? FILE_GENERATION_RULES_BLOCK : '';
-  // Operator's answer-size contract. `standard` is '' so the delivered state
-  // keeps the prompt (and its cache key) unchanged.
-  const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
   const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
@@ -2712,11 +2721,7 @@ function buildSystemPrompt(
   // join-back that re-attaches a masked identity column to an aggregate.
   const privacyV4Block = hasPrivacyV4 ? privacyV4Directive(hasFileExport) : '';
 
-  return `${assistantIdentity}
-
-${buildAnswerLanguageRule(answerLanguage)}
-Kündige Tool-Aufrufe nicht mit Zwischentext an (z.B. „Ich prüfe zuerst mein Memory.“) — solcher Text wird dem Nutzer nicht gezeigt. Schreib die Antwort, wenn die Daten da sind.
-${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
+  return `${identityPreamble(assistantIdentity, answerVerbosity, answerLanguage)}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
@@ -2958,16 +2963,17 @@ export function parseToolEmittedRoutineList(
 
 /**
  * Value-free structural digest of a raw MCP tool result for KG ingestion when
- * the server is NOT privacy-bypassed: records the SHAPE (top-level fields /
- * record count) without any PII/values, so recall knows the data exists and its
- * shape without persisting sensitive contents. */
-function mcpObservationDigest(raw: string): string {
+ * the server is NOT privacy-bypassed: counts only, so recall knows the data
+ * exists and its size without persisting any of it. #1934 — not the field
+ * names either: a result keyed by e-mail address put the addresses in clear
+ * into a "values masked" digest. */
+export function mcpObservationDigest(raw: string): string {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed)) return `${String(parsed.length)} records (values masked)`;
     if (parsed !== null && typeof parsed === 'object') {
-      const keys = Object.keys(parsed as Record<string, unknown>);
-      return `Fields: ${keys.slice(0, 40).join(', ')} (values masked)`;
+      const count = Object.keys(parsed as Record<string, unknown>).length;
+      return `${String(count)} fields (names and values masked)`;
     }
   } catch {
     /* not JSON — fall through to a byte-size note */
@@ -3107,6 +3113,20 @@ const TOOL_DISPATCH_DISCARDED = '__omadia_tool_dispatch_discarded__';
  */
 interface KernelRefusalBox {
   text?: string;
+}
+
+/**
+ * #1747 — stop a turn whose caller cancelled it (`turnContext.abortSignal`):
+ * a routine run past its timeout, or one whose routine was paused or deleted.
+ * Checked at the top of every tool-loop iteration, so no further model call
+ * is paid for; throws the signal's reason so the caller can tell a timeout
+ * from a cancellation.
+ */
+function throwIfTurnAborted(): void {
+  const signal = turnContext.current()?.abortSignal;
+  if (signal?.aborted !== true) return;
+  const reason: unknown = signal.reason;
+  throw reason instanceof Error ? reason : new Error('turn aborted by its caller');
 }
 
 /**
@@ -4750,6 +4770,12 @@ export class Orchestrator {
       console.error('[context] SKIP fresh-check');
       return { text: undefined, recalled: undefined };
     }
+    // #1771 / ADR 0242 — an unattended turn's "recent turns" are earlier runs
+    // of the same routine or trigger, not facts of this one.
+    if (isUnattendedTurn(input)) {
+      console.error('[context] SKIP unattended');
+      return { text: undefined, recalled: undefined };
+    }
     if (!this.contextRetriever) {
       console.error('[context] SKIP no-retriever');
       return { text: undefined, recalled: undefined };
@@ -6135,6 +6161,10 @@ export class Orchestrator {
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
           : {}),
+        // #1747 — an outer caller's cancellation (routine timeout, pause).
+        ...(parent?.abortSignal ? { abortSignal: parent.abortSignal } : {}),
+        // #1743 — the user's zone for `manage_routine` (ADR 0240).
+        ...(input.userTimeZone ? { userTimeZone: input.userTimeZone } : {}),
         // Canvas sentinel tap — installed by the ui-orchestrator in its
         // OUTER scope before this turn scope exists; must survive into the
         // turn so dispatchTool can hand raw sentinels past the privacy guard.
@@ -6568,13 +6598,10 @@ export class Orchestrator {
     this.turnAttribution.set(turnId, { model, provider: providerId, fallbackUsed });
   }
 
-  /** #1033 W3 — the persona family a model id belongs to (mirrors the
-   *  middleware's `inferFamilyFromModel`: unknown ids read as sonnet). */
+  /** #1033 W3 / #1893 — the persona family a model id belongs to: the one
+   *  mapper the middleware compiles the per-family prompts with. */
   private static familyOf(model: string): string {
-    const m = model.toLowerCase();
-    if (m.includes('opus')) return 'opus';
-    if (m.includes('haiku')) return 'haiku';
-    return 'sonnet';
+    return inferPersonaFamily(model);
   }
 
   /**
@@ -7273,6 +7300,7 @@ export class Orchestrator {
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        throwIfTurnAborted();
         // Final pass: the loop guard stopped, the wall-clock budget is spent,
         // or this is the last allowed iteration. Suppress tool use (#1211, see
         // `toolParamsFor`) so the model MUST answer in text, and append the
@@ -7531,7 +7559,8 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           // #2217 — not in a tool-less turn: the router is a forced tool call.
-          if (!isToolsOffTurn(input)) {
+          // #1770 — nor in an unattended one: nobody can pick a card.
+          if (!isToolsOffTurn(input) && !isUnattendedTurn(input)) {
             await this.maybeRouteCardsFromText(
               wireUserMessage,
               answer,
@@ -8717,6 +8746,7 @@ export class Orchestrator {
           console.warn('[orchestrator] observer.onIteration threw:', err);
         }
 
+        throwIfTurnAborted();
         // Final pass: loop guard stopped, wall-clock budget spent, or last
         // allowed iteration → answer with tool use suppressed (#1211, see
         // `toolParamsFor`) — best-effort finalize.
@@ -9013,7 +9043,8 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           // #2217 — not in a tool-less turn: the router is a forced tool call.
-          if (!isToolsOffTurn(input)) {
+          // #1770 — nor in an unattended one: nobody can pick a card.
+          if (!isToolsOffTurn(input) && !isUnattendedTurn(input)) {
             await this.maybeRouteCardsFromText(
               wireUserMessage,
               answer,
@@ -10225,6 +10256,13 @@ export class Orchestrator {
         // back to the model as the placeholders it wrote.
         return remaskEchoedValues(privacy, result);
       }
+      // #1768 / ADR 0241 — a field-exempt tool's operational state in clear,
+      // its user-entered free text withheld. Its `Error:` text took the
+      // control-flow guard above like any tool's (not exempt there).
+      const fieldExempt = isGuardedControlFlowResult(result, mcpAuthPromptMint)
+        ? undefined
+        : fieldExemptModelCopy(name, result);
+      if (fieldExempt !== undefined) return remaskEchoedValues(privacy, fieldExempt);
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default
@@ -10234,11 +10272,14 @@ export class Orchestrator {
       // ACL-gated to the turn's user.
       const kgTool = this.domainToolsByName.get(name);
       // A replayed result was ingested by the run that produced it.
+      // #1934 — only a delivered result is knowledge: a failed call or the
+      // connect prompt (with its authorize URL) is never stored.
       if (
         replay === undefined &&
         kgTool?.mcpServerId !== undefined &&
         isMcpServerKgIngest(kgTool.mcpServerId) &&
-        this.knowledgeGraph !== undefined
+        this.knowledgeGraph !== undefined &&
+        !isGuardedControlFlowResult(result, mcpAuthPromptMint)
       ) {
         const tc = turnContext.current();
         const userId = tc?.userId;
@@ -10325,8 +10366,11 @@ export class Orchestrator {
           }
         }
         // #1544 — bypass passes the tool's DATA raw; the user's own masked
-        // values it was handed (and may echo) stay masked.
-        return remaskEchoedValues(privacy, result);
+        // values it was handed (and may echo) stay masked. #1920 — bounded
+        // like a masked result (ADR-0207).
+        return capToolResultText(remaskEchoedValues(privacy, result), {
+          keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+        });
       }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
@@ -10351,7 +10395,9 @@ export class Orchestrator {
       // agent's LLM read them directly), so re-interning the prose would
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
-        return remaskEchoedValues(privacy, result);
+        return capToolResultText(remaskEchoedValues(privacy, result), {
+          keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+        });
       }
       // Canvas sentinel tap: interning is about the LLM wire — the surface
       // synthesis is server-side and must compose from the RAW directive
@@ -10417,7 +10463,10 @@ export class Orchestrator {
           : internFailedNotice(name);
       }
     }
-    return result;
+    // #1920 — no privacy guard: nothing else bounds the result (ADR-0207).
+    return capToolResultText(result, {
+      keepDirectives: this.domainToolsByName.get(name)?.mcpServerId === undefined,
+    });
   }
 
   /**
@@ -12042,9 +12091,11 @@ function candidateLabel(c: {
 const FILE_ANNOUNCE_RE =
   /\b(baue|erstelle|erzeuge|generiere|exportiere)\b[^.!?\n]{0,100}\b(excel|xlsx|datei|word|docx|arbeitsmappe|workbook)\b/i;
 
-/** Injected as a user turn to force the model to actually call the file tool. */
+/** Injected as a user turn to force the model to actually call the file tool.
+ *  #1219 — English, without shouted caps; the one sentence to the user is in
+ *  the conversation's language. */
 const FILE_RETRY_NUDGE =
-  'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
+  'You said you would build a file (Excel or Word), but you did not call `create_xlsx` or `create_docx`, so the user received nothing. Do not describe the plan again. Call the matching tool in this step and build the file. If you cannot build it, tell the user in one sentence, in the language of the conversation, that you cannot and why.';
 
 /**
  * Appended to the per-turn system hint (see {@link withFinalizeHint}) on the

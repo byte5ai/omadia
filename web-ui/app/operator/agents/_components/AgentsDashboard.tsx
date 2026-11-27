@@ -1,5 +1,6 @@
 'use client';
 
+import { AGENT_SLUG_MAX_LENGTH, AGENT_SLUG_PATTERN } from '../../../_lib/agentSlug';
 import { channelTypesOfCatalog } from '../../../_lib/channelTypes';
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
@@ -47,6 +48,7 @@ import { FirstAgentCard } from './FirstAgentCard';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
 import { useConfirmAction } from './useConfirmAction';
+import { serverDetail, useAgentApiErrorText } from './useAgentApiErrorText';
 
 /** `run()` label of the default-agent write — its 409 gets its own sentence. */
 const DEFAULT_AGENT_LABEL = 'default-agent';
@@ -91,6 +93,8 @@ export function AgentsDashboard({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  // #1884 — what a successful action did, when it says more than "done".
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [endOfService, setEndOfService] = useState<EndOfServiceResult | null>(null);
   const [deletedRefresh, setDeletedRefresh] = useState(0);
@@ -114,6 +118,7 @@ export function AgentsDashboard({
   }, []);
 
   const refusalMessage = useFacilitatorRefusalMessage();
+  const apiErrorText = useAgentApiErrorText();
 
   // #2066 — two kinds, two lists. A facilitator is never routed to, never the
   // default agent and never gets plugins, so it does not appear in the
@@ -154,11 +159,18 @@ export function AgentsDashboard({
 
   const channelTypes = useMemo(() => channelTypesOfCatalog(catalog), [catalog]);
 
-  function run(label: string, op: () => Promise<unknown>): void {
+  /** Resolves to `true` when `op` succeeded, so a form can keep its input on a refusal. */
+  function run(
+    label: string,
+    op: () => Promise<unknown>,
+    describeSuccess?: (result: unknown) => string,
+  ): Promise<boolean> {
     setError(null);
+    setNotice(null);
     setBusy(label);
-    op()
+    return op()
       .then((result) => {
+        if (describeSuccess) setNotice(describeSuccess(result));
         // #2088 — a disable or a delete answers with what ended with the
         // agent; show it instead of a silent status flip.
         const change = result as AgentChangeResult | undefined;
@@ -172,6 +184,7 @@ export function AgentsDashboard({
         }
         if (label.startsWith('delete:')) setDeletedRefresh((n) => n + 1);
         startTransition(() => router.refresh());
+        return true;
       })
       .catch((err: unknown) => {
         // A facilitator refusal has its own sentence in the catalogue; the
@@ -180,8 +193,9 @@ export function AgentsDashboard({
           refusalMessage(err) ??
             (label === DEFAULT_AGENT_LABEL && isConflict(err)
               ? t('defaultAgentRefused')
-              : humanizeApiError(err)),
+              : apiErrorText(err)),
         );
+        return false;
       })
       .finally(() => setBusy(null));
   }
@@ -194,6 +208,14 @@ export function AgentsDashboard({
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
+      )}
+      {notice && (
+        <p
+          role="status"
+          className="rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 p-3 text-sm text-[color:var(--accent)]"
+        >
+          {notice}
+        </p>
       )}
       {endOfService && (
         <EndOfServiceNotice result={endOfService} onDismiss={() => setEndOfService(null)} />
@@ -288,12 +310,18 @@ export function AgentsDashboard({
                 )
               }
               onDrain={() =>
-                run(`drain:${agent.slug}`, () =>
-                  drainAgentSessions(agent.slug),
+                run(
+                  `drain:${agent.slug}`,
+                  () => drainAgentSessions(agent.slug),
+                  (result) => t('drainResult', { count: affectedOf(result), slug: agent.slug }),
                 )
               }
               onKill={() =>
-                run(`kill:${agent.slug}`, () => killAgentSessions(agent.slug))
+                run(
+                  `kill:${agent.slug}`,
+                  () => killAgentSessions(agent.slug),
+                  (result) => t('killResult', { count: affectedOf(result), slug: agent.slug }),
+                )
               }
             />
           ))
@@ -397,6 +425,7 @@ function RoutingTester(props: {
   disabled: boolean;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const apiErrorText = useAgentApiErrorText();
   const [type, setType] = useState('');
   const [key, setKey] = useState('');
   const [result, setResult] = useState<ResolveChannelResponse | null>(null);
@@ -407,11 +436,10 @@ function RoutingTester(props: {
     if (!type || !key) return;
     setRunning(true);
     setError(null);
+    setResult(null);
     resolveAgentForChannel(type, key)
       .then((res) => setResult(res))
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setError(apiErrorText(err)))
       .finally(() => setRunning(false));
   }
 
@@ -486,7 +514,9 @@ function RoutingTester(props: {
             <p>
               {t('routingTesterMatched', {
                 slug: result.matched.slug,
-                via: result.via,
+                via: t.has(`routingTesterVia.${result.via}`)
+                  ? t(`routingTesterVia.${result.via}`)
+                  : result.via,
               })}
             </p>
           ) : (
@@ -502,11 +532,12 @@ function RoutingTester(props: {
 
 function CreateAgentForm(props: {
   disabled: boolean;
+  /** Resolves to `true` once the server created the agent. */
   onCreate: (input: {
     slug: string;
     name: string;
     description?: string;
-  }) => void;
+  }) => Promise<boolean>;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const [slug, setSlug] = useState('');
@@ -521,14 +552,16 @@ function CreateAgentForm(props: {
         onSubmit={(e) => {
           e.preventDefault();
           if (!slug || !name) return;
-          props.onCreate({
-            slug,
-            name,
-            description: description || undefined,
-          });
-          setSlug('');
-          setName('');
-          setDescription('');
+          // #1885 — the input stays until the server took it: a refused slug
+          // is corrected, not typed again.
+          void props
+            .onCreate({ slug, name, description: description || undefined })
+            .then((created) => {
+              if (!created) return;
+              setSlug('');
+              setName('');
+              setDescription('');
+            });
         }}
       >
         <Field label={t('fieldSlug')}>
@@ -536,7 +569,9 @@ function CreateAgentForm(props: {
             type="text"
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
-            pattern="^[a-z0-9][a-z0-9-]*$"
+            pattern={AGENT_SLUG_PATTERN}
+            maxLength={AGENT_SLUG_MAX_LENGTH}
+            title={t('fieldSlugRule')}
             required
             className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             placeholder="public"
@@ -634,7 +669,7 @@ function AgentCard(props: {
             </span>
             <span className="block text-xs text-[color:var(--fg-muted)]">
               {t('agentCardSummary', {
-                privacy: agent.privacy_profile,
+                privacy: t(`privacyProfiles.${agent.privacy_profile}`),
                 status:
                   agent.status === 'enabled'
                     ? t('statusEnabled')
@@ -735,7 +770,13 @@ function AgentCard(props: {
               type="button"
               className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
               disabled={props.disabled}
-              onClick={() => props.onDrain()}
+              onClick={() =>
+                confirmAction.ask({
+                  title: t('drainConfirm', { slug: agent.slug }),
+                  confirmLabel: t('actionDrain'),
+                  onConfirm: props.onDrain,
+                })
+              }
               title={t('drainTooltip')}
             >
               {t('actionDrain')}
@@ -984,37 +1025,26 @@ function bindingsRevisionKey(agent: OperatorAgentDto): string {
   return `bindings:${agent.id}:${sig}`;
 }
 
-/**
- * Pull the operator-readable message out of a thrown error. `ApiError`
- * carries the JSON body the route returned (e.g. the 409 from
- * `validateSnapshot`); the bare `error.message` is just
- * `"PUT /v1/... failed: 409"` which tells the operator nothing.
- */
+/** #1884 — the `affected` count of a drain/kill answer (0 when absent). */
+function affectedOf(result: unknown): number {
+  const affected = (result as { affected?: unknown } | null)?.affected;
+  return typeof affected === 'number' ? affected : 0;
+}
+
 /** `true` for a 409 — the default-agent PUT's refusal (agent not available
  *  to everyone in every channel, or disabled). */
 function isConflict(err: unknown): boolean {
   return err instanceof ApiError && err.status === HTTP_CONFLICT;
 }
 
+/**
+ * Pull the operator-readable message out of a thrown error. `ApiError`
+ * carries the JSON body the route returned (e.g. the 409 from
+ * `validateSnapshot`); the bare `error.message` is just
+ * `"PUT /v1/... failed: 409"` which tells the operator nothing.
+ */
 export function humanizeApiError(err: unknown): string {
-  if (err instanceof ApiError) {
-    try {
-      const parsed = err.body ? JSON.parse(err.body) : null;
-      const m =
-        (parsed && typeof parsed === 'object' && 'message' in parsed
-          ? String((parsed as { message?: unknown }).message ?? '')
-          : '') || '';
-      const e =
-        (parsed && typeof parsed === 'object' && 'error' in parsed
-          ? String((parsed as { error?: unknown }).error ?? '')
-          : '') || '';
-      if (m && e) return `${e}: ${m} (HTTP ${err.status})`;
-      if (m) return `${m} (HTTP ${err.status})`;
-      if (e) return `${e} (HTTP ${err.status})`;
-    } catch {
-      // body wasn't JSON — fall through to status-only
-    }
-    return `${err.message}${err.body ? ` — ${err.body.slice(0, 200)}` : ''}`;
-  }
-  return err instanceof Error ? err.message : String(err);
+  // #1885 — the server's reason and, for a 400, which fields; never the
+  // machine code or the transport line.
+  return serverDetail(err);
 }

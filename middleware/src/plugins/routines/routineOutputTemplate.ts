@@ -31,14 +31,16 @@
 /**
  * Output format the renderer emits. Different channels prefer
  * different shapes — Teams renders Adaptive Cards natively, web-ui
- * consumes markdown, future HTML-only channels may use html.
+ * consumes markdown. #1759 — `html` was accepted here but never rendered
+ * (every run fell back to the plain model answer); it is refused until a
+ * renderer exists.
  *
  * The orchestrator can request a downcast: a template authored as
  * `adaptive-card` can be rendered to markdown for a channel that
  * does not support cards. Reverse is not supported (markdown loses
  * structural fidelity).
  */
-export type RoutineOutputFormat = 'markdown' | 'adaptive-card' | 'html';
+export type RoutineOutputFormat = 'markdown' | 'adaptive-card';
 
 /**
  * A narrative slot is a free-form text fragment the LLM produces.
@@ -147,6 +149,15 @@ export interface RoutineOutputTemplate {
 }
 
 /**
+ * #1760 — a template that needs no model: only `static-markdown` sections.
+ * Its run skips the agent turn and delivers the text (spec 2042: "deliver,
+ * plus an optional turn").
+ */
+export function isStaticOnlyTemplate(template: RoutineOutputTemplate): boolean {
+  return template.sections.every((s) => s.kind === 'static-markdown');
+}
+
+/**
  * Narrow type-guard the orchestrator uses to validate a JSONB blob
  * fetched from Postgres before treating it as a template. Defensive
  * against operator typos and schema drift. Returns the typed value
@@ -168,19 +179,22 @@ export function parseRoutineOutputTemplate(
   }
   const obj = raw as Record<string, unknown>;
   const formatRaw = obj['format'];
-  if (
-    formatRaw !== 'markdown' &&
-    formatRaw !== 'adaptive-card' &&
-    formatRaw !== 'html'
-  ) {
+  if (formatRaw !== 'markdown' && formatRaw !== 'adaptive-card') {
     return {
       ok: false,
-      reason: `format must be 'markdown' | 'adaptive-card' | 'html', got ${JSON.stringify(formatRaw)}`,
+      reason:
+        formatRaw === 'html'
+          ? "format 'html' is not supported (no renderer); use 'markdown' or 'adaptive-card'"
+          : `format must be 'markdown' | 'adaptive-card', got ${JSON.stringify(formatRaw)}`,
     };
   }
   const sectionsRaw = obj['sections'];
   if (!Array.isArray(sectionsRaw)) {
     return { ok: false, reason: 'sections must be an array' };
+  }
+  // #1760 — a template without sections renders nothing on every run.
+  if (sectionsRaw.length === 0) {
+    return { ok: false, reason: 'sections must contain at least one section' };
   }
   const sections: RoutineTemplateSection[] = [];
   for (let i = 0; i < sectionsRaw.length; i += 1) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import {
@@ -9,6 +9,7 @@ import {
   parseAgentDetailTab,
   type AgentDetailTab,
 } from './agentDetailTab';
+import { UnsavedChangesContext, type ReportUnsaved } from './unsavedChangesGuard';
 
 /**
  * The agent detail page as tabs.
@@ -53,6 +54,19 @@ function writeTabToLocation(tab: AgentDetailTab): void {
   }
 }
 
+/** Undo a back/forward the operator declined: the URL names the shown tab again. */
+function restoreTabInLocation(tab: AgentDetailTab): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (tab === DEFAULT_TAB) url.searchParams.delete(TAB_PARAM);
+    else url.searchParams.set(TAB_PARAM, tab);
+    window.history.pushState(window.history.state, '', url);
+  } catch {
+    // Without history access the tab stays; only the URL is off.
+  }
+}
+
 interface AgentDetailTabsProps {
   /**
    * One render function per tab; only the active one is called. A tab
@@ -78,16 +92,41 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
   // A deep link to a tab this agent does not have lands on the first one.
   const tab = tabs.includes(requested) ? requested : (tabs[0] ?? DEFAULT_TAB);
 
+  // #1889 — the active panel reports unsaved input here; leaving it asks
+  // first, because the panel unmounts and its local state goes with it.
+  const unsaved = useRef(false);
+  const reportUnsaved = useCallback<ReportUnsaved>((dirty) => {
+    unsaved.current = dirty;
+  }, []);
+  const leaveMessage = t('unsavedLeaveConfirm');
+
+  // Back/forward asks too. The browser has already moved the URL when
+  // `popstate` fires, so a declined leave puts the current tab's URL back.
+  const shown = useRef<{ tab: AgentDetailTab; leaveMessage: string }>({ tab, leaveMessage });
   useEffect(() => {
-    const onPop = (): void => setTab(readTabFromLocation());
+    shown.current = { tab, leaveMessage };
+  }, [tab, leaveMessage]);
+  useEffect(() => {
+    const onPop = (): void => {
+      const next = readTabFromLocation();
+      const { tab: current, leaveMessage: message } = shown.current;
+      if (next !== current && unsaved.current && !window.confirm(message)) {
+        restoreTabInLocation(current);
+        return;
+      }
+      setTab(next);
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  const select = useCallback((next: AgentDetailTab): void => {
+  const select = (next: AgentDetailTab): boolean => {
+    if (next === tab) return true;
+    if (unsaved.current && !window.confirm(leaveMessage)) return false;
     setTab(next);
     writeTabToLocation(next);
-  }, []);
+    return true;
+  };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     const idx = tabs.indexOf(tab);
@@ -96,7 +135,7 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
     e.preventDefault();
     const next = tabs[(idx + delta + tabs.length) % tabs.length];
     if (next === undefined) return;
-    select(next);
+    if (!select(next)) return;
     document.getElementById(`agent-detail-tab-${next}`)?.focus();
   };
 
@@ -136,7 +175,9 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
         aria-labelledby={`agent-detail-tab-${tab}`}
         className="space-y-8"
       >
-        {props.panels[tab]?.()}
+        <UnsavedChangesContext.Provider value={reportUnsaved}>
+          {props.panels[tab]?.()}
+        </UnsavedChangesContext.Provider>
       </div>
     </div>
   );

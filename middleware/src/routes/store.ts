@@ -27,7 +27,10 @@ import {
   type ReadinessLlmProbe,
   type ReadinessVault,
 } from '../plugins/readiness.js';
-import { findProvidesCollision } from '../plugins/capabilityResolver.js';
+import {
+  describeProviderCollision,
+  findProvidesCollision,
+} from '../plugins/capabilityResolver.js';
 import type {
   RegistryClient,
   ResolvedRegistryPlugin,
@@ -560,17 +563,11 @@ function matchesCategory(plugin: Plugin, category: string | undefined): boolean 
 /** The English fallback line for `blocking_reasons` (OM-06 / #671).
  *
  *  `blocking_reasons` is a list of server-authored strings the client can only
- *  print, so this stays deliberately plain and mirrors the 409 the install
- *  would return. The ACTIONABLE version — "configure the provider you already
- *  have", with a link — is built client-side from
- *  `blocked_by_active_provider`, which is why that field exists rather than
- *  this string carrying the whole story. */
-function alreadyProvidedReason(collision: {
-  capability: string;
-  ownerId: string;
-}): string {
-  return `capability '${collision.capability}' is already provided by '${collision.ownerId}' — configure that plugin instead of installing a second provider`;
-}
+ *  print, so it is the SAME sentence the 409 of the install would return
+ *  (#1814, `describeProviderCollision`). The actionable version, with a link
+ *  to the page that manages the capability, is built client-side from
+ *  `blocked_by_active_provider`. */
+const alreadyProvidedReason = describeProviderCollision;
 
 async function resolveRemotePlugin(
   client: RegistryClient | undefined,

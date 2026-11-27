@@ -16,7 +16,10 @@ import type {
   MemoryEntry,
   MemoryStore,
 } from '@omadia/plugin-api';
-import type { EmbeddingClient } from '@omadia/embeddings';
+import {
+  currentEmbeddingClient,
+  type EmbeddingClientSource,
+} from '@omadia/embeddings';
 import {
   isDurableRulePath,
   promoteRuleFileToDurable,
@@ -28,7 +31,8 @@ export interface DurableRulesHookDeps {
   pool: Pool;
   kg: KnowledgeGraph;
   tenantId: string;
-  embeddingClient?: EmbeddingClient;
+  /** #1815 / ADR-0194 — resolved when a rule is promoted, not at build time. */
+  embeddingClient?: EmbeddingClientSource;
   log?: (msg: string) => void;
   /** Spec 2042 §5.11 — called with a newly promoted rule's memorable id, in the
    *  writing turn's context (the memorable keeps the turn's labels). */
@@ -47,6 +51,7 @@ export class DurableRulesMemoryStore implements MemoryStore {
     // bypassed it, can hold values no shield masked. Read here, inside the
     // turn's dispatch; no turn context reads as unprotected (fail closed).
     const unprotected = isCurrentTurnUnprotected();
+    const embeddingClient = currentEmbeddingClient(this.deps.embeddingClient);
     // Fire-and-forget — never block or fail the originating write.
     void promoteRuleFileToDurable({
       ...(unprotected ? { unprotected: true } : {}),
@@ -55,9 +60,7 @@ export class DurableRulesMemoryStore implements MemoryStore {
       tenantId: this.deps.tenantId,
       virtualPath,
       content,
-      ...(this.deps.embeddingClient
-        ? { embeddingClient: this.deps.embeddingClient }
-        : {}),
+      ...(embeddingClient ? { embeddingClient } : {}),
       ...(this.deps.log ? { log: this.deps.log } : {}),
     })
       .then(async (result) => {

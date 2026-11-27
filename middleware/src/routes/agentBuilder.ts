@@ -47,6 +47,8 @@ import {
   isDeprecatedMcpTransport,
   looksUnauthorized,
   McpManager,
+  mcpNativeToolName,
+  mcpNativeToolNameCollision,
   mcpToolNameFromRef,
   turnContext,
   today,
@@ -105,7 +107,8 @@ import {
   McpRegistryError,
   type McpRegistryConfig,
 } from '../services/mcpRegistryClient.js';
-import { diffMcpToolAllowlist, scanDiscoveredTools } from '../services/mcpToolGuard.js';
+import { persistDiscoveredTools } from '../services/mcpDiscoveryPersist.js';
+import { diffMcpToolAllowlist } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
@@ -207,7 +210,13 @@ export interface AgentBuilderRouterOptions {
       cimdBlockedReason: string | null;
       /** `protected` rests on a failed metadata read, not on an advertisement. */
       discoveryUnavailable?: boolean;
+      /** #1924 — the metadata was read and is unusable: why. */
+      discoveryError?: string;
     }>;
+    /** #1947 — drop the stored client of an issuer no server uses any more. */
+    forgetClient(issuer: string): Promise<boolean>;
+    /** #1947 — a server's issuer; `undefined` when it cannot be told now. */
+    issuerUse(server: McpServerRow): Promise<string | null | undefined>;
     beginAuthorization(server: McpServerRow, userKey: string, actor?: AuditActor): Promise<{ authorizeUrl: string }>;
     /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
      *  validated against the flow-bound issuer before any exchange. */
@@ -522,6 +531,38 @@ export function createAgentBuilderRouter(
   };
   /** Issue #1925 — a removed OAuth authorization leaves a trace: a log line
    *  always, an `admin_audit` row when the hook is wired. One per token. */
+  /** #1933 — log + admin audit of a delegation change. Best-effort: the
+   *  audit row goes through the shared operator audit (`auditMcpServer`). */
+  const recordDelegationChange = async (
+    req: Request,
+    server: McpServerRow,
+    to: 'per_user' | 'service',
+  ): Promise<void> => {
+    console.log(
+      `[mcp] delegation change: id=${server.id} name=${JSON.stringify(server.name)} from=${server.delegation} to=${to} actor=${sessionIdentity(req) ?? 'unknown'}`,
+    );
+    await auditMcpServer(req, server.id, 'mcp_server.delegation_change',
+      { delegation: server.delegation }, { name: server.name, delegation: to });
+  };
+  /** #1947 — once no remaining server resolves to `issuer`, its stored client
+   *  and vault secret go too. Best-effort: a failure leaves a client row. */
+  const forgetIssuerClientIfUnused = async (l: Live, issuer: string): Promise<void> => {
+    if (!options.mcpOAuth) return;
+    try {
+      // Fail closed: a server whose issuer cannot be told right now (its
+      // metadata is down, a placeholder does not resolve) may be using it.
+      for (const other of await l.graph.listMcpServers()) {
+        if (other.transport === 'stdio' || (await oauthEndpointRefusal(other)) !== null) continue;
+        const used = await options.mcpOAuth.issuerUse(other).catch(() => undefined);
+        if (used === undefined || used === issuer) return;
+      }
+      if (await options.mcpOAuth.forgetClient(issuer)) {
+        console.log(`[mcp] oauth client removed: issuer=${JSON.stringify(issuer)} (no server uses it)`);
+      }
+    } catch (err) {
+      console.warn(`[mcp] oauth client cleanup failed for issuer=${JSON.stringify(issuer)}: ${msg(err)}`);
+    }
+  };
   const recordOAuthDisconnect = async (
     req: Request,
     server: McpServerRow,
@@ -1813,6 +1854,11 @@ export function createAgentBuilderRouter(
       // every user's grant at the provider and clear the vault, or deleting
       // the server leaves live credentials behind on both sides.
       const server = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      // #1947 — read the issuer while the server still exists.
+      const issuer =
+        server && options.mcpOAuth && (await oauthEndpointRefusal(server)) === null
+          ? await options.mcpOAuth.issuerFor(server).catch(() => null)
+          : null;
       if (server && options.mcpOAuth) {
         const revoke = (await oauthEndpointRefusal(server)) === null;
         for (const { userKey, revocation } of await options.mcpOAuth.disconnectAll(server, {
@@ -1830,6 +1876,9 @@ export function createAgentBuilderRouter(
         await auditMcpServer(req, id, 'mcp_server.delete', mcpServerAuditView(server), null);
       }
       await invalidateMcpServer(id);
+      if (issuer && options.mcpOAuth) {
+        await forgetIssuerClientIfUnused(l, issuer);
+      }
       await reload(l);
       // #1912 — the server's config secrets (secret fields, secret headers)
       // would otherwise outlive it in the Vault. Best effort, AFTER the
@@ -1922,17 +1971,19 @@ export function createAgentBuilderRouter(
       // Scan gate (epic #459 W1, issue #454): every discovered tool is scanned
       // and its verdict persisted BEFORE the tool list itself is stored, so no
       // unscanned tool ever becomes visible or grantable.
-      const verdicts = scanDiscoveredTools(row.id, tools);
-      for (const verdict of verdicts) {
-        await l.graph.upsertMcpToolVerdict(verdict);
-      }
       // Prune verdicts for tools this server no longer exposes (codex fold):
-      // a hidden/renamed tool must not keep a stale clean verdict.
-      await l.graph.pruneMcpToolVerdicts(
-        row.id,
-        tools.map((t) => t.name),
-      );
-      await l.graph.setMcpDiscoveredTools(row.id, tools);
+      // a hidden/renamed tool must not keep a stale clean verdict. #1917 — an
+      // empty list after a non-empty one is not stored (`persistDiscoveredTools`).
+      const persisted = await persistDiscoveredTools(l.graph, row, tools);
+      if (persisted.emptyListIgnored) {
+        res.status(409).json({
+          error: 'mcp_tool_list_empty',
+          message:
+            'The server listed no tools. The previous tool list was kept; run Discover again once the server is back.',
+          serverId: row.id,
+        });
+        return;
+      }
       await auditMcpServer(req, row.id, 'mcp_server.discover',
         { toolCount: row.discoveredTools?.length ?? 0 }, { toolCount: tools.length });
       // Re-discovery can change verdicts (and thus the runtime blocklist) and
@@ -2441,6 +2492,11 @@ export function createAgentBuilderRouter(
         needsClient: !desc.brokered && desc.issuer !== null && client === undefined,
         // Issuer and acquisition mode above are placeholders while this is set.
         discoveryUnavailable: desc.discoveryUnavailable === true,
+        // #1924 — the metadata is unusable, and why.
+        ...(desc.discoveryError ? { discoveryError: desc.discoveryError } : {}),
+        // #1933 — under `service` every caller shares one authorization; the
+        // UI must not call it "yours".
+        sharedAuthorization: server.delegation === 'service',
         redirectUri: options.mcpOAuth.redirectUri,
       });
     } catch (err) {
@@ -2489,6 +2545,12 @@ export function createAgentBuilderRouter(
         }
         if (err instanceof McpAuthDiscoveryError && err.code === DISCOVERY_UNAVAILABLE) {
           res.status(503).json({ error: 'mcp_auth_discovery_unavailable', message: err.message });
+          return;
+        }
+        // #1924 — a provider configuration that cannot be used is the
+        // server's problem, not an internal error.
+        if (err instanceof McpAuthDiscoveryError) {
+          res.status(422).json({ error: 'mcp_oauth_discovery_failed', code: err.code, message: err.message });
           return;
         }
         throw err;
@@ -2591,23 +2653,40 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
+      const id = str(req.params.id);
+      // #1933 — a malformed id names no server (ADR-0038).
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
       const delegation = parseDelegation(req.body?.delegation);
       if (delegation === null) {
         res.status(400).json({ error: 'invalid_delegation' });
         return;
       }
-      const id = str(req.params.id);
-      const previous = options.recordAudit
-        ? await readOperatorAuditState(async () => (await l.graph.listMcpServers()).find((server) => server.id === id))
-        : undefined;
+      const before = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!before) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      // #1933 — `service` makes every chat, routine and workflow that calls
+      // this server act under one shared authorization. The caller confirms
+      // it knowingly (the UI asks first).
+      if (delegation === 'service' && before.delegation !== 'service' && req.body?.confirm !== true) {
+        res.status(409).json({
+          error: 'delegation_confirmation_required',
+          affects: ['chats', 'routines', 'workflows'],
+        });
+        return;
+      }
+      const from = before.delegation;
       const updated = await l.graph.setMcpServerDelegation(id, delegation);
       if (!updated) {
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
-      if (previous && (previous === 'unknown' || previous.delegation !== updated.delegation)) {
-        await auditMcpServer(req, id, 'mcp_server.delegation_change',
-          previous === 'unknown' ? previous : { delegation: previous.delegation }, { delegation: updated.delegation });
+      if (from !== updated.delegation) {
+        await recordDelegationChange(req, { ...before, delegation: from }, updated.delegation);
       }
       res.json({ id: updated.id, delegation: updated.delegation });
     } catch (err) {
@@ -2771,6 +2850,19 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
+      // #1933 — same rule as PUT /mcp-servers/:id/delegation: switching to a
+      // shared service identity is confirmed, before anything is written.
+      if (
+        delegation === 'service' &&
+        server.delegation !== 'service' &&
+        req.body?.confirm !== true
+      ) {
+        res.status(409).json({
+          error: 'delegation_confirmation_required',
+          affects: ['chats', 'routines', 'workflows'],
+        });
+        return;
+      }
       // Normalize first, gate later. `mcpToolNameFromRef` strips an optional
       // '<serverName>:' prefix — the same normalization `assertMcpToolAllowed`
       // applies — so the diff below compares names, never raw refs.
@@ -2808,6 +2900,9 @@ export function createAgentBuilderRouter(
       for (const toolName of diff.toGrant) {
         await assertMcpToolAllowed(l, mcpServerId, toolName);
       }
+      // #1948 — two tools whose native names collide (`a.b` / `a_b`) cannot
+      // both be granted: the second would be silently dropped at hydration.
+      assertNoNativeNameCollision(server.name, diff.toGrant, [...diff.unchanged, ...diff.toGrant]);
       const broadReachAudit = await mcpGrantBroadReachGate(
         l,
         req,
@@ -2837,8 +2932,7 @@ export function createAgentBuilderRouter(
       }
       if (delegation !== undefined && delegation !== server.delegation) {
         await l.graph.setMcpServerDelegation(mcpServerId, delegation);
-        await auditMcpServer(req, mcpServerId, 'mcp_server.delegation_change',
-          { delegation: server.delegation }, { delegation });
+        await recordDelegationChange(req, server, delegation);
       }
       if (diff.toGrant.length > 0 || toRevoke.length > 0) {
         // Same recipe as server status/ack changes: policy refresh + epoch
@@ -3563,6 +3657,23 @@ export function createAgentBuilderRouter(
  * Returns the normalized bare tool name. Shared by the grant edge dispatcher
  * and the skill capability bind route.
  */
+/** #1948 — refuse a grant whose native tool name another granted tool of the
+ *  same holder already has. */
+function assertNoNativeNameCollision(
+  serverName: string,
+  toGrant: readonly string[],
+  granted: readonly string[],
+): void {
+  for (const toolName of toGrant) {
+    const other = mcpNativeToolNameCollision(serverName, toolName, granted);
+    if (other !== undefined) {
+      throw new ConfigValidationError(
+        `mcp_tool_name_collision: tools "${other}" and "${toolName}" on "${serverName}" get the same tool name "${mcpNativeToolName(serverName, toolName)}"; grant only one of them`,
+      );
+    }
+  }
+}
+
 async function assertMcpToolAllowed(
   l: Live,
   mcpServerId: string,
@@ -3765,6 +3876,19 @@ async function createEdge(
         // the bare-name grant (the 0014 unique index keys on the raw ref),
         // splitting one tool across two rows (W0c review).
         toolRef = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+        const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+        if (server) {
+          const holderGrants = (await l.graph.listAllToolGrants()).filter(
+            (g) =>
+              g.toolKind === 'mcp' &&
+              g.mcpServerId === mcpServerId &&
+              (subAgentId !== null ? g.subAgentId === subAgentId : g.agentId === agent.id && g.subAgentId === null),
+          );
+          assertNoNativeNameCollision(server.name, [toolRef], [
+            ...holderGrants.map((g) => mcpToolNameFromRef(g.toolRef, server.name)),
+            toolRef,
+          ]);
+        }
       }
       // #2050 — a helper's grant is a subset of its agent's: refused unless the
       // helper belongs to this agent and the agent holds the tool itself.

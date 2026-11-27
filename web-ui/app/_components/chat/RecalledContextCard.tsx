@@ -24,6 +24,7 @@ export function RecalledContextCard({
   recalled,
 }: Props): React.ReactElement | null {
   const t = useTranslations('recalledContext');
+  const tKinds = useTranslations('memories.kinds');
 
   const { plans, processes, insights } = recalled;
   if (plans.length === 0 && processes.length === 0 && insights.length === 0) {
@@ -105,7 +106,7 @@ export function RecalledContextCard({
                   className="text-[color:var(--fg)]"
                 >
                   <span className="text-[color:var(--fg-subtle)]">
-                    {ins.kind}:
+                    {tKinds.has(ins.kind) ? tKinds(ins.kind) : ins.kind}:
                   </span>{' '}
                   {ins.summary}
                 </li>

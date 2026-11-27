@@ -22,6 +22,7 @@ import { Markdown } from '../../_components/Markdown';
 import { LegacyKindNotice } from '../../_components/store/LegacyKindNotice';
 import { PluginVerdictBadge } from '../../_components/admin/PluginVerdictBadge';
 import { pickLocalized } from '../../_lib/localized';
+import { providerAdminLink } from '../../_lib/providerAdminLink';
 
 import { ApiError, getStorePlugin, listStorePlugins } from '../../_lib/api';
 import { entitySystemOverlaps } from '../../_lib/entitySystemOverlap';
@@ -495,11 +496,10 @@ export default async function PluginDetailPage({
           {/* OM-06 / #671 — the capability this plugin provides is already
               covered by an active plugin, so the install would be refused.
               `blocking_reasons` above already says so, but only in English and
-              only as a statement of fact. The operator's actual next step is
-              to configure the provider they ALREADY have, which the original
-              report called out as missing: the store offered "install" while
-              the admin area listed the same provider as connected, with no
-              link between the two. */}
+              only as a statement of fact. #1814 — the box names both ways out
+              (configure the active provider, or uninstall it first) and links
+              to the admin page of THIS capability: `/admin/providers` lists
+              LLM providers and cannot help with an embedding provider. */}
           {blocked_by_active_provider ? (
             <div className="space-y-2 rounded-lg border border-[color:var(--edge)] p-4">
               <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">
@@ -508,10 +508,10 @@ export default async function PluginDetailPage({
                 })}
               </p>
               <Link
-                href="/admin/providers"
+                href={providerAdminLink(blocked_by_active_provider.capability).href}
                 className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent)] transition hover:opacity-80"
               >
-                {t('alreadyProvidedCta')}
+                {t(providerAdminLink(blocked_by_active_provider.capability).ctaKey)}
               </Link>
             </div>
           ) : null}

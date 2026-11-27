@@ -249,6 +249,9 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
         userMessage: instruction,
         sessionScope: `trigger:${trigger.id}`,
         extraSystemHint: triggerTurnHint(trigger, status),
+        // #1770 / #1771 / ADR 0242 — nobody is present to answer, and earlier
+        // firings are not trusted context of this one.
+        unattended: true,
       };
       // INV-9 — the turn starts with the labels of the turn that set its
       // trigger, and its answer is checked against the readers of the room it

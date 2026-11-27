@@ -48,6 +48,17 @@ class StubRunner {
   public readonly rows = new Map<string, Routine>();
   public chatAvailable = false;
   public triggerCalls: string[] = [];
+  public running = new Set<string>();
+
+  isRunning(id: string): boolean {
+    return this.running.has(id);
+  }
+
+  public agentProblems = new Map<string, string>();
+
+  agentProblemOf(routine: Routine): string | undefined {
+    return this.agentProblems.get(routine.id);
+  }
 
   seed(routine: Routine): void {
     this.rows.set(routine.id, routine);
@@ -171,6 +182,45 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
     assert.equal(res.status, 409);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'routines.not_active');
+    assert.equal(h.runner.triggerCalls.length, 0);
+  });
+
+  // #1748 — one run per routine: a second "run now" while one is in flight
+  // is refused instead of starting an overlapping run that also delivers.
+  it('returns 409 routines.run_in_progress while a run is in flight — without dispatching a second one', async () => {
+    h.runner.chatAvailable = true;
+    h.runner.running.add('00000000-0000-4000-8000-000000000001');
+
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
+      method: 'POST',
+    });
+
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string };
+    assert.equal(body.code, 'routines.run_in_progress');
+    assert.equal(h.runner.triggerCalls.length, 0);
+  });
+
+  it('marks the accepted routine as running in the 202 body', async () => {
+    h.runner.chatAvailable = true;
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
+      method: 'POST',
+    });
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { routine: { running: boolean } };
+    assert.equal(body.routine.running, true);
+  });
+
+  // #1744 — a routine whose agent is gone answers why, not the LLM-key 503.
+  it('returns 409 routines.agent_unavailable naming the agent problem', async () => {
+    h.runner.agentProblems.set('00000000-0000-4000-8000-000000000001', "its agent 'seo' is disabled or deleted");
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
+      method: 'POST',
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'routines.agent_unavailable');
+    assert.match(body.message, /disabled or deleted/);
     assert.equal(h.runner.triggerCalls.length, 0);
   });
 });

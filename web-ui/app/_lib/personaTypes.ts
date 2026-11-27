@@ -53,7 +53,16 @@ export interface PersonaConfig {
   custom_notes?: string;
 }
 
-/** Default value when an axis is unset — visual mid-point, no delta emission. */
+/*
+ * #1887 — the axis names and slider end labels live in the message catalogue
+ * under `builder.persona.axes.<axisKey>.{name,left,right}` (read through
+ * `usePersonaAxisCopy`), next to the per-axis `description`. Left = lower-end
+ * behaviour, right = upper-end behaviour; range 0–100, 50 = neutral.
+ */
+
+/** The scale's middle: where an unset axis is drawn when no model baseline is
+ *  known (#1893). Not "neutral" for the compiler, which measures against the
+ *  model family's own level. */
 export const PERSONA_AXIS_NEUTRAL = 50;
 
 /**

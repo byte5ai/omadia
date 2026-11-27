@@ -24,8 +24,9 @@ import {
  * (`DATABASE_URL ? postgres : inmemory`). Postgres REQUIRES `DATABASE_URL`
  * (it consumes the Neon KG's shared graphPool).
  *
- * This page only PERSISTS the choice. The provider swap happens on the NEXT
- * restart — so on a successful save the operator is told a restart is
+ * "Active backend" is the backend that is running; a saved choice that is not
+ * applied yet is shown next to it (#1834). This page only PERSISTS the choice.
+ * The provider swap happens on the NEXT restart — so on a successful save the operator is told a restart is
  * required. Backed by `/bot-api/v1/admin/memory/backend` (cookie-session auth,
  * same admin router family as the Danger Zone purge page).
  */
@@ -62,7 +63,7 @@ export default function MemoryBackendPage(): React.ReactElement {
     try {
       const s = await getMemoryBackend();
       setState(s);
-      setChoice(s.current);
+      setChoice(s.desired ?? s.current);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
       setState(null);
@@ -80,12 +81,16 @@ export default function MemoryBackendPage(): React.ReactElement {
   }, [load]);
 
   const dbMissing = state !== null && !state.databaseUrlPresent;
+  // The saved choice the next boot applies (#1834): compare the selection
+  // against it, not against the running backend, so a pending switch can be
+  // reverted.
+  const desired = state === null ? null : (state.desired ?? state.current);
   // Block submitting postgres when DATABASE_URL is absent — the backend would
   // 400 anyway, but disabling the action makes the constraint explicit.
   const canSave =
     state !== null &&
     !saving &&
-    choice !== state.current &&
+    choice !== desired &&
     !(choice === 'postgres' && dbMissing);
 
   const onSave = useCallback(async (): Promise<void> => {
@@ -155,6 +160,14 @@ export default function MemoryBackendPage(): React.ReactElement {
                 {t('activeBackend')}
               </dt>
               <dd className="font-mono">{state.current}</dd>
+              {state.restartRequiredToApply && desired !== null && (
+                <>
+                  <dt className="text-[color:var(--fg-muted)]">
+                    {t('savedChoice')}
+                  </dt>
+                  <dd className="font-mono">{desired}</dd>
+                </>
+              )}
               <dt className="text-[color:var(--fg-muted)]">{t('envDefault')}</dt>
               <dd className="font-mono">{state.envDefault}</dd>
               <dt className="text-[color:var(--fg-muted)]">

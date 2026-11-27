@@ -256,7 +256,7 @@ describe('McpAddServerModal — delegation gate', () => {
     const tools = await screen.findAllByTestId('mcp-add-tool');
     expect(tools[0]).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Enable service delegation' }));
-    expect(mockSetDelegation).toHaveBeenCalledWith('s1', 'service');
+    expect(mockSetDelegation).toHaveBeenCalledWith('s1', 'service', { confirm: true });
     await waitFor(() => expect(screen.queryByTestId('mcp-add-delegation')).not.toBeInTheDocument());
     await userEvent.click(screen.getAllByTestId('mcp-add-tool')[0] as HTMLElement);
     expect(onResolve).toHaveBeenCalledWith(expect.objectContaining({ actionId: expect.stringMatching(/^mcp:s1:/) }));

@@ -40,6 +40,37 @@ const GATED_SERVICES: ReadonlyMap<string, ReadonlyMap<PropertyKey, ModelOperatio
 
 const GATED = Symbol.for('omadia.modelGateway.gated');
 
+/**
+ * #1817 / ADR-0194 — gated wrappers whose registration was disposed. A
+ * consumer that still holds one (it captured the object before the provider
+ * was uninstalled, deactivated or reactivated) gets a refusal instead of a
+ * call into the removed adapter: an OpenAI-compatible client keeps its key and
+ * base URL after `close()`, so without this a removed provider kept receiving
+ * text until a restart.
+ */
+const withdrawnServices = new WeakSet<object>();
+
+/** Raised when a model service is called after its provider withdrew it. */
+export class ModelServiceWithdrawnError extends Error {
+  constructor(readonly serviceName: string) {
+    super(
+      `the provider of '${serviceName}' was withdrawn (uninstalled, deactivated or replaced); resolve the service again`,
+    );
+    this.name = 'ModelServiceWithdrawnError';
+  }
+}
+
+/**
+ * Mark a wrapper returned by {@link gateModelService} as withdrawn. Every
+ * later model call through it refuses. No-op for anything that is not a gated
+ * wrapper (plain services keep their own lifecycle).
+ */
+export function withdrawModelService(impl: unknown): void {
+  if (impl === null || typeof impl !== 'object') return;
+  if ((impl as Record<symbol, unknown>)[GATED] !== true) return;
+  withdrawnServices.add(impl);
+}
+
 /** The bare service name of a registry key (`embeddingClient@2` → `embeddingClient`). */
 function baseName(name: PropertyKey): string {
   return typeof name === 'string' ? name.split('@')[0] ?? name : String(name);
@@ -55,13 +86,19 @@ export function gateModelService<T>(name: PropertyKey, impl: T): T {
   const methods = GATED_SERVICES.get(baseName(name));
   if (!methods || impl === null || typeof impl !== 'object') return impl;
   if ((impl as Record<symbol, unknown>)[GATED] === true) return impl;
-  return new Proxy(impl as object, {
+  const serviceName = baseName(name);
+  const proxy: T = new Proxy(impl as object, {
     get(target, prop, receiver) {
       if (prop === GATED) return true;
       const value = Reflect.get(target, prop, receiver) as unknown;
       const operation = methods.get(prop);
       if (operation === undefined || typeof value !== 'function') return value;
       return function gated(this: unknown, ...args: unknown[]): unknown {
+        if (withdrawnServices.has(proxy as object)) {
+          const refusal = new ModelServiceWithdrawnError(serviceName);
+          if (prop === 'transcribeStream') throw refusal;
+          return Promise.reject(refusal);
+        }
         if (prop === 'transcribeStream') {
           // An async iterable: the gate runs when the stream is called, like
           // a provider's `stream()`.
@@ -77,6 +114,7 @@ export function gateModelService<T>(name: PropertyKey, impl: T): T {
       };
     },
   }) as T;
+  return proxy;
 }
 
 /**

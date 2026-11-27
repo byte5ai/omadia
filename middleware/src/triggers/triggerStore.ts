@@ -680,6 +680,33 @@ export class TriggerStore {
     });
   }
 
+  /**
+   * #1776 — book a run that did not come through a firing (a routine's
+   * "run now") on its trigger: spend, monthly spend, and an audit row with
+   * its cost, so the operator's trigger view shows what the routine costs.
+   * No run is counted and the breaker is untouched: it was not a firing.
+   */
+  async bookManualSpend(triggerId: string, costUsd: number, month: string, detail: Record<string, unknown>): Promise<void> {
+    if (costUsd <= 0) return;
+    await this.inTransaction(async (client) => {
+      const { rows } = await client.query<TriggerRowDb>(
+        'UPDATE agent_triggers SET spent_usd = spent_usd + $2, updated_at = now() WHERE id = $1 RETURNING *',
+        [triggerId, costUsd],
+      );
+      const row = rows[0];
+      if (!row) return;
+      const trigger = toTrigger(row);
+      for (const scope of ['instance', trigger.agentId]) {
+        await client.query(
+          `INSERT INTO agent_trigger_spend AS s (scope, month, spent_usd) VALUES ($1, $2::date, $3)
+           ON CONFLICT (scope, month) DO UPDATE SET spent_usd = s.spent_usd + EXCLUDED.spent_usd`,
+          [scope, month, costUsd],
+        );
+      }
+      await this.auditIn(client, trigger, 'fired', { outcome: 'manual_run', ...detail }, costUsd);
+    });
+  }
+
   /** Remove a firing's reservation; what it held, or 0 when none is left. */
   private async takeReservationIn(client: PoolClient, occurrenceId: string): Promise<number> {
     const { rows } = await client.query<{ amount_usd: string }>(
