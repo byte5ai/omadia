@@ -20,6 +20,8 @@ import {
   type RecalledProcess,
   type TurnSearchHit,
   isEvidencedPlanStepDone,
+  MEMORY_CORRECTED_AT_PROP,
+  sessionNodeId,
 } from '@omadia/plugin-api';
 import { parseRecordingTranscript, renderUserLine } from './recordingTranscriptRender.js';
 
@@ -262,7 +264,21 @@ export interface MemoryRecallHit {
 // ---------------------------------------------------------------------------
 
 export interface AssembleForBudgetInput {
+  /**
+   * The message every recall leg searches with: term extraction, the query
+   * embedding and the full-text query. Must be the REAL message — stored
+   * turns hold real values, so a pseudonymised query cannot match them
+   * (#1869). The rendered block is masked by the caller before it reaches
+   * the model.
+   */
   userMessage: string;
+  /**
+   * #1869 — the variant the relevance judge (a model call) reads. Under
+   * prompt masking the orchestrator passes the wire (pseudonymised) message
+   * so the user's typed values never reach that model (ADR-0095). Defaults
+   * to {@link userMessage}.
+   */
+  judgeMessage?: string;
   sessionScope?: string;
   userId?: string;
   /** External id of the turn currently being answered — excluded from hits. */
@@ -463,6 +479,32 @@ const DEFAULTS: Required<
   recallRelevanceJudgeDisabled: false,
 };
 
+/**
+ * #1856 — the section headings of the recalled-context block. The
+ * orchestrator's trust rules name these, so they import them from here
+ * instead of restating the strings: a rule must point at a heading the chat
+ * path actually renders. The compact variant of the related-turns heading
+ * appends ` (compact)`; rules match it by prefix.
+ */
+export const RECALL_HEADINGS = {
+  /** The verbatim tail of the current chat. */
+  tail: '## Letzte Turns in diesem Chat',
+  /** Entity- and full-text hits from the user's OTHER chats. */
+  relatedTurns: '## Inhaltlich verwandte Turns',
+  /** Entity hits of the test-only `build` path, a sub-section of the above. */
+  relatedEntityTurns: '## Inhaltlich verwandte Turns — besprochene Entitäten',
+  plans: '## Aus früheren Sessions — offene Pläne',
+  processes: '## Aus früheren Sessions — gespeicherte Prozesse',
+  insights: '## Aus früheren Sessions — verwandte Erkenntnisse',
+} as const;
+
+/**
+ * #1863 — the marker an insight a user corrected carries, followed by the
+ * day (`vom Nutzer korrigiert am 2026-11-25`). The orchestrator's precedence
+ * rule quotes it.
+ */
+export const USER_CORRECTED_MARKER = 'vom Nutzer korrigiert am';
+
 // Tiny, language-agnostic stopword list. We keep it short because the real
 // signal comes from proper nouns and IDs which survive any sensible filter.
 // Mixing German + English entries since both show up in user queries.
@@ -604,9 +646,10 @@ export class ContextRetriever {
     // without adding verbose retrieval traces. stderr is used so Fly's log
     // aggregator reliably forwards it (we've seen stdout INFO lines dropped).
     const scope = input.sessionScope ?? '<no-scope>';
-    const termsPreview = extractedTerms.slice(0, 5).join(',');
+    // Only the term COUNT: the terms are the user's own words — under prompt
+    // masking the real values (#1869) — and do not belong in server logs.
     console.error(
-      `[context:inner] scope=${scope} tail=${String(tail.length)} entity-hits=${String(entityHitsFiltered.length)} fts=${String(ftsHitsFiltered.length)} memory=${String(memoryHits.length)} terms=[${termsPreview}] rendered=${String(text.length)}B`,
+      `[context:inner] scope=${scope} tail=${String(tail.length)} entity-hits=${String(entityHitsFiltered.length)} fts=${String(ftsHitsFiltered.length)} memory=${String(memoryHits.length)} terms=${String(extractedTerms.length)} rendered=${String(text.length)}B`,
     );
 
     return {
@@ -792,7 +835,8 @@ export class ContextRetriever {
         excluded.push({ turnId: c.turnId, reason: 'audience-scope' });
         continue;
       }
-      const pri = prioritiesIndex.get(c.turnId);
+      // #1820 — a turn entry wins; a session entry applies to every turn of it.
+      const pri = prioritiesIndex.get(c.turnId) ?? prioritiesIndex.get(sessionNodeId(c.scope));
       if (pri?.action === 'block') {
         excluded.push({ turnId: c.turnId, reason: 'agent-blocked' });
         continue;
@@ -910,7 +954,7 @@ export class ContextRetriever {
       const deduped = candidates.filter((c) =>
         seenCand.has(c.id) ? false : (seenCand.add(c.id), true),
       );
-      const keep = await judge.filterRelevant(input.userMessage, deduped);
+      const keep = await judge.filterRelevant(input.judgeMessage ?? input.userMessage, deduped);
       if (judgeTermGated) {
         judgedPlans = planHits.filter((p) => keep.has(p.planId));
         judgedProcesses = processHits.filter((p) => keep.has(p.id));
@@ -1032,7 +1076,7 @@ export class ContextRetriever {
       const pre = `${planHits.length}/${processHits.length}/${memoryHits.length}`;
       const post = `${recalled.plans.length}/${recalled.processes.length}/${recalled.insights.length}`;
       console.error(
-        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} durableJudge=${this.opts.durableRelevanceJudgeEnabled ? 'on' : 'off'} durable=${String(durableHits.length)}→${String(judgedDurable.length)} pre(p/pr/i)=${pre} post=${post} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
+        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} durableJudge=${this.opts.durableRelevanceJudgeEnabled ? 'on' : 'off'} durable=${String(durableHits.length)}→${String(judgedDurable.length)} pre(p/pr/i)=${pre} post=${post} terms=${String(extractedTerms.length)} plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
       );
     }
 
@@ -1557,7 +1601,7 @@ export class ContextRetriever {
   private async loadFtsHits(input: ContextBuildInput): Promise<TurnSearchHit[]> {
     // Vector search first when we have an embedding client + the backend
     // supports it. Semantic recall catches paraphrases ("kredite" ↔ "darlehen")
-    // that plainto_tsquery misses. Empty result → fall through to FTS as a
+    // that the lexical query misses. Empty result → fall through to FTS as a
     // lexical safety net (good for specific ids / names).
     const embeddingClient = currentEmbeddingClient(this.embeddingClient);
     if (embeddingClient) {
@@ -1566,10 +1610,10 @@ export class ContextRetriever {
         if (vector.length > 0) {
           const hits = await this.graph.searchTurnsByEmbedding({
             queryEmbedding: vector,
-            // OB-72: pass the user message verbatim as the FTS leg.
-            // `plainto_tsquery('simple', …)` accepts arbitrary punctuation,
-            // so no extra tokenisation needed. When the backend gets a
-            // non-empty ftsQuery it switches to hybrid scoring.
+            // OB-72: pass the user message verbatim as the FTS leg. The
+            // backend turns it into an OR query over its content terms
+            // (buildRecallTsQuery, #1822); a message without one stays
+            // pure cosine.
             ftsQuery: input.userMessage,
             ...(input.userId ? { userId: input.userId } : {}),
             ...(input.sessionScope ? { excludeScope: input.sessionScope } : {}),
@@ -1641,7 +1685,7 @@ function renderContext(input: RenderInput): string {
   };
 
   if (input.verbatimTurns.length > 0) {
-    push('## Letzte Turns in diesem Chat');
+    push(RECALL_HEADINGS.tail);
     for (const t of input.verbatimTurns) {
       const chunk = `- [${t.time}]\n  ${renderUserLine(t.userMessage, 600, 'Nutzer')}\n  Assistent: ${truncate(t.assistantAnswer, 1200)}`;
       if (!push(chunk)) break;
@@ -1649,7 +1693,7 @@ function renderContext(input: RenderInput): string {
   }
 
   if (input.entityHits.length > 0 && budget > 500) {
-    push('\n## Früher besprochene Entitäten (aus anderen Chats dieses Users)');
+    push(`\n${RECALL_HEADINGS.relatedEntityTurns}`);
     for (const hit of input.entityHits) {
       const label =
         String(hit.entity.props['displayName'] ?? '') ||
@@ -1666,7 +1710,7 @@ function renderContext(input: RenderInput): string {
   }
 
   if (input.ftsHits.length > 0 && budget > 500) {
-    push('\n## Inhaltlich ähnliche frühere Turns');
+    push(`\n${RECALL_HEADINGS.relatedTurns}`);
     for (const h of input.ftsHits) {
       const chunk = `- [${h.time}] (rank ${h.rank.toFixed(2)})\n  Frage: ${truncate(h.userMessage, 400)}\n  Antwort: ${truncate(h.assistantAnswer, 800)}`;
       if (!push(chunk)) break;
@@ -1759,7 +1803,7 @@ function renderRecallBlocks(
   };
 
   if (recalled.plans.length > 0) {
-    push('## Aus früheren Sessions — offene Pläne');
+    push(RECALL_HEADINGS.plans);
     for (const p of recalled.plans) {
       const label = p.strategy ? truncate(p.strategy, 120) : 'Plan';
       const when = p.createdAt ? ` · ${p.createdAt}` : '';
@@ -1801,7 +1845,7 @@ function renderRecallBlocks(
   }
 
   if (recalled.processes.length > 0 && budget > 200) {
-    push('\n## Aus früheren Sessions — gespeicherte Prozesse');
+    push(`\n${RECALL_HEADINGS.processes}`);
     for (const pr of recalled.processes) {
       const chunk = `- ${truncate(pr.title, 160)} (${String(pr.stepCount)} Schritte, score ${pr.score.toFixed(2)})`;
       if (!push(chunk)) break;
@@ -1809,14 +1853,14 @@ function renderRecallBlocks(
   }
 
   if (recalled.insights.length > 0 && budget > 200) {
-    push('\n## Aus früheren Sessions — verwandte Erkenntnisse');
+    push(`\n${RECALL_HEADINGS.insights}`);
     for (const ins of recalled.insights) {
       // Durable (curated schema/reference) insights render in full so the
       // agent can rely on them instead of re-running discovery tools; fuzzy
       // insights stay capped. `ins.summary` is already bounded upstream by
       // toRecalledInsight (durable → 2000, fuzzy → 300).
       const rendered = ins.durable ? ins.summary : truncate(ins.summary, 300);
-      const chunk = `- ${ins.kind}: ${rendered} (score ${ins.score.toFixed(2)})`;
+      const chunk = `- ${ins.kind}: ${rendered} (${insightProvenance(ins)}score ${ins.score.toFixed(2)})`;
       if (!push(chunk)) break;
     }
   }
@@ -1834,6 +1878,8 @@ function toRecalledInsight(
   hit: MemoryRecallHit,
   durable = false,
 ): RecalledInsight {
+  const correctedAt = isoDay(hit.mk.props[MEMORY_CORRECTED_AT_PROP]);
+  const asOf = correctedAt ?? isoDay(hit.mk.props['created_at']);
   return {
     mkId: hit.mk.id,
     kind: String(hit.mk.props['kind'] ?? 'memory'),
@@ -1843,7 +1889,28 @@ function toRecalledInsight(
     ),
     score: hit.score,
     ...(durable ? { durable: true } : {}),
+    ...(asOf !== undefined ? { asOf } : {}),
+    ...(correctedAt !== undefined ? { correctedByUser: true } : {}),
   };
+}
+
+/** The `YYYY-MM-DD` day of an ISO timestamp property, if it holds one. */
+function isoDay(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const day = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return day?.[1];
+}
+
+/**
+ * #1863 — the date marker in front of an insight's score: when a user
+ * corrected it, or how old it is. The orchestrator's precedence rule refers
+ * to the "vom Nutzer korrigiert" wording ({@link USER_CORRECTED_MARKER}).
+ */
+function insightProvenance(ins: RecalledInsight): string {
+  if (ins.correctedByUser === true && ins.asOf !== undefined) {
+    return `${USER_CORRECTED_MARKER} ${ins.asOf}; `;
+  }
+  return ins.asOf !== undefined ? `Stand ${ins.asOf}; ` : '';
 }
 
 // ---------------------------------------------------------------------------
@@ -1923,7 +1990,7 @@ function renderAssembledParts(
   const recall = ordered.filter((o) => o.candidate.origin !== 'tail');
 
   if (tail.length > 0) {
-    parts.push('## Letzte Turns in diesem Chat');
+    parts.push(RECALL_HEADINGS.tail);
     for (const o of tail) {
       parts.push(renderHitChunk(o.candidate, compactMode));
     }
@@ -1931,8 +1998,8 @@ function renderAssembledParts(
   if (recall.length > 0) {
     parts.push(
       compactMode
-        ? '\n## Inhaltlich verwandte Turns (compact)'
-        : '\n## Inhaltlich verwandte Turns',
+        ? `\n${RECALL_HEADINGS.relatedTurns} (compact)`
+        : `\n${RECALL_HEADINGS.relatedTurns}`,
     );
     for (const o of recall) {
       parts.push(renderHitChunk(o.candidate, compactMode));

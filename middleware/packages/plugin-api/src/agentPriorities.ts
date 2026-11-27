@@ -20,7 +20,8 @@ export const AGENT_PRIORITIES_CAPABILITY = 'agentPriorities@1';
 export interface AgentPriorityRecord {
   /** Agent manifest identity (e.g. `de.byte5.agent.calendar`). */
   readonly agentId: string;
-  /** `graph_nodes.external_id` (Turn-ID, `Session::scope::time` pattern, etc.). */
+  /** `graph_nodes.external_id` of a Turn (`turn:<scope>:<time>`) or a
+   *  Session (`session:<scope>`, applies to every turn of it — #1820). */
   readonly entryExternalId: string;
   /** `'block'` drops the hit entirely, `'boost'` multiplies score × weight. */
   readonly action: 'block' | 'boost';

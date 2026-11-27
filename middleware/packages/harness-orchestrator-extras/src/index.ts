@@ -41,6 +41,8 @@ export type {
 
 export {
   ContextRetriever,
+  RECALL_HEADINGS,
+  USER_CORRECTED_MARKER,
   extractCandidateTerms,
 } from './contextRetriever.js';
 export {

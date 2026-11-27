@@ -38,6 +38,13 @@ import { parseClientAddressPolicy } from './auth/clientAddress.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryOwnerlessRouter } from './routes/memoryOwnerless.js';
 import { runDurableRulesSync } from './services/durableRulesSync.js';
+import {
+  createGeneratedObjectsRegistry,
+  InMemoryGeneratedObjectStore,
+  PostgresGeneratedObjectStore,
+  type GeneratedObjectStore,
+} from './services/generatedObjects.js';
+import { GENERATED_OBJECTS_SERVICE_NAME } from '@omadia/plugin-api';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
 import { createUpdateAuditStore } from './update/auditStore.js';
@@ -1680,6 +1687,25 @@ async function main(): Promise<void> {
     'attachmentBindings',
     createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
   );
+  // ADR-0187 (#1986) — generated files recorded under the turn's person and
+  // chat (migration 0119), released with chat deletion and memory purges.
+  // Provided before plugins activate (Office and Diagrams read it then); the
+  // Postgres store is bound once the graph pool exists.
+  let generatedObjectStoreRef: GeneratedObjectStore | undefined = config.DATABASE_URL
+    ? undefined
+    : new InMemoryGeneratedObjectStore();
+  const generatedObjects = createGeneratedObjectsRegistry({
+    store: () => generatedObjectStoreRef,
+    currentTurn: () => {
+      const turn = turnContext.current();
+      if (!turn) return undefined;
+      return {
+        ...(turn.resolvedOmadiaUserId ? { ownerOmadiaUserId: turn.resolvedOmadiaUserId } : {}),
+        ...(turn.sessionScope ? { scope: turn.sessionScope } : {}),
+      };
+    },
+  });
+  serviceRegistry.provide(GENERATED_OBJECTS_SERVICE_NAME, generatedObjects);
   if (config.AUDIENCE_FLOOR_ENABLED) {
     const storedGrants = config.DATABASE_URL
       ? createLateBoundGrantStore(() => audienceGrantStoreRef)
@@ -2830,6 +2856,9 @@ async function main(): Promise<void> {
       audienceGrantStoreRef = audienceGrantStore;
     }
   }
+  generatedObjectStoreRef = graphPool
+    ? new PostgresGeneratedObjectStore(graphPool)
+    : (generatedObjectStoreRef ?? new InMemoryGeneratedObjectStore());
   attachmentBindingStoreRef = graphPool
     ? new PostgresAttachmentBindingStore(graphPool)
     : (attachmentBindingStoreRef ?? new InMemoryAttachmentBindingStore());
@@ -4381,6 +4410,8 @@ async function main(): Promise<void> {
     createChatSessionsRouter({
       getStore: getChatSessionStore,
       legacyOwner: legacyChatOwner,
+      releaseGenerated: (scope, ownerOmadiaUserId) =>
+        generatedObjects.release({ scope, ...(ownerOmadiaUserId ? { ownerOmadiaUserId } : {}) }),
       // #1753 — and removes its markdown transcripts.
       purgeTranscripts: (scope) => purgeSessionTranscripts(memoryStore, scope),
       // #1757 — deleting a chat pauses the routines that deliver into it.
@@ -4583,6 +4614,7 @@ async function main(): Promise<void> {
       tenantId: graphTenantId,
       ...(syncDurableRules ? { syncDurableRules } : {}),
       processMemory: () => serviceRegistry.get<ProcessMemoryService>('processMemory'),
+      generatedObjects,
     }),
   );
 

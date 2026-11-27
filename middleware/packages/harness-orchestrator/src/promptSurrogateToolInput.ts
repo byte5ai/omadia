@@ -15,9 +15,10 @@
  *     every value put in is one {@link remaskEchoedValues} masks again;
  *   - not for a domain tool that runs a sub-agent (its input is a question
  *     for a model; the sub-agent's own tool calls are restored in turn);
- *   - not for the intern-exempt self tools (`memory`, stored processes, …):
- *     what they store is read back in clear in later turns, whose map no
- *     longer knows the value, so they keep the placeholder;
+ *   - not for the intern-exempt self tools (stored processes, …): they keep
+ *     the placeholder. `memory` has its own rule (#1841, ADR-0191,
+ *     `memoryNoteSurrogates.ts`): restored with the full map on write,
+ *     re-masked through the reading turn's map on read;
  *   - every tool result text the model gets, errors included, is re-masked
  *     with the turn's known values before it goes out.
  * A real value therefore reaches a tool, not the model. A plugin tool that

@@ -15,6 +15,11 @@ import {
   runsOnModelInput,
 } from './privacyInternPolicy.js';
 import {
+  isMemoryNoteTool,
+  maskMemoryNoteResult,
+  restoreMemoryNoteInput,
+} from './memoryNoteSurrogates.js';
+import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
 } from './promptSurrogateToolInput.js';
@@ -641,6 +646,12 @@ export class LocalSubAgent {
     if (decision?.action === 'refuse-repeat') return refusedRepeat(this.name, toolName);
     if (decision?.action === 'refuse-miss') return { output: replayMissNotice(toolName) };
     const replay = decision?.action === 'replay' ? decision.record : undefined;
+    // #1841 / ADR-0191 — a `memory` note is stored with the user's values.
+    const memoryNote =
+      isMemoryNoteTool(toolName) && replay === undefined && privacy !== undefined
+        ? await restoreMemoryNoteInput(privacy, input)
+        : undefined;
+    if (memoryNote !== undefined && !memoryNote.ok) return { output: memoryNote.notice };
     let raw: Awaited<ReturnType<LocalSubAgentTool['handle']>>;
     try {
       if (replay?.kind === 'rejection') throw replay.error;
@@ -653,9 +664,11 @@ export class LocalSubAgent {
                   // #1544 — the inner tool runs on the user's values; this
                   // sub-agent's model keeps reading the placeholders.
                   tool.handle(
-                    runsOnModelInput(toolName)
-                      ? input
-                      : restorePromptSurrogatesInToolInput(privacy, input),
+                    memoryNote !== undefined
+                      ? memoryNote.input
+                      : runsOnModelInput(toolName)
+                        ? input
+                        : restorePromptSurrogatesInToolInput(privacy, input),
                   ),
                 ),
               ),
@@ -733,7 +746,12 @@ export class LocalSubAgent {
             ...carried,
           };
         }
-        return { output: remaskEchoedValues(privacy, result), ...carried };
+        return {
+          output: isMemoryNoteTool(toolName)
+            ? await maskMemoryNoteResult(privacy, result)
+            : remaskEchoedValues(privacy, result),
+          ...carried,
+        };
       }
       // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
       const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)

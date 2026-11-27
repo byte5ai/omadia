@@ -35,6 +35,8 @@ export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
 export * from './datasetId.js';
+// ADR-0187 (#1986) — generated files recorded with owner and chat.
+export * from './generatedObjects.js';
 
 // #440: provider-neutral `embeddingClient@1` contract. Lives here for the same
 // reason the KG contract does — every adapter (`@omadia/embeddings` for Ollama,
@@ -229,3 +231,7 @@ export * from './agentDirectory.js';
 // #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
 // agent batch triggers, not as free-running plugin intervals.
 export * from './batchJobs.js';
+
+// #1822 — content terms + OR tsquery for full-text recall, shared by both
+// knowledge-graph backends so the lexical leg matches the same turns.
+export * from './recallQuery.js';

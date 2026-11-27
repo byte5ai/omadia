@@ -13,6 +13,11 @@
 
 import { fieldExemptModelCopy, internFailedNotice, isInternExemptCall } from './privacyInternPolicy.js';
 import {
+  isMemoryNoteTool,
+  maskMemoryNoteResult,
+  restoreMemoryNoteInput,
+} from './memoryNoteSurrogates.js';
+import {
   isNativeToolResult,
   isUnknownOutcomeToolErrorNotice,
   isWriteCapableTool,
@@ -444,7 +449,16 @@ export class ToolDispatchService {
       const callContext = currentToolCallContext() ?? {
         ...(this.deps.agentSlug !== undefined ? { agentSlug: this.deps.agentSlug } : {}),
       };
-      return this.invoke(name, input, () => nativeHandler(input, callContext), options);
+      // #1841 / ADR-0191 — a `memory` note is stored with the user's values.
+      // No handle ⇒ no await: the dispatch keeps its timing (commit order).
+      const memoryPrivacy = isMemoryNoteTool(name) ? this.privacyHandle() : undefined;
+      const memoryNote =
+        memoryPrivacy !== undefined ? await restoreMemoryNoteInput(memoryPrivacy, input) : undefined;
+      if (memoryNote !== undefined && !memoryNote.ok) {
+        return { content: memoryNote.notice, isError: true, origin: 'dispatcher' };
+      }
+      const handlerInput = memoryNote !== undefined ? memoryNote.input : input;
+      return this.invoke(name, input, () => nativeHandler(handlerInput, callContext), options);
     }
 
     const domainTool = this.domainTools().find((t) => t.name === name);
@@ -595,7 +609,8 @@ export class ToolDispatchService {
           }),
         );
       }
-      return fromTool(result);
+      // #1841 — a `memory` result is masked through this turn's map.
+      return fromTool(isMemoryNoteTool(name) ? await maskMemoryNoteResult(privacy, result) : result);
     }
     // #1768 / ADR 0241 — field-level exemption (see the orchestrator seam).
     const fieldExempt = isGuardedControlFlowResult(result, authPromptMint)

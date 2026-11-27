@@ -121,6 +121,12 @@ import {
   type Visibility,
   type EmbeddingClient,
   normalizeDatasetUuid,
+  PROMOTION_RETIRED_PROP,
+  SYSTEM_AUDIT_ACTOR_UUID,
+  buildRecallTsQuery,
+  isMemorableContentCorrection,
+  INCONSISTENCY_MAX_LOST_VERDICTS,
+  MEMORY_CORRECTED_AT_PROP,
 } from '@omadia/plugin-api';
 import {
   GRAPH_EDGE_TYPES,
@@ -2018,8 +2024,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   }
 
   async searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]> {
-    const query = opts.query.trim();
-    if (query.length === 0) return [];
+    // #1822 — an OR query over the message's content terms, not every word.
+    const query = buildRecallTsQuery(opts.query);
+    if (query === null) return [];
     const audienceOwners = audienceFilter(opts.audienceOwners);
     if (audienceOwners === EMPTY_AUDIENCE) return [];
 
@@ -2031,9 +2038,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       ? Array.from(opts.excludeTurnIds)
       : null;
 
-    // plainto_tsquery keeps Postgres happy with arbitrary user input
-    // (including punctuation and German compound words). 'simple' config
-    // matches the index expression from migration 0004.
+    // The query holds only letter/digit terms joined by `|`
+    // (buildRecallTsQuery), so to_tsquery cannot fail on user input. 'simple'
+    // config matches the index expression from migration 0004.
     const result = await this.pool.query<{
       external_id: string;
       scope: string;
@@ -2055,7 +2062,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
             coalesce(properties->>'userMessage', '') || ' ' ||
             coalesce(properties->>'assistantAnswer', '')
           ),
-          plainto_tsquery('simple', $3)
+          to_tsquery('simple', $3)
         ) AS rank
       FROM graph_nodes
       WHERE tenant_id = $1
@@ -2081,7 +2088,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           'simple',
           coalesce(properties->>'userMessage', '') || ' ' ||
           coalesce(properties->>'assistantAnswer', '')
-        ) @@ plainto_tsquery('simple', $3)
+        ) @@ to_tsquery('simple', $3)
       ORDER BY rank DESC, (properties->>'time') DESC
       LIMIT $6
       `,
@@ -2138,8 +2145,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     // OB-72 hybrid retrieval. ftsQuery=null/empty → pure-cosine path
     // (backwards-compat); otherwise switch to BM25 + cosine + recency +
     // type-weight scoring in a single SQL.
-    const ftsQuery = opts.ftsQuery?.trim();
-    const ftsActive = ftsQuery !== undefined && ftsQuery.length > 0;
+    // #1822 — OR query over content terms; a message without one has no
+    // lexical leg (pure cosine).
+    const ftsQuery =
+      opts.ftsQuery !== undefined ? buildRecallTsQuery(opts.ftsQuery) : null;
+    const ftsActive = ftsQuery !== null;
     const recallMinScore = Math.max(0, Math.min(opts.recallMinScore ?? 0, 1));
     const recallRecencyBoost = Math.max(0, opts.recallRecencyBoost ?? 0.05);
     const includeCold = opts.includeCold === true;
@@ -2206,7 +2216,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
                   coalesce(properties->>'userMessage','') || ' ' ||
                   coalesce(properties->>'assistantAnswer','')
                 ),
-                plainto_tsquery('simple', $6)
+                to_tsquery('simple', $6)
               ),
               0
             )
@@ -2240,7 +2250,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
                 'simple',
                 coalesce(properties->>'userMessage','') || ' ' ||
                 coalesce(properties->>'assistantAnswer','')
-              ) @@ plainto_tsquery('simple', $6)
+              ) @@ to_tsquery('simple', $6)
             )
           )
       ),
@@ -2893,6 +2903,21 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { uuid: hit.id, owners };
   }
 
+  /** ADR-0190 — `keeper_missing` when the entry a resolution keeps is gone. */
+  private async assertKeeperExists(mkExternalId: string): Promise<void> {
+    const row = await this.pool.query(
+      `SELECT 1 FROM graph_nodes
+        WHERE tenant_id = $1 AND external_id = $2 AND type = 'MemorableKnowledge'
+        LIMIT 1`,
+      [this.tenantId, mkExternalId],
+    );
+    if (row.rows.length === 0) {
+      throw Object.assign(new Error('keeper_missing'), {
+        code: 'keeper_missing',
+      });
+    }
+  }
+
   private assertActorIsOwner(
     owners: string[],
     actorOmadiaUserId: string,
@@ -3022,16 +3047,18 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // memory (even though there's no FK).
       await this.writeAclAudit(client, {
         memoryExternalId: memorableKnowledgeNodeId,
-        actorOmadiaUserId: actor.actorOmadiaUserId,
-        ...(actor.actorChannelIdentityId
-          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
-          : {}),
+        ...auditActorOf(actor),
         action: 'delete',
         beforeOwners: owners,
         afterOwners: null,
         ...(actor.reason ? { reason: actor.reason } : {}),
       });
-      await this.deleteMemoryNode(client, uuid);
+      await this.deleteMemoryNode(
+        client,
+        uuid,
+        memorableKnowledgeNodeId,
+        resolvedByOf(actor),
+      );
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -3041,8 +3068,69 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
-  /** One MK node and its excerpts, inside the caller's transaction. */
-  private async deleteMemoryNode(client: PoolClient, uuid: string): Promise<void> {
+  /**
+   * One MK node and its excerpts, inside the caller's transaction. Every
+   * deletion follows ADR-0190: the source turns are retired and the open
+   * pairs that involve the entry are closed before the node goes.
+   */
+  private async deleteMemoryNode(
+    client: PoolClient,
+    uuid: string,
+    externalId: string,
+    resolvedBy: string | null,
+  ): Promise<void> {
+    // ADR-0190 — the source turns keep a mark, so auto and bulk promotion
+    // do not mint the deleted (discarded, merged-away) entry again from
+    // them. The DERIVED_FROM edges go with the node below.
+    await client.query(
+      `UPDATE graph_nodes
+          SET properties = properties || jsonb_build_object(
+                '${PROMOTION_RETIRED_PROP}',
+                jsonb_build_object('at', $3::text, 'reason', 'memory_deleted'))
+        WHERE tenant_id = $1
+          AND type = 'Turn'
+          AND id IN (
+            SELECT to_node FROM graph_edges
+             WHERE tenant_id = $1 AND from_node = $2 AND type = 'DERIVED_FROM'
+          )`,
+      [this.tenantId, uuid, new Date().toISOString()],
+    );
+    // ADR-0190 (#1862) — open contradictions and duplicate candidates that
+    // involve this entry, or one of its excerpts, lose their subject. Close
+    // them as dismissed with the reason, so the operator is not offered to
+    // delete the other side as the "loser" of a pair that no longer exists.
+    // A resolution that deletes this entry overwrites its own pair after.
+    await client.query(
+      `UPDATE graph_nodes
+          SET properties = properties || jsonb_build_object(
+                'status', 'dismissed',
+                'resolved_at', $3::text,
+                'resolved_by', $4::text,
+                'closed_reason', 'memory_deleted',
+                'closed_memory', $5::text)
+        WHERE tenant_id = $1
+          AND properties->>'status' = 'open'
+          AND (
+            (type IN ('Inconsistency', 'MergeCandidate')
+              AND properties->'mk_pair' @> jsonb_build_array($5::text))
+            OR (type = 'ExcerptMergeCandidate'
+              AND EXISTS (
+                SELECT 1 FROM graph_edges xe
+                  JOIN graph_nodes x ON x.id = xe.from_node
+                 WHERE xe.tenant_id = $1
+                   AND xe.to_node = $2
+                   AND xe.type = 'EXCERPT_OF'
+                   AND graph_nodes.properties->'excerpt_pair' @> jsonb_build_array(x.external_id)
+              ))
+          )`,
+      [
+        this.tenantId,
+        uuid,
+        new Date().toISOString(),
+        resolvedBy,
+        externalId,
+      ],
+    );
     // Slice 6.5 — cascade-delete the PalaiaExcerpt nodes attached
     // to this MK. The EXCERPT_OF edges are auto-cleaned by graph_edges
     // FK CASCADE on either side, but the Excerpt nodes themselves are
@@ -3105,7 +3193,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         afterOwners: null,
         ...(actor.reason ? { reason: actor.reason } : {}),
       });
-      await this.deleteMemoryNode(client, uuid);
+      await this.deleteMemoryNode(
+        client,
+        uuid,
+        memorableKnowledgeNodeId,
+        resolvedByOf(actor),
+      );
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -3581,6 +3674,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       }>(`SELECT properties FROM graph_nodes WHERE id = $1`, [uuid]);
       const current = propsRow.rows[0]!.properties;
       const merged: Record<string, unknown> = { ...current };
+      // #1863 — a person changed what the entry says: stamp the correction.
+      if (isMemorableContentCorrection(current, patch)) {
+        merged[MEMORY_CORRECTED_AT_PROP] = new Date().toISOString();
+      }
       if (patch.kind !== undefined) merged['kind'] = patch.kind;
       if (patch.summary !== undefined) merged['summary'] = patch.summary;
       if (patch.rationale === null) {
@@ -4300,6 +4397,15 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const terminalStatus: InconsistencyStatus =
       resolution === 'dismiss' ? 'dismissed' : 'resolved';
 
+    // ADR-0190 (#1862) — a resolution that keeps one side and deletes the
+    // other needs the kept side to exist; otherwise it would delete the last
+    // copy of the knowledge. Refused before anything is deleted.
+    if (resolution === 'a_wins' || resolution === 'b_wins') {
+      const keeper =
+        existing.conflictsWith[resolution === 'a_wins' ? 0 : 1];
+      await this.assertKeeperExists(keeper);
+    }
+
     // a_wins / b_wins: delete the loser BEFORE marking resolved so a
     // failed delete (not_an_owner) leaves the inconsistency open.
     if (resolution === 'a_wins') {
@@ -4316,7 +4422,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       status: terminalStatus,
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
       // Defensive: ensure mk_pair lands in the next-write even if the
       // existing record predates the schema field.
       mk_pair: existing.conflictsWith,
@@ -4358,7 +4464,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND type = 'MemorableKnowledge'
           AND embedding IS NOT NULL
           AND NOT (properties ? 'last_inconsistency_check_at')
-        ORDER BY created_at ASC
+        ORDER BY properties->>'last_inconsistency_attempt_at' ASC NULLS FIRST,
+                 created_at ASC
         LIMIT $2`,
       [this.tenantId, limit],
     );
@@ -4398,7 +4505,38 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
 
   async markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
+    opts?: { verdictLost?: boolean },
   ): Promise<void> {
+    if (opts?.verdictLost === true) {
+      // ADR-0190 (#1861) — count the lost attempt; give up (marker +
+      // outcome) once INCONSISTENCY_MAX_LOST_VERDICTS attempts were lost.
+      await this.pool.query(
+        `UPDATE graph_nodes AS g
+            SET properties = g.properties
+                  || jsonb_build_object(
+                       'inconsistency_lost_verdicts', a.n,
+                       'last_inconsistency_attempt_at', to_jsonb(now()::timestamptz)
+                     )
+                  || CASE WHEN a.n >= $3
+                       THEN jsonb_build_object(
+                              'last_inconsistency_check_at', to_jsonb(now()::timestamptz),
+                              'inconsistency_check_outcome', 'verdict_lost'
+                            )
+                       ELSE '{}'::jsonb
+                     END
+           FROM (
+             SELECT id,
+                    COALESCE((properties->>'inconsistency_lost_verdicts')::int, 0) + 1 AS n
+               FROM graph_nodes
+              WHERE tenant_id = $1
+                AND external_id = $2
+                AND type = 'MemorableKnowledge'
+           ) AS a
+          WHERE g.id = a.id`,
+        [this.tenantId, memorableKnowledgeNodeId, INCONSISTENCY_MAX_LOST_VERDICTS],
+      );
+      return;
+    }
     // jsonb_set creates the key if absent, replaces if present. The
     // timestamp string is wrapped in to_jsonb so the column stays
     // jsonb-typed end-to-end.
@@ -4609,6 +4747,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const terminalStatus: MergeCandidateStatus =
       resolution === 'not_duplicate' ? 'dismissed' : 'resolved';
 
+    // ADR-0190 (#1862) — never delete the other side when the keeper is gone.
+    if (resolution === 'keep_a' || resolution === 'keep_b') {
+      await this.assertKeeperExists(
+        existing.duplicateOf[resolution === 'keep_a' ? 0 : 1],
+      );
+    }
     if (resolution === 'keep_a') {
       await this.deleteMemory(existing.duplicateOf[1], actor);
     } else if (resolution === 'keep_b') {
@@ -4621,7 +4765,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       status: terminalStatus,
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
       mk_pair: existing.duplicateOf,
     };
     const validated = validateNodeProps('MergeCandidate', nextProps);
@@ -4954,7 +5098,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       status: terminalStatus,
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
       excerpt_pair: existing.duplicateExcerptOf,
     };
     const validated = validateNodeProps('ExcerptMergeCandidate', nextProps);
@@ -6231,6 +6375,37 @@ function audienceFilter(
   if (audience === undefined) return null;
   const members = canonicalOwners(audience);
   return members.length === 0 ? EMPTY_AUDIENCE : JSON.stringify(members);
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * ADR-0190 — who an audit row names: the kernel job (nil uuid + its
+ * `system:<job>` label) when `systemActor` is set, else the person.
+ */
+function auditActorOf(actor: AclMutationOptions): {
+  actorOmadiaUserId: string;
+  actorChannelIdentityId?: string;
+} {
+  if (actor.systemActor) {
+    return {
+      actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+      actorChannelIdentityId: actor.systemActor,
+    };
+  }
+  return {
+    actorOmadiaUserId: actor.actorOmadiaUserId,
+    ...(actor.actorChannelIdentityId
+      ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+      : {}),
+  };
+}
+
+/** ADR-0190 — `resolved_by` of a pair: the person's uuid, null for a job. */
+function resolvedByOf(actor: AclMutationOptions): string | null {
+  if (actor.systemActor) return null;
+  return UUID_RE.test(actor.actorOmadiaUserId) ? actor.actorOmadiaUserId : null;
 }
 
 function vectorLiteral(v: readonly number[]): string {

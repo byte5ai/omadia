@@ -234,6 +234,12 @@ interface ChatSessionDeps {
   getStore: () => ChatSessionStore | undefined;
   /** #1762 — owner of chats written before owners existed; see `chatSessionAccess.ts`. */
   legacyOwner?: LegacyChatOwner;
+  /**
+   * ADR-0187 (#1986) — drop the caller's records of generated files made in
+   * this chat; files no other chat or person references are deleted. Runs
+   * after the transcript is gone; a failure is logged, never fails the delete.
+   */
+  releaseGenerated?: (scope: string, ownerOmadiaUserId: string | undefined) => Promise<unknown>;
   /** #1753 — remove the markdown transcripts of the chat's scope when it is deleted. */
   purgeTranscripts?: (sessionScope: string) => Promise<void>;
   /** #1757 — the routines that deliver into a chat; absent = no routines feature. */
@@ -389,6 +395,12 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       // a Teams conversation, a shared bucket), may name someone else's.
       const existed = exists && isWebChatSessionId(id);
       await store.delete(id);
+      // ADR-0187 (#1986) — the caller's records of generated files made in this
+      // chat; only their own rows, so it is safe for a chat that never existed.
+      // A failure is logged and never fails the delete.
+      await deps.releaseGenerated?.(id, req.session?.omadia_user_id).catch((err: unknown) => {
+        console.error('[chat-sessions] generated files not released:', err instanceof Error ? err.message : err);
+      });
       if (!existed) {
         res.json({ ok: true, routinesPaused: 0 });
         return;

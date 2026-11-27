@@ -75,6 +75,8 @@ import type {
   RecalledContext,
 } from '@omadia/orchestrator-extras';
 import {
+  RECALL_HEADINGS,
+  USER_CORRECTED_MARKER,
   buildKgInsertPayload,
   buildKgWalkPayload,
   promoteTurnIfSignificant,
@@ -257,6 +259,12 @@ import {
   isPromptMaskedUploadCall,
   runsOnModelInput,
 } from './privacyInternPolicy.js';
+import {
+  isMemoryNoteTool,
+  maskMemoryNoteResult,
+  maskMemoryNoteText,
+  restoreMemoryNoteInput,
+} from './memoryNoteSurrogates.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -2077,7 +2085,7 @@ function buildSystemBlocks(
     //     refer *directly* to these turns. Don't re-query Odoo for the base
     //     numbers, don't speculate about different time ranges — build on
     //     what's already here.
-    //   - "Früher besprochene Entitäten" + "Inhaltlich ähnliche Turns" come
+    //   - "Inhaltlich verwandte Turns" (incl. its compact variant) comes
     //     from OTHER chats of the same user. Treat as working hypothesis;
     //     if the current question hinges on a concrete number from there,
     //     re-verify via the domain agent.
@@ -2088,8 +2096,9 @@ function buildSystemBlocks(
 Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention im System-Prompt oben: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Werkzeug-Abfrage für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
 
 **Vertrauensregeln:**
-- \`## Letzte Turns in diesem Chat\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über ein Fach-Werkzeug. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
-- \`## Früher besprochene Entitäten\` und \`## Inhaltlich ähnliche Turns\` — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen über ein Fach-Werkzeug verifizieren.
+- \`${RECALL_HEADINGS.tail}\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über ein Fach-Werkzeug. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
+- \`${RECALL_HEADINGS.relatedTurns}\` (auch mit dem Zusatz „(compact)“) — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen über ein Fach-Werkzeug verifizieren.
+- \`${RECALL_HEADINGS.insights}\` — gespeicherte Erkenntnisse mit Datum („Stand …“). Trägt ein Eintrag „${USER_CORRECTED_MARKER} …“, hat der Nutzer ihn selbst korrigiert: das ist seine jüngste Angabe und gilt vor älteren Turns, Notizen und Erkenntnissen, die zum selben Sachverhalt einen anderen Wert nennen. Antworte mit dem korrigierten Wert; den alten nennst du höchstens als überholt.
 
 ${priorContext}`,
       cache_control: ORCHESTRATOR_CACHE_CONTROL,
@@ -2131,7 +2140,7 @@ async function wireExtraSystemHint(
   privacy: PrivacyTurnHandle | undefined,
   input: ChatTurnInput,
   /** Prefetched `/memories` index block (`memoryIndexPrefetch.ts`) — kernel
-   *  prose around an intern-exempt tool result, so not masked. */
+   *  prose around a `memory` result already masked like one (ADR-0191). */
   memoryIndexBlock?: string,
 ): Promise<string | undefined> {
   const callerHint = input.extraSystemHint;
@@ -2742,10 +2751,10 @@ Memory-Namensräume (Konvention):
 ${contextMemoryBlock}**Regel für /memories/_rules/ lesen:**
 - Bei einer **neuen fachlichen Frage** (Erstfrage zu einer Domäne in dieser Session, oder Wechsel der Domäne) zuerst die relevanten Regel-Dateien unter /memories/_rules/ lesen und die Konventionen strikt befolgen.
 - Bei einem **Follow-up** im selben Chat (Variante, Bereinigung, Klarifikation, Nachfrage zum letzten Turn wie "und das Ganze nochmal ohne X", "und für Q4?", "zeig das als Line-Chart") **NICHT erneut** die Regeln lesen — der Verbatim-Tail im Gesprächskontext hat bereits den relevanten Stand. Direkt antworten (ggf. mit \`render_diagram\` für Chart-Varianten). Regel erneut lesen nur, wenn die Follow-up eine fachlich neue Dimension einführt (z. B. "jetzt das Gleiche auf HR-Ebene").
-- Heuristik: enthält der Kontext-Block einen \`## Letzte Turns in diesem Chat\`-Abschnitt und bezieht sich die aktuelle Frage auf einen dieser Turns → Memory-Read überspringen.
+- Heuristik: enthält der Kontext-Block einen \`${RECALL_HEADINGS.tail}\`-Abschnitt und bezieht sich die aktuelle Frage auf einen dieser Turns → Memory-Read überspringen.
 
 **Dauerhaftes Schema-Wissen vertrauen (kein Re-Discovery):**
-- Enthält der Kontext-Block den Abschnitt \`## Aus früheren Sessions — verwandte Erkenntnisse\` mit **kuratiertem Schema-/Referenzwissen** (z. B. Dynamics-Entitäten und ihre Felder: \`ud_tutorial\`/\`ud_tutorials\`, \`ud_name\`, \`ud_coursenumber\`, \`ud_startdatetime\` …), dann ist das **maßgeblich und sessionübergreifend stabil**. Nutze es direkt.
+- Enthält der Kontext-Block den Abschnitt \`${RECALL_HEADINGS.insights}\` mit **kuratiertem Schema-/Referenzwissen** (z. B. Dynamics-Entitäten und ihre Felder: \`ud_tutorial\`/\`ud_tutorials\`, \`ud_name\`, \`ud_coursenumber\`, \`ud_startdatetime\` …), dann ist das **maßgeblich und sessionübergreifend stabil**. Nutze es direkt.
 - **Rufe KEINE Discovery-Tools erneut** (z. B. \`dynamics_describe\`) für eine Entität, deren Struktur in diesem dauerhaften Wissen bereits beschrieben ist. Gehe direkt zur **Daten-Abfrage** (\`dynamics_query\` o. ä.) über. Discovery nur für Entitäten/Felder, die im dauerhaften Wissen NICHT vorkommen.
 - Widerspricht eine Fach-Werkzeug-Antwort dem dauerhaften Wissen, weise den Nutzer auf die Inkonsistenz hin — überschreibe das kuratierte Wissen nicht still.
 
@@ -2771,7 +2780,7 @@ Regeln:
 
 8. **Keine Selbst-Verifizierung im Antworttext.** Schreibe NIEMALS Wörter wie "verifiziert", "geprüft", "bestätigt", "live", "live-verifiziert", "nachgeschlagen", "aus Odoo geholt" in deine Antwort, um Daten als frisch zu kennzeichnen. Das entscheidet ausschließlich das Verifier-Badge nach Turn-Ende — und es prüft anhand deines Tool-Traces, ob du wirklich ein Fach-Werkzeug gefragt hast. Wenn du diese Wörter trotzdem nutzt und in Wirklichkeit keinen Fach-Werkzeug-Aufruf gemacht hast, widerspricht der Verifier hart.
 
-9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Werkzeug-Aufruf machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
+9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`${RECALL_HEADINGS.relatedTurns}\` und \`${RECALL_HEADINGS.tail}\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Werkzeug-Aufruf machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
 
 10. **Gültiger Rückbezug:** Wenn der User explizit auf einen früheren Turn verweist ("wie eben berichtet", "die Zahl von gestern"), darfst du die Kontext-Zahl zitieren — aber formuliere dann klar als Rückbezug ("laut Stand vom <Datum>, keine Neu-Abfrage in diesem Turn"), niemals als "verifiziert/geprüft". Für Aggregate über mehrere Dimensionen (Team × Kunde × Zeitraum) immer einen Plausibilitäts-Check gegen bekannte Muster aus \`/memories/\`: wenn die Zahl >50 % vom Erwartungsband abweicht, EXPLIZIT als Auffälligkeit markieren und nachfragen statt bestätigen.
 
@@ -4737,9 +4746,11 @@ export class Orchestrator {
    */
   private async retrievePriorContext(
     input: ChatTurnInput,
-    // #361 — the wire-bound (possibly masked) message variant. The recalled
-    // text this returns flows INTO the LLM prompt, so the recall query must
-    // not itself carry a raw PII span the mask pass just removed.
+    // #361 / #1869 — the wire-bound (possibly masked) message variant. Only
+    // the relevance judge (a model call) reads it. Every search leg runs on
+    // the REAL message: stored turns hold real values, so a pseudonym query
+    // cannot match them. The recalled text is masked through the turn map
+    // (`maskRecalledForWire`) before it reaches the model.
     wireUserMessage?: string,
     // `enforce-strict` — see `TurnMemoryBinding.isolation`.
     isolation?: TurnMemoryBinding['isolation'],
@@ -4851,12 +4862,14 @@ export class Orchestrator {
       // recall legs are unchanged (tail + entity + hybrid-FTS); the
       // assembler adds per-agent block/boost (when the KG provider
       // publishes agentPriorities@1) + manual_authored × 1.3 + greedy
-      // fill against a configured token budget. agentId='orchestrator-default'
-      // for the main chat path; sub-agents that consume the retriever
-      // directly should pass their manifest identity.id so per-agent
-      // priorities apply.
+      // fill against a configured token budget. `agentId` is this
+      // orchestrator's agent (its slug, `default` on a legacy single-agent
+      // boot), so agent_priorities entries apply under that id (#1820).
       const result = await this.contextRetriever.assembleForBudget({
-        userMessage: wireUserMessage ?? input.userMessage,
+        userMessage: input.userMessage,
+        ...(wireUserMessage !== undefined && wireUserMessage !== input.userMessage
+          ? { judgeMessage: wireUserMessage }
+          : {}),
         // Per-orchestrator isolation: the real Agent identity drives the KG
         // scope-prefix filter (and agent_priorities). The retriever expects
         // the sessionScope already agent-qualified — `graphScopeFor` is the
@@ -5930,8 +5943,16 @@ export class Orchestrator {
       if (index.reason !== 'no-handler') console.log(`[orchestrator] memory-index skipped reason=${index.reason}`);
       return undefined;
     }
-    console.log(`[orchestrator] memory-index prefetched chars=${String(index.listing.length)} ms=${String(Date.now() - startedAt)}`);
-    return memoryIndexHint(index.listing);
+    // #1841 / ADR-0191 — the listing names stored notes: masked through this
+    // turn's map like a `memory` result. Withheld ⇒ no index; the model keeps
+    // the ordinary read convention, whose results are masked the same way.
+    const listing = await maskMemoryNoteText(turnContext.current()?.privacyHandle, index.listing);
+    if (!listing.ok) {
+      console.log('[orchestrator] memory-index skipped reason=privacy-withheld');
+      return undefined;
+    }
+    console.log(`[orchestrator] memory-index prefetched chars=${String(listing.text.length)} ms=${String(Date.now() - startedAt)}`);
+    return memoryIndexHint(listing.text);
   }
 
   private bindTurnMemory(
@@ -10052,9 +10073,20 @@ export class Orchestrator {
     // A top-level MCP grant is registered as a domain tool too, but calls its
     // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
     // server id runs a sub-agent model.
-    const handlerInput = this.toolKeepsSurrogates(name)
-      ? input
-      : restorePromptSurrogatesInToolInput(privacy, input);
+    // #1841 / ADR-0191 — a `memory` note is stored with the user's values
+    // (restored with the turn's full map), never with this turn's
+    // placeholders, which a later turn mints for other values.
+    const memoryNote =
+      isMemoryNoteTool(name) && replay === undefined && privacy !== undefined
+        ? await restoreMemoryNoteInput(privacy, input)
+        : undefined;
+    if (memoryNote !== undefined && !memoryNote.ok) return memoryNote.notice;
+    const handlerInput =
+      memoryNote !== undefined
+        ? memoryNote.input
+        : this.toolKeepsSurrogates(name)
+          ? input
+          : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<NativeToolOutput> => {
       if (
         privacy !== undefined &&
@@ -10253,8 +10285,11 @@ export class Orchestrator {
         // with its PII spans masked like the attachment tail of a prompt.
         if (ownUpload) return maskOwnUploadText(privacy, name, result);
         // #1544 — the handler ran on the user's values; what it echoes goes
-        // back to the model as the placeholders it wrote.
-        return remaskEchoedValues(privacy, result);
+        // back to the model as the placeholders it wrote. #1841 — a `memory`
+        // result is masked through THIS turn's map (ADR-0191).
+        return isMemoryNoteTool(name)
+          ? maskMemoryNoteResult(privacy, result)
+          : remaskEchoedValues(privacy, result);
       }
       // #1768 / ADR 0241 — a field-exempt tool's operational state in clear,
       // its user-entered free text withheld. Its `Error:` text took the

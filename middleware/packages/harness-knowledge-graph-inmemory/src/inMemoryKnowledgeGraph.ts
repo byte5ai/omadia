@@ -116,6 +116,12 @@ import {
   type TurnIngest,
   type TurnIngestResult,
   type TurnSearchHit,
+  PROMOTION_RETIRED_PROP,
+  SYSTEM_AUDIT_ACTOR_UUID,
+  extractRecallSearchTerms,
+  isMemorableContentCorrection,
+  INCONSISTENCY_MAX_LOST_VERDICTS,
+  MEMORY_CORRECTED_AT_PROP,
 } from '@omadia/plugin-api';
 
 /**
@@ -279,6 +285,16 @@ function computeDatasetAggregate(
  * tests, and the first round of UI work. Swap for an embedded or remote
  * store once the data model stabilises.
  */
+
+/**
+ * How many recall terms occur as whole tokens in `text`, the way the `simple`
+ * tsvector of the Neon backend sees it (#1822).
+ */
+function countRecallTermMatches(text: string, terms: readonly string[]): number {
+  const tokens = new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+  return terms.filter((term) => tokens.has(term)).length;
+}
+
 export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   private readonly nodes = new Map<string, GraphNode>();
   /** `from|type|to` → edge. Dedupes multi-ingest of the same turn. */
@@ -803,9 +819,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   }
 
   async searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]> {
-    const query = opts.query.trim().toLowerCase();
-    if (query.length === 0) return [];
-    const tokens = query.split(/\s+/).filter((t) => t.length >= 2);
+    // #1822 — the content terms of the message, OR-matched like the Neon
+    // backend's tsquery (buildRecallTsQuery).
+    const tokens = extractRecallSearchTerms(opts.query);
     if (tokens.length === 0) return [];
 
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
@@ -829,10 +845,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         String(node.props['userMessage'] ?? '') +
         ' ' +
         String(node.props['assistantAnswer'] ?? '')
-      ).toLowerCase();
-
-      let matches = 0;
-      for (const tok of tokens) if (haystack.includes(tok)) matches++;
+      );
+      const matches = countRecallTermMatches(haystack, tokens);
       if (matches === 0) continue;
 
       scored.push({
@@ -882,7 +896,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     };
     const excludeTurnIds = new Set(opts.excludeTurnIds ?? []);
 
-    const tokens = ftsQuery.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
+    const tokens = extractRecallSearchTerms(ftsQuery);
     if (tokens.length === 0) return [];
 
     const now = Date.now();
@@ -908,9 +922,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         String(node.props['userMessage'] ?? '') +
         ' ' +
         String(node.props['assistantAnswer'] ?? '')
-      ).toLowerCase();
-      let matches = 0;
-      for (const tok of tokens) if (haystack.includes(tok)) matches++;
+      );
+      const matches = countRecallTermMatches(haystack, tokens);
       if (matches === 0) continue;
       const bm25Norm = matches / tokens.length; // already in [0,1]
 
@@ -1325,6 +1338,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.aclAudit.set(entry.memoryExternalId, list);
   }
 
+  /** ADR-0190 — `keeper_missing` when the entry a resolution keeps is gone. */
+  private assertKeeperExists(mkExternalId: string): void {
+    const node = this.nodes.get(mkExternalId);
+    if (!node || node.type !== 'MemorableKnowledge') {
+      throw Object.assign(new Error('keeper_missing'), {
+        code: 'keeper_missing',
+      });
+    }
+  }
+
   private requireMkOrThrow(memorableKnowledgeNodeId: string): GraphNode {
     const node = this.nodes.get(memorableKnowledgeNodeId);
     if (!node || node.type !== 'MemorableKnowledge') {
@@ -1432,28 +1455,73 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // Audit BEFORE delete (matches Neon semantics).
     this.appendAclAudit({
       memoryExternalId: memorableKnowledgeNodeId,
-      actorOmadiaUserId: actor.actorOmadiaUserId,
-      ...(actor.actorChannelIdentityId
-        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
-        : {}),
+      ...(actor.systemActor
+        ? {
+            actorOmadiaUserId: SYSTEM_AUDIT_ACTOR_UUID,
+            actorChannelIdentityId: actor.systemActor,
+          }
+        : {
+            actorOmadiaUserId: actor.actorOmadiaUserId,
+            ...(actor.actorChannelIdentityId
+              ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+              : {}),
+          }),
       action: 'delete',
       beforeOwners: owners,
       afterOwners: null,
       ...(actor.reason ? { reason: actor.reason } : {}),
     });
-    this.deleteMemoryNode(node);
+    this.deleteMemoryNode(node, resolvedByOf(actor));
   }
 
-  /** One MK node, its excerpts, their edges and embeddings. */
-  private deleteMemoryNode(node: GraphNode): void {
+  /**
+   * One MK node, its excerpts, their edges and embeddings. Every deletion
+   * follows ADR-0190: source turns retired, open pairs closed (see Neon).
+   */
+  private deleteMemoryNode(node: GraphNode, resolvedBy: string | null): void {
+    const memorableKnowledgeNodeId = node.id;
     // Slice 6.5 — cascade-delete attached PalaiaExcerpt nodes BEFORE
     // dropping the parent + its edges; otherwise the edge-purge loop
     // below would orphan the excerpt nodes themselves.
     const excerptIdsToDrop: string[] = [];
+    const now = new Date().toISOString();
     for (const edge of this.edges.values()) {
       if (edge.type === 'EXCERPT_OF' && edge.to === node.id) {
         excerptIdsToDrop.push(edge.from);
       }
+      // ADR-0190 — mark the source turns retired from promotion (see Neon).
+      if (edge.type === 'DERIVED_FROM' && edge.from === node.id) {
+        const turn = this.nodes.get(edge.to);
+        if (turn && turn.type === 'Turn') {
+          turn.props = {
+            ...turn.props,
+            [PROMOTION_RETIRED_PROP]: { at: now, reason: 'memory_deleted' },
+          };
+        }
+      }
+    }
+    // ADR-0190 (#1862) — close the open pairs that lose their subject.
+    const excerptIds = new Set(excerptIdsToDrop);
+    for (const pair of this.nodes.values()) {
+      if (pair.props['status'] !== 'open') continue;
+      const mkPair = pair.props['mk_pair'];
+      const exPair = pair.props['excerpt_pair'];
+      const hit =
+        ((pair.type === 'Inconsistency' || pair.type === 'MergeCandidate') &&
+          Array.isArray(mkPair) &&
+          mkPair.includes(memorableKnowledgeNodeId)) ||
+        (pair.type === 'ExcerptMergeCandidate' &&
+          Array.isArray(exPair) &&
+          exPair.some((id) => excerptIds.has(String(id))));
+      if (!hit) continue;
+      pair.props = {
+        ...pair.props,
+        status: 'dismissed',
+        resolved_at: now,
+        resolved_by: resolvedBy,
+        closed_reason: 'memory_deleted',
+        closed_memory: memorableKnowledgeNodeId,
+      };
     }
     for (const exId of excerptIdsToDrop) this.nodes.delete(exId);
 
@@ -1503,7 +1571,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       afterOwners: null,
       ...(actor.reason ? { reason: actor.reason } : {}),
     });
-    this.deleteMemoryNode(node);
+    this.deleteMemoryNode(node, resolvedByOf(actor));
   }
 
   /**
@@ -1791,6 +1859,10 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     }
 
     const next: Record<string, unknown> = { ...node.props };
+    // #1863 — see NeonKnowledgeGraph.updateMemorableKnowledge.
+    if (isMemorableContentCorrection(node.props, patch)) {
+      next[MEMORY_CORRECTED_AT_PROP] = new Date().toISOString();
+    }
     if (patch.kind !== undefined) next['kind'] = patch.kind;
     if (patch.summary !== undefined) next['summary'] = patch.summary;
     if (patch.rationale === null) {
@@ -2268,6 +2340,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       });
     }
 
+    // ADR-0190 (#1862) — the kept side must still exist.
+    if (resolution === 'a_wins' || resolution === 'b_wins') {
+      this.assertKeeperExists(
+        existing.conflictsWith[resolution === 'a_wins' ? 0 : 1],
+      );
+    }
     if (resolution === 'a_wins') {
       await this.deleteMemory(existing.conflictsWith[1], actor);
     } else if (resolution === 'b_wins') {
@@ -2286,7 +2364,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'dismiss' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
     };
     return this.hydrateInconsistency(externalId)!;
   }
@@ -2297,15 +2375,21 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     limit: number;
   }): Promise<string[]> {
     const limit = Math.max(1, Math.min(opts.limit, 200));
-    const candidates: { id: string; createdAt: string }[] = [];
+    const candidates: { id: string; createdAt: string; attemptAt: string }[] = [];
     for (const node of this.nodes.values()) {
       if (node.type !== 'MemorableKnowledge') continue;
       if (!this.embeddings.has(node.id)) continue;
       if (node.props['last_inconsistency_check_at'] !== undefined) continue;
       const createdAt = String(node.props['created_at'] ?? '');
-      candidates.push({ id: node.id, createdAt });
+      const attemptAt = String(node.props['last_inconsistency_attempt_at'] ?? '');
+      candidates.push({ id: node.id, createdAt, attemptAt });
     }
-    candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // ADR-0190 — never-attempted first, then by last lost attempt, then age.
+    candidates.sort(
+      (a, b) =>
+        a.attemptAt.localeCompare(b.attemptAt) ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
     return candidates.slice(0, limit).map((c) => c.id);
   }
 
@@ -2335,9 +2419,27 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
+    opts?: { verdictLost?: boolean },
   ): Promise<void> {
     const node = this.nodes.get(memorableKnowledgeNodeId);
     if (!node || node.type !== 'MemorableKnowledge') return;
+    if (opts?.verdictLost === true) {
+      // ADR-0190 (#1861) — see NeonKnowledgeGraph.
+      const now = new Date().toISOString();
+      const lost = Number(node.props['inconsistency_lost_verdicts'] ?? 0) + 1;
+      node.props = {
+        ...node.props,
+        inconsistency_lost_verdicts: lost,
+        last_inconsistency_attempt_at: now,
+        ...(lost >= INCONSISTENCY_MAX_LOST_VERDICTS
+          ? {
+              last_inconsistency_check_at: now,
+              inconsistency_check_outcome: 'verdict_lost',
+            }
+          : {}),
+      };
+      return;
+    }
     node.props = {
       ...node.props,
       last_inconsistency_check_at: new Date().toISOString(),
@@ -2490,6 +2592,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         code: 'already_resolved',
       });
     }
+    if (resolution === 'keep_a' || resolution === 'keep_b') {
+      this.assertKeeperExists(
+        existing.duplicateOf[resolution === 'keep_a' ? 0 : 1],
+      );
+    }
     if (resolution === 'keep_a') {
       await this.deleteMemory(existing.duplicateOf[1], actor);
     } else if (resolution === 'keep_b') {
@@ -2508,7 +2615,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
     };
     return this.hydrateMergeCandidate(externalId)!;
   }
@@ -2927,7 +3034,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
       resolution,
       resolved_at: now,
-      resolved_by: actor.actorOmadiaUserId,
+      resolved_by: resolvedByOf(actor),
     };
     return this.hydrateExcerptMergeCandidate(externalId)!;
   }
@@ -3921,6 +4028,20 @@ function cosine(a: readonly number[], b: readonly number[]): number {
   }
   if (na === 0 || nb === 0) return Number.NaN;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+const RESOLVED_BY_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * ADR-0190 — `resolved_by` of a pair: the person's uuid, null for a job or a
+ * non-uuid actor (mirrors NeonKnowledgeGraph).
+ */
+function resolvedByOf(actor: AclMutationOptions): string | null {
+  if (actor.systemActor) return null;
+  return RESOLVED_BY_UUID_RE.test(actor.actorOmadiaUserId)
+    ? actor.actorOmadiaUserId
+    : null;
 }
 
 /** An audience that canonicalises to no owner matches nothing (mirrors Neon's `EMPTY_AUDIENCE`). */

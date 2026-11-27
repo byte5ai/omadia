@@ -4067,6 +4067,8 @@ export interface BulkPromoteRunResult {
     promoted: number;
     alreadyPromoted: number;
     belowThreshold: number;
+    /** ADR-0190 — left alone on purpose (retired, no person owner, no excerpt). */
+    skipped?: number;
     failed: number;
   };
   durationMs: number;
@@ -4665,6 +4667,8 @@ export interface MemoryPurgePreviewResult {
   datasetCount?: number;
   processCount?: number;
   identityCount?: number;
+  /** #1986 — generated Office/Diagram files deleted from the bucket. */
+  generatedFileCount?: number;
   /** #1840 — the person a user-axis selector resolved to. */
   resolvedUser?: { omadiaUserId: string; via: string };
   /** Top-level entries a re-seed resets and writes back (#1335). */
@@ -4684,6 +4688,7 @@ export interface MemoryPurgeResult {
   datasetsDeleted?: number;
   processesDeleted?: number;
   identityDeleted?: number;
+  generatedFilesDeleted?: number;
   /** Files the re-seed wrote back; present only on a re-seed purge. */
   reseededFiles?: number;
   /** `memory_purge_audit` row id; absent when the purge was not recorded. */

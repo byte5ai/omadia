@@ -18,7 +18,8 @@
 export interface BulkPromotePreview {
   /** Turns that would be SCORED on a run (significance IS NULL). */
   nullSignificanceCount: number;
-  /** Turns at or above threshold that aren't promoted yet. */
+  /** Turns at or above threshold that aren't promoted yet and still can be:
+   *  not retired from promotion (ADR-0190) and owned by an omadia user. */
   eligibleForPromoteCount: number;
   /** Already-promoted Turns at or above threshold (context only). */
   alreadyPromotedCount: number;
@@ -48,6 +49,13 @@ export interface BulkPromotePhaseResult {
   promoted: number;
   alreadyPromoted: number;
   belowThreshold: number;
+  /**
+   * ADR-0190 — turns the run left alone on purpose: retired from promotion
+   * (its memory was deleted or merged away), no person to own the entry, a
+   * missing excerpt or agent narration. Not failures; a retired or ownerless
+   * turn is not offered again. Absent from providers before 1.105.0.
+   */
+  skipped?: number;
   failed: number;
 }
 

@@ -86,6 +86,13 @@ export default function DuplicateDetailPage(): React.ReactElement {
     [id, detail, reason, router, t],
   );
 
+  // ADR-0190 (#1862) — a resolution that keeps a deleted side would delete
+  // the last copy of the knowledge; the server refuses it, the page offers
+  // only what can still be done.
+  const keeperMissing = (r: string): boolean =>
+    (r === 'keep_a' && detail?.mkA === null) ||
+    (r === 'keep_b' && detail?.mkB === null);
+
   return (
     <main className="mx-auto max-w-[1100px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
@@ -163,6 +170,11 @@ export default function DuplicateDetailPage(): React.ReactElement {
                   {t('error', { message: mutationError })}
                 </p>
               )}
+              {(detail.mkA === null || detail.mkB === null) && (
+                <p className="mb-3 border-l-2 border-[color:var(--border-strong)] px-2 py-1 text-xs text-[color:var(--fg-muted)]">
+                  {t('keeperMissing')}
+                </p>
+              )}
               <div className="grid gap-2 sm:grid-cols-1">
                 {(['keep_a', 'keep_b', 'not_duplicate'] as const).map((r) => (
                   // eslint-disable-next-line no-restricted-syntax -- selection tile/row (label + description)
@@ -170,7 +182,7 @@ export default function DuplicateDetailPage(): React.ReactElement {
                     key={r}
                     type="button"
                     onClick={() => void resolve(r)}
-                    disabled={busy}
+                    disabled={busy || keeperMissing(r)}
                     className={[
                       'rounded border px-3 py-2 text-left text-xs disabled:opacity-50',
                       r === 'keep_a' || r === 'keep_b'

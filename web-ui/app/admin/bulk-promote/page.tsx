@@ -262,6 +262,10 @@ export default function BulkPromotePage(): React.ReactElement {
                 <dd className="font-mono">{result.promotePhase.alreadyPromoted}</dd>
                 <dt className="text-[color:var(--fg-muted)]">below</dt>
                 <dd className="font-mono">{result.promotePhase.belowThreshold}</dd>
+                <dt className="text-[color:var(--fg-muted)]" title={t('skippedHint')}>
+                  {t('skipped')}
+                </dt>
+                <dd className="font-mono">{result.promotePhase.skipped ?? 0}</dd>
                 <dt className="text-[color:var(--fg-muted)]">failed</dt>
                 <dd className="font-mono text-[color:var(--warning)]">
                   {result.promotePhase.failed}

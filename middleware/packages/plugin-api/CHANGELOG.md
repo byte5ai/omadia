@@ -8,6 +8,64 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.106.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`generatedObjects@1`** (`GENERATED_OBJECTS_SERVICE_NAME`, `GeneratedObjectsService`,
+  `GeneratedObjectDeleter`; ADR-0187, #1986): kernel-provided. A plugin that writes generated
+  files records each key under the current turn's person and chat and registers how its objects
+  are deleted; the kernel deletes a key once no chat or person references it.
+
+## 1.105.0 — 2026-11-26
+
+Additive.
+
+### Added
+
+- **`AclMutationOptions.systemActor?`** (ADR-0190): audit-only label
+  (`system:<job>`) for a mutation a kernel job decided. Authorisation still checks
+  `actorOmadiaUserId`; the audit row names the job (`SYSTEM_AUDIT_ACTOR_UUID` +
+  the label) and a resolved pair carries `resolved_by: null`.
+- **`SYSTEM_AUDIT_ACTOR_UUID`**: the nil uuid a job's audit row carries.
+- **`PROMOTION_RETIRED_PROP`** (`promotionRetired`): the Turn property that keeps a
+  turn out of auto and bulk promotion once an entry derived from it was deleted,
+  discarded or merged away, or the turn proved unpromotable.
+- **`BulkPromotePhaseResult.skipped?`**: turns the run left alone on purpose
+  (retired, no person owner, missing excerpt, narration), apart from `failed`.
+- **`extractRecallSearchTerms` / `buildRecallTsQuery` / `RECALL_QUERY_MAX_TERMS`**
+  (#1822): the content terms of a message and an OR `tsquery` over them for
+  full-text recall; `null` when the message has no content term.
+- **`MEMORY_CORRECTED_AT_PROP`** (`corrected_at`) / **`isMemorableContentCorrection`**
+  and **`RecalledInsight.asOf?` / `correctedByUser?`** (#1863): a person's content edit
+  of a memorable entry is stamped and recalled with its day.
+- **`markMemorableKnowledgeInconsistencyChecked(id, opts?: { verdictLost?: boolean })`**
+  and **`INCONSISTENCY_MAX_LOST_VERDICTS`** (ADR-0190, #1861): a pass that lost a
+  verdict records an attempt (`inconsistency_lost_verdicts`,
+  `last_inconsistency_attempt_at`) instead of the marker; after the limit the entry is
+  marked checked with `inconsistency_check_outcome: 'verdict_lost'`. A third-party
+  provider that ignores the option sets the marker on the first lost pass, as all
+  providers did before #1861 (no retry, no endless retries either).
+
+### Changed (behaviour)
+
+- `deleteMemory` on both bundled providers retires the entry's source turns and
+  dismisses its open contradiction and duplicate pairs (`closed_reason:
+  'memory_deleted'`); `resolveInconsistency` / `resolveMergeCandidate` refuse a
+  resolution that keeps a deleted side (`keeper_missing`).
+- `searchTurns`, the lexical leg of `searchTurnsByEmbedding` and process recall
+  on both bundled providers OR-match the message's content terms
+  (`buildRecallTsQuery`) instead of requiring every word; a message without a
+  content term has no lexical leg (#1822).
+- `updateMemorableKnowledge` on both bundled providers stamps `corrected_at` when the
+  patch changes kind, summary or rationale (#1863).
+- `listMemorableKnowledgeIdsForBulkInconsistencyCheck` on both bundled providers puts
+  never-attempted entries first, then orders by the last lost attempt and age.
+- `extractRecallSearchTerms` keeps two-letter acronyms written in capitals ("IT",
+  "HR", "EU"); lowercase two-letter words stay out.
+
 ## 1.104.0 — 2026-11-26
 
 Additive.

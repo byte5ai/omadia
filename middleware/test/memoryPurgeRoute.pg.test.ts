@@ -78,6 +78,7 @@ describe('memory-purge router · audit on real Postgres', () => {
         datasets: 0,
         processes: 0,
         identity: 0,
+        generatedFiles: 0,
         reseedEntries: [],
       });
     } finally {

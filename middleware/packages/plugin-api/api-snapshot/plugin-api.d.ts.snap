@@ -372,6 +372,7 @@ scanned: number;
 promoted: number;
 alreadyPromoted: number;
 belowThreshold: number;
+skipped?: number;
 failed: number;
 }
 export interface BulkPromoteRunResult {
@@ -1177,6 +1178,15 @@ outcome: 'sent';
 } | FollowupRefusal>;
 }
 
+// ===== generatedObjects.d.ts =====
+export declare const GENERATED_OBJECTS_SERVICE_NAME = "generatedObjects";
+export declare const GENERATED_OBJECTS_CAPABILITY = "generatedObjects@1";
+export type GeneratedObjectDeleter = (storageKey: string) => Promise<void>;
+export interface GeneratedObjectsService {
+record(producer: string, storageKey: string): Promise<void>;
+registerDeleter(producer: string, deleter: GeneratedObjectDeleter): () => void;
+}
+
 // ===== inconsistency.d.ts =====
 export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
 export type InconsistencyResolution =
@@ -1237,6 +1247,7 @@ export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
 export * from './datasetId.js';
+export * from './generatedObjects.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
 export * from './boundaryPresets.js';
@@ -1280,6 +1291,7 @@ export * from './modelPassthrough.js';
 export * from './agentEnvelope.js';
 export * from './agentDirectory.js';
 export * from './batchJobs.js';
+export * from './recallQuery.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -1365,7 +1377,9 @@ unchecked: number;
 alreadyChecked: number;
 withoutEmbedding: number;
 }>;
-markMemorableKnowledgeInconsistencyChecked(memorableKnowledgeNodeId: string): Promise<void>;
+markMemorableKnowledgeInconsistencyChecked(memorableKnowledgeNodeId: string, opts?: {
+verdictLost?: boolean;
+}): Promise<void>;
 listMergeCandidates(opts: ListMergeCandidatesOptions): Promise<MergeCandidateNode[]>;
 getMergeCandidate(mergeCandidateExternalId: string, viewerOmadiaUserId: string): Promise<MergeCandidateNode | null>;
 createMergeCandidate(input: CreateMergeCandidateInput): Promise<MergeCandidateNode | null>;
@@ -1538,6 +1552,8 @@ kind: string;
 summary: string;
 score: number;
 durable?: boolean;
+asOf?: string;
+correctedByUser?: boolean;
 }
 export interface RecalledContext {
 plans: RecalledPlan[];
@@ -1550,6 +1566,9 @@ summary?: string;
 rationale?: string | null;
 significance?: number;
 }
+export declare const MEMORY_CORRECTED_AT_PROP = "corrected_at";
+export declare const INCONSISTENCY_MAX_LOST_VERDICTS = 3;
+export declare function isMemorableContentCorrection(current: Readonly<Record<string, unknown>>, patch: MemorableKnowledgeUpdate): boolean;
 export interface SessionFilter {
 userId?: string;
 }
@@ -1710,7 +1729,10 @@ export interface AclMutationOptions {
 actorOmadiaUserId: string;
 actorChannelIdentityId?: string;
 reason?: string;
+systemActor?: string;
 }
+export declare const SYSTEM_AUDIT_ACTOR_UUID = "00000000-0000-0000-0000-000000000000";
+export declare const PROMOTION_RETIRED_PROP = "promotionRetired";
 export interface MemorableKnowledgePurgeFilter {
 tenantId: string;
 originAgent?: string;
@@ -3533,6 +3555,11 @@ code: string;
 message: string;
 };
 export {};
+
+// ===== recallQuery.d.ts =====
+export declare const RECALL_QUERY_MAX_TERMS = 16;
+export declare function extractRecallSearchTerms(message: string): string[];
+export declare function buildRecallTsQuery(message: string): string | null;
 
 // ===== responseGuard.d.ts =====
 export declare const RESPONSE_GUARD_SERVICE_NAME = "responseGuard";

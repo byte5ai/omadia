@@ -6323,7 +6323,9 @@
     "startRun": "Bulk-Job starten",
     "resultTitle": "Ergebnis ({duration} ms)",
     "scorePhaseTitle": "Schritt 1 · Bewerten",
-    "promotePhaseTitle": "Schritt 2 · Übernehmen"
+    "promotePhaseTitle": "Schritt 2 · Übernehmen",
+    "skipped": "übersprungen",
+    "skippedHint": "Bewusst ausgelassen, nicht fehlgeschlagen: ein Eintrag aus diesem Turn wurde gelöscht, verworfen oder zusammengeführt, dem Turn gehört keine Person (Public API), der Auszug fehlte oder die Antwort war Agenten-Erzählung. Ausgemusterte und besitzerlose Turns werden nicht erneut angeboten."
   },
   "adminUpdate": {
     "title": "Update",
@@ -6505,7 +6507,8 @@
       "reseed_failed": "Die Defaults konnten nicht zurückgeschrieben werden; sie kommen beim nächsten Neustart zurück, außer MEMORY_SEED_MODE steht auf skip.",
       "user_selector_resolved": "Der Selektor ist {via, select, account_id {eine Konto-ID} channel_identity {eine Kanal-Identität} other {keine omadia-User-ID}}; der Purge arbeitet mit der omadia-User-ID {omadiaUserId} dieser Person.",
       "user_unknown": "Zu dieser ID gibt es keine Person: keinen Knowledge-Graph-Nutzer und kein Konto. Prüfe, ob du die omadia-User-ID oder die Konto-ID von der Nutzerseite kopiert hast.",
-      "user_layers_unsupported": "Diese Installation kann {layers} der Person nicht löschen; sie bleiben."
+      "user_layers_unsupported": "Diese Installation kann {layers} der Person nicht löschen; sie bleiben.",
+      "generated_files_pending": "{count} erzeugte Dateien hätten gelöscht werden sollen, wurden es aber nicht: das Office- oder Diagramm-Plugin ist nicht aktiv, oder sein Bucket hat das Löschen abgelehnt. Sie werden beim nächsten Purge oder Löschen eines Chats gelöscht; die Lifecycle-Regel des Buckets bleibt die Rückfallebene."
     },
     "errors": {
       "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
@@ -6536,13 +6539,14 @@
       "datasets": "Datensätze",
       "processes": "Gespeicherte Prozesse",
       "identity": "Identitätsknoten (Name, E-Mail)",
-      "deowned": "Geteilte Fakten: nur diese Person wird als Eigentümer entfernt"
+      "deowned": "Geteilte Fakten: nur diese Person wird als Eigentümer entfernt",
+      "generatedFiles": "Erzeugte Dateien (Office, Diagramme)"
     }
   },
   "adminDuplicates": {
     "list": {
       "title": "Memory · Mögliche Duplikate",
-      "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
+      "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.90, solange Auto-Merge an ist, sonst ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Auto-Merge (Einstellung „Duplikate automatisch zusammenführen“ der Agent Runtime Extras, standardmäßig an) löst nur nahezu identische Paare selbst auf (cosine ≥ 0.98 und derselbe Text) und entfernt dabei nur eine automatisch gespeicherte Kopie, die niemand korrigiert hat; der Audit-Trail nennt das System und den Wert. Von Hand gespeicherte oder korrigierte Einträge werden nie automatisch gelöscht und bleiben hier als offene Paare. Wird eine Memory gelöscht, schließen sich ihre offenen Paare. Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
       "tabs": {
         "memories": "Memories",
         "excerpts": "Auszüge (Palaia)"
@@ -6605,6 +6609,7 @@
       },
       "openMemory": "zur Memory →",
       "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "keeperMissing": "Eine Seite dieses Paars existiert nicht mehr oder ist für dich nicht zugänglich. Sie zu behalten ist nicht möglich, deshalb sind die Optionen, die die andere Seite löschen würden, aus.",
       "memoryA": "Memory A",
       "memoryB": "Memory B",
       "status": "Status",
@@ -6708,6 +6713,7 @@
       },
       "openMemory": "zur Memory →",
       "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "keeperMissing": "Eine Seite dieses Paars existiert nicht mehr oder ist für dich nicht zugänglich. Sie zu behalten ist nicht möglich, deshalb sind die Optionen, die die andere Seite löschen würden, aus.",
       "memoryA": "Memory A",
       "memoryB": "Memory B",
       "severity": "Schweregrad",
@@ -6771,7 +6777,7 @@
   "adminKgPriorities": {
     "intro": "Block- und Boost-Liste pro Agent für die Zusammenstellung des Kontexts. Block nimmt einen Turn aus dem Recall heraus; Boost multipliziert seine Bewertung mit `weight` (Standard 1,3). Von Hand gespeicherte Einträge (`manuallyAuthored=true`) bekommen zusätzlich einen eigenen Faktor ×1,3 — beide wirken zusammen.",
     "agentIdLabel": "Agent-ID",
-    "agentIdPlaceholder": "de.byte5.agent.calendar oder orchestrator-default",
+    "agentIdPlaceholder": "Agent-Slug, z. B. default",
     "load": "Laden",
     "newEntryTitle": "Neuer Eintrag",
     "weightIgnoredTitle": "Gewicht gilt nicht für Block",
@@ -6786,7 +6792,12 @@
     "colWeight": "Gewicht",
     "colReason": "Grund",
     "colUpdated": "Aktualisiert",
-    "add": "Hinzufügen"
+    "agentOption": "{name} ({slug})",
+    "agentIdHint": "Der Recall sucht Prioritäten unter dem Slug des Agenten, der im Chat antwortet.",
+    "entryPlaceholder": "turn:SCOPE:ZEIT oder session:SCOPE",
+    "entryHint": "Ein Turn-Eintrag gilt für diesen Turn; ein Session-Eintrag (session:SCOPE, wie im Graphen) gilt für jeden Turn dieser Session.",
+    "add": "Hinzufügen",
+    "remove": "Entfernen"
   },
   "adminDatasets": {
     "title": "Wissen · Datensätze",
