@@ -12084,6 +12084,11 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   für einen gespeicherten Chat eine Zeile `chat.delete` (Ziel `chat:<id>`, `after` = `kind`,
   `transcriptsPurged`, pausierte Routinen als `routine:<id>`), best-effort nach dem Löschen.
   `ChatRoutinesPort.pauseForChat` liefert dafür die Ids statt einer Zahl.
+- **Budget-Vorabprüfung manueller Routine-Läufe (#2357, ADR-0324, Welle 7):** `run_now`,
+  `POST /api/v1/routines/:id/trigger` (`409 routines.budget_refused`) und der Karten-Button fragen
+  vorher `TriggerService.manualRunRefusal('routine', id)`: Kill-Switch, Budget-Pause des Triggers,
+  Platz für ein `budget_per_firing_usd` im Trigger-Gesamtbudget und im Agent-/Instanz-Monat. Nur
+  lesend; die Kosten bucht weiter `bookManualSpend` danach. Fehler der Prüfung → Lauf startet.
 - **Graph-Verlauf gelöschter Chats/Routinen (#1753, ADR-0323, Welle 7):** Chat-Löschen und
   Routine-Löschen rufen `purgeConversationRecords` (`src/plugins/routines/sessionTranscripts.ts`):
   erst die Markdown-Transkripte, dann `KnowledgeGraph.purgeConversationHistory({ tenantId,

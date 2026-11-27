@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a manual routine run passes the budget checks first (#2357) (2026-11-27)
+
+- `manage_routine` `run_now`, the routine page's "run now" and the smart-card button refuse a run
+  when the kill switch is set, the routine's trigger is paused for budget, or one more firing's
+  budget would exceed the trigger's total or the agent's or instance's month
+  (`TriggerService.manualRunRefusal`; route answers `409 routines.budget_refused`). Read-only; the
+  cost is still booked afterwards (ADR-0324).
+
 ### Fixed — deleting a chat or routine purges its graph history (#1753) (2026-11-27)
 
 - Deleting a web chat or a routine now removes its conversation history from the knowledge graph

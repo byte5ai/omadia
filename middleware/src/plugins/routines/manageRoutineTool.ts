@@ -14,6 +14,7 @@ import {
   type Routine,
 } from './routineStore.js';
 import {
+  RoutineBudgetRefusedError,
   RoutineNotActiveError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
@@ -509,8 +510,13 @@ function formatError(err: unknown): string {
   if (err instanceof RoutineNotFoundError) {
     return `Error: ${err.message}`;
   }
-  // #2339 — `run_now` refusals: paused, or a run already in flight.
-  if (err instanceof RoutineNotActiveError || err instanceof RoutineRunInProgressError) {
+  // #2339 — `run_now` refusals: paused, or a run already in flight;
+  // #2357 — or the budget pre-check.
+  if (
+    err instanceof RoutineNotActiveError ||
+    err instanceof RoutineRunInProgressError ||
+    err instanceof RoutineBudgetRefusedError
+  ) {
     return `Error: ${err.message}`;
   }
   if (err instanceof UnknownChannelError) {

@@ -3934,6 +3934,9 @@ async function main(): Promise<void> {
       bookManualRunCost: async (routineId, costUsd) => {
         await triggersRef.current?.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId });
       },
+      // #2357 — a manual run gets the budget checks a scheduled firing gets.
+      manualRunRefusal: (routineId) =>
+        triggersRef.current?.service.manualRunRefusal('routine', routineId) ?? Promise.resolve(undefined),
       // #1744 / #1745 — the agent a routine is bound to, by id.
       resolveAgent: (routine) =>
         resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
