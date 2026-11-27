@@ -196,6 +196,8 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         -- KG migration 0035 (#1540): the store writes and reads it.
         unprotected BOOLEAN NOT NULL DEFAULT FALSE,
+        -- KG migration 0040 (#2296): the store reads it on get/edit.
+        legacy_id  TEXT,
         PRIMARY KEY (tenant_id, id)
       )`);
     await real.query(`
