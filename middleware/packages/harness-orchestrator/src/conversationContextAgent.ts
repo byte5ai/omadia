@@ -25,7 +25,7 @@ export function wrapChatAgentWithConversationContext(
   agentSlug: string,
   lookup: ConversationContextLookup,
   log: (message: string) => void = (m) => console.warn(m),
-): ChatAgent {
+): ChatAgent & { readonly inner: ChatAgent } {
   const enrich = async (input: ChatTurnInput): Promise<ChatTurnInput> => {
     const scope = input.sessionScope;
     if (input.conversationContextHint !== undefined || scope === undefined || scope.trim() === '') return input;
@@ -38,6 +38,8 @@ export function wrapChatAgentWithConversationContext(
     }
   };
   return {
+    // Kept reachable for introspection, like the fast-path wrapper's.
+    inner,
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
       return inner.chat(await enrich(input));
     },
