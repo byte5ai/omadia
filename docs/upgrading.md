@@ -356,6 +356,30 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — stdio MCP servers run as their own OS user
+
+From this release the container image runs every stdio MCP server as the system user
+`omadia-mcp` instead of the middleware's `node` user (#2306, ADR-0270). The image sets
+`MCP_STDIO_RUN_AS=omadia-mcp`, installs `sudo` with a rule scoped to that user, and the
+entrypoint sets `/data` to `0700` on every start. Remote (http) MCP servers are not affected.
+
+- **Nothing to do for most installs.** The image brings the user, the rule and the variable.
+  Fly (`fly/middleware.fly.toml`, volume `/data`), the Compose stack and the Azure VM stack
+  (same GHCR image via Compose) pick it up with the image. The first start re-applies
+  `chmod 0700 /data` to the existing volume; nothing is moved.
+- **Compose:** stdio stays off by default (`MCP_STDIO_ENABLED=false`). With
+  `MCP_STDIO_ENABLED=true` in `middleware/.env`, stdio servers now run isolated.
+- **A stdio server that used `/data` or `/home/node`** (files, an npx cache, a config file) no
+  longer finds them. Its home is `/home/omadia-mcp` (not persisted across image updates); pass
+  what it needs through its config fields.
+- **The env of a stdio server** is the SDK base, `LANG`/`LC_ALL`/`LC_CTYPE`/`TZ` and its own
+  config values on every install. A server that relied on another variable of the middleware's
+  environment (for example a proxy setting) needs it as a config field.
+- **Custom images or a different runtime user:** if `sudo -n -u omadia-mcp` does not work, stdio
+  connects are refused with `stdio_isolation_unavailable` (Discover shows it). Either provide
+  the user and the sudoers rule from the repo `Dockerfile`, or set `MCP_STDIO_RUN_AS=` (empty)
+  to run stdio servers as the middleware's user again, with the ADR-0211 trust model.
+
 ## Upgrading past v0.210.0 — agents' own bots on Telegram, Discord and Slack
 
 Spec 2042 §5.3, §5.12 (S7), plugin-api 1.79.0, additive. Migration

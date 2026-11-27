@@ -82,6 +82,7 @@ import {
   MCP_STDIO_DISABLED_MESSAGE,
 } from '../services/mcpOutboundHostGuard.js';
 import { rescanAllMcpServers } from '../services/mcpRescan.js';
+import type { McpStdioIsolationProbe } from '../services/mcpStdioIsolationProbe.js';
 import {
   isHeaderRefusal,
   planHeaders,
@@ -300,6 +301,13 @@ export interface AgentBuilderRouterOptions {
    *  (manual and catalog import) and the router's McpManager refuses existing
    *  stdio rows at connect time. Omitted → enabled (pre-#1342 behaviour). */
   readonly mcpStdioEnabled?: boolean;
+  /** #2306 / ADR-0270 — `MCP_STDIO_RUN_AS` plus its probe. Discover and
+   *  test-call start stdio children as that user, and refuse to start one
+   *  when the switch fails. Omitted → the middleware's own user. */
+  readonly mcpStdioIsolation?: {
+    readonly runAsUser: string;
+    readonly probe: McpStdioIsolationProbe;
+  };
   /** Issue #1342 — durable trace for a saved stdio server, which runs as a
    *  child process of the middleware. Best-effort: a failed write is logged,
    *  never turned into a failed request. Never receives the command line
@@ -413,7 +421,15 @@ export function createAgentBuilderRouter(
     ...(options.mcpCallObserver ? { onToolCall: options.mcpCallObserver } : {}),
     // Issues #1341 / #1342 — every Discover, test-call and Re-scan all connect
     // passes the operator outbound host rule and the stdio switch first.
-    connectGuard: createMcpConnectGuard({ stdioEnabled: mcpStdioEnabled }),
+    connectGuard: createMcpConnectGuard({
+      stdioEnabled: mcpStdioEnabled,
+      ...(options.mcpStdioIsolation
+        ? { stdioIsolationProbe: options.mcpStdioIsolation.probe }
+        : {}),
+    }),
+    ...(options.mcpStdioIsolation
+      ? { stdioIsolation: { runAsUser: options.mcpStdioIsolation.runAsUser } }
+      : {}),
     ...(options.mcpCallGuard ? { guard: options.mcpCallGuard } : {}),
     // Resolve Vault-backed config (stdio env + http secret headers) and OAuth
     // tokens at connect time — the SAME provider the orchestrator's manager
@@ -1675,6 +1691,9 @@ export function createAgentBuilderRouter(
         // #1957 — the UI greys out stdio (manual form and catalog Connect)
         // when the deployment refuses it, instead of failing after submit.
         stdioEnabled: mcpStdioEnabled,
+        // #2306 — whether stdio children run as their own OS user; the UI
+        // words the stdio trust hint after it.
+        stdioIsolated: options.mcpStdioIsolation !== undefined,
       });
     } catch (err) {
       fail(res, err);

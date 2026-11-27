@@ -6,5 +6,9 @@ set -eu
 
 mkdir -p /data/memory
 chown -R node:node /data
+# #2306 / ADR-0270 — stdio MCP servers run as `omadia-mcp`; they must not read
+# the vault, secrets or uploads. Re-applied on every start because an existing
+# volume (Fly, Compose) was created with the default 0755.
+chmod 0700 /data
 
 exec gosu node node dist/index.js

@@ -30,11 +30,18 @@ export function apiErrorBodyMessage(err: unknown): string | null {
  * same URL or the same stdio server is refused again on every retry, so the UI
  * explains the rule instead of offering to try again.
  */
-export type McpGuardCode = 'blocked_host' | 'stdio_disabled';
+export type McpGuardCode = 'blocked_host' | 'stdio_disabled' | 'stdio_isolation_unavailable';
+
+const GUARD_CODES: ReadonlySet<string> = new Set<McpGuardCode>([
+  'blocked_host',
+  'stdio_disabled',
+  // #2306 — MCP_STDIO_RUN_AS is set but the user switch fails (fail closed).
+  'stdio_isolation_unavailable',
+]);
 
 export function mcpGuardCode(err: unknown): McpGuardCode | null {
-  if (!(err instanceof ApiError)) return null;
-  return err.code === 'blocked_host' || err.code === 'stdio_disabled' ? err.code : null;
+  if (!(err instanceof ApiError) || typeof err.code !== 'string') return null;
+  return GUARD_CODES.has(err.code) ? (err.code as McpGuardCode) : null;
 }
 
 /**

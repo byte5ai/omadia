@@ -145,6 +145,9 @@ function useMcpErrorText(): (err: unknown) => string {
       const code = mcpGuardCode(err);
       if (code === 'blocked_host') return t('guard.blockedHost', { detail: errText(err) });
       if (code === 'stdio_disabled') return t('guard.stdioDisabled', { detail: errText(err) });
+      if (code === 'stdio_isolation_unavailable') {
+        return t('guard.stdioIsolationUnavailable', { detail: errText(err) });
+      }
       // #1941 — enabling a server whose risky tools nobody reviewed yet.
       const risky = parseUnackedRisks(err);
       if (risky) {
@@ -291,6 +294,9 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
   // #1957 — whether this deployment allows stdio servers (MCP_STDIO_ENABLED).
   // Unknown (older middleware) counts as allowed, as before.
   const [stdioEnabled, setStdioEnabled] = useState(true);
+  // #2306 — whether stdio children run as their own OS user (MCP_STDIO_RUN_AS).
+  // Unknown (older middleware) counts as not isolated: the stricter hint.
+  const [stdioIsolated, setStdioIsolated] = useState(false);
   // #1916 — the outcome of the last "Re-scan all", shown until the next action.
   const [rescanResult, setRescanResult] = useState<Awaited<
     ReturnType<typeof rescanAllMcpServers>
@@ -301,6 +307,7 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
       const list = await listMcpServers();
       setServers(list.servers);
       setStdioEnabled(list.stdioEnabled !== false);
+      setStdioIsolated(list.stdioIsolated === true);
       setError(null);
     } catch (err) {
       setError(errText(err));
@@ -390,7 +397,9 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
           </select>
         </label>
         {transport === 'stdio' && stdioEnabled ? (
-          <p className="basis-full text-xs text-[color:var(--fg-muted)]">{t('servers.stdioHint')}</p>
+          <p className="basis-full text-xs text-[color:var(--fg-muted)]">
+            {t(stdioIsolated ? 'servers.stdioHintIsolated' : 'servers.stdioHint')}
+          </p>
         ) : null}
         {!stdioEnabled ? (
           <p className="basis-full text-xs text-[color:var(--fg-muted)]">
@@ -1229,9 +1238,14 @@ function MarketplacePane(): React.ReactElement {
   const [regToken, setRegToken] = useState('');
   // #1957 — a stdio catalog entry cannot be imported where stdio is off.
   const [stdioEnabled, setStdioEnabled] = useState(true);
+  // #2306 — the stdio trust hint follows MCP_STDIO_RUN_AS.
+  const [stdioIsolated, setStdioIsolated] = useState(false);
   useEffect(() => {
     listMcpServers()
-      .then((list) => setStdioEnabled(list.stdioEnabled !== false))
+      .then((list) => {
+        setStdioEnabled(list.stdioEnabled !== false);
+        setStdioIsolated(list.stdioIsolated === true);
+      })
       .catch(() => setStdioEnabled(true));
   }, []);
 
@@ -1637,7 +1651,7 @@ function MarketplacePane(): React.ReactElement {
                       entry.transport === 'http' || entry.transport === 'sse'
                         ? t('marketplace.authHintRemote')
                         : entry.transport === 'stdio'
-                          ? t('marketplace.authHintLocal')
+                          ? t(stdioIsolated ? 'marketplace.authHintLocalIsolated' : 'marketplace.authHintLocal')
                           : '';
                     // Truncated rather than wrapped so it cannot push past the
                     // card edge; the full sentence stays available on hover.

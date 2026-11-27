@@ -152,6 +152,7 @@ import {
 } from './services/mcpGrantPolicy.js';
 import { rescanAllMcpServers } from './services/mcpRescan.js';
 import { createMcpConnectGuard } from './services/mcpOutboundHostGuard.js';
+import { createStdioIsolationProbe } from './services/mcpStdioIsolationProbe.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { HttpSkillSpectorScanner } from './services/pluginScanner.js';
 import {
@@ -3077,6 +3078,18 @@ async function main(): Promise<void> {
     );
   }
 
+  // #2306 / ADR-0270 — the stdio user switch, shared by the runtime manager
+  // and the operator router's manager (one probe, one cached result).
+  const mcpStdioIsolation = config.MCP_STDIO_RUN_AS
+    ? {
+        runAsUser: config.MCP_STDIO_RUN_AS,
+        probe: createStdioIsolationProbe(config.MCP_STDIO_RUN_AS),
+      }
+    : undefined;
+  if (mcpStdioIsolation) {
+    console.log(`[mcp] stdio servers run as OS user "${mcpStdioIsolation.runAsUser}" (MCP_STDIO_RUN_AS)`);
+  }
+
   // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
   // McpManager (auth provider) and the operator router (begin/callback routes)
   // reference the same instance.
@@ -3410,8 +3423,13 @@ async function main(): Promise<void> {
       structuredSink: mcpStructuredSink,
       // Issues #1341 / #1342 — runtime tool calls and the periodic rescan
       // pass the operator outbound host rule and the stdio switch before
-      // any transport is built.
-      connectGuard: createMcpConnectGuard({ stdioEnabled: config.MCP_STDIO_ENABLED }),
+      // any transport is built. #2306 — and, with MCP_STDIO_RUN_AS, the
+      // stdio user switch (fail closed).
+      connectGuard: createMcpConnectGuard({
+        stdioEnabled: config.MCP_STDIO_ENABLED,
+        ...(mcpStdioIsolation ? { stdioIsolationProbe: mcpStdioIsolation.probe } : {}),
+      }),
+      ...(mcpStdioIsolation ? { stdioIsolation: { runAsUser: mcpStdioIsolation.runAsUser } } : {}),
       // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
       // The process-shared instance, so the Orchestrator's turn drain reads
       // exactly what this manager wrote.
@@ -5353,6 +5371,7 @@ async function main(): Promise<void> {
       // Closure: adminAudit is constructed
       // further down, and stays undefined without Postgres (log line only).
       mcpStdioEnabled: config.MCP_STDIO_ENABLED,
+      ...(mcpStdioIsolation ? { mcpStdioIsolation } : {}),
       auditMcpStdioServerSaved: async (entry) => {
         // #775 lesson — the SUB is an email and must NEVER land in the uuid
         // actor_id column; the uuid rides separately when the session has one.

@@ -1393,6 +1393,8 @@ export interface McpServersListResponse {
   servers: McpServerNode[];
   /** #1957 — `MCP_STDIO_ENABLED` of this deployment; absent on older middleware. */
   stdioEnabled?: boolean;
+  /** #2306 — stdio children run as their own OS user (`MCP_STDIO_RUN_AS`); absent on older middleware. */
+  stdioIsolated?: boolean;
 }
 
 export async function listMcpServers(): Promise<McpServersListResponse> {

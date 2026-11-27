@@ -7526,18 +7526,41 @@ placeholder deletes its Vault secret. A secret placed in the endpoint URL can
 still be quoted by an upstream or transport error message; a header avoids
 that. Deleting a server deletes its config secrets.
 
-**stdio trust model (ADR-0211, #1914).** For transport `stdio` the endpoint is
-a command line. The middleware splits it and starts it as its own child
-process, so it runs as the middleware's OS user with the same filesystem and
-network access. Its own environment is minimal (the SDK defaults plus the
-server's config values), but that is not a boundary: the middleware is PID 1
-under the same user, so the child can read `/proc/1/environ` (`VAULT_KEY`,
-`CREDENTIAL_KEYCHAIN_KEY`, `DATABASE_URL`, provider keys) and the data
-directory (`/data/.dev-vault.key` when no `VAULT_KEY` is set). With those it
-can decrypt every stored secret. A stdio server is therefore inside the
-middleware's trust domain; for a command the admin typed that is the admin's
-own power, for a catalog entry it is third-party npm code with the same
-access. The add-server form and the catalog card of a stdio entry say so.
+**stdio trust model (ADR-0211, #1914; ADR-0270, #2306).** For transport `stdio`
+the endpoint is a command line. The middleware splits it and starts it as its
+own child process. The child never inherits the middleware's environment: it
+gets the MCP SDK's safe base (HOME, LOGNAME, PATH, SHELL, TERM, USER), the
+locale variables `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ` and the server's own config
+values (`stdioLaunch`).
+
+With `MCP_STDIO_RUN_AS` set (the container image sets `omadia-mcp`), the child
+is started through `sudo -n -E -H -u omadia-mcp --`. The sudoers rule
+(`/etc/sudoers.d/omadia-mcp`) lets `node` start commands as that user only,
+never as root; `SETENV` lets the config env pass through `execve`, never on the
+command line, which every user can read. The child runs under its own UID with
+its own home (`/home/omadia-mcp`, `0700`), so it cannot read the middleware's
+`/proc/<pid>/environ` (`VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY`, `DATABASE_URL`,
+provider keys), and the entrypoint keeps `/data` at `0700` owned by `node` on
+every start, so the Vault, the dev vault key, uploads and CLI logins are closed
+to it. Before the first stdio spawn the connect guard probes the switch
+(`sudo … -- true`); if it fails, the connect is refused with
+`stdio_isolation_unavailable` and nothing is started. There is no fallback to
+the middleware's user.
+
+What stays shared, accepted in ADR-0270: the container's network namespace
+(Postgres, sidecars and the middleware's own port on loopback are reachable,
+without their credentials), CPU and memory, and `/proc` without `hidepid`
+(other processes' command lines are visible; they carry no secrets). A
+deployment that wants more can remount `/proc` with `hidepid=2` or restrict the
+network on the host side.
+
+Without `MCP_STDIO_RUN_AS` (from-source runs, the desktop app) the child runs
+as the middleware's OS user, and the ADR-0211 trust model holds: it can read
+`/proc/1/environ` and the data directory and so every stored secret. For a
+command the admin typed that is the admin's own power; for a catalog entry it
+is third-party npm code with the same access. The add-server form and the
+catalog card of a stdio entry say which of the two models applies
+(`stdioIsolated` in `GET /api/v1/operator/mcp-servers`).
 Catalog imports only write
 `npx -y -- <package>` and check the package name against a strict npm-name
 grammar (`NPM_NAME_RE`); a manual entry accepts any command. Saving a stdio
@@ -7574,10 +7597,11 @@ who wants stdio servers sets `true` in `middleware/.env` (ADR-0211).
 - With stdio on, an admin can run any command in the middleware container.
   Restricting manual stdio entries to the catalog grammar unless the operator
   opts in to free command lines is deferred.
-- With stdio on, every stdio server (and every catalog package it pulls) can
-  read the middleware's keys and so every stored secret (accepted, ADR-0211).
-  Isolating stdio children (separate UID, hidden `/proc`, no `/data`) is the
-  open follow-up.
+- With stdio on and `MCP_STDIO_RUN_AS` unset (from-source, desktop), every
+  stdio server (and every catalog package it pulls) can read the middleware's
+  keys and so every stored secret (accepted, ADR-0211). The container image
+  runs stdio children as `omadia-mcp` instead (ADR-0270); they keep the
+  container's network and an unhidden `/proc`.
 ## 10q. The admin audit trail: one actor rule, one read route (#1315, #1347)
 
 `admin_audit` is append-only; nothing in the code updates or deletes a row.

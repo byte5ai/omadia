@@ -45,10 +45,7 @@ import {
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
-import {
-  StdioClientTransport,
-  getDefaultEnvironment,
-} from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CallToolResultSchema,
@@ -56,6 +53,7 @@ import {
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { stdioLaunch, type McpStdioIsolation } from './stdioIsolation.js';
 import type {
   LocalSubAgentTool,
   NativeTextToolHandler,
@@ -500,6 +498,10 @@ export interface McpManagerOptions {
    *  optional-dependency shape as `auth`: omitting it leaves behaviour
    *  byte-identical to before. */
   readonly connectGuard?: (cfg: McpServerConfig) => Promise<void>;
+  /** #2306 / ADR-0270 — how stdio children are started (OS user). The env is
+   *  scrubbed with or without it (`stdioLaunch`). Omitting it keeps the child
+   *  under the middleware's user. */
+  readonly stdioIsolation?: McpStdioIsolation;
 }
 
 /** Default idle lifetime of a pooled MCP connection (5 minutes). */
@@ -2132,14 +2134,11 @@ export class McpManager {
       if (!command) {
         throw new Error(`MCP server "${cfg.name}" stdio command is empty`);
       }
-      // Merge our config env (values + Vault secrets) over a SAFE base env
-      // (PATH/HOME/… from getDefaultEnvironment — not the full process env) so
-      // the spawned server gets its required credentials (epic #459).
-      const env =
-        cfg.env && Object.keys(cfg.env).length > 0
-          ? { ...getDefaultEnvironment(), ...cfg.env }
-          : undefined;
-      return new StdioClientTransport({ command, args, ...(env ? { env } : {}) });
+      // #2306 / ADR-0270 — locale + the row's config env (values + Vault
+      // secrets, epic #459) over the SDK's safe base, never the process env;
+      // with `stdioIsolation.runAsUser` the child runs as that OS user.
+      const launch = stdioLaunch(command, args, cfg.env, this.options?.stdioIsolation);
+      return new StdioClientTransport(launch);
     }
     const url = new URL(cfg.endpoint);
     const requestInit = httpRequestInit(cfg, token);
