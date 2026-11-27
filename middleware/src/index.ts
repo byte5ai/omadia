@@ -4424,6 +4424,8 @@ async function main(): Promise<void> {
             }
           : undefined;
       },
+      // #2318 — and is recorded in the admin audit (created later in boot).
+      audit: () => adminAudit,
     }),
   );
 

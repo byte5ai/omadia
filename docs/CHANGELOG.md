@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — deleting a chat is recorded in the admin audit (#2318) (2026-11-27)
+
+Deleting a saved chat now writes a `chat.delete` row to the admin audit (ADR-0100): target
+`chat:<id>`, with whether its transcripts were removed and which routines the delete paused.
+Written after the delete; a failed audit write is logged and the delete stands.
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

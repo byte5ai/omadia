@@ -11967,6 +11967,13 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
 - **Routinen-Seite**: DTO `timeZone`, `nextRunAt`, `until`; Läufe `?before=`;
   Fehlertexte über `routineErrors.ts` + `serverErrorCode`.
 
+## Agents, Keys, Routinen: Folgen (W34, Welle 6) (2026-11-27)
+
+- **Chat löschen im Admin-Audit (#2318, ADR-0100):** `DELETE /api/chat/sessions/:id` schreibt
+  für einen gespeicherten Chat eine Zeile `chat.delete` (Ziel `chat:<id>`, `after` = `kind`,
+  `transcriptsPurged`, pausierte Routinen als `routine:<id>`), best-effort nach dem Löschen.
+  `ChatRoutinesPort.pauseForChat` liefert dafür die Ids statt einer Zahl.
+
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 
 Entscheidung: [ADR 0043](adr/0043-draft-previews-run-agent-steps-as-tool-less-turns.md).
