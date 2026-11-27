@@ -7,6 +7,7 @@ import type { StoredTurnAttachment } from '@omadia/channel-sdk';
 import { bindingForRawScope, bindingsEqual } from '@omadia/orchestrator';
 import type { AttachmentBindingStore, ChatSessionStore } from '@omadia/orchestrator';
 
+import { uploadContentMatches } from './chatUploadContent.js';
 import { chatSessionRefusal, chatSessionUse, type LegacyChatOwner } from './chatSessionAccess.js';
 
 /**
@@ -37,6 +38,13 @@ export const WEB_CHAT_UPLOADS_PER_TURN = 10;
 
 /** Most uploads one chat may hold; a further upload is refused (429). */
 export const WEB_CHAT_UPLOADS_PER_CHAT = 100;
+
+/**
+ * ADR-0333 — most uploads one account may hold across all its chats (default
+ * of `WEB_CHAT_UPLOADS_PER_ACCOUNT`); a further upload is refused (429). With
+ * {@link WEB_CHAT_UPLOAD_MAX_BYTES} this bounds an account's upload storage.
+ */
+export const WEB_CHAT_UPLOADS_PER_ACCOUNT = 200;
 
 const KEY_PREFIX = 'web-chat';
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
@@ -138,6 +146,10 @@ export interface ChatUploadDeps {
   recordUpload: (storageKey: string, owner: UploadOwner) => Promise<void>;
   /** The keys this account uploaded into this chat (ledger rows). */
   uploadsOf: (owner: UploadOwner) => Promise<string[]>;
+  /** ADR-0333 — how many uploads this account holds across all its chats (ledger rows). */
+  accountUploadCount: (ownerOmadiaUserId: string) => Promise<number>;
+  /** ADR-0333 — the per-account cap; default {@link WEB_CHAT_UPLOADS_PER_ACCOUNT}. */
+  uploadsPerAccount?: number;
   /** Deletes one upload of this account and chat now (file and ledger row). */
   releaseUpload: (storageKey: string, owner: UploadOwner) => Promise<void>;
   getChatSessionStore?: () => ChatSessionStore | undefined;
@@ -294,6 +306,23 @@ async function storeUpload(req: Request, deps: ChatUploadDeps): Promise<WebChatU
     };
   }
 
+  // ADR-0333 — the bytes must look like the type the extension claims.
+  if (!uploadContentMatches(extensionOf(fileName), file.buffer)) {
+    return {
+      status: 415,
+      code: 'chat_upload.content_mismatch',
+      message: 'the file content does not match its extension',
+    };
+  }
+
+  const perAccount = deps.uploadsPerAccount ?? WEB_CHAT_UPLOADS_PER_ACCOUNT;
+  if ((await deps.accountUploadCount(owner)) >= perAccount) {
+    return {
+      status: 429,
+      code: 'chat_upload.account_limit',
+      message: `an account holds at most ${String(perAccount)} uploads; delete chats with uploads to free space`,
+    };
+  }
   const storageKey = webChatUploadKey(sessionId, (deps.newUploadId ?? randomUUID)(), fileName);
   await store.put(storageKey, file.buffer, contentType);
   try {

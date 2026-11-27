@@ -4520,6 +4520,10 @@ async function main(): Promise<void> {
         (await generatedObjects.rows({ scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId }))
           .filter((row) => row.producer === WEB_CHAT_UPLOAD_PRODUCER)
           .map((row) => row.storageKey),
+      accountUploadCount: async (ownerOmadiaUserId) =>
+        (await generatedObjects.rows({ ownerOmadiaUserId })).filter((row) => row.producer === WEB_CHAT_UPLOAD_PRODUCER)
+          .length,
+      uploadsPerAccount: config.WEB_CHAT_UPLOADS_PER_ACCOUNT,
       releaseUpload: async (key, owner) => {
         await generatedObjects.release(
           { scope: owner.scope, ownerOmadiaUserId: owner.ownerOmadiaUserId },

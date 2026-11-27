@@ -220,6 +220,9 @@ export const ConfigSchema = z.object({
   // either way. An empty value means unset.
   // Same grammar as `MCP_STDIO_RUN_AS_PATTERN` (@omadia/orchestrator).
   MCP_STDIO_RUN_AS: optionalNonEmpty(z.string().regex(/^[a-z_][a-z0-9_-]{0,31}$/)),
+  // ADR-0333 — most web chat uploads one account may hold across its chats
+  // (`429 chat_upload.account_limit` beyond). Default 200 × 25 MiB per file.
+  WEB_CHAT_UPLOADS_PER_ACCOUNT: z.coerce.number().int().positive().default(200),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback

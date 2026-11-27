@@ -28,6 +28,8 @@ describe('#2336 — web-chat uploads (client)', () => {
     expect(uploadErrorFromResponse(503, 'chat_upload.store_unavailable')).toBe('storeUnavailable');
     expect(uploadErrorFromResponse(401, 'chat_upload.no_account')).toBe('noAccount');
     expect(uploadErrorFromResponse(429, 'chat_upload.chat_limit')).toBe('chatLimit');
+    expect(uploadErrorFromResponse(429, 'chat_upload.account_limit')).toBe('accountLimit');
+    expect(uploadErrorFromResponse(415, 'chat_upload.content_mismatch')).toBe('contentMismatch');
     expect(uploadErrorFromResponse(413, undefined)).toBe('tooLarge');
     expect(uploadErrorFromResponse(500, 'chat_upload.failed')).toBe('failed');
   });

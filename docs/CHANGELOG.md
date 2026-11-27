@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Security — web chat uploads are checked by content and capped per account (#2373, ADR-0333) (2026-11-27)
+
+`POST /api/chat/uploads` accepted a file by its extension only, so an executable renamed to
+`.pdf` was stored and stated as `application/pdf`; and an account could fill the store by opening
+chats (100 uploads per chat, no account limit). The route now checks the leading signature of
+every accepted type (`uploadContentMatches`, `routes/chatUploadContent.ts`; text types: no NUL
+byte unless UTF-16) and answers `415 chat_upload.content_mismatch`, and caps uploads per account
+across its chats (`WEB_CHAT_UPLOADS_PER_ACCOUNT`, default 200, from the ledger) with `429
+chat_upload.account_limit`. New ENV in `.env.example` and handoff §10; web UI messages en + de.
+
 ### Fix — kernel notices in a turn follow the user message's language (#2372, ADR-0332) (2026-11-27)
 
 Refusal, withheld-answer, degraded-turn and CLI force-guarded notices took their language from

@@ -1967,8 +1967,11 @@ Der Web-Chat nimmt Dateien an wie Teams und Telegram. Der Kernel spielt dabei se
 Kanal-Adapter aus ADR-0178:
 
 - `POST /api/chat/uploads` (Session-Gate, multipart `sessionId` + `file`, `src/routes/chatUploads.ts`):
-  Konto nötig (401), eigener Chat (`mayUseChatSession`, sonst 404), Typ nach Endung
-  (Aufnahmen, PDF, DOCX, TXT/MD, CSV/XLSX, Bilder; sonst 415), max. 25 MiB (413), ohne
+  Konto nötig (401), eigener Chat (`chatSessionUse`, sonst 404; neue Chat-ID nicht klein
+  geschrieben → 400 `non_canonical_id`, ADR-0330), Typ nach Endung (Aufnahmen, PDF, DOCX,
+  TXT/MD, CSV/XLSX, Bilder; sonst 415), Inhalt muss zur Endung passen (Signatur,
+  `chatUploadContent.ts`, sonst 415 `chat_upload.content_mismatch`, ADR-0333), max. 25 MiB (413),
+  max. 100 pro Chat und `WEB_CHAT_UPLOADS_PER_ACCOUNT` (200) pro Konto (429), ohne
   Objektspeicher 503. Schlüssel `web-chat/<sessionId>/<uuid>/<Dateiname>`; die Route bindet ihn
   sofort an den Chat (`attachmentBindings`) und trägt ihn als Producer `web-chat-upload` unter
   Konto + Chat ins `generated_objects`-Ledger ein (ADR-0187). Antwort `201 { upload }`.
@@ -6096,6 +6099,7 @@ BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Die Desktop-App setzt ihn, wenn der Wizard-Schalter „Anhänge“ an ist.
 # GET /health → attachments.store: 's3' | 'filesystem' | 'none' (nie Pfad/Bucket).
 ATTACHMENT_STORE_DIR=/data/attachments     # Objekte unter sha256(key), 0700/0600, kein Ablauf
+WEB_CHAT_UPLOADS_PER_ACCOUNT=200          # ADR-0333: Web-Chat-Uploads pro Account (429 chat_upload.account_limit)
 # Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId.
 # Aus heißt seit #1707 **503 webhook.inbound_disabled** (vorher 200 {"outcome":"disabled"},
 # d.h. jeder Sender sah Erfolg); Zustand steht in der Boot-Log-Zeile und in
