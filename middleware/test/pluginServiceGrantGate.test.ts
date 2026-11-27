@@ -230,11 +230,12 @@ describe('services.get — undeclared capabilities are denied', () => {
 
 describe('services.get — declared capabilities resolve', () => {
   it('resolves a capability listed in `requires`', () => {
-    const catalog = catalogOf(pluginOf('@test/consumer', ['entityRefBus@^1']));
+    // Not `entityRefBus`: that one comes in a bounded form (ADR-0257).
+    const catalog = catalogOf(pluginOf('@test/consumer', ['chatAgent@^1']));
     const { ctx, registry } = makeCtx('@test/consumer', catalog);
     const impl = { kg: true };
-    registry.provide('entityRefBus', impl);
-    assert.equal(ctx.services.get('entityRefBus'), impl);
+    registry.provide('chatAgent', impl);
+    assert.equal(ctx.services.get('chatAgent'), impl);
   });
 
   it('accepts both `name@1` and `name@^1` spellings', () => {
@@ -769,6 +770,79 @@ describe('services.get — ADR-0044 bounded graph services', () => {
     const own = makeCtx('@omadia/orchestrator-extras', extras);
     own.registry.provide('topicClustering', topicsImpl);
     assert.equal(own.ctx.services.get('topicClustering'), topicsImpl);
+  });
+
+  it('ADR-0257: recall and curation services resolve only for a bundled boundary implementer', () => {
+    const impl = { recall: true };
+    for (const name of [
+      'contextRetriever',
+      'sessionBriefing',
+      'palaiaExcerpt',
+      'bulkPromotion',
+      'bulkInconsistencyDetect',
+      'bulkMergeDetect',
+      'bulkExcerptMergeDetect',
+      'inconsistencyDetector',
+      'mergeCandidateDetector',
+      'nudgeProviders',
+      'graphLifecycle',
+    ]) {
+      const upload = makeCtx('@test/recall', catalogOf(pluginOf('@test/recall', [`${name}@^1`])));
+      upload.registry.provide(name, impl);
+      assert.throws(() => upload.ctx.services.get(name), { name: 'ServiceNotDeclaredError' }, name);
+
+      const shadow = makeCtx(
+        '@omadia/orchestrator',
+        catalogWithOrigin('installed', [pluginOf('@omadia/orchestrator', [`${name}@^1`])], ['@omadia/orchestrator']),
+      );
+      shadow.registry.provide(name, impl);
+      assert.throws(() => shadow.ctx.services.get(name), { name: 'ServiceNotDeclaredError' }, `${name} (#789)`);
+
+      const own = makeCtx(
+        '@omadia/orchestrator',
+        catalogWithOrigin('bundled', [pluginOf('@omadia/orchestrator', [`${name}@^1`])]),
+      );
+      own.registry.provide(name, impl);
+      assert.equal(own.ctx.services.get(name), impl, name);
+    }
+  });
+
+  it('ADR-0257: entityRefBus@1 is publish-only for a plugin', () => {
+    const published: unknown[] = [];
+    const bus = { publish: (ref: unknown) => published.push(ref), beginCollection: () => ({ drain: () => [] }) };
+    const { ctx, registry } = makeCtx('@test/odoo', catalogOf(pluginOf('@test/odoo', ['entityRefBus@^1'])));
+    registry.provide('entityRefBus', bus);
+    const bounded = ctx.services.get<typeof bus>('entityRefBus')!;
+    bounded.publish({ system: 'odoo', model: 'res.partner', id: 1 });
+    assert.equal(published.length, 1);
+    assert.throws(() => bounded.beginCollection(), { name: 'GraphServiceRefusedError' });
+
+    const orchestrator = makeCtx(
+      '@omadia/orchestrator',
+      catalogWithOrigin('bundled', [pluginOf('@omadia/orchestrator', ['entityRefBus@^1'])]),
+    );
+    orchestrator.registry.provide('entityRefBus', bus);
+    assert.equal(orchestrator.ctx.services.get('entityRefBus'), bus);
+  });
+
+  it('ADR-0256: memoryStore@1 changes the trees the manifest declares, first user owns them', async () => {
+    const store = new InMemoryMemoryStore();
+    const declaring = (id: string) =>
+      makeCtx(id, catalogOf(pluginOf(id, ['memoryStore@^1'], [], { memory: { trees: ['Notes', 'core', '_rules', 'sessions'] } })));
+    const first = declaring('@test/notes');
+    first.registry.provide('memoryStore', store);
+    const notes = first.ctx.services.get<InMemoryMemoryStore>('memoryStore')!;
+    await notes.writeFile('/memories/notes/a.md', 'mine');
+    assert.equal(await notes.readFile('/memories/notes/a.md'), 'mine');
+    // `core`, `_rules` and `sessions` were dropped from the declaration.
+    await assert.rejects(() => notes.writeFile('/memories/core/a.md', 'x'), { name: 'MemoryPathError' });
+    await assert.rejects(() => notes.writeFile('/memories/_rules/a.md', 'x'), { name: 'MemoryPathError' });
+
+    const second = declaring('@test/rival');
+    second.registry.provide('memoryStore', store);
+    const rival = second.ctx.services.get<InMemoryMemoryStore>('memoryStore')!;
+    await assert.rejects(() => rival.writeFile('/memories/notes/b.md', 'x'), { name: 'MemoryPathError' });
+    await assert.rejects(() => rival.readFile('/memories/notes/a.md'), { name: 'MemoryPathError' });
   });
 
   it('a bundled boundary implementer gets the raw service', () => {

@@ -24,11 +24,12 @@ import {
   isArchetype,
   isArchetypeId,
   DEFAULT_MODEL_POLICY,
+  describeModelPolicyRuntime,
   isModelRef,
+  ModelPolicyRefusedError,
   parseAgentToAgentMode,
   parseModelPolicy,
   parseModelRef,
-  resolveModelPolicyRuntime,
   validateModelPolicy,
   ANSWER_VERBOSITY_LEVELS,
   type AgentToAgentMode,
@@ -1796,7 +1797,11 @@ export interface OperatorAgentsRouterOptions {
    * 503 while it returns undefined.
    */
   readonly getModelPolicyContext?: () =>
-    | (ModelPolicyValidationContext & { readonly activeProvider?: string })
+    | (ModelPolicyValidationContext & {
+        readonly activeProvider?: string;
+        /** #1871 — a provider pool is wired: a primary elsewhere really runs there. */
+        readonly switchesProviders?: boolean;
+      })
     | undefined;
   /** OM-75 / OM-78 (#1000, #1001) — why the runtime is down. The readiness
    *  banner probes `GET /` and reads `cause` off the 503 so it can name the
@@ -2192,6 +2197,11 @@ export function createOperatorAgentsRouter(
   function badRequest(res: Response, err: unknown): void {
     // #2060 — one mapping for every facilitator refusal on this router.
     if (respondFacilitatorRefusal(res, err)) return;
+    // #1871 — a policy the host cannot run: a 400 with a code the UI localizes.
+    if (err instanceof ModelPolicyRefusedError) {
+      res.status(400).json({ error: err.code, message: err.message });
+      return;
+    }
     if (err instanceof ConfigValidationError) {
       res.status(409).json({ error: 'config_validation', message: err.message });
       return;
@@ -2913,6 +2923,15 @@ export function createOperatorAgentsRouter(
   });
 
   // ── model policy (#1033) ─────────────────────────────────────────────
+  /** #1871 — the read-out context; a host that does not say has no pool. */
+  const readoutContext = (
+    ctx: NonNullable<ReturnType<NonNullable<typeof options.getModelPolicyContext>>>,
+  ) => ({
+    ...(ctx.activeProvider !== undefined ? { activeProvider: ctx.activeProvider } : {}),
+    switchesProviders: ctx.switchesProviders === true,
+    usable: (provider: string) => ctx.usable(provider),
+    runsToolTurns: (provider: string) => ctx.runsToolTurns(provider),
+  });
   // Read + write as a pair like context-memory: which model answers under
   // an agent's name is a cost / data-residency / quality decision that must
   // not ride along on a rename.
@@ -2930,16 +2949,17 @@ export function createOperatorAgentsRouter(
       const policy = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
       const ctx = options.getModelPolicyContext?.();
       const built = live.registry.get(agent.slug)?.built;
-      const resolved = resolveModelPolicyRuntime(policy, ctx?.activeProvider);
+      const readout = ctx ? await describeModelPolicyRuntime(policy, readoutContext(ctx)) : {};
       res.json({
         slug: agent.slug,
         policy,
         // What `auto` currently resolves to, so the UI can say "Auto (Opus 4.8)".
         effectiveModel: built?.effectiveModel ?? null,
         activeProvider: ctx?.activeProvider ?? null,
-        // An explicit primary on another provider is honoured for its effort
-        // only until the multi-provider turn loop lands — the UI must say so.
-        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+        // #1871/#1877 — `deferredProvider` only when the switch really does
+        // not happen (no pool); `primaryUnavailable` when the primary's
+        // provider cannot be used now. The UI must say so.
+        ...readout,
         vision: {
           ...(isModelRef(policy.primary)
             ? { primary: ctx?.resolveModel(policy.primary.provider, policy.primary.model)?.vision ?? null }
@@ -3018,7 +3038,7 @@ export function createOperatorAgentsRouter(
           `[security-audit] model_policy ${JSON.stringify(previous)} -> ${JSON.stringify(policy)} for agent ${agent.slug}`,
         );
       }
-      const resolved = resolveModelPolicyRuntime(policy, ctx.activeProvider);
+      const readout = await describeModelPolicyRuntime(policy, readoutContext(ctx));
       res.json({
         ok: true,
         policy,
@@ -3026,7 +3046,7 @@ export function createOperatorAgentsRouter(
           ...(vision.primaryVision !== undefined ? { primary: vision.primaryVision } : {}),
           ...(vision.fallbackVision !== undefined ? { fallback: vision.fallbackVision } : {}),
         },
-        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+        ...readout,
       });
     } catch (err) {
       badRequest(res, err);

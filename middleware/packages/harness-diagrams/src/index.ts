@@ -13,6 +13,11 @@ export type { KrokiClient } from './krokiClient.js';
 export { createTigrisStore, isNotFound } from './tigrisStore.js';
 export type { TigrisStore } from './tigrisStore.js';
 export { signUrl, verifySig } from './signing.js';
+export {
+  renderFileLinkErrorPage,
+  sendFileLinkError,
+  type FileLinkError,
+} from './fileLinkErrorPage.js';
 export { buildCacheKey } from './cacheKey.js';
 export { PerTurnBuffer, MAX_PENDING_TURNS } from './perTurnBuffer.js';
 // Only the read-side helpers are public: consumers verify a stored diagram

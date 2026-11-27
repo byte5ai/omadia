@@ -104,6 +104,8 @@ export interface ControlFlowTurn {
   readonly pendingSlotCard?: unknown;
   readonly pendingOAuthConsent?: boolean;
   readonly degraded?: true;
+  /** #1877 — the turn did not run; a `system` notice is the answer. */
+  readonly systemNotice?: unknown;
   /** The turn's AI disclosure; a streamed `done` folds its block into
    *  `answer` on the first turn of a scope. */
   readonly aiDisclosure?: AiDisclosure;
@@ -143,6 +145,7 @@ export function isDeliberateSilence(answer: string): boolean {
 export function releasesWithoutVerification(turn: ControlFlowTurn): boolean {
   return (
     Boolean(turn.pendingUserChoice) ||
+    turn.systemNotice !== undefined ||
     Boolean(turn.pendingMcpInput) ||
     Boolean(turn.pendingSlotCard) ||
     turn.pendingOAuthConsent === true ||

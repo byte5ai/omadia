@@ -355,8 +355,11 @@ export class VerifierService implements ChatAgent {
     // The Smart-Card UX is the "answer" here; there is nothing to check.
     // `enforce` releases every control-flow result this way, as the stream
     // does (`releasesWithoutVerification`).
+    // #1877 — a turn that did not run (the `model_unavailable` notice) has
+    // nothing to check either; the notice goes out as it is.
     if (
       first.result.pendingUserChoice ||
+      first.result.systemNotice !== undefined ||
       (this.mode === 'enforce' && releasesWithoutVerification(first.result))
     ) {
       return toSemanticAnswer(await this.delivered(first, ledger, egress));

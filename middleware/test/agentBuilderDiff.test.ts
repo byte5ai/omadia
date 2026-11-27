@@ -168,6 +168,44 @@ test('changing model_routing rebuilds the agent (reason: model_routing)', () => 
   assert.match(onlyRebuild(diffSnapshots(before, after)).reason, /model_routing/);
 });
 
+test('#1870 — changing the model policy rebuilds the agent (reason: model_policy)', () => {
+  const before = snap();
+  const after = snap({
+    agents: [
+      agent({
+        modelPolicy: {
+          primary: { provider: 'anthropic', model: 'claude-haiku-5-5', effort: 'xhigh' },
+          fallback: 'auto',
+        },
+      }),
+    ],
+  });
+  assert.match(onlyRebuild(diffSnapshots(before, after)).reason, /model_policy/);
+});
+
+test('#1870 — an effort-only change rebuilds; back to auto rebuilds too', () => {
+  const pinned = (effort?: 'low' | 'xhigh') =>
+    agent({
+      modelPolicy: {
+        primary: { provider: 'anthropic', model: 'claude-haiku-5-5', ...(effort ? { effort } : {}) },
+        fallback: 'none',
+      },
+    });
+  assert.match(
+    onlyRebuild(diffSnapshots(snap({ agents: [pinned('low')] }), snap({ agents: [pinned('xhigh')] }))).reason,
+    /model_policy/,
+  );
+  assert.match(
+    onlyRebuild(diffSnapshots(snap({ agents: [pinned()] }), snap())).reason,
+    /model_policy/,
+  );
+});
+
+test('#1870 — an absent policy equals the explicit default: no action', () => {
+  const after = snap({ agents: [agent({ modelPolicy: { primary: 'auto', fallback: 'none' } })] });
+  assert.equal(diffSnapshots(snap(), after).actions.length, 0);
+});
+
 test('adding a schedule produces NO orchestrator action', () => {
   const before = snap();
   const after = snap({

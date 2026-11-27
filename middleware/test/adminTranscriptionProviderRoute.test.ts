@@ -7,6 +7,9 @@ import {
   makeHarness,
   type Harness,
 } from './adminTranscriptionProvider.harness.js';
+import type { TranscriptionService } from '@omadia/plugin-api';
+import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { transcriptionProviderState } from '../src/routes/adminTranscriptionProvider.js';
 
 /**
  * `/api/v1/admin/transcription-provider` — the live `transcription@1`
@@ -143,6 +146,20 @@ describe('POST /switch', () => {
     assert.equal(harness.registry.get(OTHER_STT)?.status, 'inactive');
   });
 
+  it('#1981 — with no previous provider the rollback says so, not "could not be restored"', async () => {
+    harness = await makeHarness([
+      { id: OPENAI_STT, status: 'inactive' },
+      { id: OTHER_STT, status: 'inactive' },
+    ]);
+    harness.state.publishNothing.add(OPENAI_STT);
+    const { status, body } = await harness.postSwitch({ pluginId: OPENAI_STT });
+    assert.equal(status, 409);
+    assert.equal(body['code'], 'transcriptionProvider.target_unavailable');
+    assert.doesNotMatch(String(body['message']), /COULD NOT BE RESTORED/);
+    assert.match(String(body['message']), /no provider was active before/);
+    assert.deepEqual(body['details'], { restoredProviderId: null, previousProviderId: null });
+  });
+
   it('switching TO a provider with no previous active one works', async () => {
     harness = await makeHarness([
       { id: OPENAI_STT, status: 'inactive' },
@@ -185,5 +202,30 @@ describe('POST /switch', () => {
     const { status, body } = await harness.postSwitch({ nope: true });
     assert.equal(status, 400);
     assert.equal(body['code'], 'transcriptionProvider.invalid_request');
+  });
+});
+
+describe('#1981 — transcriptionProviderState', () => {
+  const catalog = {
+    list: () => [{ plugin: { id: 'p', name: 'P', provides: ['transcription@1'] } }],
+    get: () => undefined,
+  };
+  const registry = (installed: boolean) =>
+    ({ has: (id: string) => installed && id === 'p' }) as unknown as InstalledRegistry;
+  const service = {} as TranscriptionService;
+
+  it('ready, not_configured and not_installed', () => {
+    assert.equal(
+      transcriptionProviderState({ installedRegistry: registry(true), catalog, getTranscription: () => service }),
+      'ready',
+    );
+    assert.equal(
+      transcriptionProviderState({ installedRegistry: registry(true), catalog, getTranscription: () => undefined }),
+      'not_configured',
+    );
+    assert.equal(
+      transcriptionProviderState({ installedRegistry: registry(false), catalog, getTranscription: () => undefined }),
+      'not_installed',
+    );
   });
 });

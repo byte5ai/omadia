@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { isNotFound, type TigrisStore } from './tigrisStore.js';
+import { sendFileLinkError } from './fileLinkErrorPage.js';
 import { verifySig } from './signing.js';
 
 interface DiagramsRouterDeps {
@@ -21,7 +22,7 @@ export function isDiagramKey(key: string): boolean {
 /**
  * HMAC-signed proxy that serves diagram PNGs from Tigris/SeaweedFS to Teams.
  *
- * The URL format is `/diagrams/<url-encoded-key>?exp=<unix-seconds>&sig=<hex>`
+ * The URL format is `/diagrams/dl/<url-encoded-key>?exp=<unix-seconds>&sig=<hex>`
  * where the signature covers `<decoded-key>.<exp>`. Expired or tampered
  * URLs return 403; unknown keys return 404; everything else returns 200 with
  * the raw PNG body streamed from object-storage.
@@ -43,13 +44,13 @@ export function createDiagramsRouter(deps: DiagramsRouterDeps): Router {
         ? [rawSegments]
         : [];
     if (segments.length === 0) {
-      res.status(400).type('text/plain').send('missing key');
+      sendFileLinkError(req, res, 'bad_request');
       return;
     }
     // Express already URL-decodes each path segment before it lands here.
     const key = segments.join('/');
     if (!isDiagramKey(key)) {
-      res.status(404).type('text/plain').send('not found');
+      sendFileLinkError(req, res, 'not_found');
       return;
     }
 
@@ -57,7 +58,7 @@ export function createDiagramsRouter(deps: DiagramsRouterDeps): Router {
     const sig = typeof req.query['sig'] === 'string' ? req.query['sig'] : '';
     const ok = verifySig({ key, exp, sig, secret: deps.secret });
     if (!ok) {
-      res.status(403).type('text/plain').send('invalid or expired signature');
+      sendFileLinkError(req, res, 'expired');
       return;
     }
 
@@ -75,7 +76,7 @@ export function createDiagramsRouter(deps: DiagramsRouterDeps): Router {
       stream.on('error', (err) => {
         console.error('[diagrams] stream error:', err);
         if (!res.headersSent) {
-          res.status(500).type('text/plain').send('internal error');
+          sendFileLinkError(req, res, 'failed');
         } else {
           res.destroy(err);
         }
@@ -83,11 +84,11 @@ export function createDiagramsRouter(deps: DiagramsRouterDeps): Router {
       stream.pipe(res);
     } catch (err) {
       if (isNotFound(err)) {
-        res.status(404).type('text/plain').send('not found');
+        sendFileLinkError(req, res, 'not_found');
         return;
       }
       console.error('[diagrams] proxy failed:', err);
-      res.status(500).type('text/plain').send('internal error');
+      sendFileLinkError(req, res, 'failed');
     }
   });
 

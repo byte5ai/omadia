@@ -9,6 +9,7 @@ import {
   createOpenAiEmbeddingClient,
   defaultDimensionsForModel,
 } from './openaiEmbeddingClient.js';
+import { parseAllowedHosts, undeclaredHost } from './endpointHosts.js';
 
 /**
  * @omadia/embedding-adapter-openai — second `embeddingClient@1` provider (#440).
@@ -96,6 +97,23 @@ export async function activate(
     );
     return { close: closeNoop(ctx) };
   }
+  // #1984 / ADR-0200 — texts and key go only to a declared host.
+  const refusedHost = undeclaredHost(
+    baseUrl,
+    parseAllowedHosts(ctx.config.get<string>('allowed_hosts')),
+  );
+  if (refusedHost !== undefined) {
+    ctx.log(
+      `[embedding-adapter-openai] Base URL host '${refusedHost}' is not declared (api.openai.com or allowed_hosts) — capability not published`,
+    );
+    ctx.status.report({
+      state: 'error',
+      title: 'Endpoint nicht freigegeben',
+      detail: `Host ${refusedHost} ist nicht freigegeben — unter „Zusätzlich erlaubte Hosts“ eintragen oder die Base-URL ändern.`,
+    });
+    return { close: closeNoop(ctx) };
+  }
+  ctx.status.clear();
   const dimensions = knownDimensions ?? configuredDimensions;
   if (dimensions === undefined) {
     // Refusing here beats publishing a client with unknown dimensions: the KG

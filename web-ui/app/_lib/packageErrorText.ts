@@ -78,6 +78,9 @@ export function packageErrorText(
 export interface StoreErrorBody {
   code?: string;
   message?: string;
+  /** #1973 — `details.missing` of `install.missing_dependencies`: the
+   *  plugin ids that have to be installed first. */
+  missing?: readonly string[];
   params?: Readonly<Record<string, string>>;
 }
 
@@ -106,5 +109,11 @@ export function storeErrorText(
   if (UPLOAD_ERRORS[code]) {
     return packageErrorText(code, body.params, serverText, tUpload);
   }
-  return errorHelpLine(code, tRoot) ?? serverText;
+  const help = errorHelpLine(code, tRoot);
+  if (help === null) return serverText;
+  // #1973 — the help line says "the plugins named below": name them.
+  if (code === 'install.missing_dependencies' && body.missing && body.missing.length > 0) {
+    return `${help} ${tRoot('store.install.missingPlugins')} ${body.missing.join(', ')}`;
+  }
+  return help;
 }
