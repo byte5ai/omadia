@@ -1722,6 +1722,36 @@ Not part of this change: channel-teams still uses its own copy of the verifier
 "Expose an API" setup (`access_as_user` scope, Teams client pre-authorization)
 on the bot's app registration.
 
+## 5b-2. Channel accounts linked to omadia accounts (#1995, ADR-0225, ADR-0280)
+
+A linked channel account (Telegram today) runs its turns as the omadia account: the account's
+cluster id, principal and IdP subject, so also its `per_user` MCP tokens. What guards that:
+
+- **Only an operator creates a link.** `CoreApi.channelIdentityLinks.offerLink` resolves the
+  operator from the session cookie of the plugin's admin request (same path as
+  `ctx.operatorAuth`); the plugin never names the actor. The account must be active.
+- **The person proves control of the channel account.** The offer is single-use, lives at most
+  15 minutes, and is redeemed with the sender the platform attested (Telegram `/start <token>`).
+- **Per plugin.** Offer, redeem, `linkOf` and unlink refuse a channel type the calling plugin
+  does not hold (`ChannelTypeClaims`); `web` and `api` cannot be linked.
+- **Audited before it changes anything.** `channel_identity.link` (actor: the offering
+  operator) and `channel_identity.unlink` (actor: the session) go to `admin_audit` first;
+  without an audit store no offer is made.
+- **Kernel-only graph write.** `KnowledgeGraph.linkChannelIdentity` is `kernel-only` in the
+  bounded graph services (ADR-0044).
+
+Accepted residual risks (ADR-0280):
+
+- **Turn attestation stays the channel plugin's.** The turn path reads the link from the
+  identity a plugin channel turn states through `origin` + `userId`. The kernel does not check
+  that the calling plugin holds `origin.channelType`, exactly as it already trusts a channel's
+  `userRef` for Teams identities (`handleTurnStream`, see the `mcpUserKey` comment in
+  `orchestrator.ts`). A malicious installed channel plugin could therefore speak as a linked
+  account. Follow-up #2324: stamp or check the origin channel type per plugin in the kernel.
+- **Disabling an account does not unlink it.** Its linked channel accounts keep running as the
+  account (and its `per_user` keys) until an operator unlinks them in the channel's admin UI.
+  The user purge (ADR-0186) removes linked identities with the cluster.
+
 ## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
 
 Since #983 an orchestrator refuses a domain tool whose plugin is not in its

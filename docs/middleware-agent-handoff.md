@@ -7006,6 +7006,11 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Kanal-Konto-Links (W35, ADR-0280) — Reste (#2324):** Origin-Kanaltyp pro Plugin prüfen statt Adapter-Attestierung; Deaktivieren eines Kontos entknüpft seine
+  Kanal-Identitäten nicht (Turns laufen bis zum Unlink weiter als Konto-Cluster); Slack, Discord
+  und WhatsApp sollten `CoreApi.channelIdentityLinks` statt reiner Allow-Listen nutzen;
+  Cross-Channel-Memory (`docs/cross-channel-memory.md`) entscheidet, ob ein verknüpftes Konto die
+  Memory-Tiers des Web-Kontos sieht.
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
   pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
@@ -12005,6 +12010,27 @@ Ersetzt den Platzhalter aus #2007.
   `StepEffects`-Implementierung muss `meta.preview` selbst beachten. Der
   stabile System-Prompt beschreibt die Tools weiter, nur der per-Turn-Hint
   widerspricht ihm.
+
+## Welle 6 · W35: Kanal-Konto an omadia-Konto binden (#1995, ADR-0225, ADR-0280, 2026-11-27)
+
+- **`CoreApi.channelIdentityLinks`** (channel-sdk 0.3.19, optional, feature-detected;
+  Kernel: `src/channels/channelIdentityLinks.ts`, gebunden pro Plugin in `scopedCoreApi.ts`):
+  `listLinkableAccounts(cookie)` (aktive `users`), `offerLink(cookie, {channelType, userId})`
+  (Einmal-Angebot im Speicher, ≤ 15 min, Akteur = Operator aus dem Cookie),
+  `redeemLink({channelType, channelUserId, offerId})` (Kanal löst mit dem vom Plattform-Update
+  bestätigten Absender ein), `linkOf`, `unlink(cookie, …)`. `channelUserId` ist immer die
+  `ChatTurnInput.userId` der Turns (Telegram `telegram:<id>`). Fehlergründe `no_session`,
+  `unknown_user`, `unsupported_channel`, `unknown_offer`, `not_linked`, `unavailable`.
+  Audit `channel_identity.link`/`.unlink` vor der Graph-Änderung; ohne Audit-Store kein Angebot.
+- **KG:** `linkChannelIdentity` (plugin-api 1.107.0, kernel-only, beide Backends) hängt die
+  `ChannelIdentity` an den Cluster von `web:<users.id>` und setzt `linkedUserId/linkedBy/linkedAt`;
+  Unlink → frischer 1:1-Cluster. `resolveOrCreateChannelIdentity` liefert `linkedUserId`.
+- **Turn:** `resolveTurnOwnerIdentity` löst den über `origin` genannten Absender eines
+  Plugin-Kanal-Turns einmal auf; nur verknüpft laufen `resolvedOmadiaUserId`, Principal und
+  `mcpUserKey` (`channelTurnMcpUserKey`) auf dem Konto-Cluster. Run-Trace-Owner nutzt dieselbe
+  Auflösung (`originClusterUserId`).
+- **Offen:** deaktiviertes Konto entknüpft nicht automatisch (ADR-0280, akzeptiert); Slack/Discord/
+  WhatsApp nutzen die Fähigkeit noch nicht (§13).
 
 ## Welle 5 · W15-17: Kanal-Seams, Antwortsprache, Fast-Lane-Übergabe (2026-11-26)
 

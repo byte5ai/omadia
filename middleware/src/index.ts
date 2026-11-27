@@ -379,6 +379,7 @@ import {
   evaluateSessionToken,
 } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
+import { createChannelIdentityLinks } from './channels/channelIdentityLinks.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
@@ -1374,6 +1375,9 @@ async function main(): Promise<void> {
   // lifecycle). Late-bound: the AdminAuditLog needs the Postgres pool, which
   // exists only further down; attached right where it is constructed.
   const pluginAdminAudit = new LateBoundAdminAudit();
+  // ADR-0225 — the users table for the channel-account links, late-bound for
+  // the same reason (attached where the UserStore is constructed).
+  const linkableUsers: { current?: UserStore } = {};
   const operatorAuth = createOperatorAuthAccessor({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
@@ -6321,6 +6325,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    linkableUsers.current = userStore;
     resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
     // this users table; every user write reloads the snapshot.
@@ -8260,6 +8265,13 @@ async function main(): Promise<void> {
     readAttachment: createAttachmentByteReader({
       resolveGrantedPath: (path) => publicPathGrants.resolve(path),
       loopbackOrigin: loopbackOriginFor(config.HOST, config.PORT),
+    }),
+    // ADR-0225 — operator-issued links from a channel account to an account.
+    channelIdentityLinks: createChannelIdentityLinks({
+      operatorOf: (cookie) => operatorAuth.sessionPrincipal?.(cookie) ?? Promise.resolve(null),
+      users: () => linkableUsers.current,
+      knowledgeGraph: () => knowledgeGraph,
+      audit: () => pluginAdminAudit.current,
     }),
   });
 

@@ -225,6 +225,11 @@ const ChannelIdentityPropsSchema = z
      */
     authProvider: z.string().min(1).optional(),
     authProviderUserId: z.string().min(1).optional(),
+    /** ADR-0225 — an operator linked this identity to the account
+     *  `linkedUserId` (`users.id`); `linkedBy` is the operator's `users.id`. */
+    linkedUserId: z.string().min(1).optional(),
+    linkedBy: z.string().min(1).optional(),
+    linkedAt: z.string().datetime().optional(),
     firstSeenAt: z.string().datetime(),
     lastSeenAt: z.string().datetime(),
     /** Free-form channel-side payload (Telegram from-object, etc.). */
