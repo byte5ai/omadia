@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.109.0 — 2026-11-27
+## 1.110.0 — 2026-11-27
 
 Additive.
 

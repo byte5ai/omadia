@@ -75,7 +75,7 @@ changelog.
 - `query_dataset` `query_rows` no longer refuses `gt`/`gte`/`lt`/`lte` on `date` columns (a v1
   limit from before #1845 stored dates as ISO). Cells and bounds compare as wall-clock
   timestamps (date-only = midnight) in both backends (Neon: guarded `::timestamp` cast,
-  in-memory: `datasetDateTime`, plugin-api **1.109.0**). The tool reads a string bound with the
+  in-memory: `datasetDateTime`, plugin-api **1.110.0**). The tool reads a string bound with the
   import's parser (`normaliseDateFilterValue`: ISO, `d.m.yyyy`, `d/m/yyyy`, optional time); an
   unreadable bound is `invalid_date_value` naming the accepted formats. Columns with encrypted
   cells stay refused for every filter (`encrypted_column`, a range would be a bisection oracle);
@@ -88,7 +88,7 @@ changelog.
   (plugin's normal TTL), without re-generating the file. Rule: signed-in session, signature
   valid with the expiry ignored, original expiry at most 30 days back; refusals `400`/`401`/
   `403`/`404`/`410` with `file_link.*` codes, logged with a hashed key id only.
-- New kernel service `fileLinkRenewal@1` (plugin-api **1.109.0**); `@omadia/plugin-office`
+- New kernel service `fileLinkRenewal@1` (plugin-api **1.110.0**); `@omadia/plugin-office`
   0.1.8 and `@omadia/diagrams` 0.2.5 register a link renewer (`optional_requires:
   fileLinkRenewal@1`).
 - Web chat: diagram images and file chips of older messages renew their link on render, on a

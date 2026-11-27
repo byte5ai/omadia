@@ -5251,7 +5251,7 @@ Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test
   `401 file_link.session_required`, `403 file_link.invalid_signature`,
   `404 file_link.unknown_route`, `410 file_link.too_old`; Ablehnungen werden mit gehashter
   Key-ID geloggt (`[file-links] renew refused`), nie mit URL/Signatur. Kernel-Service
-  `fileLinkRenewal@1` (`services/fileLinkRenewal.ts`, plugin-api 1.109.0): Office (`/documents/dl`)
+  `fileLinkRenewal@1` (`services/fileLinkRenewal.ts`, plugin-api 1.110.0): Office (`/documents/dl`)
   und Diagrams (`/diagrams/dl`) registrieren je einen Renewer (`linkRenewer.ts`). Web-Chat:
   `app/_components/chat/FileAttachments.tsx` + `app/_lib/fileLinkRenewal.ts` erneuern beim
   Rendern, bei `onError` des Bildes oder beim Klick nach Ablauf.
