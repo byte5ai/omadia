@@ -2576,7 +2576,11 @@ requests, and only there, the shield acts on four kinds of text:
   earlier context (`maskedContextSpans`, #1541) and never as masked in the
   user's message. It fails closed like prompt masking (below): a
   failing C1 falls back to C0, and a detection failure or a surviving value
-  blocks the turn (`PromptMaskBlockedError`).
+  blocks the turn (`PromptMaskBlockedError`). When a replayed answer (or the
+  recalled chat context) crossed the wire with masked spans, the turn gets a
+  data-free kernel note that placeholders in its earlier answers are the
+  shield's and are no reason to correct them (#2341,
+  `replayedAnswerNote.ts`, CLI path included).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
   upload, the user messages a channel replays in `priorTurns`, live steering text

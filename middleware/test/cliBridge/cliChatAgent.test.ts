@@ -21,6 +21,7 @@ import type { ChatStreamEvent } from '../../packages/harness-channel-sdk/src/cha
 import { CliIncompatibleError } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
 import { KERNEL_NATIVE_TOOL_NAMES } from '../../packages/harness-orchestrator/src/orchestrator.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
+import { REPLAYED_ANSWER_MASKED_NOTE } from '../../packages/harness-orchestrator/src/replayedAnswerNote.js';
 import { resetModelGatewayForTests, setModelCallHalts } from '@omadia/usage-telemetry';
 
 // Unit tests for the M2 stream-json → omadia mapping. The `claude -p
@@ -1201,6 +1202,27 @@ describe('CliChatAgent conversation memory (#1087)', () => {
     const text = prompt();
     assert.ok(!text.includes('DE89370400440532013000'), text);
     assert.ok(text.includes('[IBAN_1]'), text);
+    // #2341 — a masked replayed answer comes with the kernel note.
+    assert.ok(text.includes(REPLAYED_ANSWER_MASKED_NOTE.split('\n')[0]!), text);
+  });
+
+  it('#2341 — a replayed answer with nothing masked gets no kernel note', async () => {
+    const { agent, prompt } = makeAgent({
+      sessionTail: async () => [{ userMessage: 'Hallo', assistantAnswer: 'Hallo, wie kann ich helfen?' }],
+    });
+    await turnContext.run(
+      {
+        turnId: 't1',
+        turnDate: '2026-09-24',
+        privacyHandle: {
+          maskUserPrompt: async () => ({ outcome: 'disabled' as const }),
+        } as never,
+      },
+      async () => {
+        await agent.chat({ userMessage: 'und weiter?', sessionScope: 'sess-1' });
+      },
+    );
+    assert.equal(prompt().includes(REPLAYED_ANSWER_MASKED_NOTE.split('\n')[0]!), false);
   });
 
   it('drops the replay entirely when masking is blocked', async () => {

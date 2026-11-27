@@ -313,6 +313,7 @@ import {
   type DiscretionTurnState,
 } from './discretion/turnLabels.js';
 import { conversationContextKey, once, ownerContextKey, readersFromAudience } from './discretion/turnSetup.js';
+import { withReplayedAnswerNote } from './replayedAnswerNote.js';
 import {
   consultationAllowsTool,
   consultationToolRefusal,
@@ -1685,6 +1686,8 @@ interface PriorContextRecall {
   readonly recallUsed?: boolean;
   readonly segments?: readonly string[];
   readonly priorContext: string | undefined;
+  /** #2341 — the injected copy differs from the stored text (spans masked). */
+  readonly priorContextMasked?: boolean;
 }
 
 /** The recalled prior-context block (knowledge-graph recall and the session
@@ -1747,8 +1750,13 @@ async function maskReplayedAnswerForWire(
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
-): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+): Promise<{
+  readonly messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /** #2341 — a replayed answer crossed the wire with masked spans. */
+  readonly answersMasked: boolean;
+}> {
   const pairs: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  let answersMasked = false;
   for (const t of priorTurns ?? []) {
     if (t.userMessage.trim().length > 0) {
       pairs.push({
@@ -1760,13 +1768,12 @@ async function maskPriorTurnsForWire(
     // the agent's words; replayed, the model starts writing it itself.
     const answer = stripKnownAiDisclosureLines(t.assistantAnswer);
     if (answer.trim().length > 0) {
-      pairs.push({
-        role: 'assistant',
-        content: await maskReplayedAnswerForWire(privacy, answer),
-      });
+      const content = await maskReplayedAnswerForWire(privacy, answer);
+      if (content !== answer) answersMasked = true;
+      pairs.push({ role: 'assistant', content });
     }
   }
-  return pairs;
+  return { messages: pairs, answersMasked };
 }
 
 /**
@@ -4737,7 +4744,7 @@ export class Orchestrator {
       // The structured `recalled` payload stays raw — it goes to the UI, not
       // the model. Its stored-turn segments let C1 skip turns already scanned.
       const priorContext = await maskRecalledForWire(privacy, retrieved.text, retrieved.segments);
-      return { ...retrieved, priorContext };
+      return { ...retrieved, priorContext, priorContextMasked: priorContext !== retrieved.text };
     })();
     recall.catch(() => undefined);
     return recall;
@@ -7172,7 +7179,7 @@ export class Orchestrator {
         ...(input.planHint !== undefined ? { planHint: input.planHint } : {}),
       });
     }
-    const { recalled, recallUsed, priorContext } = await recall;
+    const { recalled, recallUsed, priorContext, priorContextMasked } = await recall;
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — the same pass also resolves image attachments (Teams
     // Tigris storage_key, or a bare url for channels without a pre-fetch)
@@ -7228,9 +7235,15 @@ export class Orchestrator {
     // #361 — priorTurns replay persisted REAL values (turn N restored them
     // before persistence), so they are masked through the same turn map
     // before assembly. See maskPriorTurnsForWire.
-    const priorTurnMessages = await maskPriorTurnsForWire(
+    const { messages: priorTurnMessages, answersMasked: priorAnswersMasked } = await maskPriorTurnsForWire(
       privacyForPrompt,
       input.priorTurns,
+    );
+    // #2341 — the model is told that placeholders in its own replayed
+    // answers are the shield's, so it never "corrects" a correct answer.
+    const turnSystemHint = withReplayedAnswerNote(
+      effectiveExtraSystemHint,
+      priorAnswersMasked || priorContextMasked === true,
     );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Live chat history first. Each turn becomes a (user, assistant) pair —
@@ -7356,7 +7369,7 @@ export class Orchestrator {
               turnWorkingMode,
             ),
             priorContext,
-            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
+            withFinalizeHint(turnSystemHint, finalizePass),
           );
         // #1211 — `tools` / `tool_choice` depend on the provider a request
         // goes to, so the primary request and the fallback below each get
@@ -8551,7 +8564,7 @@ export class Orchestrator {
     // builds no `memoryUsed`, and its only consumer is the non-streaming Teams
     // card (`toSemanticAnswer`). Wire it through with the flag if a streaming
     // channel ever grows a Fresh-Check affordance.
-    const { recalled, priorContext } = await (startedRecall ??
+    const { recalled, priorContext, priorContextMasked } = await (startedRecall ??
       this.startPriorContextRecall(input, wireUserMessage, turnMemory, privacyForPrompt));
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
@@ -8604,9 +8617,15 @@ export class Orchestrator {
 
     // #361 — priorTurns are masked through the same turn map before
     // assembly; see chatInContextInner / maskPriorTurnsForWire.
-    const priorTurnMessages = await maskPriorTurnsForWire(
+    const { messages: priorTurnMessages, answersMasked: priorAnswersMasked } = await maskPriorTurnsForWire(
       privacyForPrompt,
       input.priorTurns,
+    );
+    // #2341 — the model is told that placeholders in its own replayed
+    // answers are the shield's, so it never "corrects" a correct answer.
+    const turnSystemHint = withReplayedAnswerNote(
+      effectiveExtraSystemHint,
+      priorAnswersMasked || priorContextMasked === true,
     );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Same in-memory history injection as chat() — see chatInContext().
@@ -8842,7 +8861,7 @@ export class Orchestrator {
               turnWorkingMode,
             ),
             priorContext,
-            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
+            withFinalizeHint(turnSystemHint, finalizePass),
           );
         // #2217 — a tool-less turn sends no tool definitions at all.
         const iterationTools = toolsForTurn(input, () => this.buildToolsList());

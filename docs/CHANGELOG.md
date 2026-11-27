@@ -36,7 +36,7 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — Office export in a web chat (W32 follow-up) (2026-11-27)
+### Fixed — Office export in a web chat, false self-correction after a masked replay (W32 follow-up) (2026-11-27)
 
 - **#2338 — Office is no integration egress (ADR-0298).** `create_xlsx` and `create_docx`
   declared no tool effect, so the discretion integration egress checked them like a write. A web
@@ -48,6 +48,13 @@ changelog.
   Kroki endpoint. Every other undeclared tool is still checked like a write. Known gap: a withheld
   streamed answer leaves the tool outputs (the signed link included) in the client's tool trace
   (#2342).
+- **#2341 — a masked replayed answer comes with a kernel note.** A channel replays the agent's own
+  earlier answer in `priorTurns`; it reaches the model masked (ADR-0095), so names the agent wrote
+  (here: historical persons, detected by C1) come back as pseudonyms, and the model "corrected" a
+  correct earlier answer in an unrelated turn. When a replayed answer or the recalled chat context
+  crossed the wire with masked spans, the turn's system hint (and on the CLI path a
+  `System Hint` line) now says that placeholders in earlier answers are the shield's and must not
+  be corrected (`replayedAnswerNote.ts`). The note is data-free; the masking itself is unchanged.
 
 ### Docs — wave 5 ADRs accepted, roadmap design ADRs 0285–0290 (W36) (2026-11-27)
 
