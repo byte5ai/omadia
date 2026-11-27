@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — debug `scope` turns and steering are bound to the account (#2291) (2026-11-27)
+
+- `POST /api/chat`, `/chat/stream` and `/chat/steer` with a debug `scope` (or neither `scope`
+  nor `sessionId`) used the caller-chosen label as the turn bucket, so another account with the
+  same label could steer the turn and shared its transcript bucket (ADR-0180 residual). For a
+  signed-in session the bucket is now `http-<users.id>~<scope>` / `http-<users.id>~default`
+  (account first, so the 80-character key cut cannot drop it);
+  requests without an account keep the old labels. Debug transcripts under the old labels stay
+  where they are.
+
 ### Changed — agents on memory mode `off` move to `members` (#2290, ADR-0261) (2026-11-27)
 
 - **Migration** core **0120_context_memory_off_to_members** — every `standard` agent on
