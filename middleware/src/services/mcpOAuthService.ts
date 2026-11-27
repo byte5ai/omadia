@@ -32,6 +32,7 @@ import { redactedErrorText } from './secretRedaction.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 import { substituteMcpConfig } from '../agents/subAgentToolHydration.js';
 import type { AuditActor } from '../auth/adminAuditLog.js';
+import type { McpOAuthFlowCompletion } from '@omadia/orchestrator';
 
 import type {
   AgentGraphStore,
@@ -557,11 +558,17 @@ export class McpOAuthService {
     }
   }
 
-  /** Start the authorization flow: returns the URL to send the user to. */
+  /**
+   * Start the authorization flow: returns the URL to send the user to.
+   * `completion: 'teams-sso'` (ADR-0301) binds the flow to the starter's Teams
+   * SSO token: the callback hands the code back to Teams and only
+   * {@link completeAuthorization} with `completion: 'teams-sso'` finishes it.
+   */
   async beginAuthorization(
     server: McpServerRow,
     userKey: string,
     actor: AuditActor = {},
+    opts: { readonly completion?: McpOAuthFlowCompletion } = {},
   ): Promise<BeginAuthResult> {
     if (!server.endpoint) throw new Error('server has no endpoint');
     if (server.transport === 'stdio') throw new Error('stdio servers do not use OAuth');
@@ -603,8 +610,19 @@ export class McpOAuthService {
       resource: discovered.resource.resource,
       ...(actor.id ? { auditActorId: actor.id } : {}),
       ...(actor.email ? { auditActorEmail: actor.email } : {}),
+      ...(opts.completion ? { completion: opts.completion, authorizeUrl: url } : {}),
     });
     return { authorizeUrl: url };
+  }
+
+  /** ADR-0301 — where `/directory/connect/go/<state>` sends the Teams authentication window. */
+  teamsAuthorizeUrl(state: string): Promise<string | undefined> {
+    return this.deps.graph.mcpOAuthTeamsAuthorizeUrl(state);
+  }
+
+  /** ADR-0301 — how a pending flow is completed, without consuming it; `undefined` when unknown. */
+  flowCompletion(state: string): Promise<McpOAuthFlowCompletion | undefined> {
+    return this.deps.graph.mcpOAuthFlowCompletion(state);
   }
 
   /** Finish the flow at the callback: exchange the code and store the token.
@@ -625,9 +643,14 @@ export class McpOAuthService {
     code: string,
     iss: string | null | undefined,
     completingUserKeyFor: CompletingUserKeyFor,
+    opts: { readonly completion?: McpOAuthFlowCompletion } = {},
   ): Promise<{ serverId: string; actor?: AuditActor }> {
     const flow = await this.deps.graph.takeMcpOAuthFlow(state);
     if (!flow) throw new Error('unknown or expired authorization state');
+    // ADR-0301 — a flow is finished only the way it was started: a session
+    // flow never through the Teams SSO path, a Teams SSO flow never at the
+    // session callback. The flow is consumed either way.
+    if ((opts.completion ?? 'session') !== (flow.completion ?? 'session')) throw new McpOAuthCompleterMismatchError();
     const completer = await completingUserKeyFor({ serverId: flow.serverId, userKey: flow.userKey });
     if (completer === null || completer !== flow.userKey) {
       throw new McpOAuthCompleterMismatchError();

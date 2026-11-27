@@ -127,6 +127,8 @@ export const ROUTES: Readonly<Record<string, Classification>> = {
   'src/index.ts USE /api/v1/admin/update createAdminUpdateRouter': none('self-update'),
   'src/index.ts USE /api/v1/admin/directory createAdminDirectoryRouter': operator('directory people, their channel links and MCP connections, behind requireAuth (ADR-0300)'),
   'src/index.ts USE /api/v1/admin/users createAdminUsersRouter': none('account management'),
+  'src/index.ts USE /api/v1/directory/connect createDirectoryConnectRouter': none('per-person MCP connect from Teams (ADR-0301)'),
+  'src/index.ts USE /api/v1/directory/connect/go createDirectoryConnectRedirect': none('redirect to a pending connect flow (ADR-0301)'),
   'src/index.ts USE /api/v1/admin/vault-status createVaultStatusRouter': none('vault status'),
   'src/index.ts USE /api/v1/agents createAgentDirectoryRouter': none('agent directory'),
   'src/index.ts USE /api/v1/builder createBuilderRouter': none('plugin builder drafts'),

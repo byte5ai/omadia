@@ -913,6 +913,13 @@ export interface ChatTurnResult {
    */
   pendingOAuthConsent?: boolean;
   /**
+   * #2312 / ADR-0301 — MCP servers a tool call of this turn could not use
+   * because the user has not connected them (kernel-minted connect prompts,
+   * never server text). A channel without tool output renders a Connect
+   * action per server (Teams: the Teams-SSO-bound connect dialog).
+   */
+  mcpConnectRequired?: readonly { readonly serverId: string; readonly serverName: string }[];
+  /**
    * Privacy-Proxy aggregate receipt for this turn. Populated when a
    * `privacy.redact@1` provider is registered AND processed at least one
    * outbound payload during the turn. PII-free by construction (no spans,
@@ -1297,6 +1304,8 @@ export type ChatStreamEvent =
       pendingSlotCard?: PendingSlotCard;
       /** `true` when a calendar tool hit `consent_required` this turn. */
       pendingOAuthConsent?: boolean;
+      /** #2312 — servers the user must connect (see ChatTurnResult.mcpConnectRequired). */
+      mcpConnectRequired?: readonly { readonly serverId: string; readonly serverName: string }[];
       /** Privacy-Proxy aggregate receipt for this turn. PII-free; clients
        *  render it as a collapsible disclosure under the answer. */
       privacyReceipt?: PrivacyReceipt;

@@ -121,7 +121,12 @@ import {
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from './mcp/pendingMcpInput.js';
-import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
+import {
+  McpAuthPromptMint,
+  parseMcpConnectRequest,
+  runWithMcpAuthPromptMint,
+  type McpConnectRequest,
+} from './mcp/mcpAuthPromptMint.js';
 import {
   ASK_USER_CHOICE_TOOL_NAME,
   askUserChoiceToolSpec,
@@ -4477,11 +4482,13 @@ export class Orchestrator {
     const followUpOptions = this.drainFollowUps();
     const pendingSlotCard = this.drainPendingSlotCard();
     const pendingOAuthConsent = this.drainConsentRequired();
+    const mcpConnectRequired = drainMcpConnects();
     return {
       ...(pendingUserChoice ? { pendingUserChoice } : {}),
       ...(followUpOptions ? { followUpOptions } : {}),
       ...(pendingSlotCard ? { pendingSlotCard } : {}),
       ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+      ...(mcpConnectRequired ? { mcpConnectRequired } : {}),
     };
   }
 
@@ -6261,6 +6268,7 @@ export class Orchestrator {
       {
         turnId,
         turnDate: today(),
+        mcpConnectRequests: new Map(),
         // #2043 — what this turn's tool handlers are told about their caller.
         toolCall: buildToolCallContext(this.agentId, input),
         dataSideChannel,
@@ -7733,6 +7741,7 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
+          const mcpConnectRequired = drainMcpConnects();
           // Fresh-Check gate (Teams "🔄 Fresh Check" button). Memory influenced
           // this answer when the retriever RECALLED something — a topical hit
           // from outside the live window, or a cross-session plan/process/
@@ -7762,6 +7771,7 @@ export class Orchestrator {
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
             ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+            ...(mcpConnectRequired ? { mcpConnectRequired } : {}),
             ...(recalled ? { recalled } : {}),
           };
         }
@@ -8234,6 +8244,7 @@ export class Orchestrator {
     const context: TurnContextValue = {
       turnId,
       turnDate: today(),
+      mcpConnectRequests: new Map(),
       toolCall: buildToolCallContext(this.agentId, input),
       // #2085 — read back by `attachSideChannelData` on the `done` event.
       dataSideChannel: this.dataCollectorFor(boundLedger),
@@ -9241,6 +9252,7 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
+          const mcpConnectRequired = drainMcpConnects();
           // Slice 4a — the excerpt rides the `done` event (the save-as-memory
           // modal prefill; a miss → the modal's 240-char prefill). Without a
           // re-entering verifier it is awaited here, as before. Under one
@@ -9306,6 +9318,7 @@ export class Orchestrator {
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
             ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+            ...(mcpConnectRequired ? { mcpConnectRequired } : {}),
             ...(finalAgentsConsulted && finalAgentsConsulted.length > 0
               ? { agentsConsulted: finalAgentsConsulted }
               : {}),
@@ -10400,6 +10413,10 @@ export class Orchestrator {
       );
       return TOOL_DISPATCH_DISCARDED;
     }
+    // #2312 / ADR-0301 — a connect prompt this dispatch minted names a server
+    // the user must connect; channels without tool output (Teams) render it
+    // from `ChatTurnResult.mcpConnectRequired`.
+    if (mcpAuthPromptMint.minted(result)) notePendingMcpConnect(result);
     // Recorded only now, after the late-result firewall: a re-entry must get
     // exactly what this pass used, never a result the first run discarded.
     if (tracked && replay === undefined) {
@@ -12576,3 +12593,19 @@ async function tapCanvasSentinel(toolName: string, raw: string): Promise<void> {
     console.warn(`[orchestrator.dispatchTool:${toolName}] canvasSentinelSink threw:`, err);
   }
 }
+
+/** #2312 / ADR-0301 — remember the server of a kernel-minted connect prompt on the current turn. */
+function notePendingMcpConnect(prompt: string): void {
+  const request = parseMcpConnectRequest(prompt);
+  if (request) turnContext.current()?.mcpConnectRequests?.set(request.serverId, request);
+}
+
+/** #2312 — the servers the current turn's connect prompts named, cleared after reading. */
+function drainMcpConnects(): McpConnectRequest[] | undefined {
+  const requests = turnContext.current()?.mcpConnectRequests;
+  if (!requests || requests.size === 0) return undefined;
+  const out = [...requests.values()];
+  requests.clear();
+  return out;
+}
+

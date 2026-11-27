@@ -40,6 +40,10 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // the round-trip, so the route self-secures via the signed, single-use
   // `state` token. `/oauth/start` is NOT listed — it stays behind the gate.
   /^\/api\/v1\/install\/oauth\/callback(?:\/|$|\?)/,
+  // #2312 / ADR-0301 — a directory person (no omadia login) starts and
+  // completes a per_user MCP connect from Teams. Every route under it sits
+  // behind the kernel's Teams SSO gate (ADR-0114); no session is read.
+  /^\/api\/v1\/directory\/connect\/(?:go|mcp)\//,
   // Bot Framework webhook for channel-teams: the adapter validates the
   // Bot-issued JWT inside the handler; Teams never sends a session cookie.
   /^\/api\/messages(?:\/|$|\?)/,

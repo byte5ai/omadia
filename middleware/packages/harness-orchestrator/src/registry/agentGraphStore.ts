@@ -20,6 +20,9 @@ import { normalizeDiscoveredToolOrder } from '../toolOrdering.js';
  * conflicts) lives in the REST edge-create validator (P2).
  */
 
+/** ADR-0301 — how an MCP OAuth flow is completed (migration 0124). */
+export type McpOAuthFlowCompletion = 'session' | 'teams-sso';
+
 // ── row shapes (camelCase, mapped from snake_case DB rows) ──────────────────
 
 export interface CanvasPos {
@@ -1730,13 +1733,17 @@ export class AgentGraphStore {
     resource?: string | null;
     auditActorId?: string;
     auditActorEmail?: string;
+    /** ADR-0301 — `teams-sso`: completed only with the starter's Teams SSO token. */
+    completion?: McpOAuthFlowCompletion;
+    /** ADR-0301 — kept for `teams-sso` flows only (the `/go/<state>` redirect). */
+    authorizeUrl?: string;
   }): Promise<void> {
     // Opportunistic prune of stale flows (older than 15 min) on each create.
     await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
     await this.pool.query(
       `INSERT INTO mcp_oauth_flows
-         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required, resource, audit_actor_id, audit_actor_email)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required, resource, audit_actor_id, audit_actor_email, completion, authorize_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         input.state,
         input.serverId,
@@ -1751,8 +1758,34 @@ export class AgentGraphStore {
         input.resource ?? null,
         input.auditActorId ?? null,
         input.auditActorEmail ?? null,
+        input.completion ?? 'session',
+        input.completion === 'teams-sso' ? (input.authorizeUrl ?? null) : null,
       ],
     );
+  }
+
+  /** ADR-0301 — the authorize URL of a pending `teams-sso` flow, without consuming it. */
+  async mcpOAuthTeamsAuthorizeUrl(state: string): Promise<string | undefined> {
+    const { rows } = await this.pool.query<{ authorize_url: string | null }>(
+      "SELECT authorize_url FROM mcp_oauth_flows WHERE state = $1 AND completion = 'teams-sso' AND created_at > now() - interval '15 minutes'",
+      [state],
+    );
+    return rows[0]?.authorize_url ?? undefined;
+  }
+
+  /**
+   * ADR-0301 — how a pending flow is completed, without consuming it. The
+   * callback asks this first: a `teams-sso` flow is handed back to Teams, not
+   * exchanged there. `undefined` for an unknown or expired state.
+   */
+  async mcpOAuthFlowCompletion(state: string): Promise<McpOAuthFlowCompletion | undefined> {
+    const { rows } = await this.pool.query<{ completion: string | null }>(
+      "SELECT completion FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes'",
+      [state],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    return row.completion === 'teams-sso' ? 'teams-sso' : 'session';
   }
 
   /** Atomically consume a pending flow (one-shot, ≤15 min old): returns it and
@@ -1777,6 +1810,8 @@ export class AgentGraphStore {
         resource: string | null;
         auditActorId?: string;
         auditActorEmail?: string;
+        /** ADR-0301; `session` for flows started before migration 0124. */
+        completion: McpOAuthFlowCompletion;
       }
     | undefined
   > {
@@ -1794,6 +1829,7 @@ export class AgentGraphStore {
       resource?: string | null;
       audit_actor_id?: string | null;
       audit_actor_email?: string | null;
+      completion?: string | null;
     }>(
       "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
       [state],
@@ -1816,6 +1852,7 @@ export class AgentGraphStore {
           resource: r.resource ?? null,
           ...(r.audit_actor_id ? { auditActorId: r.audit_actor_id } : {}),
           ...(r.audit_actor_email ? { auditActorEmail: r.audit_actor_email } : {}),
+          completion: r.completion === 'teams-sso' ? 'teams-sso' : 'session',
         }
       : undefined;
   }

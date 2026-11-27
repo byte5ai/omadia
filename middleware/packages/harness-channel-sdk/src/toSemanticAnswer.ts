@@ -376,6 +376,7 @@ export function toSemanticAnswer(
       : {}),
     ...(interactive ? { interactive } : {}),
     ...(r.pendingOAuthConsent ? { oauthConsentPending: true } : {}),
+    ...(r.mcpConnectRequired && r.mcpConnectRequired.length > 0 ? { mcpConnectRequired: r.mcpConnectRequired } : {}),
     ...(r.privacyReceipt ? { privacyReceipt: r.privacyReceipt } : {}),
     ...(r.maskedValues && r.maskedValues.length > 0
       ? { maskedValues: r.maskedValues }
