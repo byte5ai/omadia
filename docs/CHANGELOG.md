@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a web chat of a deleted agent no longer reaches the new agent with its slug (#2314, ADR-0276) (2026-11-27)
+
+The chat's agent pin now records the agent id. When the pinned agent was deleted and a new
+agent took its slug, the chat's next turn is refused with `503 agent_unavailable`
+(`reason: agent_deleted`) and the web chat shows its recovery banner, which re-binds or
+deletes the chat and resets the picked agent.
+
 ### Changed — provider OAuth tokens and the /setup key seed write only the kernel scope (#2313, ADR-0275) (2026-11-27)
 
 The OAuth device flow and the token refresh no longer copy tokens into the verifier's and

@@ -11977,6 +11977,11 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   (`storeProviderOAuthTokens`), Token-Store-`persist`/`load` und `/setup`-Seed schreiben/lesen nur
   `KERNEL_PROVIDER_CREDENTIAL_SCOPE`; `consolidateProviderCredentials` übernimmt beim Boot eine
   neuere Modul-Kopie (Stempel `oauth_updated_at`) und löscht die Modul-Kopien.
+- **Chat-Pin mit Agent-Id (#2314, ADR-0276):** `SessionConfigSnapshot.agentId` wird beim ersten
+  Turn mitgepinnt; gehört der gepinnte Slug inzwischen einem anderen Agenten (gelöscht, Slug neu
+  vergeben), antwortet `POST /api/chat[/stream]` mit `503 agent_unavailable`, `reason:
+  'agent_deleted'` (Option `agentIdForSlug`). Der Web-Chat zeigt das Recovery-Banner
+  (`unavailableReplacedBody`) und setzt Pin und Auswahl beim Neu-Zuordnen zurück.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 

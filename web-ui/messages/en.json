@@ -2177,6 +2177,7 @@
     "emptyCta": "No agents configured — open Operator → Agents",
     "unavailableTitle": "This session's agent is no longer available",
     "unavailableBody": "The agent \"{slug}\" was deleted or disabled. Pick how to recover this session.",
+    "unavailableReplacedBody": "The agent this chat was opened with was deleted. \"{slug}\" is now a different agent, so this chat no longer reaches it. Rebind the chat or delete it.",
     "actionReSnapshot": "Re-bind to the default agent",
     "actionDelete": "Delete session",
     "noAgentsTitle": "No agent is running",

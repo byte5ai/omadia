@@ -2177,6 +2177,7 @@
     "emptyCta": "Keine Agenten konfiguriert — öffne Operator → Agenten",
     "unavailableTitle": "Der Agent dieser Session ist nicht mehr verfügbar",
     "unavailableBody": "Der Agent „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
+    "unavailableReplacedBody": "Der Agent, mit dem dieser Chat begonnen wurde, wurde gelöscht. „{slug}“ ist jetzt ein anderer Agent, dieser Chat erreicht ihn nicht mehr. Chat neu zuordnen oder löschen.",
     "actionReSnapshot": "Auf den Standard-Ansprechpartner umbinden",
     "actionDelete": "Session löschen",
     "noAgentsTitle": "Es läuft kein Agent",

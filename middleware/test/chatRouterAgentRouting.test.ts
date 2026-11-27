@@ -85,6 +85,8 @@ describe('createChatRouter (Phase A)', () => {
   let store: FakeStore;
   let availableAgents: Map<string, ChatAgent>;
   let defaultSlug: string | undefined;
+  /** #2314 — live agent ids by slug; a slug absent here has id `id-<slug>`. */
+  const agentIds = new Map<string, string>();
 
   async function mountApp(): Promise<void> {
     const app = express();
@@ -102,8 +104,10 @@ describe('createChatRouter (Phase A)', () => {
           (slug) => availableAgents.get(slug),
           () => defaultSlug,
         ),
+        agentIdForSlug: (slug) => (availableAgents.has(slug) ? (agentIds.get(slug) ?? `id-${slug}`) : undefined),
         snapshotForAgent: (slug) => ({
           agentSlug: slug,
+          agentId: agentIds.get(slug) ?? `id-${slug}`,
           pluginIds: [],
           toolIds: [],
           memoryScope: ['core'],
@@ -135,6 +139,7 @@ describe('createChatRouter (Phase A)', () => {
     availableAgents.set(SLUG_PUBLIC, fakeChatAgent(SLUG_PUBLIC));
     availableAgents.set(SLUG_GENERAL, fakeChatAgent(SLUG_GENERAL));
     defaultSlug = SLUG_PUBLIC;
+    agentIds.clear();
   });
 
   it('1: no slug + no default agent → no_agent notice from system', async () => {
@@ -286,5 +291,47 @@ describe('createChatRouter (Phase A)', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as { agent_slug: string };
     assert.equal(body.agent_slug, SLUG_GENERAL);
+  });
+
+  it('8 (#2314): a pin of a deleted agent whose slug was reused → 503 agent_unavailable, the new agent never answers', async () => {
+    store.seed('sess-old', {
+      agentSlug: SLUG_PUBLIC,
+      agentId: 'id-deleted-agent',
+      pluginIds: [],
+      toolIds: [],
+      memoryScope: [],
+      capturedAt: Date.now(),
+    });
+    agentIds.set(SLUG_PUBLIC, 'id-new-agent');
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi', sessionId: 'sess-old' }),
+    });
+    assert.equal(res.status, 503);
+    const body = (await res.json()) as { error: string; reason: string; slug: string };
+    assert.equal(body.error, 'agent_unavailable');
+    assert.equal(body.reason, 'agent_deleted');
+    assert.equal(body.slug, SLUG_PUBLIC);
+  });
+
+  it('9 (#2314): a pin with the live id, or a legacy pin without one, still answers', async () => {
+    store.seed('sess-live', {
+      agentSlug: SLUG_PUBLIC,
+      agentId: `id-${SLUG_PUBLIC}`,
+      pluginIds: [],
+      toolIds: [],
+      memoryScope: [],
+      capturedAt: Date.now(),
+    });
+    store.seed('sess-legacy', { agentSlug: SLUG_PUBLIC, pluginIds: [], toolIds: [], memoryScope: [], capturedAt: Date.now() });
+    for (const sessionId of ['sess-live', 'sess-legacy']) {
+      const res = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'hi', sessionId }),
+      });
+      assert.equal(res.status, 200, sessionId);
+    }
   });
 });

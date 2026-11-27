@@ -4370,6 +4370,8 @@ async function main(): Promise<void> {
       },
       getChatSessionStore,
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
+      // #2314 — a pin of a deleted agent whose slug was reused is refused.
+      agentIdForSlug: (slug) => getRegistry()?.get(slug)?.agent.id,
     }),
   );
 
