@@ -122,6 +122,10 @@ export function passThroughReason(input: ChatTurnInput): string | undefined {
   if (text.startsWith('/')) return 'command';
   if ((input.attachments?.length ?? 0) > 0) return 'attachments';
   if (input.sessionScope === undefined || SYSTEM_SCOPE.test(input.sessionScope)) return 'system';
+  // #2317 (ADR-0278) — `conversationContextHint` (a chat's recent routine
+  // deliveries) is NOT a reason: it is context, not an instruction for this
+  // turn, and a delivery would otherwise keep the chat off the fast path for
+  // its whole 24-hour window. A turn the triage hands on keeps it.
   if (
     input.extraSystemHint !== undefined ||
     input.fixedSystemHint !== undefined ||

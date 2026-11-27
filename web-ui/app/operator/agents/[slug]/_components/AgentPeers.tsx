@@ -40,6 +40,8 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
   const t = useTranslations('operatorAgents.peers');
   const tErr = useTranslations('operatorAgents');
   const [mode, setMode] = useState<AgentToAgentMode | null>(null);
+  /** #2315 — revision of the switch as read; sent with its next write. */
+  const [modeRevision, setModeRevision] = useState<number | undefined>(undefined);
   const [channels, setChannels] = useState<PeerChannelDto[]>([]);
   const [channelTypes, setChannelTypes] = useState<string[]>([]);
   const [available, setAvailable] = useState<PeerChatCandidateDto[]>([]);
@@ -64,6 +66,7 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
     try {
       const res = await getAgentPeerChannels(props.slug);
       setMode(res.mode);
+      setModeRevision(res.revision);
       setChannels(res.channels);
       setChannelTypes(res.channelTypes);
       setAvailable(res.available);
@@ -95,7 +98,7 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
   );
 
   const toggleMode = (next: AgentToAgentMode): void => {
-    void run(() => setAgentAgentToAgent(props.slug, next));
+    void run(() => setAgentAgentToAgent(props.slug, next, modeRevision));
   };
 
   // The picker is derived, never typed: only channel kinds this agent owns a

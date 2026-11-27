@@ -95,13 +95,14 @@ describe('AgentMcpServers delegation (#862, read-only per the W0c ruling)', () =
     ).toBeTruthy();
   });
 
-  it('shows the fail-closed identity note for a per_user server', async () => {
+  it('shows the per-user identity note for a per_user server (#1906, ADR-0206)', async () => {
     mockListMcpServers.mockResolvedValue({ servers: [server('per_user')] });
     await renderExpanded();
 
+    // Only an OAuth server fails closed without an identity; the note says so.
     expect(
       screen.getByText(
-        "Per-user calls act under each user's own identity and fail closed when none can be resolved.",
+        "On an OAuth-protected server every call runs under the calling user's own authorization; without a mapped identity nothing is sent. A server without OAuth has no per-user credentials and is called with its shared configuration.",
       ),
     ).toBeTruthy();
   });
@@ -118,7 +119,8 @@ describe('AgentMcpServers delegation (#862, read-only per the W0c ruling)', () =
     await renderExpanded();
 
     const link = screen.getByRole('link', { name: 'Change in MCP server settings' });
-    expect(link.getAttribute('href')).toBe('/admin/mcp');
+    // #1906 — deep link: the admin page opens this server's row.
+    expect(link.getAttribute('href')).toBe('/admin/mcp?server=srv-1');
   });
 
   it('suppresses McpAuthSection\'s own delegation toggle on this page (one surface per context)', async () => {

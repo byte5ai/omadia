@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import { mcpRouteErrorKey } from '@/app/admin/mcp/mcpErrors';
@@ -43,6 +43,7 @@ export function McpAuthSection({
   showDelegation?: boolean;
 }): React.ReactElement | null {
   const t = useTranslations('adminMcp');
+  const format = useFormatter();
   /** W09-10 — route refusals in the catalog's words, not the English body. */
   const errText = (err: unknown): string => {
     const routeKey = mcpRouteErrorKey(err);
@@ -208,13 +209,18 @@ export function McpAuthSection({
             </Button>
           </div>
           <div className="text-[11px] text-[color:var(--fg-muted)]">
-            {status.delegation === 'per_user'
-              ? t('auth.delegationPerUserWhy')
-              : t('auth.delegationServiceWhy')}
+            {status.delegation !== 'per_user'
+              ? t('auth.delegationServiceWhy')
+              : status.protected
+                ? t('auth.delegationPerUserWhy')
+                : t('auth.delegationPerUserWhyShared')}
           </div>
           {status.delegation === 'per_user' && status.identityResolved === false ? (
             <div className="text-[11px] text-[color:var(--warning)]">
-              {t('auth.delegationIdentityMissing')}
+              {/* #1906 / ADR-0206 — only an OAuth server refuses the call. */}
+              {status.protected
+                ? t('auth.delegationIdentityMissing')
+                : t('auth.delegationIdentityMissingShared')}
             </div>
           ) : null}
         </div>
@@ -257,7 +263,19 @@ export function McpAuthSection({
             <span className="text-[color:var(--success)]">
               {status.sharedAuthorization ? t('auth.connectedShared') : t('auth.connected')}
             </span>
-          ) : (
+          ) : null}
+          {status.connected && status.sharedAuthorization && status.sharedAuthorizationStoredBy ? (
+            <span className="ml-2 text-[11px] text-[color:var(--fg-muted)]">
+              {t('auth.sharedStoredBy', {
+                who: status.sharedAuthorizationStoredBy.email ?? t('auth.sharedStoredByUnknown'),
+                when: format.dateTime(new Date(status.sharedAuthorizationStoredBy.at), {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                }),
+              })}
+            </span>
+          ) : null}
+          {status.connected ? null : (
             <span className="text-[color:var(--warning)]">
               {tokenInvalid ? t('auth.expired') : t('auth.notConnected')}
             </span>

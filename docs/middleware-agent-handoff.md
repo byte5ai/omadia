@@ -2692,6 +2692,28 @@ Config-Schema von http/sse-Servern wird bei jedem Lesen/Speichern mit den Platzh
   gemerkt); `forgetClient` beim Löschen des letzten Servers eines Issuers (nur DCR/CIMD,
   fail-closed); `onAuthFailure(cfg, failure)`.
 
+### MCP-Folgen Welle 6 (W33, ADR-0271/0272/0273)
+
+- **stdio-Timeout (#2307):** ein stdio-Child, dessen Call in den SDK-Timeout läuft, verlässt den
+  Pool sofort; laufende Requests darauf enden normal, danach (spätestens 30 s) wird es geschlossen.
+- **Cap überall (#2309):** `capToolResultText` auch auf intern-exempten Tools unter Guard und auf
+  jedem nicht internierten Ergebnis im `ToolDispatchService` (CLI, Loopback, Public MCP).
+- **MCP-Bilder (#1920, ADR-0272):** `mcpBinaryContent.ts` sammelt Bilder pro Dispatch; der
+  Orchestrator hängt sie nur bei Bypass/ohne Guard und Provider-Capability `toolResultImages`
+  (`@omadia/llm-provider-api`, Anthropic) als Bildblock an den `tool_result`.
+- **Public MCP (#2305, ADR-0271):** `render_diagram`, `create_xlsx`, `create_docx` wieder
+  servierbar; jedes Ergebnis läuft durch `PublicMcpPrivacyGate.checkResult` (Shield-Detektoren),
+  nur sauber wird serviert. `ToolDispatchOptions.validateResult` darf async sein. Jeder
+  Public-Request finalisiert seinen Privacy-Turn nach Ende der Arbeit.
+- **Delegation/Audit (#1906, #2308):** Agentenseite verlinkt `/admin/mcp?server=<id>`;
+  `mcp_oauth_tokens.stored_by_*` (Migration 0120), `auth-status` → `sharedAuthorizationStoredBy`.
+- **Key-Löschung (#2310, ADR-0273):** Kernel-Service `publicMcpKeyBindings`
+  (`forgetDeletedKey`), von `@omadia/channel-api` 0.1.1 nach `DELETE /admin/keys/:id` gerufen.
+- **OAuth-Callback-Seite (#1959):** de/en nach `Accept-Language` (`mcpOAuthCallbackPage.ts`).
+- **Chat-Store-Sweep (#2311):** der einmalige Sweep beim ersten `list()` entfernt auch alte
+  Input-Card-Envelopes.
+- **Offen:** #2312 (Per-User-Connect für Kanal-Nutzer ohne Login) — Owner-Entscheidung nötig.
+
 ### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
 
 MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
@@ -7006,14 +7028,22 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **MCP Welle 6 — Reste (2026-11-27):** #2312 Per-User-OAuth-Connect für Kanal-Nutzer ohne
+  omadia-Login (braucht Kanal-Flow + Owner-Entscheidung zum Link-Risiko, ADR-0175); MCP-Bilder
+  auch für Sub-Agenten/CLI/Public MCP (ADR-0272); stdio-Kinder teilen einen OS-User (ADR-0270).
 - **Kanal-Konto-Links (W35, ADR-0280) — Reste (#2324):** Origin-Kanaltyp pro Plugin prüfen statt Adapter-Attestierung; Deaktivieren eines Kontos entknüpft seine
   Kanal-Identitäten nicht (Turns laufen bis zum Unlink weiter als Konto-Cluster); Slack, Discord
   und WhatsApp sollten `CoreApi.channelIdentityLinks` statt reiner Allow-Listen nutzen;
   Cross-Channel-Memory (`docs/cross-channel-memory.md`) entscheidet, ob ein verknüpftes Konto die
   Memory-Tiers des Web-Kontos sieht.
+- **Agent-Config-Revisionen, Rest (#2315, ADR-0277):** Dashboard-Editoren für Plugins/Bindings
+  und die Verfügbarkeits-Sektion senden noch kein `expected_revision` (Server bereit; `GET
+  /:slug/plugins` liefert `revision`); Agent-Anlage, Onboarding, Canvas und Templates bewegen die
+  Zähler nicht.
+
 - **Routinen Welle 5 — Reste (2026-11-26):** Abbruch eines Routine-Laufs auf dem
   Subscription-CLI-Pfad (CLI-Prozess beenden); Lauf-Sperre über Prozesse hinweg (heute nur
-  pro Prozess); Zustellungs-Kontext (ADR 0244) auch für Teams/Telegram/Slack/Discord;
+  pro Prozess); Zustellungs-Kontext für Kanal-Routinen von vor #2316 (ohne `origin_scope`);
   Zustellungen und Transkripte ohne Komplett-Rewrite pro Lauf (#1753, Rest); Graph-Knoten
   gelöschter Routinen/Chats (nur Markdown-Transkripte werden entfernt);
   `/admin/usage`-Quelle „Routinen“ (ADR 0243 Option A, bewusst nicht gebaut);
@@ -11974,6 +12004,40 @@ Entscheidung: [ADR 0244](adr/0244-routine-deliveries-are-context-of-their-chat.m
   200 pro Routine, 90 Tage (`RoutineRunsStore.prune`).
 - **Routinen-Seite**: DTO `timeZone`, `nextRunAt`, `until`; Läufe `?before=`;
   Fehlertexte über `routineErrors.ts` + `serverErrorCode`.
+
+## Agents, Keys, Routinen: Folgen (W34, Welle 6) (2026-11-27)
+
+- **Chat löschen im Admin-Audit (#2318, ADR-0100):** `DELETE /api/chat/sessions/:id` schreibt
+  für einen gespeicherten Chat eine Zeile `chat.delete` (Ziel `chat:<id>`, `after` = `kind`,
+  `transcriptsPurged`, pausierte Routinen als `routine:<id>`), best-effort nach dem Löschen.
+  `ChatRoutinesPort.pauseForChat` liefert dafür die Ids statt einer Zahl.
+- **OAuth-Tokens und /setup-Seed nur im Kernel-Scope (#2313, ADR-0275):** Device-Flow
+  (`storeProviderOAuthTokens`), Token-Store-`persist`/`load` und `/setup`-Seed schreiben/lesen nur
+  `KERNEL_PROVIDER_CREDENTIAL_SCOPE`; `consolidateProviderCredentials` übernimmt beim Boot eine
+  neuere Modul-Kopie (Stempel `oauth_updated_at`) und löscht die Modul-Kopien.
+- **Chat-Pin mit Agent-Id (#2314, ADR-0276):** `SessionConfigSnapshot.agentId` wird beim ersten
+  Turn mitgepinnt; gehört der gepinnte Slug inzwischen einem anderen Agenten (gelöscht, Slug neu
+  vergeben), antwortet `POST /api/chat[/stream]` mit `503 agent_unavailable`, `reason:
+  'agent_deleted'` (Option `agentIdForSlug`). Der Web-Chat zeigt das Recovery-Banner
+  (`unavailableReplacedBody`) und setzt Pin und Auswahl beim Neu-Zuordnen zurück.
+- **Revisionen der Agent-Config-Writes (#2315, ADR-0277, Migration 0121):** `PUT /:slug/plugins`,
+  `/bindings`, `/model-policy`, `/context-memory`, `/fast-lane`, `/agent-to-agent`,
+  `/availability` nehmen optional `expected_revision`; ein Zähler pro Ressource in
+  `agents.config_revisions`, `ConfigStore.claimConfigRevision` vor dem ersten Write. Stale →
+  `409 config_revision_conflict` (mit `resource`). GETs und Writes liefern `revision`;
+  `GET /:slug/config-revisions` liefert alle Zähler. Web-UI
+  sendet es aus den vier Detail-Panels.
+- **Zustellungs-Kontext als eigenes Feld (#2317, ADR-0278, channel-sdk 0.3.20):**
+  `ChatTurnInput.conversationContextHint` trägt den Block aus `routineDeliveriesHint`; kein
+  Fast-Path-Pass-Through-Grund; maskiert wie `extraSystemHint`, aber bei Block/Fehler fällt nur
+  der Block aus dem Turn (`wireConversationContextHint`, CLI `maskContextOrDrop`).
+- **Zustellungs-Kontext in Kanal-Chats (#2316, ADR-0279, Routines-Migration 0013):**
+  `routines.origin_scope` = Session-Scope des anlegenden Kanal-Turns (`manage_routine` create);
+  Kernel-Service `conversationContext@1` (`createChannelDeliveryContext`, boundary-only) liest
+  die gelieferten Läufe der Routinen des Turn-Agenten (`RoutineStore.recentDeliveriesForScope`,
+  24 h, max. 3; ein anderer Agent im selben Chat sieht sie nicht);
+  `wrapChatAgentWithConversationContext` (vor dem Fast-Path) füllt `conversationContextHint`.
+  Keine Plugin-Änderung nötig.
 
 ## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
 

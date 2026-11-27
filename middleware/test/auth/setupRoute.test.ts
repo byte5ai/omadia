@@ -26,8 +26,8 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
  * OB-61 — /api/v1/auth/setup integration test. Drives the route via
  * real Express + fetch and asserts:
  *
- *   1. Anthropic key (when supplied + validated) is seeded into all
- *      consumer plugin vaults via vault.setMany(agentId, …).
+ *   1. Anthropic key (when supplied + validated) is seeded once, into the
+ *      kernel scope (#2313, ADR-0215), never into the module scopes.
  *   2. installService.reactivate(agentId) is invoked once per consumer
  *      so the freshly-seeded key takes effect without a server restart.
  *   3. Setup-without-key still succeeds (admin user is created, no
@@ -311,7 +311,7 @@ describe('POST /api/v1/auth/setup (OB-61)', () => {
     await h.close();
   });
 
-  it('seeds anthropic_api_key into all consumer vaults and reactivates each', async () => {
+  it('seeds anthropic_api_key into the kernel scope only and reactivates each consumer, orchestrator last (#2313)', async () => {
     const res = await fetch(`${h.baseUrl}/api/v1/auth/setup`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -327,24 +327,19 @@ describe('POST /api/v1/auth/setup (OB-61)', () => {
     assert.equal(h.store.rows.length, 1);
     assert.equal(h.store.rows[0]?.user.email, 'admin@example.com');
 
-    // Vault writes — exactly 3, one per consumer, all with the same key
+    // #2313 (ADR-0215) — one write, into the kernel scope; module scopes stay empty.
     const writes = h.vault.writes;
-    assert.equal(writes.length, 3, `expected 3 vault writes, got ${writes.length}`);
-    const agentIds = writes.map((w) => w.agentId).sort();
-    assert.deepEqual(agentIds, [
-      '@omadia/orchestrator',
-      '@omadia/orchestrator-extras',
-      '@omadia/verifier',
-    ]);
-    for (const w of writes) {
-      assert.equal(
-        w.entries[providerApiKeyVaultKey('anthropic')],
-        'sk-ant-api03-validlooking-key',
-      );
-    }
+    assert.equal(writes.length, 1, `expected 1 vault write, got ${writes.length}`);
+    assert.equal(writes[0]?.agentId, '@omadia/orchestrator');
+    assert.equal(
+      writes[0]?.entries[providerApiKeyVaultKey('anthropic')],
+      'sk-ant-api03-validlooking-key',
+    );
 
-    // Reactivate fired once per consumer, in the same order
-    assert.deepEqual(h.reactivateCalls.sort(), [
+    // Reactivate fired once per consumer; the capturing orchestrator last (#1394).
+    assert.equal(h.reactivateCalls.length, 3);
+    assert.equal(h.reactivateCalls.at(-1), '@omadia/orchestrator');
+    assert.deepEqual([...h.reactivateCalls].sort(), [
       '@omadia/orchestrator',
       '@omadia/orchestrator-extras',
       '@omadia/verifier',
@@ -452,7 +447,7 @@ describe('POST /api/v1/auth/setup — provider-outage path', () => {
     });
     assert.equal(res.status, 200, await res.text());
     assert.equal(h.store.rows.length, 1);
-    assert.equal(h.vault.writes.length, 3, 'the key is still seeded');
+    assert.equal(h.vault.writes.length, 1, 'the key is still seeded');
     // …but it is NOT claimed as verified: no durable record was written.
     for (const w of h.vault.writes) {
       assert.equal(

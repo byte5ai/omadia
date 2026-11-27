@@ -14,6 +14,11 @@
  */
 
 import {
+  mcpOAuthCallbackLocale,
+  mcpOAuthCallbackPage,
+  type McpOAuthCallbackMessage,
+} from './mcpOAuthCallbackPage.js';
+import {
   STANDARD_ARCHETYPE,
   archetypeOf,
   assertArchetypeAllows,
@@ -237,6 +242,8 @@ export interface AgentBuilderRouterOptions {
     ): Promise<{
       connected: boolean;
       invalid: 'expired' | 'refresh_failed' | 'rejected' | null;
+      /** #2308 — who stored the token on Connect. */
+      storedBy?: { email: string | null; at: Date } | null;
     }>;
     /** #1923 — the MCP server refused a call that carried `rejectedToken`,
      *  this user's token at the time the call read it. */
@@ -2434,8 +2441,6 @@ export function createAgentBuilderRouter(
    *  no resolvable identity (fail closed — never silently the operator). */
   const oauthUserKeyFor = (req: Request, server: McpServerRow): string | null =>
     resolveMcpUserKey(server, sessionIdentity(req));
-  const escapeHtml = (s: string): string =>
-    s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
   /** Auth status for a server: is it OAuth-protected, is the user connected,
    *  and (if protected) does its issuer still need a one-time manual client. */
@@ -2492,7 +2497,7 @@ export function createAgentBuilderRouter(
       // expired without a refresh token, or been refused since.
       const token =
         userKey === null
-          ? { connected: false, invalid: null }
+          ? { connected: false, invalid: null, storedBy: null }
           : await options.mcpOAuth.tokenState(server.id, userKey);
       const client = desc.issuer ? await l.graph.getMcpOAuthClient(desc.issuer) : undefined;
       res.json({
@@ -2524,6 +2529,15 @@ export function createAgentBuilderRouter(
         // #1933 — under `service` every caller shares one authorization; the
         // UI must not call it "yours".
         sharedAuthorization: server.delegation === 'service',
+        // #2308 — under `service`, whose authorization every caller shares.
+        ...(server.delegation === 'service' && token.storedBy
+          ? {
+              sharedAuthorizationStoredBy: {
+                email: token.storedBy.email,
+                at: token.storedBy.at.toISOString(),
+              },
+            }
+          : {}),
         redirectUri: options.mcpOAuth.redirectUri,
       });
     } catch (err) {
@@ -2730,15 +2744,14 @@ export function createAgentBuilderRouter(
   router.get('/mcp-oauth/callback', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
-    // Escape the detail — it can carry attacker-controlled provider error text
-    // (codex W9 fold: reflected XSS on an auth-gated admin origin otherwise).
-    const donePage = (ok: boolean, detail: string): string =>
-      `<!doctype html><meta charset="utf-8"><title>MCP authorization</title><body style="font-family:system-ui;padding:2rem;max-width:32rem">
-       <h2>${ok ? '✅ Connected' : '⚠️ Authorization failed'}</h2><p>${escapeHtml(detail)}</p>
-       <p>You can close this tab and return to the MCP Control Center.</p></body>`;
+    // #1959 — localized; the detail (provider error text) is escaped (codex
+    // W9 fold: reflected XSS on an auth-gated admin origin otherwise).
+    const locale = mcpOAuthCallbackLocale(req);
+    const donePage = (ok: boolean, message: McpOAuthCallbackMessage, detail?: string): string =>
+      mcpOAuthCallbackPage(locale, ok, message, detail);
     try {
       if (!options.mcpOAuth) {
-        res.status(501).send(donePage(false, 'MCP OAuth is not configured.'));
+        res.status(501).send(donePage(false, 'notConfigured'));
         return;
       }
       const code = typeof req.query['code'] === 'string' ? req.query['code'] : '';
@@ -2750,16 +2763,16 @@ export function createAgentBuilderRouter(
       // itself a tampering signal — treat it as a mismatch, not a "pick one".
       const rawIss = req.query['iss'];
       if (rawIss !== undefined && typeof rawIss !== 'string') {
-        res.status(400).send(donePage(false, 'The authorization response carried a malformed issuer.'));
+        res.status(400).send(donePage(false, 'malformedIssuer'));
         return;
       }
       const iss = typeof rawIss === 'string' ? rawIss : null;
       if (providerError) {
-        res.status(400).send(donePage(false, `The provider returned: ${providerError}`));
+        res.status(400).send(donePage(false, 'providerError', providerError));
         return;
       }
       if (code === '' || state === '') {
-        res.status(400).send(donePage(false, 'Missing code or state.'));
+        res.status(400).send(donePage(false, 'missingCodeOrState'));
         return;
       }
       // The service validates `iss` against the flow-bound issuer BEFORE
@@ -2779,16 +2792,13 @@ export function createAgentBuilderRouter(
         target: 'mcp-server:' + authorization.serverId,
         after: { authorized: true },
       });
-      res.status(200).send(donePage(true, 'The server is now authorized for you.'));
+      res.status(200).send(donePage(true, 'connected'));
     } catch (err) {
       if (err instanceof Error && err.name === 'McpOAuthCompleterMismatchError') {
         res
           .status(403)
           .send(
-            donePage(
-              false,
-              'This authorization link was started by a different account (or you are not signed in). Nothing was stored. Sign in and click Connect yourself.',
-            ),
+            donePage(false, 'completerMismatch'),
           );
         return;
       }
@@ -2798,14 +2808,11 @@ export function createAgentBuilderRouter(
         res
           .status(400)
           .send(
-            donePage(
-              false,
-              'The authorization response came from an unexpected issuer and was rejected. Nothing was stored. Please start the connection again.',
-            ),
+            donePage(false, 'issuerMismatch'),
           );
         return;
       }
-      res.status(400).send(donePage(false, redactSecrets(msg(err))));
+      res.status(400).send(donePage(false, 'failed', redactSecrets(msg(err))));
     }
   });
 

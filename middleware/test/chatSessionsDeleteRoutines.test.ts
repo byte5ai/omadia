@@ -11,6 +11,7 @@ import express from 'express';
 import { InMemoryMemoryStore } from '@omadia/memory';
 import { ChatSessionStore } from '@omadia/orchestrator';
 
+import type { AuditEntryInput } from '../src/auth/adminAuditLog.js';
 import { purgeSessionTranscripts } from '../src/plugins/routines/sessionTranscripts.js';
 import { createChatSessionsRouter } from '../src/routes/chatSessions.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
@@ -19,6 +20,7 @@ describe('#1753 / #1757 — deleting a web chat', () => {
   const memory = new InMemoryMemoryStore();
   const store = new ChatSessionStore(memory);
   const paused: string[] = [];
+  const audited: AuditEntryInput[] = [];
   let server: import('node:http').Server;
   let base = '';
 
@@ -30,7 +32,11 @@ describe('#1753 / #1757 — deleting a web chat', () => {
     app.use(express.json());
     // The session's `sub` owns chats (#1762); tests pick it per request.
     app.use((req, _res, next) => {
-      (req as unknown as { session: { sub: string } }).session = { sub: req.header('x-test-sub') ?? 'u-1' };
+      (req as unknown as { session: { sub: string; uid: string; email: string } }).session = {
+        sub: req.header('x-test-sub') ?? 'u-1',
+        uid: '0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f',
+        email: 'owner@example.test',
+      };
       next();
     });
     app.use(
@@ -42,7 +48,13 @@ describe('#1753 / #1757 — deleting a web chat', () => {
           listForChat: (id) => Promise.resolve(id === '11111111-1111-4111-8111-111111111111' ? [{ id: 'r1', name: 'Morgenbericht' }] : []),
           pauseForChat: (id) => {
             paused.push(id);
-            return Promise.resolve(id === '11111111-1111-4111-8111-111111111111' ? 1 : 0);
+            return Promise.resolve(id === '11111111-1111-4111-8111-111111111111' ? ['r1'] : []);
+          },
+        }),
+        audit: () => ({
+          record: (entry) => {
+            audited.push(entry);
+            return Promise.resolve();
           },
         }),
       }),
@@ -61,6 +73,7 @@ describe('#1753 / #1757 — deleting a web chat', () => {
     const res = await fetch(`${base}/api/chat/sessions/11111111-1111-4111-8111-111111111111`, { method: 'DELETE', ...other });
     assert.equal(res.status, 404);
     assert.deepEqual(paused, []);
+    assert.deepEqual(audited, []);
   });
 
   it('pauses nothing for a chat that was never saved', async () => {
@@ -80,6 +93,15 @@ describe('#1753 / #1757 — deleting a web chat', () => {
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, routinesPaused: 1 });
     assert.deepEqual(paused, ['11111111-1111-4111-8111-111111111111']);
+    // #2318 — the delete and the routine it paused are in the admin audit.
+    assert.deepEqual(audited, [
+      {
+        actor: { id: '0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f', email: 'owner@example.test' },
+        action: 'chat.delete',
+        target: 'chat:11111111-1111-4111-8111-111111111111',
+        after: { kind: 'web', transcriptsPurged: true, routinesPaused: ['routine:r1'] },
+      },
+    ]);
     assert.equal(await memory.directoryExists('/memories/sessions/11111111-1111-4111-8111-111111111111'), false);
     assert.equal(await memory.fileExists('/memories/sessions/22222222-2222-4222-8222-222222222222/2026-11-26.md'), true);
   });
@@ -93,6 +115,8 @@ describe('#1753 / #1757 — deleting a web chat', () => {
       assert.deepEqual(await res.json(), { ok: true, routinesPaused: 0 });
     }
     assert.equal(paused.length, before);
+    // Nothing was stored under these ids: nothing was deleted, nothing audited.
+    assert.equal(audited.length, 1);
     assert.equal(await memory.fileExists('/memories/sessions/routine-abc/2026-11-26.md'), true);
     assert.equal(await memory.fileExists('/memories/sessions/http-default/2026-11-26.md'), true);
   });

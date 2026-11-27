@@ -22,13 +22,25 @@
  *     the operator entering the key under LLM access (ADR-0084 posture). The
  *     boot log asks the operator to do that.
  *
- * Idempotent: a module scope without provider API keys is left alone, so the
- * second run changes nothing. Only key names reach the log.
+ * OAuth tokens (#2313) follow the same rule: they are written to the kernel
+ * scope only. A copy the old fan-out left in a module scope is folded in
+ * newest-wins (refresh-token rotation makes the newest copy the only valid
+ * one; this is what the token store's hydration already did on every boot)
+ * and then deleted from the module scope. That is not a promotion: an OAuth
+ * login only ever came from the LLM access page, which wrote the kernel scope
+ * too, and a provider purge clears every scope.
+ *
+ * Idempotent: a module scope without provider credentials is left alone, so
+ * the second run changes nothing. Only key names reach the log.
  */
 
 import {
   legacyProviderApiKeyVaultKey,
+  providerOAuthVaultKeys,
   readProviderApiKey,
+  readProviderOAuthTokens,
+  readProviderOAuthUpdatedAt,
+  writeProviderOAuthTokens,
 } from '@omadia/llm-provider';
 
 /** The vault scope the kernel provider pool reads provider API keys from. */
@@ -50,6 +62,13 @@ const LEGACY_ANTHROPIC_API_KEY = legacyProviderApiKeyVaultKey('anthropic');
 export function providerOfApiKeyVaultKey(key: string): string | undefined {
   if (key === LEGACY_ANTHROPIC_API_KEY) return 'anthropic';
   return CANONICAL_API_KEY.exec(key)?.[1];
+}
+
+const OAUTH_ACCESS_KEY = /^provider:([^/]+)\/oauth_access_token$/;
+
+/** The provider a vault key holds the OAuth access token of, or `undefined`. */
+function providerOfOAuthAccessKey(key: string): string | undefined {
+  return OAUTH_ACCESS_KEY.exec(key)?.[1];
 }
 
 /** True for a provider API key name (canonical or the legacy Anthropic one). */
@@ -86,12 +105,23 @@ export interface ConsolidationReport {
   readonly deduplicated: readonly string[];
   /** Different from the kernel's key, or the kernel has none: renamed aside. */
   readonly superseded: readonly string[];
+  /** #2313 — a module scope's OAuth copy of a provider, removed (`<scope>/<provider>`). */
+  readonly oauthCopiesRemoved: readonly string[];
+  /** #2313 — providers whose newer module OAuth copy replaced the kernel's. */
+  readonly oauthAdopted: readonly string[];
+}
+
+interface MutableReport {
+  deduplicated: string[];
+  superseded: string[];
+  oauthCopiesRemoved: string[];
+  oauthAdopted: string[];
 }
 
 async function consolidateScope(
   vault: CredentialVault,
   scope: string,
-  report: { deduplicated: string[]; superseded: string[] },
+  report: MutableReport,
 ): Promise<void> {
   const keys = await vault.listKeys(scope);
   const taken = new Set(keys);
@@ -127,16 +157,64 @@ async function consolidateScope(
 }
 
 /**
- * Clear every provider API key out of the legacy system-module scopes (see
- * the module comment). Safe to run on every boot.
+ * #2313 — fold a module scope's OAuth copies into the kernel scope
+ * newest-wins, then delete them there (see the module comment).
+ */
+async function consolidateOAuthScope(
+  vault: CredentialVault,
+  scope: string,
+  report: MutableReport,
+): Promise<void> {
+  const providers = new Set(
+    (await vault.listKeys(scope))
+      .map(providerOfOAuthAccessKey)
+      .filter((p): p is string => p !== undefined),
+  );
+  for (const providerId of providers) {
+    const readModule = (k: string): Promise<string | undefined> => vault.get(scope, k);
+    const readKernel = (k: string): Promise<string | undefined> =>
+      vault.get(KERNEL_PROVIDER_CREDENTIAL_SCOPE, k);
+    const tokens = await readProviderOAuthTokens(readModule, providerId);
+    if (tokens !== undefined) {
+      const moduleStamp = await readProviderOAuthUpdatedAt(readModule, providerId);
+      const kernelHas = (await readProviderOAuthTokens(readKernel, providerId)) !== undefined;
+      const kernelStamp = kernelHas ? await readProviderOAuthUpdatedAt(readKernel, providerId) : -1;
+      if (moduleStamp > kernelStamp) {
+        // Written before the module copy is deleted below.
+        await writeProviderOAuthTokens(
+          (k, v) => vault.setMany(KERNEL_PROVIDER_CREDENTIAL_SCOPE, { [k]: v }),
+          providerId,
+          tokens,
+          moduleStamp,
+        );
+        report.oauthAdopted.push(`${scope}/${providerId}`);
+      }
+    }
+    for (const key of Object.values(providerOAuthVaultKeys(providerId))) {
+      await vault.deleteKey(scope, key);
+    }
+    report.oauthCopiesRemoved.push(`${scope}/${providerId}`);
+  }
+}
+
+/**
+ * Clear every provider API key and OAuth token copy out of the legacy
+ * system-module scopes (see the module comment). Safe to run on every boot.
  */
 export async function consolidateProviderCredentials(
   vault: CredentialVault,
   log: (message: string) => void = (m) => console.log(m),
 ): Promise<ConsolidationReport> {
-  const report = { deduplicated: [] as string[], superseded: [] as string[] };
+  const report: MutableReport = { deduplicated: [], superseded: [], oauthCopiesRemoved: [], oauthAdopted: [] };
   for (const scope of LEGACY_PROVIDER_CREDENTIAL_SCOPES) {
     await consolidateScope(vault, scope, report);
+    await consolidateOAuthScope(vault, scope, report);
+  }
+  if (report.oauthCopiesRemoved.length > 0) {
+    log(
+      `[vault] provider OAuth copies removed from system-module scopes (#2313): ${report.oauthCopiesRemoved.join(', ')}` +
+        (report.oauthAdopted.length > 0 ? ` — newer copy kept in the kernel scope from: ${report.oauthAdopted.join(', ')}` : ''),
+    );
   }
   if (report.deduplicated.length > 0) {
     log(`[vault] duplicate provider keys removed from system-module scopes (ADR-0215): ${report.deduplicated.join(', ')}`);

@@ -99,6 +99,7 @@ import {
 import {
   createFailClosedPrivacyGate,
   isPubliclyServableTool,
+  PUBLIC_RESULT_CHECKED_TOOLS,
   type PublicMcpPrivacyGate,
 } from './publicMcpPrivacy.js';
 import {
@@ -1166,7 +1167,18 @@ export class PublicMcpServer {
       // just rejected it. Throwing from inside the store's `exec` means nothing
       // is retained, and a concurrent duplicate inherits the rejection instead
       // of the body. The post-dispatch check below stays as defence in depth.
-      validateResult: (produced) => {
+      validateResult: async (produced) => {
+        // #2305 / ADR-0271 — a file producer's result is not interned; the
+        // shield's detectors check it before it may be served or cached.
+        if (
+          gate !== undefined &&
+          PUBLIC_RESULT_CHECKED_TOOLS.has(name) &&
+          produced.origin === 'tool' &&
+          produced.replayed !== true &&
+          !isToolReportedError(produced)
+        ) {
+          await gate.checkResult(name, produced.content);
+        }
         this.assertMaskingCrossed(produced, gate);
       },
     };
@@ -1215,6 +1227,19 @@ export class PublicMcpServer {
       // Both arms, so a late rejection is handled rather than surfacing as an
       // unhandled rejection once the race has already rejected.
       void work.then(releaseSlot, releaseSlot);
+      // The request's privacy state (interned datasets, detector caches) is
+      // dropped once the work settles: the endpoint is stateless (ADR-0143),
+      // nothing refers to it later, and an unfinalized turn kept it forever.
+      if (base !== undefined) {
+        const finalize = (): void => {
+          Promise.resolve()
+            .then(() => base.finalize())
+            .catch(() => {
+              /* best-effort cleanup */
+            });
+        };
+        void work.then(finalize, finalize);
+      }
       const result = await this.withTimeout(name, work);
 
       // Defence in depth. `validateResult` already ran this on the freshly
@@ -1359,7 +1384,8 @@ export class PublicMcpServer {
       result.origin !== 'dispatcher' &&
       result.replayed !== true &&
       !isToolReportedError(result) &&
-      !gate.masked()
+      !gate.masked() &&
+      !gate.resultChecked()
     ) {
       throw new McpError(
         ErrorCode.InternalError,
