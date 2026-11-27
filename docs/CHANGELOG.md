@@ -36,6 +36,59 @@ changelog.
 
 ## [Unreleased]
 
+### Docs — wave 5 ADRs accepted, roadmap design ADRs 0285–0290 (W36) (2026-11-27)
+
+- ADRs 0175–0257 whose code is on main move from Proposed to Accepted (status line and index
+  only). ADR-0225 stays Proposed: its kernel link seam is not built.
+- New design records, nothing built. Owner decision 2026-11-27: 0285, 0286, 0288, 0289 and 0290
+  **Accepted** (implementation not planned yet); 0287 stays **Proposed** until the approved spikes
+  S1', S4', A-S1 and S3' are done and the licence question is decided:
+  ADR-0285 proof inclusion as the `omadia-proof` plugin on the receipt chain (#442),
+  ADR-0286 deployment directory with check/plan gates, agent apply later (#582),
+  ADR-0287 audio meeting source in the Teams plugin as the agent's tenant user (#584),
+  ADR-0288 Satellites as outbound-only capability bridges, no remote agents (#746),
+  ADR-0289 Linear channel as a third plugin with one Linear app per agent (#1031),
+  ADR-0290 credential broker as a per-agent granted capability (#778).
+
+### Security — stdio MCP servers run as their own OS user (#2306, ADR-0270) (2026-11-27)
+
+- Every stdio MCP child now gets a scrubbed environment: the SDK's safe base, `LANG`/`LC_ALL`/
+  `LC_CTYPE`/`TZ` and the row's config env, never the middleware's process env
+  (`stdioLaunch`, `packages/harness-orchestrator/src/mcp/stdioIsolation.ts`).
+- New ENV **`MCP_STDIO_RUN_AS`**: starts each child through `sudo -n -E -H -u <user> --`. The
+  image creates the system user `omadia-mcp`, installs `sudo` with a rule that lets `node` start
+  commands as that user only (`NOPASSWD:SETENV`, `!use_pty`, `runcwd=~`) and sets
+  `MCP_STDIO_RUN_AS=omadia-mcp`. The entrypoint sets `/data` to `0700` on every start. A child can
+  no longer read `/proc/<pid>/environ` of the middleware (VAULT_KEY, DATABASE_URL, …) or `/data`.
+- Fail closed: with `MCP_STDIO_RUN_AS` set, the connect guard probes the switch
+  (`sudo … -- true`); a failure refuses the connect with the new guard code
+  `stdio_isolation_unavailable` (Discover → 502), no child is started.
+- `GET /api/v1/operator/mcp-servers` reports `stdioIsolated`; the stdio hints in `/admin/mcp`
+  (form + catalog card) follow it (en + de).
+- A `/bin/sh` shim gives each stdio server its own npm cache (`$HOME/.npm-cache/<hash>`,
+  `umask 077`). All stdio servers share the one user and can read each other's config values
+  (accepted, ADR-0270). `/home/node` is `0700`; on Fly the entrypoint restricts `/.fly/api` to root
+  when present. The list route adds `stdioIsolationError` when the probe fails.
+- Compose keeps `MCP_STDIO_ENABLED=false` (ADR-0211); ADR-0211's trust model is superseded in part
+  by ADR-0270.
+
+### Added — Telegram pairing links the chat to a real omadia account (#1995, ADR-0225, ADR-0280) (2026-11-27)
+
+- **`CoreApi.channelIdentityLinks`** (channel-sdk **0.3.19**): a channel plugin lists active
+  accounts for a picker, offers a link on behalf of the operator whose session cookie it passes
+  (the kernel resolves the operator), and redeems the single-use offer (≤ 15 min) with the sender
+  the platform attested. `linkOf` and `unlink` complete it. Bound per plugin to its own channel
+  types; `web`/`api` cannot be linked. Audit actions `channel_identity.link` / `.unlink`.
+- **`KnowledgeGraph.linkChannelIdentity?`** (plugin-api **1.107.0**, kernel-only) in both graph
+  backends: the `ChannelIdentity` joins the account's User-Cluster (`web:<users.id>`) with
+  `linkedUserId`/`linkedBy`/`linkedAt`; unlink gives it a fresh cluster. Nothing written before
+  is moved. `resolveOrCreateChannelIdentity` returns `linkedUserId`.
+- **Turn identity:** a plugin channel turn (Telegram, Teams, …) whose sender is linked runs as the
+  account's cluster (`resolvedOmadiaUserId`, principal, `per_user` MCP key via
+  `channelTurnMcpUserKey`). Unlinked senders keep their raw id, unchanged. The sender's cluster is
+  resolved once per turn and reused as the run-trace owner. Memory tiers stay per channel.
+- No migration. Plugin side: omadia-channel-telegram 0.9.0 (user picker, kernel-validated pairing).
+
 ### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
 
 - Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn

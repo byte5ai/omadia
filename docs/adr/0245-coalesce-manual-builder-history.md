@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Related:** #1740, [ADR-0058](0058-builder-drafts-owner-scoped-and-installed-through-the-upload-ingest.md)

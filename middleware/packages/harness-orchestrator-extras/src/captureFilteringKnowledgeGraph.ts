@@ -182,6 +182,8 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
   readonly deleteOwnerlessMemory?: KnowledgeGraph['deleteOwnerlessMemory'];
   // #1840 / #1843 — identity lookups and the identity purge, forwarded too.
   readonly findOmadiaUserIdByChannelIdentity?: KnowledgeGraph['findOmadiaUserIdByChannelIdentity'];
+  // ADR-0225 — the operator link of a channel identity, forwarded too.
+  readonly linkChannelIdentity?: KnowledgeGraph['linkChannelIdentity'];
   readonly countUserIdentity?: KnowledgeGraph['countUserIdentity'];
   readonly purgeUserIdentity?: KnowledgeGraph['purgeUserIdentity'];
 
@@ -201,6 +203,8 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     if (innerDeleteOwnerless) this.deleteOwnerlessMemory = innerDeleteOwnerless;
     const innerFindByIdentity = opts.inner.findOmadiaUserIdByChannelIdentity?.bind(opts.inner);
     if (innerFindByIdentity) this.findOmadiaUserIdByChannelIdentity = innerFindByIdentity;
+    const innerLinkIdentity = opts.inner.linkChannelIdentity?.bind(opts.inner);
+    if (innerLinkIdentity) this.linkChannelIdentity = innerLinkIdentity;
     const innerCountIdentity = opts.inner.countUserIdentity?.bind(opts.inner);
     if (innerCountIdentity) this.countUserIdentity = innerCountIdentity;
     const innerPurgeIdentity = opts.inner.purgeUserIdentity?.bind(opts.inner);
