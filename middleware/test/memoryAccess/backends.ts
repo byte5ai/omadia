@@ -42,6 +42,8 @@ function processEmbedder(): EmbeddingClient {
 
 export interface NeonSeeded {
   readonly seeded: Seeded;
+  /** The tenant id each world tenant was written under (unique per run). */
+  readonly tenants: Readonly<Record<TenantKey, string>>;
   /** Deletes every row the seed wrote. Does not end the pool. */
   readonly clean: () => Promise<void>;
 }
@@ -99,5 +101,9 @@ export async function seedNeon(pool: Pool, world: World): Promise<NeonSeeded> {
       await pool.query(`DELETE FROM ${table} WHERE tenant_id = ANY($1)`, [tenants]);
     }
   };
-  return { seeded: { ...seeded, pool }, clean };
+  return {
+    seeded: { ...seeded, pool },
+    tenants: { main: tenantId('main'), other: tenantId('other') },
+    clean,
+  };
 }

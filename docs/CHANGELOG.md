@@ -365,6 +365,98 @@ changelog.
 - **A provider plugin's config change reaches every LLM plugin (#1891).** A config or secret write to a provider plugin (e.g. `anthropic_base_url` of `@omadia/plugin-llm-anthropic`) rebuilds the provider plugin, then in `rebuildOrder` the LLM plugins that may run on its provider (the agent runtime always, last; the verifier and orchestrator-extras when their provider chain names it); orchestrator-extras no longer keeps calling the old endpoint until a restart. A plugin that does not come back up — or a provider plugin that itself stays down, in which case nothing is rebuilt onto it — is reported as `runtime.dependent_rebuild_failed`.
 - **System modules use the kernel provider pool; provider keys in one vault scope (#2240, ADR-0215).** The verifier and orchestrator-extras build their providers from the kernel `llmProviderPool` only, like the agent runtime. Provider API keys live in one kernel vault scope (id `@omadia/orchestrator`); LLM access (and the orchestrator's own secret editor) writes only there and rebuilds every installed LLM plugin, so one rotation reaches all three. Boot migration `consolidateProviderCredentials` clears the verifier's and extras' scopes key by key: a copy equal to the kernel key is dropped, every other copy is renamed to `superseded:<key>` (numbered when taken) — never deleted, never logged, never promoted into the kernel scope (a key only a module held must be entered under LLM access; the boot log says so); idempotent. A revoke under LLM access and a provider plugin's uninstall also remove the `superseded:` copies. A provider API key sent to the verifier's or extras' own scope is refused with `400 runtime.provider_key_in_kernel_scope`; both manifests drop their `anthropic_api_key` field (`@omadia/verifier` 0.2.0, `@omadia/orchestrator-extras` 0.3.0). An install that ran extras on a dedicated Anthropic key now runs it on the LLM-access key (old key kept as `superseded:<key>`, boot log warns). The verifier now shares the pool's retry budget. ADR-0215 (Proposed) supersedes the pool part of ADR-0165.
 
+### Added — memory lifecycle invariants (memory-ACL test plan, step 5) (2026-11-26)
+
+- **Real lifecycle jobs on the seeded world** (`middleware/test/memoryAccess/lifecycleInvariants.pg.test.ts`,
+  `lifecycleCleanup.pg.test.ts`, shared harness `lifecycle.ts`). On Neon: identity resolution, turn
+  promotion, bulk promotion, the scratch reaper, owner removal, the decay sweep on rows aged 90 days,
+  the transcript backfill, auto-merge and a user purge. Around each job the memorable-knowledge search
+  is read for every viewer and mode; a canary someone gains without an ACL audit row from that job
+  fails. Memories a job creates must stay within what the oracle allows for an item of that shape. A
+  backfill must keep each turn's owners, user and Privacy Shield flag; a user purge must remove the
+  person's datasets and member-notes trees from every tenant table and de-own shared memories with a
+  `shrink` row (ADR-0186).
+- **Random operation sequences** (`lifecycleInvariants.test.ts`, `fast-check`, new dev dependency):
+  owner adds and removals, edits and deletes on the in-memory graph; access never widens without an
+  `expand` audit row and a deleted memory is read by nobody. Scope keys of different raw scopes never
+  collide (`scopeGraphKey`).
+- **Known gaps, first written as `todo` tests naming their issue** (regular tests since the fixes
+  #2281/#2282/#2283 landed in the same train): #2277 (`scopeGraphKey` returns its own
+  output unchanged, so a raw scope spelled like a key lands in that partition; behind
+  `OMADIA_INJECTIVE_SCOPE_KEYS`, off by default), #2278 (deleting an unprotected turn, e.g. by a user
+  purge, unmasks the memories derived from it for shielded turns: promotion stamps no `unprotected`,
+  only the `DERIVED_FROM` edge marks them), #2279 (a user purge misses memories owned by the person's
+  raw channel id, as Teams auto-promotion writes them).
+- The seed now registers each members tier in `members-index`, as the binder does; the purge finds a
+  person's member notes through it.
+- CI `PG_TEST_FLOOR` → 847 together with step 4: main's measured 833 plus the 3 + 11 new Postgres tests.
+
+### Added — memory completeness guards (memory-ACL test plan, step 4) (2026-11-26)
+
+- **Surface inventory** (`middleware/test/memoryAccess/surfaceInventory.test.ts`). Every
+  mounted route (94), native tool registration (33) and `PluginContext` method (59) is read
+  from the source (TypeScript AST) and must appear in the hand-written table
+  `surfaceClassification.ts` as `no-memory`, `viewer-scoped`, `operator-only` or `dev-only`,
+  each with a reason. A viewer-scoped entry names the test that proves its filter, and the
+  canary-sweep entry point where one covers it. A new route or tool fails until classified.
+  `ctx.sql` is classified operator-only: a non-archetype plugin with a granted
+  `permissions.sql` runs on the shared pool, where memory tables are readable.
+- **Lint rule against viewer-less graph reads** (`middleware/eslint/viewerlessGraphReads.mjs`,
+  wired into `eslint.config.mjs` as `no-restricted-syntax`). `listSessions`, `getNeighbors`,
+  `listMemoriesForScope`, the topic and issue lists, the subgraph walk, the owner-less list,
+  and `getSession` / `getMemorableKnowledge` without their viewer argument are errors outside
+  an allowlist of 20 files, each with a reason. `viewerlessGraphReads.test.ts` proves the rule
+  fires on a new file and that no allowlist entry has gone stale.
+- **Memory defaults pinned** (`memoryAccess/memoryDefaults.test.ts`): `KG_ACL_AUTO_PROMOTE`
+  (on, 0.7), `KG_DURABLE_AUTOPROMOTE` (on, 0.85), `KG_RECALL_TEAM_VISIBILITY` (on), auto-merge
+  (on, 0.98 for identical-text machine copies since ADR-0190; the manifest field
+  `kg_auto_merge_enabled` defaults on and is pinned too), the scratch reaper (on, 24 h, keeps unpromoted scratch),
+  `OMADIA_INJECTIVE_SCOPE_KEYS` (off), memory visibility without a value (`private`, both
+  backends), `agents.context_memory` (`members`) and the orchestrator fallback (`off`). A
+  changed default fails until the pin, this CHANGELOG and the oracle change together.
+- **ACL contract after migrations** (`memoryAccess/aclAfterMigrations.pg.test.ts`). The world
+  is written into a schema migrated up to graph migration 0036, with defaulted memories stored
+  `team` as the code before #1823 did; the boot migrator then applies the rest. Memorable
+  knowledge and excerpts must equal the oracle for the world as the migrations are documented
+  to leave it (`migrated()`, written from 0037's intent). A migration that widened visibility
+  showed 18,036 leaks. `PG_TEST_FLOOR`: see step 5 (847 for both steps).
+
+### Fixed — scopeGraphKey: a produced key is no longer a fixed point (#2277) (2026-11-26)
+
+- `scopeGraphKey` (`@omadia/channel-sdk`, the injective graph-scope key behind
+  `OMADIA_INJECTIVE_SCOPE_KEYS`) passed every graph-safe scope through unchanged, and every key
+  its digest branch emits is graph-safe. A web chat naming its `sessionId` after another
+  conversation's key landed in that conversation's partition. A safe scope now passes through
+  only when it does not end in `-<16 hex>` and is not `unscoped`; those are hashed, as
+  `safeContextSegment` already does for context keys. Default deployments (flag off) are
+  unaffected; with the flag on, only scopes of exactly those spellings move partition.
+
+### Fixed — Privacy Shield: a purged turn no longer unmasks the memories derived from it (#2278) (2026-11-26)
+
+- A MemorableKnowledge row counted as unprotected if stamped `unprotected` or linked
+  `DERIVED_FROM` to an unprotected Turn (#1536). Auto-promotion never set the stamp, so the edge
+  was the only mark, and it went with the Turn: after a user purge (ADR-0186) or history purge,
+  memories other people still own reached shielded turns with values no shield masked (3,104
+  withheld reads in the memory-ACL step 5 world). `createMemorableKnowledge` (Neon and
+  in-memory) now stamps a memory when any of its `derivedFromTurnIds` is unprotected.
+- **Migration** `harness-knowledge-graph-neon` **0039_memorable_knowledge_unprotected_from_turn**
+  — stamps existing memories whose `DERIVED_FROM` Turn is unprotected. Idempotent. A memory whose
+  Turn was already deleted has no mark left and stays as it is.
+- Regression case in the #1536 contract (`recallDerivedUnprotected1536Contract.ts`, both backends).
+
+### Fixed — user purge reaches memories owned by the person's Teams id (#2279) (2026-11-26)
+
+- Teams auto-promotion (`off` / `enforce` mode) owns a memory by the turn's raw channel id, the
+  AAD object id, not the omadia user id. A user purge (ADR-0186) matched `aclOwner` against the
+  omadia user id alone, so those memories and their excerpts survived an erasure, and a memory
+  owned in both forms was only "de-owned" down to the AAD id (135 memories of one person in the
+  memory-ACL step 5 world). The memory purge (Neon and in-memory) now matches every id of the
+  person: the omadia user id plus each channel identity's `<kind>:<id>` and AAD object id, the
+  same set the conversation purge already used (`personIdsSql` / `personIds`, now shared by
+  both). Shared entries lose all of those ids, one `shrink` row each.
+- Regression cases in `memoryPurgeUserErasure.test.ts` (route, in-memory) and
+  `memoryPurgeUserErasure.pg.test.ts` (Neon). Docs: ADR-0186, `security-architecture.md` §10q.
+
 ### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
 
 - With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
