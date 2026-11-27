@@ -5864,6 +5864,7 @@
     "edit": "Edit",
     "cancel": "Cancel",
     "save": "Save",
+    "remove": "Remove",
     "removeToken": "Remove token",
     "badge": {
       "tokenSet": "Token set",

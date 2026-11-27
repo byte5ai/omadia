@@ -356,7 +356,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
                       onClick={() => { void handleRemove(r.entryExternalId); }}
                       disabled={busy === `remove:${r.entryExternalId}`}
                     >
-                      {busy === `remove:${r.entryExternalId}` ? '…' : 'Remove'}
+                      {busy === `remove:${r.entryExternalId}` ? '…' : t('remove')}
                     </Button>
                   </td>
                 </tr>
