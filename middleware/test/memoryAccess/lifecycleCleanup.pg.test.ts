@@ -6,7 +6,7 @@
  * (`lifecycle.ts`). A replay must keep each turn's owners, user and Privacy
  * Shield flag; a user purge must remove what the person owned alone from
  * every tenant table and their member-notes trees, and de-own shared entries
- * with a `shrink` audit row. Known gaps stay `todo` tests naming their issue.
+ * with a `shrink` audit row. The former gaps #2278/#2279 are regular tests since their fixes landed.
  */
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
@@ -26,7 +26,7 @@ import { guarded, pool, widenedBy, world } from './lifecycle.js';
 import { axis, mkGroup, readBack, scratchPath } from './seed.js';
 import { USERS } from './world.js';
 
-/** What the user purge widened; asserted by its own `todo` test (#2278). */
+/** What the user purge widened; asserted by its own test (#2278). */
 let purgeWidening: string[] | undefined;
 /** Rows of memories alice owned alone still there after the purge (#2279). */
 const purgeMemoryLeft: string[] = [];
@@ -215,7 +215,7 @@ describe('memory lifecycle invariants on Neon: jobs that age, merge and erase me
       if ((await readBack(n.seeded, note)) !== undefined) found.push(`${scratchPath(note, n.seeded.users)}: ${note.canary}`);
     }
     assert.deepEqual(found, [], 'the purge left datasets or member notes of alice');
-    // Positive control for the todo below: the scan does find memory rows.
+    // Positive control for the purge tests below: the scan does find memory rows.
     assert.ok(goneCanaries.length > found.length, 'nothing to look for');
 
     const graph = n.seeded.stores.main.graph;
@@ -237,7 +237,6 @@ describe('memory lifecycle invariants on Neon: jobs that age, merge and erase me
 
   it(
     'a user purge erases the memories the person owned alone, in every id form',
-    { todo: 'known gap #2279: memories owned by the raw channel id survive a user purge' },
     (t) => {
       if (!purgeRan) return t.skip('the purge did not run');
       assert.deepEqual(purgeMemoryLeft.slice(0, 30), [], `the purge left ${String(purgeMemoryLeft.length)} memory rows alice owned alone`);
@@ -246,7 +245,6 @@ describe('memory lifecycle invariants on Neon: jobs that age, merge and erase me
 
   it(
     'a user purge widens nobody\'s access',
-    { todo: 'known leak #2278: deleting an unprotected turn unmasks the memories derived from it' },
     (t) => {
       if (!purgeWidening) return t.skip('the purge did not run');
       assert.deepEqual(purgeWidening.slice(0, 30), [], `user purge widened access without an ACL audit row (${String(purgeWidening.length)})`);

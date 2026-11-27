@@ -321,7 +321,8 @@ changelog.
   owner adds and removals, edits and deletes on the in-memory graph; access never widens without an
   `expand` audit row and a deleted memory is read by nobody. Scope keys of different raw scopes never
   collide (`scopeGraphKey`).
-- **Known gaps, kept as `todo` tests naming their issue:** #2277 (`scopeGraphKey` returns its own
+- **Known gaps, first written as `todo` tests naming their issue** (regular tests since the fixes
+  #2281/#2282/#2283 landed in the same train): #2277 (`scopeGraphKey` returns its own
   output unchanged, so a raw scope spelled like a key lands in that partition; behind
   `OMADIA_INJECTIVE_SCOPE_KEYS`, off by default), #2278 (deleting an unprotected turn, e.g. by a user
   purge, unmasks the memories derived from it for shielded turns: promotion stamps no `unprotected`,
@@ -329,8 +330,7 @@ changelog.
   raw channel id, as Teams auto-promotion writes them).
 - The seed now registers each members tier in `members-index`, as the binder does; the purge finds a
   person's member notes through it.
-- CI `PG_TEST_FLOOR` 798 → 828: the 11 new Postgres tests (2 of them `todo`) on top of the measured
-  817 with step 4.
+- CI `PG_TEST_FLOOR` 809 → 820: the 11 new Postgres tests (re-based onto main's 806 at landing).
 
 ### Added — memory completeness guards (memory-ACL test plan, step 4) (2026-11-26)
 
@@ -359,7 +359,7 @@ changelog.
   `team` as the code before #1823 did; the boot migrator then applies the rest. Memorable
   knowledge and excerpts must equal the oracle for the world as the migrations are documented
   to leave it (`migrated()`, written from 0037's intent). A migration that widened visibility
-  showed 18,036 leaks. `PG_TEST_FLOOR` 795 → 798.
+  showed 18,036 leaks. `PG_TEST_FLOOR` 806 → 809 (re-based onto main at landing).
 
 ### Fixed — scopeGraphKey: a produced key is no longer a fixed point (#2277) (2026-11-26)
 

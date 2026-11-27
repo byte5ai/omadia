@@ -384,7 +384,7 @@ jobs:
           # 806 → 809 with the ACL contract after migrations
           # (memoryAccess/aclAfterMigrations.pg, 3 tests, memory-ACL step 4d).
           # 809 → 820 with the memory lifecycle invariants (memoryAccess/
-          # lifecycle*.pg, 11 tests incl. 2 todo for #2278/#2279, step 5).
+          # lifecycle*.pg, 11 tests, step 5).
           PG_TEST_FLOOR: '820'
         run: |
           set -eo pipefail

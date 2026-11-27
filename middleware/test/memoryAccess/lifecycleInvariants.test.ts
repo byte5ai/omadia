@@ -162,7 +162,6 @@ describe('memory lifecycle invariants (memory-ACL plan step 5)', () => {
 
   it(
     'scopeGraphKey: a raw scope spelled like a produced key does not land in that partition',
-    { todo: 'known leak #2277: a produced key is a fixed point of scopeGraphKey' },
     () => {
       const raw = 'teams:19:abc@thread';
       const key = scopeGraphKey(raw);
