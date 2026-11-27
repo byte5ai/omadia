@@ -25,6 +25,13 @@ export interface EnvSeed {
   readonly value: string;
   /** Built-in default, as written by builds before the marker existed. */
   readonly legacyDefault: string;
+  /**
+   * #2299 — the value the boot writes when the variable is UNSET, for a key
+   * whose kernel default the plugin cannot know (a path the kernel resolves,
+   * a kernel default that differs from the plugin's own). Absent: an unset
+   * variable removes the boot-owned key and the plugin default applies.
+   */
+  readonly fallback?: string;
 }
 
 export interface EnvSeedResult {
@@ -81,12 +88,17 @@ export function applyEnvSeeds(
     const storedRaw = config[seed.configKey];
     const stored = storedRaw === undefined ? undefined : String(storedRaw);
     const recorded = marker[seed.configKey];
+    const envSet = isEnvSet(env, seed.envName);
     const bootOwned =
       stored === undefined ||
       (recorded !== undefined && stored === recorded) ||
-      (priorMarker === null && stored === seed.legacyDefault);
+      // Before the marker: the built-in default, or (#2299) exactly what the
+      // set variable says — older boots reconciled some keys from the
+      // environment on every start, so such a value was theirs.
+      (priorMarker === null &&
+        (stored === seed.legacyDefault || (envSet && stored === seed.value)));
 
-    if (isEnvSet(env, seed.envName)) {
+    if (envSet) {
       if (bootOwned) {
         config[seed.configKey] = seed.value;
         marker[seed.configKey] = seed.value;
@@ -101,10 +113,15 @@ export function applyEnvSeeds(
       continue;
     }
     // Variable unset: a boot-owned value goes, so the plugin's own default
-    // applies; an operator value stays.
+    // applies (or the kernel's `fallback`); an operator value stays.
     if (bootOwned) {
-      delete config[seed.configKey];
-      delete marker[seed.configKey];
+      if (seed.fallback !== undefined) {
+        config[seed.configKey] = seed.fallback;
+        marker[seed.configKey] = seed.fallback;
+      } else {
+        delete config[seed.configKey];
+        delete marker[seed.configKey];
+      }
     }
   }
 

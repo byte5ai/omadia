@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — every boot-seeded setting follows the ADR-0193 rule (#2299, ADR-0264) (2026-11-27)
+
+- `MEMORY_SEED_DIR`/`MEMORY_SEED_MODE` (memory plugins), `OLLAMA_BASE_URL`/
+  `OLLAMA_EMBEDDING_MODEL`/`GRAPH_EMBEDDING_MAX_CONCURRENT` (`@omadia/embeddings`) and
+  `TOPIC_CLASSIFIER_MODEL`/`TOPIC_*_THRESHOLD` (`@omadia/orchestrator-extras`) now seed their
+  settings through `applyEnvSeeds` on every boot: a set variable writes a boot-owned value, an
+  unset one removes it, an operator value wins and a shadowed variable is logged. Before, memory
+  and topic settings were written on the first install only and the Ollama URL/model were forced
+  from the environment whenever set.
+- `EnvSeed.fallback` (ADR-0264): for `seed_dir` and `max_concurrent` an unset variable writes the
+  kernel default (the plugins' own defaults differ). A pre-marker value equal to the set variable
+  counts as boot-owned. Values are written as strings.
+
 ### Fixed — retractable factory model services; withdrawn embeds count no attempt (#2298) (2026-11-27)
 
 - A model service registered as a per-caller factory (`perCallerService`) now goes through the
