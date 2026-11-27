@@ -1,10 +1,11 @@
 /**
- * The topic leg of the per-person REST sweep (`canaryHttp.ts`) on Neon:
- * `/api/v1/admin/topics` and its detail route, called as every person of
- * both tenants over the seeded world. A topic is content of every member
- * (ADR 0045, #1851): a canary `expectedHttp` forbids on either route fails,
- * and each person must get the topics over their own memories (positive
- * control). The full sweep runs on the in-memory graph (`canaryHttp.test.ts`).
+ * The per-person REST sweep (`canaryHttp.ts`) on Neon, called as every
+ * person of both tenants over the seeded world. A canary `expectedHttp`
+ * forbids on any route fails: the routes read Neon's own SQL and checks
+ * (memory step 6: nothing else read a foreign dataset by id on Neon). The
+ * positive control covers the topic routes (ADR 0045, #1851): each person
+ * gets the topics over their own memories. The in-memory sweep
+ * (`canaryHttp.test.ts`) holds the per-route controls.
  *
  * Needs a pgvector Postgres in GRAPH_PG_TEST_URL or MEMORY_PG_TEST_URL;
  * skips without one (issue #572). Runs in `npm run test:pg`.
@@ -29,7 +30,7 @@ const { url: PG_URL, reachable: pgUp } = await probePgTest({
 const NO_DUPLICATES = { memories: [], excerpts: [] } as const;
 const TOPIC_ROUTES = ['GET /api/v1/admin/topics', 'GET /api/v1/admin/topics/:id'] as const;
 
-describe('memory access — topic routes on NeonKnowledgeGraph (#1851, real PG)', () => {
+describe('memory access — REST routes on NeonKnowledgeGraph (#1851, real PG)', () => {
   const world = buildWorld();
   let pool: Pool | undefined;
   let neon: NeonSeeded;
@@ -42,7 +43,7 @@ describe('memory access — topic routes on NeonKnowledgeGraph (#1851, real PG)'
     for (const tenant of ['main', 'other'] as const) {
       for (const user of USER_KEYS) {
         const all = await sweepHttp(neon.seeded, tenant, user, NO_DUPLICATES);
-        swept.set(`${tenant}/${user}`, all.filter((s) => s.route.includes('/admin/topics')));
+        swept.set(`${tenant}/${user}`, all);
       }
     }
   });
@@ -57,7 +58,7 @@ describe('memory access — topic routes on NeonKnowledgeGraph (#1851, real PG)'
     for (const user of USER_KEYS) {
       const who = `${tenant}/${user}`;
 
-      it(`${who}: no topic built from memories the caller cannot read`, (t) => {
+      it(`${who}: no route returns a canary the caller cannot read`, (t) => {
         if (!pool) return t.skip('no test database');
         const leaks = (swept.get(who) ?? []).filter((s) => !s.verdict.allowed);
         assert.deepEqual(
