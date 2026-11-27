@@ -2,11 +2,10 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
-- **Deciders:** omadia maintainers. Design record for epic #746 (wave 6, W36). Nothing is
-  built with it; it waits for the owner's confirmation.
+- **Deciders:** omadia maintainers. Design record for epic #746 (wave 6, W36). Accepted by the owner on 2026-11-27; implementation is not planned yet.
 
 ## Context and Problem Statement
 
@@ -51,8 +50,7 @@ satellite", with an edge plugin runtime and a `placement` block — conflicts wi
 
 ## Decision Outcome
 
-Chosen option: **A** (recommended; owner confirmation pending, including whether Satellites
-v1 stays on the roadmap at all).
+Chosen option: **A** (owner decision 2026-11-27).
 
 - **Outbound only.** The satellite dials `wss://<hub>/api/v1/satellites/ws` with a
   long-poll fallback; the hub never connects to the satellite. Versioned protocol in a
@@ -84,7 +82,7 @@ v1 stays on the roadmap at all).
   hub process before the shield's hub→model boundary.
 - 🔴 **Bad:** An own tunnel protocol is several engineer-weeks before the first usable
   milestone.
-- ⚪ **Neutral:** Follow-ups after confirmation: `specs/746-satellites/spec.md`, then issues
+- ⚪ **Neutral:** Satellites stay on the roadmap (owner, 2026-11-27). Follow-ups when planned: `specs/746-satellites/spec.md`, then issues
   for W0–W2 only.
 
 ## Pros and Cons of the Options

@@ -40,7 +40,9 @@ changelog.
 
 - ADRs 0175–0257 whose code is on main move from Proposed to Accepted (status line and index
   only). ADR-0225 stays Proposed: its kernel link seam is not built.
-- New design records, all **Proposed** and waiting for the owner, nothing built:
+- New design records, nothing built. Owner decision 2026-11-27: 0285, 0286, 0288, 0289 and 0290
+  **Accepted** (implementation not planned yet); 0287 stays **Proposed** until the approved spikes
+  S1', S4', A-S1 and S3' are done and the licence question is decided:
   ADR-0285 proof inclusion as the `omadia-proof` plugin on the receipt chain (#442),
   ADR-0286 deployment directory with check/plan gates, agent apply later (#582),
   ADR-0287 audio meeting source in the Teams plugin as the agent's tenant user (#584),

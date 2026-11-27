@@ -2,11 +2,10 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
-- **Deciders:** omadia maintainers. Design record for #1031 (wave 6, W36). Nothing is built
-  with it; it waits for the owner's confirmation.
+- **Deciders:** omadia maintainers. Design record for #1031 (wave 6, W36). Accepted by the owner on 2026-11-27; implementation is not planned yet.
 
 ## Context and Problem Statement
 
@@ -52,8 +51,7 @@ delivered?
 
 ## Decision Outcome
 
-Chosen option: **A** (recommended; owner confirmation pending, including whether Linear is
-on the roadmap beyond phase 1).
+Chosen option: **A** (owner decision 2026-11-27).
 
 - **Three plugins, three kinds.** The integration (connection, `linear.api@2`), the tool
   plugin (capability granted per agent) and a new channel plugin. The channel only transports
@@ -90,7 +88,7 @@ on the roadmap beyond phase 1).
 - 🔴 **Bad:** Needs a per-agent extension of the ADR-0164 OAuth broker (own ADR) and a new
   capability between the channel and tool plugins.
 - 🔴 **Bad:** The operator creates one Linear app per agent that should be present in Linear.
-- ⚪ **Neutral:** Follow-ups after confirmation: repository `omadia-channel-linear`, OAuth in
+- ⚪ **Neutral:** Linear beyond phase 1 stays on the roadmap (owner, 2026-11-27). Follow-ups when planned: repository `omadia-channel-linear`, OAuth in
   the tool path, tracker contract issue in dev-platform.
 
 ## Pros and Cons of the Options

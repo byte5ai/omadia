@@ -2,11 +2,10 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
-- **Deciders:** omadia maintainers. Design record for #582 (wave 6, W36). Nothing is built
-  with it; it waits for the owner's confirmation.
+- **Deciders:** omadia maintainers. Design record for #582 (wave 6, W36). Accepted by the owner on 2026-11-27; implementation is not planned yet.
 
 ## Context and Problem Statement
 
@@ -49,7 +48,7 @@ deployment?
 
 ## Decision Outcome
 
-Chosen option: **A** (recommended; owner confirmation pending).
+Chosen option: **A** (owner decision 2026-11-27).
 
 - **The contract is data.** One versioned file per deployment; the CLI is its only
   interpreter; an unknown `contract` version is refused. The secret catalogue lists names,

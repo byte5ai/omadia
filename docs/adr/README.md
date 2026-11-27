@@ -295,12 +295,12 @@ that date.
 | 0255 | [A granted `graphPool` covers only the plugin's own tables](0255-granted-graphpool-covers-only-the-plugins-own-tables.md) | Accepted | 2026-11-26 |
 | 0256 | [Through `memoryStore@1` a plugin changes only the top-level trees it declares and owns](0256-memorystore-plugins-change-only-declared-owned-trees.md) | Accepted | 2026-11-26 |
 | 0257 | [Recall and curation services resolve only for the boundary implementers; `entityRefBus` is publish-only for plugins](0257-recall-and-curation-services-are-boundary-only.md) | Accepted | 2026-11-26 |
-| 0285 | [Proof inclusion (anp) ships as the omadia-proof plugin on top of the receipt chain](0285-proof-inclusion-ships-as-the-omadia-proof-plugin-on-the-receipt-chain.md) | Proposed | 2026-11-27 |
-| 0286 | [A versioned deployment directory with check and plan gates; agent-run apply comes later and only as a granted capability](0286-deployment-directory-contract-with-check-and-plan-gates-agent-apply-later.md) | Proposed | 2026-11-27 |
+| 0285 | [Proof inclusion (anp) ships as the omadia-proof plugin on top of the receipt chain](0285-proof-inclusion-ships-as-the-omadia-proof-plugin-on-the-receipt-chain.md) | Accepted | 2026-11-27 |
+| 0286 | [A versioned deployment directory with check and plan gates; agent-run apply comes later and only as a granted capability](0286-deployment-directory-contract-with-check-and-plan-gates-agent-apply-later.md) | Accepted | 2026-11-27 |
 | 0287 | [The audio meeting source is part of the Teams channel plugin and joins as the agent's own tenant user](0287-audio-meeting-source-is-a-teams-plugin-joining-as-the-agents-tenant-user.md) | Proposed | 2026-11-27 |
-| 0288 | [Satellites are outbound-only capability bridges; agents stay on the hub](0288-satellites-are-outbound-only-capability-bridges-agents-stay-on-the-hub.md) | Proposed | 2026-11-27 |
-| 0289 | [The Linear channel is a third plugin, with one Linear app per agent](0289-linear-channel-is-a-third-plugin-with-one-linear-app-per-agent.md) | Proposed | 2026-11-27 |
-| 0290 | [The credential broker reaches agents only as a granted capability in the caller's envelope](0290-credential-broker-reaches-agents-only-as-a-granted-capability.md) | Proposed | 2026-11-27 |
+| 0288 | [Satellites are outbound-only capability bridges; agents stay on the hub](0288-satellites-are-outbound-only-capability-bridges-agents-stay-on-the-hub.md) | Accepted | 2026-11-27 |
+| 0289 | [The Linear channel is a third plugin, with one Linear app per agent](0289-linear-channel-is-a-third-plugin-with-one-linear-app-per-agent.md) | Accepted | 2026-11-27 |
+| 0290 | [The credential broker reaches agents only as a granted capability in the caller's envelope](0290-credential-broker-reaches-agents-only-as-a-granted-capability.md) | Accepted | 2026-11-27 |
 
 ### The agent model (0012–0022)
 

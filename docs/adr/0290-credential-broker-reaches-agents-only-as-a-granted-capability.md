@@ -2,11 +2,11 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers. Design record for the agent-tool half of #778
-  (wave 6, W36). Nothing is built with it; it waits for the owner's confirmation.
+  (wave 6, W36). Accepted by the owner on 2026-11-27; implementation is not planned yet.
 
 ## Context and Problem Statement
 
@@ -49,7 +49,7 @@ The question: in what form do agents reach the broker, and how is an ask deliver
 
 ## Decision Outcome
 
-Chosen option: **A** (recommended; owner confirmation pending).
+Chosen option: **A** (owner decision 2026-11-27).
 
 - **A capability, not a global tool.** The broker is offered as `credentialBroker@1`; an
   agent gets the tools only through an explicit grant, and the grant can be narrowed to

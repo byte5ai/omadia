@@ -2,11 +2,10 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
-- **Deciders:** omadia maintainers. Design record for #442 (wave 6, W36). Nothing is built
-  with it; it waits for the owner's confirmation.
+- **Deciders:** omadia maintainers. Design record for #442 (wave 6, W36). Accepted by the owner on 2026-11-27; implementation is not planned yet.
 
 ## Context and Problem Statement
 
@@ -47,10 +46,10 @@ The question: where does proof inclusion live, and what does the kernel owe it?
 
 ## Decision Outcome
 
-Chosen option: **A** (recommended; owner confirmation pending).
+Chosen option: **A** (owner decision 2026-11-27).
 
-- **#442 moves to `byte5ai/omadia-proof`.** After confirmation it is closed as "moved"; the
-  plugin repository tracks the work.
+- **The work lives in `byte5ai/omadia-proof`.** #442 stays open as the omadia-side tracker
+  until a kernel seam is planned; the plugin repository tracks the protocol work.
 - **Kernel seams follow the plugin's plan, not the other way round.** Each seam is its own
   omadia issue and, if it adds a contract, its own ADR. The expected first seam is a
   read-only `receiptChain@1` capability (entries, checkpoints, verification verdict of

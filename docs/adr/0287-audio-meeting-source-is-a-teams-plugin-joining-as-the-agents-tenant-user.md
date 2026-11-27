@@ -6,8 +6,8 @@ Proposed
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers. Design record for #584 Workstream S (wave 6, W36).
-  Nothing is built with it; it waits for the owner's confirmation of the licence and join
-  questions below.
+  Nothing is built with it. Owner, 2026-11-27: the spikes S1', S4', A-S1 and S3'
+  are approved; the decision on tenant-user licences follows after the spikes.
 
 ## Context and Problem Statement
 
@@ -63,8 +63,8 @@ Placement:
 
 ## Decision Outcome
 
-Chosen options: **I1, T1, P1** (recommended; owner confirmation pending for I1's licence
-cost and for the join trigger).
+Chosen options: **I1, T1, P1** (recommended; I1's licence cost is decided after the
+spikes).
 
 - **The agent joins as its own tenant user.** The Teams identity chain of ADR-0134 gets one
   more step: a provisioned tenant user per agent that has meeting audio enabled. Only agents
@@ -96,7 +96,9 @@ cost and for the join trigger).
 
 Gating spikes before any build: S1' (headless join and audio capture in a real meeting),
 S4' (WebRTC egress from Fly and the Azure VM), A-S1 (delegated token for the agent's tenant
-user without interactive login), S3' (participant id to roster mapping).
+user without interactive login), S3' (participant id to roster mapping). The owner approved
+these spikes on 2026-11-27; they are built next. This record stays Proposed until their
+results are in and the licence question is decided.
 
 ### Consequences
 
