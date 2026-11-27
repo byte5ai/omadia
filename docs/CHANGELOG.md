@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Docs — ADR cross-references 0295→0118 and 0298→0316 (2026-11-27)
+
+ADR-0118 already named ADR-0295 as superseding it in part, but 0295 did not name 0118; ADR-0298
+accepted the streamed-trace residual that ADR-0316 closes and did not point to it. Status and
+"Supersedes" lines only, no content change.
+
+### Tests — deflake the #2329 stubborn-server shim test (#2370) (2026-11-27)
+
+`mcpStdioIsolation.test.ts` checked `kill(pid, 0)` once right after the shim closed; under CI load
+the server could still be in its TERM→KILL window or wait unreaped as a zombie. The test now polls
+until `MCP_STDIO_STOP_GRACE_S + 5` s and counts a Linux zombie (`/proc/<pid>/stat` state `Z`) as
+gone. The assertion that the shim ends within its grace stays.
+
 ### Fix — CLI turns report `mcpConnectRequired` (#2374) (2026-11-27)
 
 A subscription-CLI turn never named the per-user MCP servers its tool calls asked the user to
