@@ -2,52 +2,44 @@
 
 import { useEffect, useState } from 'react';
 
+import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 
-import {
-  type CredentialAskDto,
-  type CredentialDto,
-  listCredentials,
-  listMyAsks,
-  listPendingAsks,
-} from '../../_lib/adminCredentials';
+import { type CredentialDto, listCredentials, listPendingAsks } from '../../_lib/adminCredentials';
 import { ErrorLine, MutedLine, SurfaceFrame, SurfaceSection, useErrorText } from '../_components/AdminSurface';
-import { AskTable } from './_components/AskTable';
 import { CredentialTable } from './_components/CredentialTable';
 
 /**
- * Admin → Credentials (#2320, ADR-0102). Three reads, each scoped by the
- * server: asks addressed to the signed-in owner, asks the signed-in user
- * made, and the keychain's credential metadata with grants and revocation.
- * No secret, no fingerprint ever reaches this page.
+ * Admin → Credentials (#2320, ADR-0102): the keychain's credential metadata
+ * with grants and revocation, and a link to the ask inbox
+ * (`/admin/credentials/asks`). No secret, no fingerprint ever reaches it.
  */
 
-type Load<T> = { kind: 'loading' } | { kind: 'ready'; value: T } | { kind: 'error'; error: unknown };
-
-interface PageData {
-  readonly credentials: CredentialDto[];
-  readonly pending: CredentialAskDto[];
-  readonly mine: CredentialAskDto[];
-}
+type Load =
+  | { kind: 'loading' }
+  | { kind: 'ready'; credentials: CredentialDto[]; pendingCount: number | null }
+  | { kind: 'error'; error: unknown };
 
 export default function AdminCredentialsPage(): React.ReactElement {
   const t = useTranslations('adminCredentials');
   const errorText = useErrorText();
-  const [state, setState] = useState<Load<PageData>>({ kind: 'loading' });
-
+  const [state, setState] = useState<Load>({ kind: 'loading' });
   const [generation, setGeneration] = useState(0);
+  const reload = async (): Promise<void> => setGeneration((g) => g + 1);
 
   useEffect(() => {
     let cancelled = false;
     // Fetch-on-change: state is touched only after the awaited round-trip.
     void (async () => {
       try {
-        const [credentials, pending, mine] = await Promise.all([
+        const [credentials, pending] = await Promise.all([
           listCredentials(),
-          listPendingAsks(),
-          listMyAsks(),
+          // The count is a hint; the inbox page reports its own errors.
+          listPendingAsks().catch(() => null),
         ]);
-        if (!cancelled) setState({ kind: 'ready', value: { credentials, pending, mine } });
+        if (!cancelled) {
+          setState({ kind: 'ready', credentials, pendingCount: pending === null ? null : pending.length });
+        }
       } catch (err) {
         if (!cancelled) setState({ kind: 'error', error: err });
       }
@@ -57,48 +49,28 @@ export default function AdminCredentialsPage(): React.ReactElement {
     };
   }, [generation]);
 
-  async function reload(): Promise<void> {
-    setGeneration((g) => g + 1);
-  }
-
-  if (state.kind === 'loading') {
+  if (state.kind !== 'ready') {
     return (
       <SurfaceFrame title={t('title')} intro={t('intro')}>
-        <MutedLine text={t('loading')} />
-      </SurfaceFrame>
-    );
-  }
-  if (state.kind === 'error') {
-    return (
-      <SurfaceFrame title={t('title')} intro={t('intro')}>
-        <ErrorLine text={errorText(state.error)} />
+        {state.kind === 'loading' ? <MutedLine text={t('loading')} /> : <ErrorLine text={errorText(state.error)} />}
       </SurfaceFrame>
     );
   }
 
-  const { credentials, pending, mine } = state.value;
-  const names = new Map(credentials.map((c) => [c.id, c.name]));
   return (
     <SurfaceFrame title={t('title')} intro={t('intro')}>
       <SurfaceSection heading={t('inbox.heading')} hint={t('inbox.hint')}>
-        {pending.length === 0 ? (
-          <MutedLine text={t('inbox.empty')} />
-        ) : (
-          <AskTable asks={pending} names={names} role="owner" onChanged={reload} />
-        )}
-      </SurfaceSection>
-      <SurfaceSection heading={t('mine.heading')}>
-        {mine.length === 0 ? (
-          <MutedLine text={t('mine.empty')} />
-        ) : (
-          <AskTable asks={mine} names={names} role="requester" onChanged={reload} />
-        )}
+        <Link href="/admin/credentials/asks" className="text-sm text-[color:var(--accent)] hover:underline">
+          {state.pendingCount === null
+            ? t('asksLink.unknown')
+            : t('asksLink.count', { count: state.pendingCount })}
+        </Link>
       </SurfaceSection>
       <SurfaceSection heading={t('list.heading')} hint={t('list.hint')}>
-        {credentials.length === 0 ? (
+        {state.credentials.length === 0 ? (
           <MutedLine text={t('list.empty')} />
         ) : (
-          <CredentialTable credentials={credentials} onChanged={reload} />
+          <CredentialTable credentials={state.credentials} onChanged={reload} />
         )}
       </SurfaceSection>
     </SurfaceFrame>

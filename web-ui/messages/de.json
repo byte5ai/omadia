@@ -8336,6 +8336,16 @@
         "notActionable": "Diese Anfrage ist schon beantwortet, abgelaufen, oder ihre Zugangsdaten wurden widerrufen.",
         "notFound": "Diese Anfrage gibt es nicht mehr."
       }
+    },
+    "asksLink": {
+      "count": "{count, plural, =0 {Anfragen öffnen — nichts wartet auf dich} one {Anfragen öffnen — # Anfrage wartet auf dich} other {Anfragen öffnen — # Anfragen warten auf dich}}",
+      "unknown": "Anfragen öffnen"
+    },
+    "asksPage": {
+      "title": "Anfragen für Zugangsdaten",
+      "intro": "Anfragen, persönliche Zugangsdaten zu nutzen. Du beantwortest die an dich gerichteten; eine Zustimmung legt die Berechtigung an. Darunter stehen die Anfragen, die du selbst gestellt hast.",
+      "back": "← Zurück zum Schlüsselbund",
+      "focusMissing": "Die verlinkte Anfrage steht nicht mehr in der Liste: Sie wurde beantwortet, ist abgelaufen oder nicht an dich gerichtet."
     }
   },
   "adminSkills": {

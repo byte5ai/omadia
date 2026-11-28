@@ -6,10 +6,9 @@ import { renderWithIntl } from '../../../_lib/test-utils';
 import AdminCredentialsPage from '../page';
 
 /**
- * #2320 — Admin → Credentials wires the three server reads
- * (`/credentials`, `/credential-asks/pending`, `/credential-asks/mine`) and
- * the owner actions to the right endpoints; revoke needs a second click and
- * shows only where the server said `can_revoke`.
+ * #2320 — Admin → Credentials lists `/credentials` with revocation (second
+ * click, only where the server said `can_revoke`) and links the ask inbox
+ * with the pending count.
  */
 
 const fetchMock = vi.fn();
@@ -76,20 +75,14 @@ function postedPaths(): string[] {
 }
 
 describe('<AdminCredentialsPage />', () => {
-  it('renders the inbox with the credential name and the keychain', async () => {
+  it('renders the keychain and links the inbox with the pending count', async () => {
     renderWithIntl(<AdminCredentialsPage />);
-    expect(await screen.findByText('sync issues')).toBeInTheDocument();
-    expect(screen.getAllByText('alice-github').length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText('alice-github')).toBeInTheDocument();
     expect(screen.getByText('carol-jira')).toBeInTheDocument();
-    expect(screen.getByText('You have not asked for a credential.')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Open the ask inbox — 1 ask is waiting for you' });
+    expect(link).toHaveAttribute('href', '/admin/credentials/asks');
     // Only the own credential offers revoke.
     expect(screen.getAllByRole('button', { name: 'Revoke' })).toHaveLength(1);
-  });
-
-  it('approves an ask through the owner endpoint', async () => {
-    renderWithIntl(<AdminCredentialsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(postedPaths()).toContain('/bot-api/v1/admin/credential-asks/ask-1/approve'));
   });
 
   it('revokes a credential only after the confirm click', async () => {
@@ -100,15 +93,14 @@ describe('<AdminCredentialsPage />', () => {
     await waitFor(() => expect(postedPaths()).toContain('/bot-api/v1/admin/credentials/cred-1/revoke'));
   });
 
-  it('shows catalog copy, not the server body, for a forbidden answer', async () => {
+  it('loads the grants of a credential on demand', async () => {
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) =>
-      init?.method === 'POST'
-        ? respond({ code: 'credential_ask.forbidden', message: 'raw server text' }, 403)
+      url.endsWith('/cred-1/grants')
+        ? respond({ credential: personal, grants: [], can_revoke_grants: true })
         : route(url, init),
     );
     renderWithIntl(<AdminCredentialsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Deny' }));
-    expect(await screen.findByText('Only the owner of the credential can answer this ask.')).toBeInTheDocument();
-    expect(screen.queryByText('raw server text')).not.toBeInTheDocument();
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Grants' }))[0] as HTMLElement);
+    expect(await screen.findByText('Nobody holds a grant for this credential.')).toBeInTheDocument();
   });
 });

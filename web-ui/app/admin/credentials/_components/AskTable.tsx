@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useTranslations } from 'next-intl';
 
@@ -26,11 +26,14 @@ export function AskTable({
   asks,
   names,
   role,
+  focusId = null,
   onChanged,
 }: {
   asks: readonly CredentialAskDto[];
   names: ReadonlyMap<string, string>;
   role: 'owner' | 'requester';
+  /** The ask a deep link (`?ask=<id>`) points at: highlighted and scrolled to. */
+  focusId?: string | null;
   onChanged: () => Promise<void>;
 }): React.ReactElement {
   const t = useTranslations('adminCredentials.asks');
@@ -42,6 +45,11 @@ export function AskTable({
   });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const focusRow = useRef<HTMLTableRowElement | null>(null);
+
+  useEffect(() => {
+    focusRow.current?.scrollIntoView?.({ block: 'center' });
+  }, [focusId]);
 
   async function run(id: string, action: () => Promise<void>): Promise<void> {
     setBusyId(id);
@@ -75,7 +83,17 @@ export function AskTable({
         </thead>
         <tbody>
           {asks.map((ask) => (
-            <tr key={ask.id} className={ROW_CLASS}>
+            <tr
+              key={ask.id}
+              ref={ask.id === focusId ? focusRow : undefined}
+              aria-current={ask.id === focusId ? 'true' : undefined}
+              data-focused={ask.id === focusId ? 'true' : undefined}
+              className={
+                ask.id === focusId
+                  ? `${ROW_CLASS} bg-[color:var(--accent)]/10 outline outline-2 outline-[color:var(--accent)]`
+                  : ROW_CLASS
+              }
+            >
               <td className={CELL_CLASS}>{names.get(ask.credential_id) ?? <Mono>{ask.credential_id}</Mono>}</td>
               <td className={CELL_CLASS}>
                 <Mono>{role === 'owner' ? ask.requester : ask.owner}</Mono>

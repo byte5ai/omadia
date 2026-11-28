@@ -8336,6 +8336,16 @@
         "notActionable": "This ask is already answered, has expired, or its credential was revoked.",
         "notFound": "This ask no longer exists."
       }
+    },
+    "asksLink": {
+      "count": "{count, plural, =0 {Open the ask inbox — nothing is waiting for you} one {Open the ask inbox — # ask is waiting for you} other {Open the ask inbox — # asks are waiting for you}}",
+      "unknown": "Open the ask inbox"
+    },
+    "asksPage": {
+      "title": "Credential asks",
+      "intro": "Asks to use a personal credential. You answer the ones addressed to you; an approval creates the grant. Below are the asks you made yourself.",
+      "back": "← Back to the keychain",
+      "focusMissing": "The linked ask is no longer listed: it was answered, has expired, or is not addressed to you."
     }
   },
   "adminSkills": {
