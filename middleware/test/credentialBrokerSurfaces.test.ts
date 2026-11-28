@@ -73,14 +73,14 @@ describe('#2319 · ask notices', () => {
         { channelType: 'telegram', channelUserId: 'Telegram:9' },
         { channelType: 'teams', channelUserId: 'aad-1' },
       ],
-      sendToUser: async (channelType, principal) => {
-        sent.push(`${channelType}|${principal}`);
+      sendToUser: async (channelType, principal, message) => {
+        sent.push(`${channelType}|${principal}|${message.speaker.kind}`);
         return channelType === 'telegram';
       },
       sendToConversation: async () => undefined,
     });
     assert.equal(await notices.notifyOwner(sampleAsk(), { credentialName: 'x', agentName: 'Clara' }), true);
-    assert.deepEqual(sent, ['telegram|user:telegram:9']);
+    assert.deepEqual(sent, ['telegram|user:telegram:9|system']);
   });
 
   it('report an unreachable owner and never throw', async () => {
@@ -250,8 +250,8 @@ describe('#2319 · wireCredentialBroker', () => {
         language: () => 'en',
         ownerChannels: async () => [],
         sendToUser: async () => false,
-        sendToConversation: async (channel, _ref, text) => {
-          posted.push(`${channel}|${text}`);
+        sendToConversation: async (channel, _ref, message) => {
+          posted.push(`${channel}|${message.text}`);
         },
       },
       recordAudit: async () => undefined,

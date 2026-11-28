@@ -5347,18 +5347,14 @@ async function main(): Promise<void> {
         const identities = (await kg?.listUserChannelIdentities?.(ownerUserId)) ?? [];
         return identities.map((i) => ({ channelType: i.channelKind, channelUserId: i.channelUserId }));
       },
-      sendToUser: async (channelType, principal, text) => {
-        const report = await credentialTargetedSendRef.current?.sendToPrincipal({
-          channelType,
-          principal,
-          message: { text, speaker: SYSTEM_SPEAKER },
-        });
+      sendToUser: async (channelType, principal, message) => {
+        const report = await credentialTargetedSendRef.current?.sendToPrincipal({ channelType, principal, message });
         return report?.deliveries.some((d) => d.outcome.outcome === 'delivered') ?? false;
       },
-      sendToConversation: async (channel, conversationRef, text) => {
+      sendToConversation: async (channel, conversationRef, message) => {
         const sender = routinesHandle?.senderRegistry.get(channel);
         if (!sender) throw new Error(`no proactive sender for channel '${channel}'`);
-        await sender.send({ conversationRef, message: { text, speaker: SYSTEM_SPEAKER } });
+        await sender.send({ conversationRef, message });
       },
       publicBaseUrl: () => config.PUBLIC_BASE_URL,
       language: () => {

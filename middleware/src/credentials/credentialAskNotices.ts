@@ -20,6 +20,8 @@
  * texts (`triggers/routineTexts.ts`, `ai_disclosure_locale`).
  */
 
+import { SYSTEM_SPEAKER, type Speaker } from '@omadia/plugin-api';
+
 import type { CredentialAsk } from './asks.js';
 
 /** The web path of the owner's ask inbox (admin UI, #2320). */
@@ -33,13 +35,19 @@ export interface OwnerChannelIdentity {
   readonly channelUserId: string;
 }
 
+/** A harness message: always spoken by `system` (stamped here, ADR-0012). */
+export interface SystemNotice {
+  readonly text: string;
+  readonly speaker: Speaker;
+}
+
 export interface CredentialAskNoticeDeps {
   /** The channel identities in the owner's account cluster (`user:<id>` ref). */
   readonly ownerChannels: (ownerUserId: string) => Promise<readonly OwnerChannelIdentity[]>;
-  /** Direct message as `system`; resolves true when delivered. */
-  readonly sendToUser: (channelType: string, principal: string, text: string) => Promise<boolean>;
-  /** Post as `system` into the conversation the ask came from. */
-  readonly sendToConversation: (channel: string, conversationRef: unknown, text: string) => Promise<void>;
+  /** Direct message; resolves true when delivered. */
+  readonly sendToUser: (channelType: string, principal: string, message: SystemNotice) => Promise<boolean>;
+  /** Post into the conversation the ask came from. */
+  readonly sendToConversation: (channel: string, conversationRef: unknown, message: SystemNotice) => Promise<void>;
   readonly publicBaseUrl?: () => string | undefined;
   readonly language?: () => string | undefined;
   readonly log?: (message: string) => void;
@@ -124,12 +132,15 @@ export function createCredentialAskNotices(deps: CredentialAskNoticeDeps): Crede
         log(`[credential-broker] owner channels for ask ${ask.id} unavailable — ${errText(err)}`);
         return false;
       }
-      const text = ownerNoticeText(ask, facts, inboxLink(deps.publicBaseUrl?.(), ask.id), deps.language?.());
+      const message: SystemNotice = {
+        text: ownerNoticeText(ask, facts, inboxLink(deps.publicBaseUrl?.(), ask.id), deps.language?.()),
+        speaker: SYSTEM_SPEAKER,
+      };
       for (const channel of channels) {
         if (NON_MESSAGING_KINDS.has(channel.channelType)) continue;
         try {
           const principal = `user:${channel.channelUserId.trim().toLowerCase()}`;
-          if (await deps.sendToUser(channel.channelType, principal, text)) return true;
+          if (await deps.sendToUser(channel.channelType, principal, message)) return true;
         } catch (err) {
           log(`[credential-broker] owner notice for ask ${ask.id} via ${channel.channelType} failed — ${errText(err)}`);
         }
@@ -140,7 +151,8 @@ export function createCredentialAskNotices(deps: CredentialAskNoticeDeps): Crede
 
     async deliverDecision(ask, target, facts) {
       try {
-        await deps.sendToConversation(target.channel, target.conversationRef, decisionText(ask, facts, deps.language?.()));
+        const message: SystemNotice = { text: decisionText(ask, facts, deps.language?.()), speaker: SYSTEM_SPEAKER };
+        await deps.sendToConversation(target.channel, target.conversationRef, message);
       } catch (err) {
         log(`[credential-broker] decision on ask ${ask.id} not delivered to ${target.channel} — ${errText(err)}`);
       }

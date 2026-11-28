@@ -137,6 +137,7 @@ export const ROUTES: Readonly<Record<string, Classification>> = {
   'src/index.ts USE /api/v1/install/registry createRegistryInstallRouter': none('registry install'),
   'src/index.ts USE /api/v1/operator createAgentBuilderRouter': none('agent builder'),
   'src/index.ts USE /api/v1/operator createOperatorConsultationRouter': none('consultation and discretion settings'),
+  'src/index.ts USE /api/v1/operator credentialBroker.operatorRouter': none('#2319 — per-agent credential grants (agent × credential id); no memory'),
   'src/index.ts USE /api/v1/operator/agents createOperatorAgentArchetypeSettingsRouter': none('archetype settings per agent'),
   'src/index.ts USE /api/v1/operator/agents createOperatorAgentChannelIdentitiesRouter': none('channel identities of agents'),
   'src/index.ts USE /api/v1/operator/archetypes createOperatorArchetypesRouter': none('archetype catalogue'),
@@ -191,6 +192,8 @@ export const TOOLS: Readonly<Record<string, Classification>> = {
   'src/index.ts register reqTool.name': none('request_self_extension: files a pending plugin proposal'),
   'src/plugins/routines/initRoutines.ts registerNativeTool MANAGE_ROUTINE_TOOL_NAME': none('the calling user\'s routines; routines are not memory'),
   'src/triggers/wiring.ts registerNativeTool name': none('trigger tools (on_event, wake_at, …): the conversation\'s own triggers'),
+  'src/credentials/credentialBrokerWiring.ts registerNativeTool CREDENTIAL_REQUEST_TOOL_NAME': none('#2319 — calls a declared service through the credential broker as the turn account; no memory'),
+  'src/credentials/credentialBrokerWiring.ts registerNativeTool CREDENTIAL_ASK_TOOL_NAME': none('#2319 — creates a credential ask for the turn account; no memory'),
   'src/triggers/wiring.ts registerNativeTool DELIVER_DATA_TOOL_NAME': none('runs one of the agent\'s own read tools under its grants and the audience floor; the rows never reach the model'),
 
   // Generic registration paths: what they register is listed above or is a plugin's own tool.
