@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers (wave 6, W34; #2313; decision after recommendation, reversible)

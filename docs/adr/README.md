@@ -273,7 +273,7 @@ that date.
 | 0220 | [The answer language follows the user, with an operator fallback](0220-the-answer-language-follows-the-user.md) | Accepted; Superseded in part by 0320, 0332 | 2026-11-26 |
 | 0221 | [A fast-lane miss hands its executed call to the agent](0221-a-fast-lane-miss-hands-its-executed-call-to-the-agent.md) | Superseded by 0265 | 2026-11-26 |
 | 0222 | [Channels read outgoing attachment bytes in-process](0222-channels-read-outgoing-attachment-bytes-in-process.md) | Accepted | 2026-11-26 |
-| 0225 | [A channel account is linked to an omadia user only through the kernel, on an operator-issued pairing](0225-channel-account-links-to-an-omadia-user-only-through-the-kernel.md) | Proposed | 2026-11-26 |
+| 0225 | [A channel account is linked to an omadia user only through the kernel, on an operator-issued pairing](0225-channel-account-links-to-an-omadia-user-only-through-the-kernel.md) | Accepted | 2026-11-26 |
 | 0230 | [Builder build status has one emitter, stable codes, and a missing test credential is not a failed build](0230-builder-build-status-one-emitter-stable-codes.md) | Accepted | 2026-11-26 |
 | 0232 | [The runtime smoke passes only when a handler ran, on its own stub instance, and never calls a tool declared as writing](0232-runtime-smoke-runs-handlers-on-stub-credentials.md) | Accepted | 2026-11-26 |
 | 0235 | [Builder choices accept free answers and expire after five minutes](0235-builder-choice-free-answer-and-timeout.md) | Accepted | 2026-11-26 |
@@ -295,53 +295,53 @@ that date.
 | 0255 | [A granted `graphPool` covers only the plugin's own tables](0255-granted-graphpool-covers-only-the-plugins-own-tables.md) | Accepted | 2026-11-26 |
 | 0256 | [Through `memoryStore@1` a plugin changes only the top-level trees it declares and owns](0256-memorystore-plugins-change-only-declared-owned-trees.md) | Accepted | 2026-11-26 |
 | 0257 | [Recall and curation services resolve only for the boundary implementers; `entityRefBus` is publish-only for plugins](0257-recall-and-curation-services-are-boundary-only.md) | Accepted | 2026-11-26 |
-| 0260 | [`/api/dev` is loopback-only under `NODE_ENV=production`](0260-dev-endpoints-are-loopback-only-in-production.md) | Proposed | 2026-11-27 |
-| 0261 | [Agents on memory mode `off` move to `members`; `off` is an explicit shared agent](0261-agents-on-memory-off-move-to-members-off-is-a-shared-agent.md) | Proposed | 2026-11-27 |
-| 0262 | [A user purge covers every linked channel identity and ends the person's web sessions](0262-user-purge-covers-linked-identities-and-ends-account-sessions.md) | Proposed | 2026-11-27 |
-| 0263 | [Bulk promotion checks discretion from the stored turn labels; operators may un-retire a turn](0263-bulk-promotion-checks-discretion-from-stored-turn-labels.md) | Proposed | 2026-11-27 |
-| 0264 | [An env seed may write a kernel fallback instead of removing the key](0264-env-seeds-may-write-a-kernel-fallback.md) | Proposed | 2026-11-27 |
-| 0265 | [A fast-lane miss replays its executed call as the agent's first tool round](0265-a-fast-lane-miss-replays-its-executed-call-as-a-tool-round.md) | Proposed | 2026-11-27 |
-| 0266 | [An expired file link is renewed through a kernel route for a signed-in caller, up to 30 days after it expired](0266-expired-file-links-are-renewed-for-a-signed-in-caller-within-30-days.md) | Proposed | 2026-11-27 |
-| 0267 | [`query_rows` range filters on date columns compare as dates; encrypted columns stay unfilterable](0267-dataset-date-range-filters-compare-as-dates.md) | Proposed | 2026-11-27 |
-| 0268 | [A CLI sub-agent in a guarded turn gets the v4 verb tools under the caller's handle](0268-guarded-cli-sub-agents-get-v4-verbs-under-the-caller-handle.md) | Proposed | 2026-11-27 |
-| 0270 | [stdio MCP servers run as their own OS user, without the middleware's environment or data directory](0270-stdio-mcp-servers-run-as-their-own-os-user.md) | Proposed | 2026-11-27 |
-| 0271 | [The public MCP endpoint serves the file producers again, each result behind a detector check](0271-public-mcp-serves-file-producers-behind-a-per-result-check.md) | Proposed | 2026-11-27 |
-| 0272 | [An MCP image reaches the model as an image only where no shield masks the server and the wire carries it](0272-mcp-images-reach-the-model-only-unmasked-and-on-a-capable-wire.md) | Proposed | 2026-11-27 |
-| 0273 | [A deleted API key takes its public MCP binding with it](0273-a-deleted-api-key-takes-its-public-mcp-binding-with-it.md) | Proposed | 2026-11-27 |
-| 0275 | [Provider OAuth tokens live in the kernel scope only; older module copies are folded in newest-wins](0275-provider-oauth-tokens-live-in-the-kernel-scope-only.md) | Proposed | 2026-11-27 |
-| 0276 | [A web chat's agent pin carries the agent id; a pin whose slug now names another agent is refused](0276-chat-pins-carry-the-agent-id.md) | Proposed | 2026-11-27 |
-| 0277 | [The other agent config writes carry an expected revision, one counter per resource](0277-agent-config-writes-carry-a-revision-per-resource.md) | Proposed | 2026-11-27 |
-| 0278 | [Routine deliveries travel as conversation context: no fast-path loss, dropped when they cannot be masked](0278-routine-deliveries-travel-as-conversation-context.md) | Proposed | 2026-11-27 |
-| 0279 | [Channel chats see their routine deliveries through a kernel lookup by session scope](0279-channel-chats-see-their-routine-deliveries.md) | Proposed | 2026-11-27 |
-| 0280 | [A channel-account link is an operator offer the channel redeems; the fact lives on the identity node](0280-channel-account-link-is-an-operator-offer-redeemed-by-the-channel.md) | Proposed — refined by [0300](0300-entra-directory-people-anchor-channel-identities-and-per-person-tokens.md), [0302](0302-a-turn-origin-channel-type-is-checked-against-the-calling-plugin.md) | 2026-11-27 |
+| 0260 | [`/api/dev` is loopback-only under `NODE_ENV=production`](0260-dev-endpoints-are-loopback-only-in-production.md) | Accepted | 2026-11-27 |
+| 0261 | [Agents on memory mode `off` move to `members`; `off` is an explicit shared agent](0261-agents-on-memory-off-move-to-members-off-is-a-shared-agent.md) | Accepted | 2026-11-27 |
+| 0262 | [A user purge covers every linked channel identity and ends the person's web sessions](0262-user-purge-covers-linked-identities-and-ends-account-sessions.md) | Accepted | 2026-11-27 |
+| 0263 | [Bulk promotion checks discretion from the stored turn labels; operators may un-retire a turn](0263-bulk-promotion-checks-discretion-from-stored-turn-labels.md) | Accepted | 2026-11-27 |
+| 0264 | [An env seed may write a kernel fallback instead of removing the key](0264-env-seeds-may-write-a-kernel-fallback.md) | Accepted | 2026-11-27 |
+| 0265 | [A fast-lane miss replays its executed call as the agent's first tool round](0265-a-fast-lane-miss-replays-its-executed-call-as-a-tool-round.md) | Accepted | 2026-11-27 |
+| 0266 | [An expired file link is renewed through a kernel route for a signed-in caller, up to 30 days after it expired](0266-expired-file-links-are-renewed-for-a-signed-in-caller-within-30-days.md) | Accepted | 2026-11-27 |
+| 0267 | [`query_rows` range filters on date columns compare as dates; encrypted columns stay unfilterable](0267-dataset-date-range-filters-compare-as-dates.md) | Accepted | 2026-11-27 |
+| 0268 | [A CLI sub-agent in a guarded turn gets the v4 verb tools under the caller's handle](0268-guarded-cli-sub-agents-get-v4-verbs-under-the-caller-handle.md) | Accepted | 2026-11-27 |
+| 0270 | [stdio MCP servers run as their own OS user, without the middleware's environment or data directory](0270-stdio-mcp-servers-run-as-their-own-os-user.md) | Accepted | 2026-11-27 |
+| 0271 | [The public MCP endpoint serves the file producers again, each result behind a detector check](0271-public-mcp-serves-file-producers-behind-a-per-result-check.md) | Accepted | 2026-11-27 |
+| 0272 | [An MCP image reaches the model as an image only where no shield masks the server and the wire carries it](0272-mcp-images-reach-the-model-only-unmasked-and-on-a-capable-wire.md) | Accepted | 2026-11-27 |
+| 0273 | [A deleted API key takes its public MCP binding with it](0273-a-deleted-api-key-takes-its-public-mcp-binding-with-it.md) | Accepted | 2026-11-27 |
+| 0275 | [Provider OAuth tokens live in the kernel scope only; older module copies are folded in newest-wins](0275-provider-oauth-tokens-live-in-the-kernel-scope-only.md) | Accepted | 2026-11-27 |
+| 0276 | [A web chat's agent pin carries the agent id; a pin whose slug now names another agent is refused](0276-chat-pins-carry-the-agent-id.md) | Accepted | 2026-11-27 |
+| 0277 | [The other agent config writes carry an expected revision, one counter per resource](0277-agent-config-writes-carry-a-revision-per-resource.md) | Accepted | 2026-11-27 |
+| 0278 | [Routine deliveries travel as conversation context: no fast-path loss, dropped when they cannot be masked](0278-routine-deliveries-travel-as-conversation-context.md) | Accepted | 2026-11-27 |
+| 0279 | [Channel chats see their routine deliveries through a kernel lookup by session scope](0279-channel-chats-see-their-routine-deliveries.md) | Accepted | 2026-11-27 |
+| 0280 | [A channel-account link is an operator offer the channel redeems; the fact lives on the identity node](0280-channel-account-link-is-an-operator-offer-redeemed-by-the-channel.md) | Accepted — refined by [0300](0300-entra-directory-people-anchor-channel-identities-and-per-person-tokens.md), [0302](0302-a-turn-origin-channel-type-is-checked-against-the-calling-plugin.md) | 2026-11-27 |
 | 0285 | [Proof inclusion (anp) ships as the omadia-proof plugin on top of the receipt chain](0285-proof-inclusion-ships-as-the-omadia-proof-plugin-on-the-receipt-chain.md) | Accepted | 2026-11-27 |
 | 0286 | [A versioned deployment directory with check and plan gates; agent-run apply comes later and only as a granted capability](0286-deployment-directory-contract-with-check-and-plan-gates-agent-apply-later.md) | Accepted | 2026-11-27 |
-| 0287 | [The audio meeting source is part of the Teams channel plugin and joins as the agent's own tenant user](0287-audio-meeting-source-is-a-teams-plugin-joining-as-the-agents-tenant-user.md) | Proposed | 2026-11-27 |
+| 0287 | [The audio meeting source is part of the Teams channel plugin and joins as the agent's own tenant user](0287-audio-meeting-source-is-a-teams-plugin-joining-as-the-agents-tenant-user.md) | Accepted | 2026-11-27 |
 | 0288 | [Satellites are outbound-only capability bridges; agents stay on the hub](0288-satellites-are-outbound-only-capability-bridges-agents-stay-on-the-hub.md) | Accepted | 2026-11-27 |
 | 0289 | [The Linear channel is a third plugin, with one Linear app per agent](0289-linear-channel-is-a-third-plugin-with-one-linear-app-per-agent.md) | Accepted | 2026-11-27 |
 | 0290 | [The credential broker reaches agents only as a granted capability in the caller's envelope](0290-credential-broker-reaches-agents-only-as-a-granted-capability.md) | Accepted | 2026-11-27 |
-| 0295 | [Process ids are opaque; old ids resolve through `legacy_id`](0295-process-ids-are-opaque.md) | Proposed | 2026-11-27 |
-| 0296 | [Stored text with an earlier turn's placeholder is withheld per entry](0296-stored-text-is-withheld-per-entry.md) | Proposed | 2026-11-27 |
-| 0297 | [Agent triggers run in the person's zone and confirm themselves readably](0297-agent-triggers-run-in-the-persons-zone-and-confirm-readably.md) | Proposed | 2026-11-27 |
-| 0298 | [A file tool that delivers only into the turn's answer declares no effect](0298-file-tools-that-answer-into-the-turn-declare-no-effect.md) | Proposed | 2026-11-27 |
-| 0299 | [An internal Kroki renderer is a reader inside the instance](0299-an-internal-kroki-renderer-is-a-reader-inside-the-instance.md) | Proposed | 2026-11-27 |
-| 0300 | [Entra directory people anchor channel identities and per-person tokens; they are not accounts](0300-entra-directory-people-anchor-channel-identities-and-per-person-tokens.md) | Proposed | 2026-11-27 |
-| 0301 | [A directory person connects a per-person MCP server bound to their Teams SSO token, never through a bearer link](0301-a-directory-person-connects-bound-to-their-teams-sso-token.md) | Proposed | 2026-11-27 |
-| 0302 | [A turn origin's channel type is checked against the calling plugin; a link to a disabled account is not applied](0302-a-turn-origin-channel-type-is-checked-against-the-calling-plugin.md) | Proposed | 2026-11-27 |
-| 0310 | [Web-chat uploads are stored and bound by a kernel route and stated to the turn by the kernel, never by the request](0310-web-chat-uploads-are-stated-by-the-kernel-route-that-stored-them.md) | Proposed | 2026-11-27 |
-| 0315 | [Under a shield, the own conversation's plans follow the plan rule, not the session tail](0315-own-conversation-plans-follow-the-plan-rule-under-a-shield.md) | Proposed | 2026-11-27 |
-| 0316 | [Streamed tool outputs wait for the answer's egress check](0316-streamed-tool-outputs-wait-for-the-answer-egress-check.md) | Proposed | 2026-11-27 |
-| 0317 | [The stdio shim supervises the server under the run-as user](0317-the-stdio-shim-supervises-the-server-under-the-run-as-user.md) | Proposed | 2026-11-27 |
-| 0320 | [The AI-disclosure line follows the language of the answer it is appended to](0320-the-ai-disclosure-line-follows-the-answer-language.md) | Proposed; refined by 0331 | 2026-11-27 |
-| 0321 | [Routine deliveries reach an open web chat as a signal on a per-chat event stream](0321-routine-deliveries-reach-an-open-web-chat-as-a-signal.md) | Proposed | 2026-11-27 |
-| 0322 | [Routine deliveries and transcript turns are appended, not written back whole](0322-routine-deliveries-and-transcripts-are-appended.md) | Proposed | 2026-11-27 |
-| 0323 | [Deleting a web chat or a routine purges its conversation history in the graph](0323-deleting-a-chat-or-routine-purges-its-graph-history.md) | Proposed | 2026-11-27 |
-| 0324 | [A manual routine run passes the budget checks of a scheduled firing first](0324-a-manual-routine-run-passes-the-firing-budget-checks.md) | Proposed | 2026-11-27 |
-| 0330 | [A new web chat id must be lower case](0330-a-new-web-chat-id-must-be-lower-case.md) | Proposed | 2026-11-27 |
-| 0331 | [An undecided answer takes the language of the user message for the disclosure line](0331-an-undecided-answer-takes-the-language-of-the-user-message.md) | Proposed | 2026-11-27 |
-| 0332 | [Kernel notices in a turn follow the language of the user's message](0332-kernel-notices-in-a-turn-follow-the-user-message-language.md) | Proposed | 2026-11-27 |
-| 0333 | [Web chat uploads are checked by their content and capped per account](0333-web-chat-uploads-are-checked-by-content-and-capped-per-account.md) | Proposed | 2026-11-27 |
-| 0340 | [A turn is grounded in its frozen start time, not only its date](0340-a-turn-is-grounded-in-its-frozen-start-time.md) | Proposed | 2026-11-27 |
+| 0295 | [Process ids are opaque; old ids resolve through `legacy_id`](0295-process-ids-are-opaque.md) | Accepted | 2026-11-27 |
+| 0296 | [Stored text with an earlier turn's placeholder is withheld per entry](0296-stored-text-is-withheld-per-entry.md) | Accepted | 2026-11-27 |
+| 0297 | [Agent triggers run in the person's zone and confirm themselves readably](0297-agent-triggers-run-in-the-persons-zone-and-confirm-readably.md) | Accepted | 2026-11-27 |
+| 0298 | [A file tool that delivers only into the turn's answer declares no effect](0298-file-tools-that-answer-into-the-turn-declare-no-effect.md) | Accepted | 2026-11-27 |
+| 0299 | [An internal Kroki renderer is a reader inside the instance](0299-an-internal-kroki-renderer-is-a-reader-inside-the-instance.md) | Accepted | 2026-11-27 |
+| 0300 | [Entra directory people anchor channel identities and per-person tokens; they are not accounts](0300-entra-directory-people-anchor-channel-identities-and-per-person-tokens.md) | Accepted | 2026-11-27 |
+| 0301 | [A directory person connects a per-person MCP server bound to their Teams SSO token, never through a bearer link](0301-a-directory-person-connects-bound-to-their-teams-sso-token.md) | Accepted | 2026-11-27 |
+| 0302 | [A turn origin's channel type is checked against the calling plugin; a link to a disabled account is not applied](0302-a-turn-origin-channel-type-is-checked-against-the-calling-plugin.md) | Accepted | 2026-11-27 |
+| 0310 | [Web-chat uploads are stored and bound by a kernel route and stated to the turn by the kernel, never by the request](0310-web-chat-uploads-are-stated-by-the-kernel-route-that-stored-them.md) | Accepted | 2026-11-27 |
+| 0315 | [Under a shield, the own conversation's plans follow the plan rule, not the session tail](0315-own-conversation-plans-follow-the-plan-rule-under-a-shield.md) | Accepted | 2026-11-27 |
+| 0316 | [Streamed tool outputs wait for the answer's egress check](0316-streamed-tool-outputs-wait-for-the-answer-egress-check.md) | Accepted | 2026-11-27 |
+| 0317 | [The stdio shim supervises the server under the run-as user](0317-the-stdio-shim-supervises-the-server-under-the-run-as-user.md) | Accepted | 2026-11-27 |
+| 0320 | [The AI-disclosure line follows the language of the answer it is appended to](0320-the-ai-disclosure-line-follows-the-answer-language.md) | Accepted; refined by 0331 | 2026-11-27 |
+| 0321 | [Routine deliveries reach an open web chat as a signal on a per-chat event stream](0321-routine-deliveries-reach-an-open-web-chat-as-a-signal.md) | Accepted | 2026-11-27 |
+| 0322 | [Routine deliveries and transcript turns are appended, not written back whole](0322-routine-deliveries-and-transcripts-are-appended.md) | Accepted | 2026-11-27 |
+| 0323 | [Deleting a web chat or a routine purges its conversation history in the graph](0323-deleting-a-chat-or-routine-purges-its-graph-history.md) | Accepted | 2026-11-27 |
+| 0324 | [A manual routine run passes the budget checks of a scheduled firing first](0324-a-manual-routine-run-passes-the-firing-budget-checks.md) | Accepted | 2026-11-27 |
+| 0330 | [A new web chat id must be lower case](0330-a-new-web-chat-id-must-be-lower-case.md) | Accepted | 2026-11-27 |
+| 0331 | [An undecided answer takes the language of the user message for the disclosure line](0331-an-undecided-answer-takes-the-language-of-the-user-message.md) | Accepted | 2026-11-27 |
+| 0332 | [Kernel notices in a turn follow the language of the user's message](0332-kernel-notices-in-a-turn-follow-the-user-message-language.md) | Accepted | 2026-11-27 |
+| 0333 | [Web chat uploads are checked by their content and capped per account](0333-web-chat-uploads-are-checked-by-content-and-capped-per-account.md) | Accepted | 2026-11-27 |
+| 0340 | [A turn is grounded in its frozen start time, not only its date](0340-a-turn-is-grounded-in-its-frozen-start-time.md) | Accepted | 2026-11-27 |
 
 ### The agent model (0012–0022)
 

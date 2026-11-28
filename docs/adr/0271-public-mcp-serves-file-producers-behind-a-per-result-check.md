@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** Owner (byte5), decision of 2026-11-27 (#2305); wave 6 cluster W33. Reversible

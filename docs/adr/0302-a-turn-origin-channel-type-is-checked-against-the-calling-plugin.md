@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers (wave 7, W40; issue #2324). Closes the two risks [ADR-0280](0280-channel-account-link-is-an-operator-offer-redeemed-by-the-channel.md) accepted on purpose; decided after the wave 7 recommendation and can be reversed.

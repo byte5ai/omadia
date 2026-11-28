@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — two residuals (no content check, no per-account limit) closed by
+Accepted — two residuals (no content check, no per-account limit) closed by
 [ADR-0333](0333-web-chat-uploads-are-checked-by-content-and-capped-per-account.md)
 
 - **Date:** 2026-11-27

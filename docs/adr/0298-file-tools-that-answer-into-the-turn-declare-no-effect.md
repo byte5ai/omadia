@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — the accepted streamed-trace residual (see Consequences) is closed by
+Accepted — the accepted streamed-trace residual (see Consequences) is closed by
 [ADR-0316](0316-streamed-tool-outputs-wait-for-the-answer-egress-check.md)
 
 - **Date:** 2026-11-27

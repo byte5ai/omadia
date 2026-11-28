@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** Owner decision 2026-11-27 (Marcel, via the wave 5+6 master); implemented by wave 6

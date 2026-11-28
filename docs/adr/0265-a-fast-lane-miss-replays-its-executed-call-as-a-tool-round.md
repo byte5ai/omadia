@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** Owner decision 2026-11-27 (#2300); implemented by wave 6 cluster W32.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers. The decision follows the recommendation of the wave 5 recheck for issue #1995 and can be reversed.
