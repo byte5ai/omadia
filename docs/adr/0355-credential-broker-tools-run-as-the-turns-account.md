@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-28
 - **Deciders:** omadia maintainers; decided while implementing #2319 (wave 9, W51), following
