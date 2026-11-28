@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Docs — ADRs of wave 9 set to Accepted (2026-11-28)
+
+ADR-0350, ADR-0355, ADR-0360 and ADR-0361 are now Accepted. Their pull requests are merged: #2382, #2385 and #2384. Only the status line and the index row change; no ADR content changes.
+
+ADR-0067 and ADR-0068 stay Proposed. Their wiring conditions are still open: `PublishGateway` is not mounted, and the skill lifecycle `transition` has no kernel caller.
+
 ### Feature — admin views for credentials, asks, skills, sandboxes and published apps (#2320) (2026-11-28)
 
 Five admin views for service layers that had no surface (#778, admin half). All routes sit behind

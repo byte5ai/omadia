@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-28
 - **Deciders:** W52 cluster lead (wave 9, issue #2320; decision after the recommendation,

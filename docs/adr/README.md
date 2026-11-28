@@ -342,10 +342,10 @@ that date.
 | 0332 | [Kernel notices in a turn follow the language of the user's message](0332-kernel-notices-in-a-turn-follow-the-user-message-language.md) | Accepted | 2026-11-27 |
 | 0333 | [Web chat uploads are checked by their content and capped per account](0333-web-chat-uploads-are-checked-by-content-and-capped-per-account.md) | Accepted | 2026-11-27 |
 | 0340 | [A turn is grounded in its frozen start time, not only its date](0340-a-turn-is-grounded-in-its-frozen-start-time.md) | Accepted; Superseded in part by 0350 | 2026-11-27 |
-| 0350 | [A chat turn reads its clock in the speaker's zone](0350-a-chat-turn-reads-its-clock-in-the-speakers-zone.md) | Proposed | 2026-11-28 |
-| 0355 | [The credential broker tools run as the turn's omadia account; the agent grant only narrows](0355-credential-broker-tools-run-as-the-turns-account.md) | Proposed | 2026-11-28 |
-| 0360 | [Keychain admin surface: the owner revokes a personal credential, operators see metadata](0360-keychain-admin-surface-owner-revokes-personal-operators-see-metadata.md) | Proposed | 2026-11-28 |
-| 0361 | [The sandbox registry is wired; the idle sweep is an operator action](0361-sandbox-registry-is-wired-and-the-idle-sweep-is-an-operator-action.md) | Proposed | 2026-11-28 |
+| 0350 | [A chat turn reads its clock in the speaker's zone](0350-a-chat-turn-reads-its-clock-in-the-speakers-zone.md) | Accepted | 2026-11-28 |
+| 0355 | [The credential broker tools run as the turn's omadia account; the agent grant only narrows](0355-credential-broker-tools-run-as-the-turns-account.md) | Accepted | 2026-11-28 |
+| 0360 | [Keychain admin surface: the owner revokes a personal credential, operators see metadata](0360-keychain-admin-surface-owner-revokes-personal-operators-see-metadata.md) | Accepted | 2026-11-28 |
+| 0361 | [The sandbox registry is wired; the idle sweep is an operator action](0361-sandbox-registry-is-wired-and-the-idle-sweep-is-an-operator-action.md) | Accepted | 2026-11-28 |
 
 ### The agent model (0012–0022)
 

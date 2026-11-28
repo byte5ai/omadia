@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-28
 - **Deciders:** W50 cluster lead (wave 9, issue #2379; owner decision 2026-11-28: build it)
