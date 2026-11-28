@@ -1,6 +1,8 @@
 import { makePrincipal, type ChatTurnInput, type Principal } from '@omadia/channel-sdk';
 import type { ChannelIdentityIngest, ChannelKind, KnowledgeGraph } from '@omadia/plugin-api';
 
+import { isWebAccountTurn } from './webAccountOrigin.js';
+
 /** The `TurnOrigin.channelType` values that map onto a KG channel kind. */
 export const CHANNEL_KIND_BY_ORIGIN: Readonly<Record<string, ChannelKind>> = {
   teams: 'teams',
@@ -232,6 +234,9 @@ export async function resolveTurnOwnerIdentity(
     }
     return withPrincipal({
       ...(omadiaUserId ? { omadiaUserId } : {}),
+      // ADR-0225 — the minted identity sits in the account cluster an
+      // operator linked it to; say so, like the origin path does.
+      ...(linkedUserId && omadiaUserId ? { linkedUserId } : {}),
       ...(clusterAuthSubject
         ? { authSubjectKey: clusterAuthSubject.providerUserId }
         : {}),
@@ -424,4 +429,22 @@ export async function resolveRunTraceOwner(
     );
     return undefined;
   }
+}
+
+/**
+ * ADR-0290 / ADR-0355 — the omadia account a turn speaks for, as the
+ * canonical omadia user id (the session's `omadia_user_id`, i.e. the account's
+ * User-Cluster). A web account turn takes it from the session (chat route, web
+ * routine runner); a channel turn only through an operator's link (ADR-0225).
+ * Every other turn — an unlinked channel identity, a directory person without
+ * an account, an HTTP turn whose `userId` a client may have chosen — speaks for
+ * no account and gets `undefined`. Never derived from tool input.
+ */
+export function turnAccountUserId(
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity' | 'origin'>,
+  owner: Pick<TurnOwnerIdentity, 'omadiaUserId' | 'linkedUserId'>,
+): string | undefined {
+  if (isWebAccountTurn(input)) return input.userId.trim() || undefined;
+  if (owner.linkedUserId && owner.omadiaUserId) return owner.omadiaUserId;
+  return undefined;
 }

@@ -90,7 +90,18 @@ async function makeHarness(opts: {
   const registryMemoryCalls: unknown[] = [];
   const registryOtherCalls: unknown[] = [];
   const rootHandler = new MemoryToolHandler(rootStore);
-  const entries = new Map<string, { handler: (input: unknown) => Promise<string> }>([
+  const entries = new Map<string, { handler: (input: unknown) => Promise<string>; modelDispatchOnly?: boolean }>([
+    [
+      // #2319 — a kernel tool that only the model's own tool loop may run.
+      'credential_request',
+      {
+        handler: async (input) => {
+          registryOtherCalls.push(input);
+          return 'brokered';
+        },
+        modelDispatchOnly: true,
+      },
+    ],
     [
       'memory',
       {
@@ -315,5 +326,22 @@ describe('#909 — other tools keep the registry dispatch', () => {
     await assert.rejects(() => invoke(h, 'nope', {}), {
       message: "tools.invoke: 'nope' is unknown or handler-less",
     });
+  });
+});
+
+describe('#2319 — a model-dispatch-only kernel tool', () => {
+  it('is refused through invoke, inside a turn too', async () => {
+    const h = await makeHarness({ memoryPermission: true });
+    await assert.rejects(
+      () => inTurn('clara', () => invoke(h, 'credential_request', { credential: 'github' })),
+      (err: Error) => {
+        assert.equal(err.name, 'ToolInvokePermissionError');
+        assert.match(err.message, /credential_request/);
+        return true;
+      },
+    );
+    assert.equal(h.registryOtherCalls.length, 0);
+    // Ordinary registry tools still dispatch.
+    assert.equal(await invoke(h, 'dynamics_fetchxml', {}), 'fetchxml-result');
   });
 });

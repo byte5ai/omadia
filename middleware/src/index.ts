@@ -195,8 +195,11 @@ import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskS
 import {
   credentialKeychainDevKeyPath,
   resolveCredentialMasterKey,
+  unsealSecret,
 } from './credentials/crypto.js';
 import { createCredentialStore } from './credentials/credentialStoreFactory.js';
+import { wireCredentialBroker, type CredentialBrokerWiring } from './credentials/credentialBrokerWiring.js';
+import type { TargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createTopicsRouter } from './routes/topics.js';
@@ -1372,6 +1375,11 @@ async function main(): Promise<void> {
   } else {
     console.warn('[middleware] ⚠ credential-keychain master key GENERATED (dev file) — DEV ONLY. Set CREDENTIAL_KEYCHAIN_KEY for production.');
   }
+  // #2319 — the credential broker capability, filled once the keychain and
+  // the asks store exist (see `wireCredentialBroker` below); the asks route
+  // and the send services reach it through these refs.
+  const credentialBrokerRef: { current?: CredentialBrokerWiring } = {};
+  const credentialTargetedSendRef: { current?: TargetedDeliveryService } = {};
   // Spec 004 (FR-B5) — origin plugin flow callbacks resolve against.
   const flowPublicBaseUrl =
     config.FLOW_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
@@ -4778,7 +4786,10 @@ async function main(): Promise<void> {
   app.use(
     '/api/v1/admin/credential-asks',
     requireAuth,
-    createCredentialAskRouter({ store: credentialAskStore }),
+    createCredentialAskRouter({
+      store: credentialAskStore,
+      onResolved: (ask) => credentialBrokerRef.current?.onAskResolved(ask),
+    }),
   );
   console.log(
     `[middleware] credential-asks endpoint ready at /api/v1/admin/credential-asks (backend=${graphPool ? 'postgres' : 'in-memory'})`,
@@ -5108,6 +5119,8 @@ async function main(): Promise<void> {
     createOperatorAgentsRouter({
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      // #2319 — granted credentials and their declared hosts in the reach.
+      credentialReach: async (agentId) => (await credentialBrokerRef.current?.reachOf(agentId)) ?? [],
       // (#1033 W2 — `getModelPolicyContext` is passed further down.)
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
@@ -5303,6 +5316,62 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated, incl. teams-identity provisioning)',
+  );
+
+  // #2319 / ADR-0290 / ADR-0355 — the kernel capability `credentialBroker@1`:
+  // `credential_request` + `credential_ask`, offered only to agents an
+  // operator granted named credentials to, running as the turn's account.
+  // The broker is not published as a service (see `credentialBrokerWiring.ts`).
+  const credentialBroker = wireCredentialBroker({
+    pool: graphPool,
+    credentials: credentialStoreForAsks,
+    unseal: (material) => unsealSecret(material, credentialMasterKey.key),
+    asks: credentialAskStore,
+    registerNativeTool: (name, registration) => nativeToolRegistry.register(name, registration),
+    agentBySlug: (slug) => {
+      const agent = getRegistry()?.get(slug)?.agent;
+      return agent ? { id: agent.id, slug: agent.slug, name: agent.name } : undefined;
+    },
+    agentById: (id) => {
+      const agent = getRegistry()?.list().find((a) => a.agent.id === id)?.agent;
+      return agent ? { id: agent.id, slug: agent.slug, name: agent.name } : undefined;
+    },
+    currentConversation: () => {
+      const ctx = routineTurnContext.current();
+      return ctx ? { channel: ctx.channel, conversationRef: ctx.conversationRef } : undefined;
+    },
+    getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+    notices: {
+      ownerChannels: async (ownerUserId) => {
+        const kg = serviceRegistry.get<KnowledgeGraph>('knowledgeGraph');
+        const identities = (await kg?.listUserChannelIdentities?.(ownerUserId)) ?? [];
+        return identities.map((i) => ({ channelType: i.channelKind, channelUserId: i.channelUserId }));
+      },
+      sendToUser: async (channelType, principal, message) => {
+        const report = await credentialTargetedSendRef.current?.sendToPrincipal({ channelType, principal, message });
+        return report?.deliveries.some((d) => d.outcome.outcome === 'delivered') ?? false;
+      },
+      sendToConversation: async (channel, conversationRef, message) => {
+        const sender = routinesHandle?.senderRegistry.get(channel);
+        if (!sender) throw new Error(`no proactive sender for channel '${channel}'`);
+        await sender.send({ conversationRef, message });
+      },
+      publicBaseUrl: () => config.PUBLIC_BASE_URL,
+      language: () => {
+        const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
+        return typeof raw === 'string' ? raw : undefined;
+      },
+    },
+    recordAudit: async (entry) => {
+      await adminAudit?.record(entry);
+    },
+    log: (m) => console.log(m),
+  });
+  credentialBrokerRef.current = credentialBroker;
+  await credentialBroker.start();
+  app.use('/api/v1/operator', requireAuth, credentialBroker.operatorRouter);
+  console.log(
+    `[middleware] credential broker ready: tools credential_request/credential_ask, operator grants at /api/v1/operator/agents/:slug/credential-grants (backend=${graphPool ? 'postgres' : 'in-memory'})`,
   );
 
   // #924 — the TENANT-wide Teams sign-in. A sibling of /operator/agents, not a
@@ -8462,15 +8531,18 @@ async function main(): Promise<void> {
     ...(agentArchetypeSettingsStore ? { archetypeSettings: (agentId: string) => agentArchetypeSettingsStore.get(agentId) } : {}),
     log: (m) => console.log(m),
   });
+  const kernelTargetedDelivery = createTargetedDeliveryService({
+    providers: targetedSendRegistry,
+    ...(targetedRoleResolver ? { resolveRoleHolders: targetedRoleResolver } : {}),
+    ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
+    ownIdentity: ownIdentitySend,
+    log: (m) => console.log(m),
+  });
+  // #2319 — the owner notice of a credential ask goes out through it.
+  credentialTargetedSendRef.current = kernelTargetedDelivery;
   publishSendServices({
     serviceRegistry,
-    targeted: createTargetedDeliveryService({
-      providers: targetedSendRegistry,
-      ...(targetedRoleResolver ? { resolveRoleHolders: targetedRoleResolver } : {}),
-      ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
-      ownIdentity: ownIdentitySend,
-      log: (m) => console.log(m),
-    }),
+    targeted: kernelTargetedDelivery,
     // #330 C3b — conversation-addressed proactive send (group nudges).
     conversation: createConversationSendService({
       providers: conversationSendRegistry,

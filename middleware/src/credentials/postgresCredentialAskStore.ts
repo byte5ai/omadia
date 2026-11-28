@@ -35,6 +35,7 @@ import {
 import {
   CredentialAskRejectedError,
   assertAskableCredential,
+  grantExpiryOnApproval,
   isStillAskable,
   resolveAskOwner,
   validateNewAskInput,
@@ -56,6 +57,7 @@ interface AskRow {
   purpose: string;
   mode: CredentialGrantMode;
   requested_grant_expires_at: Date | null;
+  requested_grant_valid_seconds: number | null;
   ask_expires_at: Date;
   status: CredentialAskStatus;
   created_at: Date;
@@ -65,7 +67,7 @@ interface AskRow {
 }
 
 const COLUMNS = `id, credential_id, requester_kind, requester_ref, owner_kind, owner_ref,
-       purpose, mode, requested_grant_expires_at, ask_expires_at, status,
+       purpose, mode, requested_grant_expires_at, requested_grant_valid_seconds, ask_expires_at, status,
        created_at, resolved_at, resolved_by, grant_id`;
 
 function rowToAsk(row: AskRow): CredentialAsk {
@@ -81,6 +83,7 @@ function rowToAsk(row: AskRow): CredentialAsk {
     purpose: row.purpose,
     mode: row.mode,
     requestedGrantExpiresAt: row.requested_grant_expires_at ?? undefined,
+    ...(row.requested_grant_valid_seconds !== null ? { requestedGrantValidSeconds: row.requested_grant_valid_seconds } : {}),
     askExpiresAt: row.ask_expires_at,
     status: row.status,
     createdAt: row.created_at,
@@ -109,8 +112,8 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
       const result = await client.query<AskRow>(
         `INSERT INTO credential_asks (
            credential_id, requester_kind, requester_ref, owner_kind, owner_ref,
-           purpose, mode, requested_grant_expires_at, ask_expires_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           purpose, mode, requested_grant_expires_at, ask_expires_at, requested_grant_valid_seconds
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          RETURNING ${COLUMNS}`,
         [
           input.credentialId,
@@ -122,6 +125,7 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
           input.mode,
           input.requestedGrantExpiresAt ?? null,
           input.askExpiresAt,
+          input.requestedGrantValidSeconds ?? null,
         ],
       );
       const row = result.rows[0];
@@ -208,13 +212,14 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
         return undefined;
       }
 
+      const grantExpiry = grantExpiryOnApproval(ask, now);
       validateNewGrantInput({
         credentialId: ask.credentialId,
         principal: ask.requester,
         mode: ask.mode,
         purpose: ask.purpose,
         grantedBy: resolvedBy,
-        expiresAt: ask.requestedGrantExpiresAt,
+        expiresAt: grantExpiry,
       });
       const requesterRef = canonicalizePrincipalRef(ask.requester.kind, principalRef(ask.requester));
       const grantResult = await client.query<{ id: string }>(
@@ -222,7 +227,7 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
            credential_id, principal_kind, principal_ref, mode, purpose, granted_by, expires_at
          ) VALUES ($1,$2,$3,$4,$5,$6,$7)
          RETURNING id`,
-        [ask.credentialId, ask.requester.kind, requesterRef, ask.mode, ask.purpose, resolvedBy, ask.requestedGrantExpiresAt ?? null],
+        [ask.credentialId, ask.requester.kind, requesterRef, ask.mode, ask.purpose, resolvedBy, grantExpiry ?? null],
       );
       const grantId = grantResult.rows[0]?.id;
       if (!grantId) throw new Error('credential grant insert returned no row');

@@ -442,6 +442,7 @@ import {
   type TurnIdentityDirectory,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
+  turnAccountUserId,
   runTraceOwnerId,
 } from './resolveTurnOwnerIdentity.js';
 import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
@@ -6204,6 +6205,7 @@ export class Orchestrator {
     // re-deriving it independently.
     const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input, this.identityDirectory?.());
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    const accountUserId = turnAccountUserId(input, turnOwner);
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
     const runTraceUserId = await resolveRunTraceOwner(
@@ -6287,6 +6289,7 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        ...(accountUserId ? { accountUserId } : {}),
         runTraceOwner,
         // W2-1 (#544) — one component of the MCP pending-input store key. Never
         // the whole key; see TurnContextValue.sessionScope.
@@ -8190,6 +8193,7 @@ export class Orchestrator {
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
     const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input, this.identityDirectory?.());
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    const accountUserId = turnAccountUserId(input, turnOwner);
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
     const runTraceUserId = await resolveRunTraceOwner(
@@ -8264,6 +8268,7 @@ export class Orchestrator {
       // answer the card, and channel turns (Teams/Telegram) come through here.
       ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      ...(accountUserId ? { accountUserId } : {}),
       runTraceOwner,
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,
@@ -9997,7 +10002,7 @@ export class Orchestrator {
         meta.modelImages = images;
       }
       // Spec 2042 §5.11 — what the call brought in joins the turn's labels.
-      await labelToolRead(this.discretion, this.toolSystemOf(name));
+      await labelToolRead(this.discretion, this.toolSystemOf(name, input));
       return remaskEchoedValues(privacy, out);
     } catch (err) {
       const outcome = await withholdThrownToolError({
@@ -10049,7 +10054,7 @@ export class Orchestrator {
 
     // Spec 2042 §5.11 — a call that may write data out is checked against the
     // integration's declared readership before it runs.
-    const discretionRefusal = await guardIntegrationEgress(this.discretion, name, this.toolSystemOf(name));
+    const discretionRefusal = await guardIntegrationEgress(this.discretion, name, this.toolSystemOf(name, input));
     if (discretionRefusal !== undefined) return discretionRefusal;
 
     // #580 — the command policy's enforcement seam, at the same choke point.
@@ -12023,15 +12028,22 @@ export class Orchestrator {
    * server) and what the runtime itself knows of its effect: `write` for a
    * declared write capability or an MCP tool without `readOnlyHint`, `read`
    * for an MCP tool with it, else `unknown` (refined from the plugin's
-   * manifest at the egress). Kernel tools belong to no system.
+   * manifest at the egress). Kernel tools belong to no system, unless they
+   * declare one (`kernelSystem`, #2319).
    */
-  private toolSystemOf(name: string): ToolSystem | undefined {
+  private toolSystemOf(name: string, input?: unknown): ToolSystem | undefined {
     const native = this.nativeTools.get(name);
     if (native?.agentId !== undefined) {
       // #2338 / ADR-0299 — a declared write capability is a write; else the
       // effect the plugin declared at registration; else the manifest decides.
       const effect = isWriteCapableTool(native.writeCapabilities) ? 'write' : (native.sideEffects ?? 'unknown');
       return { system: native.agentId, effect };
+    }
+    // #2319 — a kernel tool that reaches an outside system (the credential
+    // broker) is checked like an integration, with its declared effect.
+    if (native?.kernelSystem !== undefined) {
+      const system = typeof native.kernelSystem === 'function' ? native.kernelSystem(input) : native.kernelSystem;
+      return { system, effect: native.sideEffects ?? 'unknown' };
     }
     const domain = this.domainToolsByName.get(name);
     if (!domain || domain === this.consultTool) return undefined;

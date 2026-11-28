@@ -101,3 +101,28 @@ describe('effect declared at registration (#2338, ADR-0299)', () => {
     assert.equal(systemOf('posting_tool')?.effect, 'write');
   });
 });
+
+describe('a kernel tool that declares its system (#2319)', () => {
+  it('is checked as that system with its declared effect; a plain kernel tool belongs to none', () => {
+    const nativeTools = new NativeToolRegistry();
+    const handler = async (): Promise<string> => 'ok';
+    nativeTools.register('credential_request', {
+      handler,
+      spec: spec('credential_request'),
+      sideEffects: 'write',
+      kernelSystem: (input) => `credential:${String((input as { credential?: string }).credential)}`,
+      modelDispatchOnly: true,
+    });
+    nativeTools.register('static_kernel_tool', { handler, spec: spec('static_kernel_tool'), kernelSystem: 'some-system' });
+    nativeTools.register('plain_kernel_tool', { handler, spec: spec('plain_kernel_tool') });
+    assert.equal(nativeTools.get('credential_request')?.modelDispatchOnly, true);
+    const { orchestrator } = verifiedTurn({ responses: [text('ok')], verdicts: [approved()], registry: nativeTools });
+    const systemOf = (name: string, input?: unknown): ToolSystem | undefined =>
+      (orchestrator as unknown as { toolSystemOf(n: string, i?: unknown): ToolSystem | undefined }).toolSystemOf(name, input);
+    // One system per named credential: what one read is checked before it leaves through another.
+    assert.deepEqual(systemOf('credential_request', { credential: 'hr-api' }), { system: 'credential:hr-api', effect: 'write' });
+    assert.deepEqual(systemOf('credential_request', { credential: 'crm' }), { system: 'credential:crm', effect: 'write' });
+    assert.deepEqual(systemOf('static_kernel_tool'), { system: 'some-system', effect: 'unknown' });
+    assert.equal(systemOf('plain_kernel_tool'), undefined);
+  });
+});

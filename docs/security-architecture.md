@@ -8166,6 +8166,77 @@ New surface: `POST /api/chat/uploads` and `DELETE /api/chat/uploads` (behind `re
 - Without Postgres, bindings and ledger rows live in memory; after a restart old uploads are
   unreadable and not deleted with their chat (bucket lifecycle rule remains the backstop).
 
+## 10ze. The credential broker as an agent capability (#2319, ADR-0290, ADR-0355, 2026-11-28)
+
+§10n hardened the broker before any agent could reach it. #2319 makes it reachable, only
+through the kernel capability `credentialBroker@1` (`credential_request`, `credential_ask`).
+
+**Who may call.** An agent gets the tools only when an operator granted it at least one named
+credential (`agent_credential_grants`, no wildcard; `PUT /api/v1/operator/agents/:slug/credential-grants/:id`,
+audited `agent.credential_grant_change`). The grant is read live on every call, so a revoke
+stops the next call even while the offer snapshot is stale. The broker is not published as a
+service: a plugin cannot reach it outside an agent's turn.
+
+**As whom.** The broker principal is the account the turn speaks for,
+`TurnContextValue.accountUserId` (ADR-0355): the session account on a web account turn
+(`isWebAccountTurn`; plugins cannot claim the `http` origin, `scopedCoreApi.ts`), the
+operator-linked account on a channel turn (ADR-0225), nothing for an unlinked channel identity,
+a directory person or an HTTP turn whose user id a client chose. No account → `account_not_linked`.
+A principal-shaped field in the tool input → `identity_from_turn`. `callerPrincipalId` (ADR-0032)
+is a channel identity and is not used. The account's own `CredentialGrant` (ADR-0102) is still
+required: an agent grant never lets one person use another person's grant.
+
+**Only the model's tool loop.** Both tools are registered `modelDispatchOnly`: a plugin's
+`ctx.tools.invoke` (which skips the Privacy Shield and the dispatch guards, while the ambient
+turn would still name the agent and the person) is refused with `ToolInvokePermissionError`.
+A helper (DB sub-agent) is never granted them either (`adaptNativeToolForSubAgent` drops
+`modelDispatchOnly` tools): `LocalSubAgent` has no discretion egress check. Each call declares
+the discretion system `credential:<name>` of the credential it names (`kernelSystem` as a
+function of the input, effect `write`), so `toolSystemOf` gives it the integration egress check
+and read labelling of Spec 2042 §5.11: restricted or cross-context labels do not leave through a
+request body or an ask purpose, data read through one credential is checked before it leaves
+through another, and what a request reads labels the turn. Without a declared readership the
+check is as strict as for an undeclared integration; an operator can declare one per credential.
+
+Residual: the subscription-CLI path (`ToolDispatchService`) has no discretion egress check for
+any tool. The credential tools are safe there today only because that path sets no
+`accountUserId`, so both refuse with `account_not_linked`. Whoever threads the account into the
+CLI scope must add the egress check and labelling to `ToolDispatchService` in the same change.
+
+**What the model sees.** Status, `content-type`, `location`, `retry-after` and a body capped
+at 32 000 characters, after the broker's scrub (§10n). Every other upstream header is dropped,
+`set-cookie` first. The tool result then takes the ordinary dispatch path, so the Privacy Shield
+interns it like any tool result (the tools are not on `INTERN_EXEMPT_TOOLS`). A request that left
+without a usable answer is reported as `outcome_unknown` with a "do not repeat a write" note,
+never as a denial.
+
+**Secrets the scrub cannot see.** A secret, or a `basic-password` password segment, shorter than
+`MIN_SCRUBBABLE_SECRET_LENGTH` is refused at use (`secret-too-short`) before anything is sent and
+before a `once` grant is consumed. The secret is now read and unsealed before the `once` gate;
+both steps are non-mutating.
+
+**Audit.** Every broker decision writes `credential.broker_use` (actor `system:credential-broker`,
+target `credential:<id>`, with principal, agent, host, method, pathname, reason, fingerprint and
+dropped header names; never the query string, a body or the secret). An `allow` is written before
+the secret leaves, as in §10n.
+
+**Asks.** The owner is notified by a `system` direct message in a channel of their account
+cluster with a link to the owner-only approve/deny surface; approval itself never happens in chat
+(ADR-0102 D2). The purpose is agent text and never goes into the chat notice (no model-written
+links or mentions in a `system` message); the owner reads it in the inbox. One open ask per
+person and credential bounds notice spam, serialised in-process so parallel tool calls of one
+model message cannot each pass the check (a second machine can still race). `valid_minutes`
+counts from the approval (`requested_grant_valid_seconds`, migration 0125); a standing ask
+without it lasts until revoked. The decision is posted back to the asking conversation once
+(`credential_ask_deliveries`, read-and-delete), with no secret and no grant detail; rows whose
+ask expired or was resolved elsewhere are swept hourly. Dropped header names in audit rows are
+capped (20 names, 64 characters).
+
+**Residual risk.** The fingerprint is unsalted, vendor headers have no per-credential allow-list,
+and some secret transformations are not scrubbed (§10n follow-ups). The Privacy Shield is the
+second line for those. An approved personal-credential ask mints a grant the broker cannot redeem
+yet (#2383). A notice that finds no reachable channel is only logged; the ask waits in the inbox.
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

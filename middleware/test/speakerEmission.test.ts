@@ -474,6 +474,10 @@ const PROACTIVE_POSTS: Readonly<Record<string, { stamp: string; proof: RegExp; p
     stamp: 'routine delivery: publishRoutineAnswer through the agent emitter, or the chat agent\'s published answer',
     proof: /const published = turn\.published\s*\? \{ value: turn\.published, costUsd: 0 \}\s*: await meterUsageCost\(\(\) => asAgentTurn\(\(\) => publishRoutineAnswer\(orchestrator, finished\)\)\);[\s\S]{0,400}?await sender\.send\(\{\s*conversationRef: fresh\.conversationRef,\s*message: answer,/,
   },
+  'src/credentials/credentialAskNotices.ts': {
+    stamp: 'credential ask notice to the owner and decision post: speaker system (#2319)',
+    proof: /speaker: SYSTEM_SPEAKER,\n\s*\};[\s\S]*speaker: SYSTEM_SPEAKER \};\n\s*await deps\.sendToConversation/,
+  },
   'src/conductor/awaitWorker.ts': {
     stamp: 'workflow reminder: speaker system',
     proof: /message: \{ text, speaker: SYSTEM_SPEAKER \}/,
