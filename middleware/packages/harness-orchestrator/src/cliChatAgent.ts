@@ -45,7 +45,14 @@ import {
 // Aliased: `turnContext` is already a parameter name inside this module
 // (the caller's captured async context), and the store is a different thing.
 import { buildToolCallContext, runWithToolCallContext } from './toolCallContext.js';
-import { buildDateHeader, turnClock, turnContext as turnContextStore, type TurnContextValue } from './turnContext.js';
+import {
+  buildDateHeader,
+  resolveTurnTimeZone,
+  turnClock,
+  turnContext as turnContextStore,
+  type TurnClock,
+  type TurnContextValue,
+} from './turnContext.js';
 import { createDiscretionTurnState } from './discretion/turnLabels.js';
 import { UNKNOWN_READERS, unionLabels } from './discretion/labels.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
@@ -1281,7 +1288,7 @@ interface CapturedTurnContext {
    * at capture. A turn without discretion or privacy never sets `scope`, so
    * the clock cannot live only there.
    */
-  readonly clock: { readonly turnDate: string; readonly turnStartedAt: string };
+  readonly clock: TurnClock;
   /** #1098 — the cost-ledger and receipt key of this turn. */
   readonly cliTurnId: string;
   /** ADR-0195 — the turn's own Privacy Shield ({@link CliChatAgentDeps.turnPrivacy}). */
@@ -1368,13 +1375,17 @@ export const CLI_PRIVACY_GUARD_ACTIVE_LOG =
 /**
  * #2376 — the clock a scope froze (`turnClock`), or a fresh one-reading clock
  * when it froze none: a date-only outer scope (a channel's) is not a clock.
+ * #2379 / ADR-0350 — a fresh clock is read in the speaker's zone
+ * (`userTimeZone`, else `TURN_TIME_ZONE`); a frozen one keeps its own zone.
  */
-function frozenClockOf(
-  value: TurnContextValue | undefined,
-): { readonly turnDate: string; readonly turnStartedAt: string } {
+function frozenClockOf(value: TurnContextValue | undefined, userTimeZone?: string): TurnClock {
   return value?.turnStartedAt !== undefined
-    ? { turnDate: value.turnDate, turnStartedAt: value.turnStartedAt }
-    : turnClock();
+    ? {
+        turnDate: value.turnDate,
+        turnStartedAt: value.turnStartedAt,
+        turnTimeZone: resolveTurnTimeZone(value.turnTimeZone),
+      }
+    : turnClock(new Date(), userTimeZone);
 }
 
 /**
@@ -1451,7 +1462,7 @@ export class CliChatAgent implements ChatAgent {
       privacy === undefined &&
       callerPrivacy === undefined &&
       (this.forceGuarded() || this.guardActive());
-    const clock = runInTurnContext(() => frozenClockOf(turnContextStore.current()));
+    const clock = runInTurnContext(() => frozenClockOf(turnContextStore.current(), input.userTimeZone));
     return {
       runInTurnContext,
       scope,
@@ -2584,7 +2595,8 @@ export class CliChatAgent implements ChatAgent {
       // deterministic for tests; replaying prior turns here mirrors the CLI's single-shot mode.
       // #2341 — a masked replayed answer or a masked recall block gets the note.
       const replayMasked = history.answersMasked === true || wireRecalled !== recalled.text;
-      const dateHeader = buildDateHeader(turnContext.clock.turnDate, new Date(turnContext.clock.turnStartedAt));
+      const { clock } = turnContext;
+      const dateHeader = buildDateHeader(clock.turnDate, new Date(clock.turnStartedAt), clock.turnTimeZone);
       child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled, replayMasked, dateHeader));
 
       // #2342 / ADR-0316 — tool outputs wait for the answer's egress check.

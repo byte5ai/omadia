@@ -47,6 +47,7 @@ import {
   type ConsultationRunScope,
   type DiscretionAuditEntry,
   type LabelSet,
+  today,
 } from '@omadia/orchestrator';
 
 import type {
@@ -169,6 +170,9 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
       // nothing of the run is logged, ingested or promoted. The user id only
       // with `discreet` memory, where recall needs it.
       ...(request.origin ? { origin: request.origin } : {}),
+      // #2379 / ADR-0350 — B answers A's user, so its own frozen clock reads in
+      // that person's zone, as A's did.
+      ...(parent?.userTimeZone ? { userTimeZone: parent.userTimeZone } : {}),
       ...(scope.memoryAccess === 'discreet' && request.userId ? { userId: request.userId } : {}),
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -186,7 +190,8 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
     // routine capture) do not, so none of B's raw data leaves its shield.
     const outer = {
       turnId: '',
-      turnDate: parent?.turnDate ?? new Date().toISOString().slice(0, 10),
+      // #2379 — outside a turn, today in the turn zone, never a UTC date.
+      turnDate: parent?.turnDate ?? today(),
       ...(parent?.chatParticipants ? { chatParticipants: parent.chatParticipants } : {}),
       ...(parent?.mcpUserKey ? { mcpUserKey: parent.mcpUserKey } : {}),
       // ADR-0206 — a consultation inside an unattended run is unattended too.
