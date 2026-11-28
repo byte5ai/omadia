@@ -218,7 +218,7 @@ export type AuditAction =
   | 'skill.promote'
   | 'sandbox.teardown'
   | 'sandbox.reap'
-  // #1490— an uploaded (or Hub-fetched), not installed package was removed.
+  // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
   | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
   // as a child process of the middleware, so who added it belongs in the

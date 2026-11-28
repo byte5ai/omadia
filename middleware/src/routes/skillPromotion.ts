@@ -68,7 +68,7 @@ function errMsg(err: unknown): string {
 export interface SkillPromotionRouteDeps {
   /** Narrowed to the one method this route calls (`Pick`, not the concrete
    *  class) so a test double can stand in without a real `Pool`. */
-  readonly store: Pick<PgSkillOwnershipLifecycleStore, 'promoteSkillOwnerScope' | 'listSkills'>;
+  readonly store: Pick<PgSkillOwnershipLifecycleStore, 'promoteSkillOwnerScope' | 'listSkills' | 'getSkill'>;
   /** HMAC key `promoteSkillOwnerScope` re-signs the manifest with — see
    *  `services/skillManifestSigningKey.ts`. */
   readonly signingKey: string;
@@ -114,6 +114,11 @@ export function createSkillPromotionRouter(deps: SkillPromotionRouteDeps): Route
     }
 
     try {
+      // #2320 — the owner scope before the move, for the audit row only;
+      // `promoteSkillOwnerScope` does its own reads and checks.
+      const previousOwnerScope = deps.adminAudit
+        ? ((await deps.store.getSkill(skillId))?.ownerScope ?? null)
+        : null;
       const updated = await deps.store.promoteSkillOwnerScope(skillId, parsed.data.targetScope, {
         actorScope: { kind: 'personal', userId: sessionUserId },
         signingKey: deps.signingKey,
@@ -121,6 +126,7 @@ export function createSkillPromotionRouter(deps: SkillPromotionRouteDeps): Route
       await recordOperatorAudit(deps.adminAudit, req, {
         action: 'skill.promote',
         target: `skill:${updated.id}`,
+        before: { slug: updated.slug, ownerScope: previousOwnerScope },
         after: { slug: updated.slug, ownerScope: updated.ownerScope },
       });
       res.json(toSkillBody(updated));

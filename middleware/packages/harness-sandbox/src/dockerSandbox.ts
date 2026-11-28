@@ -138,7 +138,16 @@ export class DockerSandboxBackend implements SandboxBackend {
       // outside this process (the reaper, or an operator in the admin view).
       // The cached handle points at a removed container — drop it and
       // provision again instead of failing the next command.
-      if (await this.registry.get(args.scopeKey)) {
+      let registered: boolean;
+      try {
+        registered = (await this.registry.get(args.scopeKey)) !== undefined;
+      } catch (err) {
+        // A registry outage must not break a container that is running fine:
+        // keep the cached handle and let the next call check again.
+        this.log(`DockerSandboxBackend: registry read failed for a cached scope, keeping the handle: ${String(err)}`);
+        return cached;
+      }
+      if (registered) {
         // #576 P3: even a process-local cache hit is real usage — the reaper
         // must not treat a scope as idle while its sandbox is actively being
         // reused just because Docker itself wasn't consulted this call.

@@ -145,6 +145,16 @@ export function useErrorText(codes: Readonly<Record<string, string>> = {}): (err
   };
 }
 
+/**
+ * Catalog label for a server enum value (`statuses.pending`). A value the
+ * catalog does not know yet (a newer server) shows as the raw machine value
+ * instead of a missing-message key.
+ */
+export function enumLabel(t: ReturnType<typeof useTranslations>, group: string, value: string): string {
+  const key = `${group}.${value}`;
+  return t.has(key) ? t(key) : value;
+}
+
 export const TABLE_CLASS = 'w-full text-left text-sm';
 export const THEAD_CLASS =
   'bg-[color:var(--card)]/40 text-[12px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]';

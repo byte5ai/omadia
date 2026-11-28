@@ -10,7 +10,7 @@ import {
   listCredentialGrants,
   revokeCredentialGrant,
 } from '../../../_lib/adminCredentials';
-import { ConfirmButton, ErrorLine, Mono, MutedLine, useDateText, useErrorText } from '../../_components/AdminSurface';
+import { ConfirmButton, ErrorLine, Mono, MutedLine, useDateText, useErrorText, enumLabel } from '../../_components/AdminSurface';
 
 /** The grants of one credential, loaded when its row is opened. */
 export function GrantList({ credentialId }: { credentialId: string }): React.ReactElement {
@@ -70,7 +70,7 @@ export function GrantList({ credentialId }: { credentialId: string }): React.Rea
           >
             <div className="flex flex-col gap-1">
               <span>
-                <Mono>{g.principal}</Mono> · {t(`modes.${g.mode}`)} · {g.purpose}
+                <Mono>{g.principal}</Mono> · {enumLabel(t, 'modes', g.mode)} · {g.purpose}
               </span>
               <span className="text-xs text-[color:var(--fg-muted)]">
                 {t('meta', {

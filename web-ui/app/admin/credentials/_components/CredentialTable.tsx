@@ -16,6 +16,7 @@ import {
   THEAD_CLASS,
   useDateText,
   useErrorText,
+  enumLabel,
 } from '../../_components/AdminSurface';
 import { GrantList } from './GrantList';
 
@@ -77,7 +78,7 @@ export function CredentialTable({
             <Fragment key={c.id}>
               <tr className={ROW_CLASS}>
                 <td className={`${CELL_CLASS} font-medium`}>{c.name}</td>
-                <td className={CELL_CLASS}>{t(`kinds.${c.kind}`)}</td>
+                <td className={CELL_CLASS}>{enumLabel(t, 'kinds', c.kind)}</td>
                 <td className={CELL_CLASS}>{c.owner ? <Mono>{c.owner}</Mono> : t('noOwner')}</td>
                 <td className={CELL_CLASS}>
                   {c.broker ? (

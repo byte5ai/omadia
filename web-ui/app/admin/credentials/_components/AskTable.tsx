@@ -15,6 +15,7 @@ import {
   THEAD_CLASS,
   useDateText,
   useErrorText,
+  enumLabel,
 } from '../../_components/AdminSurface';
 
 /**
@@ -99,8 +100,8 @@ export function AskTable({
                 <Mono>{role === 'owner' ? ask.requester : ask.owner}</Mono>
               </td>
               <td className={CELL_CLASS}>{ask.purpose}</td>
-              <td className={CELL_CLASS}>{t(`modes.${ask.mode}`)}</td>
-              <td className={CELL_CLASS}>{t(`statuses.${ask.status}`)}</td>
+              <td className={CELL_CLASS}>{enumLabel(t, 'modes', ask.mode)}</td>
+              <td className={CELL_CLASS}>{enumLabel(t, 'statuses', ask.status)}</td>
               <td className={`${CELL_CLASS} whitespace-nowrap text-xs text-[color:var(--fg-muted)]`}>
                 {date(ask.ask_expires_at)}
               </td>

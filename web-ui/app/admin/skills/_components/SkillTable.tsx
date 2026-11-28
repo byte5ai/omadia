@@ -3,7 +3,7 @@
 import { useTranslations } from 'next-intl';
 
 import type { AdminSkillDto } from '../../../_lib/adminSkills';
-import { CELL_CLASS, Mono, ROW_CLASS, TableFrame, THEAD_CLASS, useDateText } from '../../_components/AdminSurface';
+import { CELL_CLASS, Mono, ROW_CLASS, TableFrame, THEAD_CLASS, useDateText, enumLabel } from '../../_components/AdminSurface';
 import { PromoteForm } from './PromoteForm';
 
 export function SkillTable({
@@ -35,7 +35,7 @@ export function SkillTable({
               <Mono>{skill.slug}</Mono>
             </td>
             <td className={CELL_CLASS}>{skill.owner_scope ? <Mono>{skill.owner_scope}</Mono> : t('unowned')}</td>
-            <td className={CELL_CLASS}>{t(`statuses.${skill.lifecycle_status}`)}</td>
+            <td className={CELL_CLASS}>{enumLabel(t, 'statuses', skill.lifecycle_status)}</td>
             <td className={CELL_CLASS}>
               {skill.required_capabilities === null ? (
                 <span className="text-[color:var(--danger)]">{t('capabilitiesInvalid')}</span>

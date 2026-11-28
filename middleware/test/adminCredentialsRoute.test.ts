@@ -43,6 +43,7 @@ function buildApp(store: InMemoryCredentialStore, audit: AuditEntryInput[]): Exp
       (req as typeof req & { session?: unknown }).session = {
         sub: `sub-${as}`,
         email: `${as}@example.com`,
+        display_name: as,
         provider: 'local',
         role: 'admin',
         omadia_user_id: as,

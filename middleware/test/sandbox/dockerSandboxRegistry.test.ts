@@ -126,4 +126,19 @@ describe('DockerSandboxBackend — torn down from outside (#2320)', () => {
     assert.equal(second, first);
     assert.equal(calls.length, callsBefore, 'no docker call on a cache hit');
   });
+
+  it('keeps the cached handle when the registry read fails', async () => {
+    const { exec } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()));
+    const registry = new InMemorySandboxRegistry();
+    const logs: string[] = [];
+    const backend = new DockerSandboxBackend({ execDocker: exec, registry, log: (m) => logs.push(m) });
+    const profile = resolveAgentComputerProfile();
+    const first = await backend.provision({ scopeKey: 'personal:outage', profile });
+    registry.get = async () => {
+      throw new Error('pool down');
+    };
+    const second = await backend.provision({ scopeKey: 'personal:outage', profile });
+    assert.equal(second, first);
+    assert.ok(logs.some((m) => m.includes('registry read failed')));
+  });
 });

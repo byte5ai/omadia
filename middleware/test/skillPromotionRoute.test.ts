@@ -33,6 +33,21 @@ class FakeSkillLifecycleStore {
   public calls: PromoteArgs[] = [];
   public behavior: 'ok' | 'not-found' | 'not-published' | 'automation-blocked' = 'ok';
 
+  // #2320 — the prior owner for the audit row.
+  async getSkill(skillId: string) {
+    return {
+      id: skillId,
+      slug: 'demo-skill',
+      name: 'Demo Skill',
+      frontmatter: {},
+      body: '',
+      ownerScope: 'personal:op-1',
+      lifecycleStatus: 'published' as const,
+      manifestSignature: 'deadbeef',
+      manifestSignedAt: new Date('2026-08-20T12:00:00Z'),
+    };
+  }
+
   // #2320 — the admin list read.
   async listSkills() {
     return [
@@ -251,10 +266,10 @@ describe('#2320 skill admin list + promotion audit', () => {
 
   it('writes one skill.promote audit row on success and none on refusal', async () => {
     const store = new FakeSkillLifecycleStore();
-    const rows: Array<{ action: string; target: string }> = [];
+    const rows: Array<{ action: string; target: string; before: unknown }> = [];
     const adminAudit = {
-      record: async (entry: { action: string; target: string }) => {
-        rows.push({ action: entry.action, target: entry.target });
+      record: async (entry: { action: string; target: string; before?: unknown }) => {
+        rows.push({ action: entry.action, target: entry.target, before: entry.before });
       },
     };
     const app = buildApp(store, { adminAudit });
@@ -265,6 +280,8 @@ describe('#2320 skill admin list + promotion audit', () => {
       const refused = await postJson(`${baseUrl}/skill-1/promote`, { targetScope: { kind: 'org', orgId: 'byte5' } });
       assert.equal(refused.status, 409);
     });
-    assert.deepEqual(rows, [{ action: 'skill.promote', target: 'skill:skill-1' }]);
+    assert.deepEqual(rows, [
+      { action: 'skill.promote', target: 'skill:skill-1', before: { slug: 'demo-skill', ownerScope: 'personal:op-1' } },
+    ]);
   });
 });
