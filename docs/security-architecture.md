@@ -1518,6 +1518,15 @@ upload") true. The binding store is always published (Postgres, else in-memory),
 the audience floor. Migration `0114` removed bindings that the old bind-on-first-read had created
 for generated outputs.
 
+## 5-2. The speaker's time zone reaches the model (#2379, ADR-0350)
+
+A chat turn's date header names the speaker's IANA zone (`ChatTurnInput.userTimeZone`; in the web
+chat the browser's `omadia-tz` cookie). That is coarse location data, and it now goes to the model
+provider on every turn that has a zone. Accepted: it sits only in the per-turn, uncached date block
+(never in a cached prompt block), and the trigger tools already name it (ADR-0297). The value is
+the sender's own clock and grants nothing; `resolveTurnTimeZone` admits only a string of at most
+64 IANA-shaped characters that `Intl` can format in, so no free text reaches the prompt through it.
+
 ## 5a. Office exports: formula cells carry no caller-supplied value
 
 `create_xlsx` (`@omadia/plugin-office`) writes descriptor formulas into the

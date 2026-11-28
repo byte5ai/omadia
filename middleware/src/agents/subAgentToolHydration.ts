@@ -594,6 +594,7 @@ export function registerDbSubAgentTools(
               turnId: current.turnId,
               turnDate: current.turnDate,
               ...(current.turnStartedAt ? { turnStartedAt: current.turnStartedAt } : {}),
+              ...(current.turnTimeZone ? { turnTimeZone: current.turnTimeZone } : {}),
               ...(current.agentSlug ? { agentSlug: current.agentSlug } : {}),
               ...(current.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
               // W3-A — same carry-over as the plugin accessor: without it a

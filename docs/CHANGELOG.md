@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Feat — a chat turn reads its clock in the speaker's zone; no UTC turn-date fallbacks (#2379) (2026-11-28)
+
+A person outside Berlin got Berlin's date and time in the turn's date header, so "tomorrow" could
+land a day off, while the triggers they set in the same chat ran in their own zone (ADR-0297).
+Now `turnClock(at, zone)` freezes `turnTimeZone` together with `turnDate` and `turnStartedAt`: the
+speaker's zone from `ChatTurnInput.userTimeZone` when it is a valid IANA zone, else
+`TURN_TIME_ZONE` (`resolveTurnTimeZone`; unknown or malformed zones fall back, never throw). The
+orchestrator's `chat`/`chatStream` and CLI turns freeze it; sub-scopes (`runWithChatParticipants`,
+skill-bound tools, plugin `ctx.mcp`) carry it; a consultation hands the asker's user zone to the
+colleague's turn. The web chat now passes the browser's zone from the existing `omadia-tz` cookie
+(`webTurnTimeZone`, `routes/chat.ts`). The header names the zone (`… 22:30 (America/New_York,
+GMT-05:00) …`) and stays in the uncached date block. In group turns the zone of the person whose
+message triggered the turn applies. The streaming path now also carries `userTimeZone` into the
+turn scope (it was only set on `chat`), so `manage_routine` and the trigger tools see it on
+channel and web turns, so routines and triggers created on Teams (client `localTimezone`) or in
+the web chat (browser zone) now default to that zone instead of the instance default (ADR-0240).
+The header's weekday is now read from the calendar date in UTC, so a speaker zone east of UTC+12
+cannot name the next weekday. Drift fix: `consultationBroker.ts` and
+`pluginContext.ts` (`ctx.mcp.callTool`) fell back to a UTC date (`toISOString().slice(0, 10)`)
+outside a turn and named yesterday between 00:00 and 01:00/02:00 Berlin; both use `today()` now.
+New ADR-0350 supersedes ADR-0340 in part. Tests: `test/orchestrator/turnTimeZone2379.test.ts`,
+`test/turnDateFallback2379.test.ts`.
+
 ### Docs — ADRs of waves 6–8 set to Accepted (2026-11-28)
 
 43 ADRs that were Proposed are now Accepted: 0225, 0260–0280 (all Proposed ones in that range), 0287, 0295–0302, 0310, 0315–0317, 0320–0324, 0330–0333 and 0340. Their pull requests are merged and their code is live (Fly sha-4f632d1a). The design ADRs for the roadmap were accepted as designs on the owner's decision.

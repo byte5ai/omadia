@@ -1519,6 +1519,7 @@ export function createPluginMcpAccessor(
           turnId: current?.turnId ?? '',
           turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
           ...(current?.turnStartedAt ? { turnStartedAt: current.turnStartedAt } : {}),
+          ...(current?.turnTimeZone ? { turnTimeZone: current.turnTimeZone } : {}),
           ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
           ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
           // W3-A — the turn's MCP OAuth identity. Dropping it here made every
