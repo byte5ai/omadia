@@ -124,5 +124,24 @@ export function parseMcpConnectRequest(prompt: string): McpConnectRequest | unde
 export function notePendingMcpConnect(mint: McpAuthPromptMint, result: string): void {
   if (!mint.minted(result)) return;
   const request = parseMcpConnectRequest(result);
-  if (request) turnContext.current()?.mcpConnectRequests?.set(request.serverId, request);
+  if (request) recordPendingMcpConnects([request]);
+}
+
+/**
+ * #2377 — put connect requests on the current turn's request map, the one
+ * `notePendingMcpConnect` writes. A CLI sub-agent runs its own `CliChatAgent`
+ * turn with its own map and hands the requests it drained back to the parent
+ * turn through this, so the parent shows the Connect card. Only requests a
+ * kernel mint already vouched for may be passed. A turn without a request map
+ * records nothing.
+ */
+export function recordPendingMcpConnects(
+  requests: readonly McpConnectRequest[] | undefined,
+): void {
+  if (!requests || requests.length === 0) return;
+  const map = turnContext.current()?.mcpConnectRequests;
+  if (!map) return;
+  for (const request of requests) {
+    map.set(request.serverId, { serverId: request.serverId, serverName: request.serverName });
+  }
 }

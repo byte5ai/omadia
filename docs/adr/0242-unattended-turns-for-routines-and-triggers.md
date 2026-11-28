@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0340](0340-a-turn-is-grounded-in-its-frozen-start-time.md) (every turn now carries its frozen start time, not only the date)
 
 - **Date:** 2026-11-26
 - **Deciders:** omadia maintainers (wave 5, W22-23)

@@ -927,7 +927,9 @@ describe('CliChatAgent conversation memory (#1087)', () => {
     } = {},
   ): {
     readonly agent: CliChatAgent;
+    /** The composed stdin prompt without the #2376 date line (see `rawPrompt`). */
     readonly prompt: () => string;
+    readonly rawPrompt: () => string;
     readonly argv: () => readonly string[];
   } {
     let stdinText = '';
@@ -975,8 +977,45 @@ describe('CliChatAgent conversation memory (#1087)', () => {
         return child;
       }) as unknown as CliChatAgentDeps['spawnFn'],
     });
-    return { agent, prompt: () => stdinText, argv: () => captured };
+    return {
+      agent,
+      prompt: () => stdinText.replace(DATE_HINT_LINE, ''),
+      rawPrompt: () => stdinText,
+      argv: () => captured,
+    };
   }
+
+  /** #2376 — the leading date line every composed prompt starts with. */
+  const DATE_HINT_LINE = /^System Hint: Current date and time: [^\n]*\n/;
+
+  it('leads the prompt with the turn clock and keeps it off the system prompt (#2376)', async () => {
+    const { agent, rawPrompt, argv } = makeAgent();
+    await agent.chat({ userMessage: 'Wie spät ist es?' });
+    assert.match(
+      rawPrompt(),
+      /^System Hint: Current date and time: \w+, \d{4}-\d\d-\d\d, \d\d:\d\d \(Europe\/Berlin, GMT[+-]\d\d:\d\d\), taken at the start of this turn\./,
+    );
+    assert.doesNotMatch(systemPromptOf(argv()), /Current date and time/);
+  });
+
+  it('a CLI turn under a date-only channel scope freezes its own clock (#2376)', async () => {
+    const { agent, rawPrompt } = makeAgent();
+    // The web chat route opens an outer scope with `turnDate` only.
+    await turnContext.run({ turnId: '', turnDate: '2026-09-24' }, () =>
+      agent.chat({ userMessage: 'Wie spät ist es?' }),
+    );
+    assert.match(rawPrompt(), DATE_HINT_LINE);
+  });
+
+  it('a CLI turn inside a calling turn keeps that turn\'s frozen clock (#2376)', async () => {
+    const { agent, rawPrompt } = makeAgent();
+    await turnContext.run(
+      { turnId: 'parent', turnDate: '2026-03-29', turnStartedAt: '2026-03-29T00:30:00.000Z' },
+      () => agent.chat({ userMessage: 'Wie spät ist es?' }),
+    );
+    // 00:30Z on the DST switch day is 01:30 CET, before the clocks jump.
+    assert.match(rawPrompt(), /^System Hint: Current date and time: Sunday, 2026-03-29, 01:30 \(Europe\/Berlin, GMT\+01:00\)/);
+  });
 
   function systemPromptOf(argv: readonly string[]): string {
     const idx = argv.indexOf('--system-prompt');

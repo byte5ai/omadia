@@ -6,7 +6,7 @@ import {
   LocalSubAgent,
   SubAgentRefusalError,
   createCliSubAgent,
-  today,
+  turnClock,
   turnContext,
   type AskObserver,
   type LocalSubAgentTool,
@@ -178,7 +178,7 @@ export class PreviewChatService {
   runTurn(opts: RunTurnOptions): AsyncIterable<PreviewChatEvent> {
     const turnId = randomUUID();
     return turnContext.runGenerator(
-      { turnId, turnDate: today(), sessionScope: `builder-preview:${opts.handle.draftId}` },
+      { turnId, ...turnClock(), sessionScope: `builder-preview:${opts.handle.draftId}` },
       () => this.runTurnInScope(opts, turnId),
     );
   }

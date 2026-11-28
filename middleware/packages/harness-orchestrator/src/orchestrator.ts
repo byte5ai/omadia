@@ -419,8 +419,7 @@ function messagesCarryImages(messages: ReadonlyArray<{ content: unknown }>): boo
 import { steeringBus } from './steeringBus.js';
 import { MEMORY_TOOL_NAME } from './registry/subAgentMemoryTool.js';
 import {
-  buildDateHeader,
-  today,
+  turnClock,
   turnContext,
   type TurnContextValue,
   type GraphReadScope,
@@ -2111,7 +2110,8 @@ const ORCHESTRATOR_CACHE_CONTROL = { type: 'ephemeral', ttl: '1h' } as const;
  *   [1] prior-context block, when present — cache breakpoint (this turn's
  *       tool-loop iterations read it)
  *   [2] per-turn date header — read from the turn context so every
- *       `messages.create` site in a single turn speaks the same "today"
+ *       `messages.create` site in a single turn speaks the same "today" and
+ *       clock time (#2376); uncached, the only block that names the time
  *   [3] per-turn hint, when present — uncached
  *
  * The prompt cache is a prefix match (tools → system → messages): the stable
@@ -2165,7 +2165,7 @@ ${priorContext}`,
 
   blocks.push({
     type: 'text',
-    text: buildDateHeader(turnContext.currentTurnDate()),
+    text: turnContext.currentDateHeader(),
   });
   // Per-turn hint (e.g. verifier correction on retry). Not cache-eligible —
   // this block is exactly what should INVALIDATE the cache for the retry.
@@ -6273,7 +6273,8 @@ export class Orchestrator {
     const core = await turnContext.run(
       {
         turnId,
-        turnDate: today(),
+        // #2376 — date and start instant frozen from one reading.
+        ...turnClock(),
         mcpConnectRequests: new Map(),
         // #2043 — what this turn's tool handlers are told about their caller.
         toolCall: buildToolCallContext(this.agentId, input),
@@ -8249,7 +8250,7 @@ export class Orchestrator {
     const streamFloorFields = this.audienceFloorFor(input, parent, runTraceUserId);
     const context: TurnContextValue = {
       turnId,
-      turnDate: today(),
+      ...turnClock(),
       mcpConnectRequests: new Map(),
       toolCall: buildToolCallContext(this.agentId, input),
       // #2085 — read back by `attachSideChannelData` on the `done` event.

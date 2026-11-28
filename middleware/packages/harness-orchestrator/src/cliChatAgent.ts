@@ -45,7 +45,7 @@ import {
 // Aliased: `turnContext` is already a parameter name inside this module
 // (the caller's captured async context), and the store is a different thing.
 import { buildToolCallContext, runWithToolCallContext } from './toolCallContext.js';
-import { turnContext as turnContextStore, today, type TurnContextValue } from './turnContext.js';
+import { buildDateHeader, turnClock, turnContext as turnContextStore, type TurnContextValue } from './turnContext.js';
 import { createDiscretionTurnState } from './discretion/turnLabels.js';
 import { UNKNOWN_READERS, unionLabels } from './discretion/labels.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
@@ -1275,6 +1275,13 @@ interface CapturedTurnContext {
    * from one call to the next.
    */
   readonly scope: { value?: TurnContextValue };
+  /**
+   * #2376 / ADR-0340 — the turn's frozen clock: the calling turn's when it
+   * froze one (a CLI sub-agent inside a parent turn), else one reading taken
+   * at capture. A turn without discretion or privacy never sets `scope`, so
+   * the clock cannot live only there.
+   */
+  readonly clock: { readonly turnDate: string; readonly turnStartedAt: string };
   /** #1098 — the cost-ledger and receipt key of this turn. */
   readonly cliTurnId: string;
   /** ADR-0195 — the turn's own Privacy Shield ({@link CliChatAgentDeps.turnPrivacy}). */
@@ -1359,6 +1366,18 @@ export const CLI_PRIVACY_GUARD_ACTIVE_LOG =
   'API key under LLM access.';
 
 /**
+ * #2376 — the clock a scope froze (`turnClock`), or a fresh one-reading clock
+ * when it froze none: a date-only outer scope (a channel's) is not a clock.
+ */
+function frozenClockOf(
+  value: TurnContextValue | undefined,
+): { readonly turnDate: string; readonly turnStartedAt: string } {
+  return value?.turnStartedAt !== undefined
+    ? { turnDate: value.turnDate, turnStartedAt: value.turnStartedAt }
+    : turnClock();
+}
+
+/**
  * #2374 — the connect requests this CLI turn's loopback calls recorded
  * (`notePendingMcpConnect`), drained so a later read sees none. `undefined`
  * when there are none.
@@ -1432,9 +1451,11 @@ export class CliChatAgent implements ChatAgent {
       privacy === undefined &&
       callerPrivacy === undefined &&
       (this.forceGuarded() || this.guardActive());
+    const clock = runInTurnContext(() => frozenClockOf(turnContextStore.current()));
     return {
       runInTurnContext,
       scope,
+      clock,
       cliTurnId,
       refused,
       ...(guard ? { assertTurnOwner: guard } : {}),
@@ -1491,9 +1512,10 @@ export class CliChatAgent implements ChatAgent {
     const agentSlug = this.deps.dispatch.agentSlug;
     turnContext.scope.value = {
       ...(parent ?? {
-        turnDate: today(),
         ...(agentSlug !== undefined ? { agentSlug } : {}),
       }),
+      // #2376 / ADR-0340 — the turn's frozen clock (see `CapturedTurnContext.clock`).
+      ...turnContext.clock,
       // A channel's outer scope carries a placeholder id (`''`, or the web
       // chat's marked `http-chat-<scope>`, #1921); the audit rows of this turn
       // name the CLI turn instead.
@@ -1531,9 +1553,10 @@ export class CliChatAgent implements ChatAgent {
     const agentSlug = this.deps.dispatch.agentSlug;
     turnContext.scope.value = {
       ...(current ?? {
-        turnDate: today(),
         ...(agentSlug !== undefined ? { agentSlug } : {}),
       }),
+      // #2376 — the turn's frozen clock, as in `beginDiscretion`.
+      ...turnContext.clock,
       turnId: current?.turnId || turnContext.cliTurnId,
       graphReadScope: current?.graphReadScope ?? {},
       privacyHandle: privacy.handle,
@@ -1849,8 +1872,18 @@ export class CliChatAgent implements ChatAgent {
     recalledContext?: string,
     /** #2341 — a replayed answer or the recall was masked: say why its names look different. */
     replayMasked = false,
+    /** #2376 — the turn's frozen date header (date, clock time, zone). */
+    dateHeader?: string,
   ): string {
     const lines: string[] = [];
+
+    // #2376 / ADR-0340 — the turn's date and clock time, as the in-process
+    // turn gets them in its uncached date block. It rides stdin, not the
+    // `--system-prompt`, so the CLI's cached system prompt stays the same
+    // across turns.
+    if (dateHeader !== undefined && dateHeader.length > 0) {
+      lines.push(`System Hint: ${dateHeader}`);
+    }
 
     // #1391 — the graph recall rides stdin like the replayed history, never
     // argv: it can hold other chats' content (in `members` mode other
@@ -2551,7 +2584,8 @@ export class CliChatAgent implements ChatAgent {
       // deterministic for tests; replaying prior turns here mirrors the CLI's single-shot mode.
       // #2341 — a masked replayed answer or a masked recall block gets the note.
       const replayMasked = history.answersMasked === true || wireRecalled !== recalled.text;
-      child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled, replayMasked));
+      const dateHeader = buildDateHeader(turnContext.clock.turnDate, new Date(turnContext.clock.turnStartedAt));
+      child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled, replayMasked, dateHeader));
 
       // #2342 / ADR-0316 — tool outputs wait for the answer's egress check.
       const toolOutputs = new ToolOutputHold(() => this.egressRefusesNow(turnContext));
