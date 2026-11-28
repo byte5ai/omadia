@@ -13,7 +13,14 @@ import {
   type StoredTurnAttachment,
 } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
-import { MAX_STEER_LENGTH, steeringBus, today, turnContext, webAccountOrigin } from '@omadia/orchestrator';
+import {
+  MAX_STEER_LENGTH,
+  isTurnTimeZone,
+  steeringBus,
+  today,
+  turnContext,
+  webAccountOrigin,
+} from '@omadia/orchestrator';
 import type {
   AskObserver,
   AttachmentBindingStore,
@@ -190,6 +197,24 @@ function resolveUserId(req: Request): string | undefined {
   const raw = req.header('x-user-id');
   if (!raw) return undefined;
   return USER_ID_RE.test(raw) ? raw : undefined;
+}
+
+/**
+ * #2379 / ADR-0350 — the cookie the web UI mirrors the browser's IANA zone
+ * into (`web-ui/app/_lib/timeZone.ts`, `TIME_ZONE_COOKIE`). The same-origin
+ * `/bot-api` proxy forwards it with every request.
+ */
+export const WEB_TIME_ZONE_COOKIE = 'omadia-tz';
+
+/**
+ * #2379 / ADR-0350 — the speaker's zone for a web chat turn: the browser's
+ * zone from {@link WEB_TIME_ZONE_COOKIE} when it is a valid IANA zone, else
+ * nothing (the turn then runs in `TURN_TIME_ZONE`). Only the sender's own
+ * clock; it grants nothing.
+ */
+export function webTurnTimeZone(req: Request): { userTimeZone?: string } {
+  const raw: unknown = (req.cookies as Record<string, unknown> | undefined)?.[WEB_TIME_ZONE_COOKIE];
+  return isTurnTimeZone(raw) ? { userTimeZone: raw } : {};
 }
 
 /**
@@ -675,6 +700,7 @@ export function createChatRouter(
               sessionScope,
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
+              ...webTurnTimeZone(req),
               ...(deliveriesHint ? { conversationContextHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
@@ -939,6 +965,7 @@ export function createChatRouter(
               sessionScope: resolveScope(parsed.data, req),
               ...(userId ? { userId } : {}),
               ...webTurnOrigin(req),
+              ...webTurnTimeZone(req),
               ...(deliveriesHint ? { conversationContextHint: deliveriesHint } : {}),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }

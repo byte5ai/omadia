@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0350](0350-a-chat-turn-reads-its-clock-in-the-speakers-zone.md) (a chat turn reads its clock in the speaker's zone when known)
 
 - **Date:** 2026-11-27
 - **Deciders:** W46 cluster lead (wave 8 follow-up, issue #2376; decision after the

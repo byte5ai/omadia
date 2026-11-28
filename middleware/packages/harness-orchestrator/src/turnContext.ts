@@ -29,6 +29,9 @@ import type { ConsultationTurnState } from './consultation/consultTool.js';
  *                  8601, UTC), frozen together with `turnDate` (`turnClock`).
  *                  The date header names its clock time and zone, so every
  *                  model call of the turn sees the same "now".
+ *   - `turnTimeZone` — #2379 / ADR-0350: the zone `turnDate` and the clock
+ *                  time are read in (the speaker's, else `TURN_TIME_ZONE`),
+ *                  frozen by the same `turnClock` reading.
  *   - `chatParticipants` (optional) — lazy accessor for the active chat's
  *                  roster. Set by the Teams adapter (via TeamsRosterProvider)
  *                  in an outer ALS scope; the orchestrator re-threads it into
@@ -81,6 +84,15 @@ export interface TurnContextValue {
    * every model call of the turn. Absent ⇒ readers fall back to "now".
    */
   turnStartedAt?: string;
+  /**
+   * #2379 / ADR-0350 — the IANA zone the turn's date and clock time are read
+   * in: the speaker's zone when the channel reported a valid one
+   * (`ChatTurnInput.userTimeZone`), else {@link TURN_TIME_ZONE}. Frozen with
+   * `turnDate` / `turnStartedAt` by `turnClock()` and carried into every
+   * sub-scope, so every model call of the turn names the same zone. Absent ⇒
+   * {@link TURN_TIME_ZONE}.
+   */
+  turnTimeZone?: string;
   /**
    * #2312 / ADR-0301 — the servers this turn's kernel-minted connect prompts
    * named, by server id. Created per turn (shared by reference with the
@@ -559,6 +571,7 @@ export const turnContext = {
         turnId: prev?.turnId ?? '',
         turnDate: prev?.turnDate ?? today(),
         ...(prev?.turnStartedAt ? { turnStartedAt: prev.turnStartedAt } : {}),
+        ...(prev?.turnTimeZone ? { turnTimeZone: prev.turnTimeZone } : {}),
         ...(prev?.agentSlug ? { agentSlug: prev.agentSlug } : {}),
         chatParticipants,
         // W3-A: the caller identity MCP OAuth tokens are keyed to must survive
@@ -608,6 +621,14 @@ export const turnContext = {
     return frozenStartOf(storage.getStore());
   },
   /**
+   * #2379 / ADR-0350 — the zone the active turn's date and clock time are read
+   * in. {@link TURN_TIME_ZONE} outside a turn, or for a scope that froze none
+   * (or an invalid one).
+   */
+  currentTurnTimeZone(): string {
+    return resolveTurnTimeZone(storage.getStore()?.turnTimeZone);
+  },
+  /**
    * #2376 — the date header of the active turn: its frozen date, clock time
    * and zone (`buildDateHeader`). The same text on every model call of a turn.
    * Outside a turn: "now", from one reading. A scope without `turnStartedAt`:
@@ -617,13 +638,14 @@ export const turnContext = {
     const store = storage.getStore();
     if (store === undefined) {
       const clock = turnClock();
-      return buildDateHeader(clock.turnDate, new Date(clock.turnStartedAt));
+      return buildDateHeader(clock.turnDate, new Date(clock.turnStartedAt), clock.turnTimeZone);
     }
+    const zone = resolveTurnTimeZone(store.turnTimeZone);
     // A scope opened with a frozen date but no start instant names the date
     // only: pairing its frozen date with a live clock would say "Thursday,
     // 00:01" after midnight, and the time would move between model calls.
-    if (store.turnStartedAt === undefined) return buildDateHeader(store.turnDate);
-    return buildDateHeader(store.turnDate, frozenStartOf(store));
+    if (store.turnStartedAt === undefined) return buildDateHeader(store.turnDate, undefined, zone);
+    return buildDateHeader(store.turnDate, frozenStartOf(store), zone);
   },
   /**
    * #904 — the scoped memory handler of the turn delegating to the sub-agent
@@ -780,16 +802,45 @@ function reportTurnTeardownError(turnId: string, err: unknown): void {
 }
 
 /**
- * The zone a turn's date and clock time are read in. One fixed zone for the
- * whole instance, as before #2376; the date header names it so the model
- * never has to assume one.
+ * The instance-wide zone a turn's date and clock time are read in when the
+ * speaker's zone is not known (ADR-0340, ADR-0350). The date header names the
+ * zone it used, so the model never has to assume one.
  */
 export const TURN_TIME_ZONE = 'Europe/Berlin';
 
-/** `YYYY-MM-DD` in {@link TURN_TIME_ZONE}. Single place this computation lives. */
-export function today(at: Date = new Date()): string {
+/** Longer than any IANA identifier; keeps pathological values away from `Intl`. */
+const MAX_ZONE_LENGTH = 64;
+/** IANA identifiers: ASCII letters, digits and `/ _ + - :` (`Etc/GMT+5`). */
+const ZONE_SHAPE = /^[A-Za-z0-9/_+:-]+$/;
+
+/** Whether `zone` is an IANA zone this runtime can format in. Never throws. */
+export function isTurnTimeZone(zone: unknown): zone is string {
+  if (typeof zone !== 'string' || zone.length === 0 || zone.length > MAX_ZONE_LENGTH) return false;
+  if (!ZONE_SHAPE.test(zone)) return false;
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #2379 / ADR-0350 — the zone a turn runs in: `candidate` (the speaker's zone)
+ * when it is a valid IANA zone, else {@link TURN_TIME_ZONE}. An unknown or
+ * malformed zone falls back, it is never guessed at or thrown on.
+ */
+export function resolveTurnTimeZone(candidate?: string | null): string {
+  return isTurnTimeZone(candidate) ? candidate : TURN_TIME_ZONE;
+}
+
+/**
+ * `YYYY-MM-DD` of `at` in `zone` ({@link TURN_TIME_ZONE} by default; an
+ * invalid zone falls back to it). Single place this computation lives.
+ */
+export function today(at: Date = new Date(), zone?: string): string {
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: TURN_TIME_ZONE,
+    timeZone: resolveTurnTimeZone(zone),
   }).format(at);
 }
 
@@ -799,22 +850,34 @@ function frozenStartOf(store: TurnContextValue | undefined): Date {
   return parsed !== undefined && !Number.isNaN(parsed.getTime()) ? parsed : new Date();
 }
 
+/** A turn's frozen clock (ADR-0340, ADR-0350): date, start instant and zone. */
+export interface TurnClock {
+  /** `YYYY-MM-DD` of `turnStartedAt` in `turnTimeZone`. */
+  readonly turnDate: string;
+  /** ISO 8601, UTC. */
+  readonly turnStartedAt: string;
+  /** A valid IANA zone: the speaker's, else {@link TURN_TIME_ZONE}. */
+  readonly turnTimeZone: string;
+}
+
 /**
  * #2376 / ADR-0340 — the turn's frozen clock: date and start instant from ONE
  * reading, so a turn that starts at 23:59:59.9 never pairs one day's date
  * with the next day's time. Spread into the value a turn opens its scope with.
+ *
+ * #2379 / ADR-0350 — `zone` is the speaker's zone when the channel reported
+ * one (`ChatTurnInput.userTimeZone`); an absent or invalid zone falls back to
+ * {@link TURN_TIME_ZONE}. The date is read in the zone that is frozen with it.
  */
-export function turnClock(at: Date = new Date()): {
-  readonly turnDate: string;
-  readonly turnStartedAt: string;
-} {
-  return { turnDate: today(at), turnStartedAt: at.toISOString() };
+export function turnClock(at: Date = new Date(), zone?: string | null): TurnClock {
+  const turnTimeZone = resolveTurnTimeZone(zone);
+  return { turnDate: today(at, turnTimeZone), turnStartedAt: at.toISOString(), turnTimeZone };
 }
 
-/** `HH:mm` (24 h) and the UTC offset (`GMT+01:00`) of `at` in {@link TURN_TIME_ZONE}. */
-function clockIn(at: Date): { readonly time: string; readonly offset: string } {
+/** `HH:mm` (24 h) and the UTC offset (`GMT+01:00`) of `at` in `zone`. */
+function clockIn(at: Date, zone: string): { readonly time: string; readonly offset: string } {
   const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TURN_TIME_ZONE,
+    timeZone: zone,
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
@@ -837,19 +900,26 @@ function clockIn(at: Date): { readonly time: string; readonly offset: string } {
  * (ADR-0220 leaves those out of scope), and the answer language follows the
  * user through the kernel's answer-language rule, not this block.
  *
+ * #2379 / ADR-0350 — `zone` is the turn's frozen zone (the speaker's, else
+ * {@link TURN_TIME_ZONE}); an invalid one falls back to the instance zone.
+ *
  * Packaged as a dedicated system block that is never cached (ADR-0077): the
  * stable prompt next to it stays cache-eligible across turns, and no cached
- * block may carry the clock time.
+ * block may carry the clock time or the zone.
  */
-export function buildDateHeader(date: string, startedAt?: Date): string {
+export function buildDateHeader(date: string, startedAt?: Date, zone?: string): string {
+  const turnZone = resolveTurnTimeZone(zone);
+  // The weekday of the calendar date itself, read in UTC: reading noon UTC in
+  // the turn's zone would name the next day for zones east of UTC+12.
   const weekday = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TURN_TIME_ZONE,
+    timeZone: 'UTC',
     weekday: 'long',
   }).format(new Date(`${date}T12:00:00Z`));
-  const clock = startedAt !== undefined && !Number.isNaN(startedAt.getTime()) ? clockIn(startedAt) : undefined;
+  const clock =
+    startedAt !== undefined && !Number.isNaN(startedAt.getTime()) ? clockIn(startedAt, turnZone) : undefined;
   const now = clock
-    ? `Current date and time: ${weekday}, ${date}, ${clock.time} (${TURN_TIME_ZONE}, ${clock.offset}), taken at the start of this turn.`
-    : `Today is ${weekday}, ${date} (${TURN_TIME_ZONE}).`;
+    ? `Current date and time: ${weekday}, ${date}, ${clock.time} (${turnZone}, ${clock.offset}), taken at the start of this turn.`
+    : `Today is ${weekday}, ${date} (${turnZone}).`;
   const anchor = clock ? 'this date and time' : 'this date';
   return `${now} Resolve every relative time expression ("the last N months", "this quarter", "yesterday", "in two hours", "Q1") strictly against ${anchor}, never against your training cutoff. If you are unsure about a concrete date, ask instead of guessing.`;
 }
