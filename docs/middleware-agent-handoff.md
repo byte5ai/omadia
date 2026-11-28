@@ -8290,7 +8290,8 @@ prüft die Mounts im Quelltext der Composition Root.
 | `/admin/sandboxes` | `GET /api/v1/admin/sandboxes`, `POST /reap`, `POST /teardown` (`routes/adminSandboxes.ts`) | Registry kommt aus `sandbox_registry` (der Orchestrator-Plugin schreibt sie nur mit Graph-Pool); Sweep ist manuell, persistente Sandboxes nie; ohne Pool 503 |
 | `/admin/published-apps` | `GET /api/v1/admin/publish/apps`, `/apps/:appId/versions` (`routes/adminPublish.ts`, `services/publishAppCatalog.ts`) | nur lesend, nur Postgres; Rollback bleibt beim Tool |
 
-Audit-Aktionen: `credential.revoke`, `credential.grant_revoke`, `skill.promote`,
+Entscheidungen: ADR-0360 (Keychain-Admin) und ADR-0361 (Sandbox-Registry, manueller
+Sweep; löst ADR-0055 teilweise ab). Audit-Aktionen: `credential.revoke`, `credential.grant_revoke`, `skill.promote`,
 `sandbox.teardown`, `sandbox.reap`. Offen: eine Grant-Ansicht pro Agent (kommt nach
 #2319), ein geplanter Reaper, Prüfung/Veröffentlichung von Skills.
 

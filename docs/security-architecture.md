@@ -5688,7 +5688,11 @@ own. The rules below replace that.
    minted; the route answers 409 `credential_ask.not_actionable`.
    `revokeCredential` is a single `UPDATE credentials` that never touches
    `credential_asks`, so the two lock orders cannot deadlock.
-7. **Revocation follows the same owner rule (#2320).** The admin keychain
+7. **Role-owned personal credentials are no longer askable.** Approval is
+   bound to the session principal, which is always a user. An ask addressed
+   to a `role` owner could never be answered by anyone, so creating one is
+   refused as `not_askable`.
+8. **Revocation follows the same owner rule (#2320).** The admin keychain
    surface (`routes/adminCredentials.ts`, `/api/v1/admin/credentials`) lets
    only the owner of a `personal` credential revoke it or any grant against
    it (403 `credential.forbidden` otherwise, identity from
@@ -5697,11 +5701,7 @@ own. The rules below replace that.
    only — `getSecretMaterial` is not in its dependency type — and its bodies
    carry neither the secret nor the fingerprint. Each revocation is an admin
    audit row (`credential.revoke`, `credential.grant_revoke`) without secret
-   material.
-7. **Role-owned personal credentials are no longer askable.** Approval is
-   bound to the session principal, which is always a user. An ask addressed
-   to a `role` owner could never be answered by anyone, so creating one is
-   refused as `not_askable`.
+   material. ADR-0360 records this rule.
 
 Two consequences follow. A credential-creation surface must store a personal
 credential's owner as `user:<omadia_user_id>`, or nobody can ever approve an

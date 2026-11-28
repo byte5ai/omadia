@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0361](0361-sandbox-registry-is-wired-and-the-idle-sweep-is-an-operator-action.md) (the registry is wired; the idle sweep is an operator action)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers; issue #576, implemented in #776 (contract and Docker

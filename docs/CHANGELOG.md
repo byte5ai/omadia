@@ -64,7 +64,9 @@ Five admin views for service layers that had no surface (#778, admin half). All 
   /api/v1/admin/publish/apps` and `/apps/:appId/versions`; rollback stays with the
   `publish_rollback` tool.
 
-Sandbox and publish views answer 503 without Postgres. Tests: `adminCredentialsRoute`,
+Decisions: ADR-0360 (keychain admin surface: owner-only revocation of personal credentials,
+operators read metadata) and ADR-0361 (sandbox registry wired, idle sweep is an operator action;
+supersedes ADR-0055 in part). Sandbox and publish views answer 503 without Postgres. Tests: `adminCredentialsRoute`,
 `adminSandboxesRoute`, `adminPublishRoute`, `skillPromotionRoute`, `adminSurfaceMounts2320.wiring`,
 `sandbox/dockerSandboxRegistry`, `skillOwnershipLifecycleStore.pg`, `publish/publishStore.pg`, and a
 vitest suite per view.
