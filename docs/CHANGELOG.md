@@ -36,6 +36,39 @@ changelog.
 
 ## [Unreleased]
 
+### Feature — admin views for credentials, asks, skills, sandboxes and published apps (#2320) (2026-11-28)
+
+Five admin views for service layers that had no surface (#778, admin half). All routes sit behind
+`requireAuth`, every write lands in the admin audit trail (ADR-0100) with new actions
+`credential.revoke`, `credential.grant_revoke`, `skill.promote`, `sandbox.teardown`, `sandbox.reap`
+(also new filters on `/admin/audit`).
+
+- **Credentials** (`/admin/credentials`, ADR-0102): `GET /api/v1/admin/credentials` (metadata only:
+  no secret, no fingerprint), `GET /:id/grants`, `POST /:id/revoke`, `POST /grants/:grantId/revoke`
+  (`routes/adminCredentials.ts`). A personal credential and its grants are revoked by its owner only
+  (`user:<omadia_user_id>` from the session, 403 `credential.forbidden`); a service credential by any
+  operator. Shares the asks router's store instance.
+- **Ask inbox** (`/admin/credentials/asks?ask=<id>`): the owner's pending asks and the user's own
+  asks over the existing `/api/v1/admin/credential-asks`; the `ask` query highlights one ask (the
+  link target of the owner notice from #2319).
+- **Skills** (`/admin/skills`, ADR-0068): `GET /api/v1/admin/skills` lists owner scope, lifecycle
+  status, signing time and required capabilities (`PgSkillOwnershipLifecycleStore.listSkills`);
+  promotion of a published, owned skill to a team or the organisation from the list.
+- **Sandboxes** (`/admin/sandboxes`, #576, ADR-0055): the orchestrator plugin now passes
+  `PostgresSandboxRegistry` to both Docker backends when the graph pool exists, so
+  `sandbox_registry` is filled. `GET /api/v1/admin/sandboxes`, `POST /reap` (`{ idleMinutes,
+  dryRun }`, 5 min – 30 days; persistent sandboxes are never reaped) and `POST /teardown`
+  (`docker rm -f`, a ref that is not a container name is refused). No reaper runs on a schedule.
+  A cached sandbox handle whose registry row was removed is dropped and provisioned again.
+- **Published apps** (`/admin/published-apps`, #581, ADR-0067): read-only `GET
+  /api/v1/admin/publish/apps` and `/apps/:appId/versions`; rollback stays with the
+  `publish_rollback` tool.
+
+Sandbox and publish views answer 503 without Postgres. Tests: `adminCredentialsRoute`,
+`adminSandboxesRoute`, `adminPublishRoute`, `skillPromotionRoute`, `adminSurfaceMounts2320.wiring`,
+`sandbox/dockerSandboxRegistry`, `skillOwnershipLifecycleStore.pg`, `publish/publishStore.pg`, and a
+vitest suite per view.
+
 ### Docs — ADRs of waves 6–8 set to Accepted (2026-11-28)
 
 43 ADRs that were Proposed are now Accepted: 0225, 0260–0280 (all Proposed ones in that range), 0287, 0295–0302, 0310, 0315–0317, 0320–0324, 0330–0333 and 0340. Their pull requests are merged and their code is live (Fly sha-4f632d1a). The design ADRs for the roadmap were accepted as designs on the owner's decision.
