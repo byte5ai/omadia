@@ -32,6 +32,7 @@ import { AgentPeers } from './AgentPeers';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 import { AgentTeamsInstalls } from './AgentTeamsInstalls';
 import { AgentToolGrants } from './AgentToolGrants';
+import { AgentCredentialGrants } from './AgentCredentialGrants';
 import { FacilitatorDetail } from './FacilitatorDetail';
 
 /**
@@ -364,6 +365,12 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
               <AgentMcpServers
                 slug={props.agent.slug}
                 onGrantsChanged={() => setGrantsVersion((v) => v + 1)}
+              />
+              {/* #2320 — named credentials for credentialBroker@1 (#2319);
+                  a change re-reads the reach above. */}
+              <AgentCredentialGrants
+                slug={props.agent.slug}
+                onChanged={() => startTransition(() => router.refresh())}
               />
             </>
           ),

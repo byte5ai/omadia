@@ -99,6 +99,14 @@ vi.mock('../_components/AgentToolGrants', () => ({
 vi.mock('../_components/AgentMcpServers', () => ({
   AgentMcpServers: () => <div data-testid="agent-mcp-servers" />,
 }));
+// #2320 — the credential-grant section is wired here; its own behaviour is
+// covered by AgentCredentialGrants.test.tsx. The stub exposes `onChanged`.
+vi.mock('../_components/AgentCredentialGrants', () => ({
+  AgentCredentialGrants: ({ slug, onChanged }: { slug: string; onChanged?: () => void }) => (
+    // eslint-disable-next-line no-restricted-syntax -- test stub, not a §4.2 CTA
+    <button type="button" data-testid="agent-credential-grants" data-slug={slug} onClick={() => onChanged?.()} />
+  ),
+}));
 vi.mock('../_components/AgentContextMemory', () => ({
   AgentContextMemory: () => <div data-testid="agent-context-memory" />,
 }));
@@ -485,6 +493,13 @@ describe('AgentDetail tabs', () => {
     await user.click(screen.getByRole('tab', { name: 'Tools' }));
     expect(await screen.findByTestId('agent-tool-grants')).toBeTruthy();
     expect(screen.getByTestId('agent-mcp-servers')).toBeTruthy();
+    // #2320 — the agent's credential grants sit on the Tools tab; a change
+    // re-reads the page (and with it the reach's credential hosts).
+    const credentialGrants = screen.getByTestId('agent-credential-grants');
+    expect(credentialGrants).toHaveAttribute('data-slug', agent().slug);
+    expect(mockRefresh).not.toHaveBeenCalled();
+    await user.click(credentialGrants);
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalledTimes(1));
 
     // Back to the default clears the parameter — a plain link stays plain.
     await user.click(screen.getByRole('tab', { name: 'Identity' }));

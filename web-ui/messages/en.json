@@ -8218,7 +8218,9 @@
     },
     "confirmDefaultTitle": "Make {agent} a default agent?",
     "confirmDefaultBody": "{agent} can reach all {count} connected systems. As a default agent it answers messages addressed to no agent, so everyone who writes without naming an agent reaches every one of these systems. The change is recorded in the audit log.",
-    "confirmDefaultYes": "Make it the default agent"
+    "confirmDefaultYes": "Make it the default agent",
+    "credentialsHeading": "Credentials (credential broker)",
+    "credentialNoHost": "personal, no fixed host"
   },
   "agentAvailability": {
     "legend": "Who can reach this agent",
@@ -8462,6 +8464,38 @@
       "meta": "Published {date} · entry point {entrypoint}",
       "source": "From",
       "hash": "content"
+    }
+  },
+  "agentCredentialGrants": {
+    "heading": "Credentials",
+    "hint": "Named credentials from the keychain this agent may use through the credential broker. A grant shares no secret: a turn can only use a credential its account may use itself.",
+    "loading": "Loading credential grants…",
+    "empty": "This agent has no credential grants.",
+    "name": "Credential",
+    "kind": "Kind",
+    "host": "Target host",
+    "granted": "Granted",
+    "actions": "Actions",
+    "revoked": "revoked",
+    "unknown": "unknown",
+    "noHost": "no fixed host",
+    "grantedBy": "by {who}, {date}",
+    "remove": "Remove",
+    "confirmRemove": "Remove grant",
+    "addLabel": "Grant a credential",
+    "choose": "Choose a credential…",
+    "noneLeft": "No further active credentials",
+    "option": "{name} (host {host})",
+    "add": "Grant",
+    "adding": "Granting",
+    "kinds": {
+      "personal": "Personal",
+      "service": "Service"
+    },
+    "errors": {
+      "notFound": "This credential or grant no longer exists.",
+      "revoked": "A revoked credential cannot be granted.",
+      "previewDraft": "A Plugin Builder preview agent cannot be configured."
     }
   }
 }

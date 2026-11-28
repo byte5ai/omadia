@@ -8218,7 +8218,9 @@
     },
     "confirmDefaultTitle": "{agent} zum Default-Agenten machen?",
     "confirmDefaultBody": "{agent} erreicht alle {count} angebundenen Systeme. Als Default-Agent beantwortet er Nachrichten, die an keinen Agenten gerichtet sind; wer schreibt, ohne einen Agenten zu nennen, erreicht damit jedes dieser Systeme. Die Änderung wird im Audit-Log festgehalten.",
-    "confirmDefaultYes": "Zum Default-Agenten machen"
+    "confirmDefaultYes": "Zum Default-Agenten machen",
+    "credentialsHeading": "Zugangsdaten (Credential-Broker)",
+    "credentialNoHost": "persönlich, kein fester Host"
   },
   "agentAvailability": {
     "legend": "Wer diesen Agenten erreichen kann",
@@ -8462,6 +8464,38 @@
       "meta": "Veröffentlicht am {date} · Einstiegspunkt {entrypoint}",
       "source": "Aus",
       "hash": "Inhalt"
+    }
+  },
+  "agentCredentialGrants": {
+    "heading": "Zugangsdaten",
+    "hint": "Benannte Zugangsdaten aus dem Schlüsselbund, die dieser Agent über den Credential-Broker nutzen darf. Eine Freigabe teilt kein Geheimnis: Ein Turn kann nur Zugangsdaten nutzen, die sein Konto selbst nutzen darf.",
+    "loading": "Freigaben werden geladen …",
+    "empty": "Dieser Agent hat keine freigegebenen Zugangsdaten.",
+    "name": "Zugangsdaten",
+    "kind": "Art",
+    "host": "Zielhost",
+    "granted": "Freigegeben",
+    "actions": "Aktionen",
+    "revoked": "widerrufen",
+    "unknown": "unbekannt",
+    "noHost": "kein fester Host",
+    "grantedBy": "von {who}, {date}",
+    "remove": "Entfernen",
+    "confirmRemove": "Freigabe entfernen",
+    "addLabel": "Zugangsdaten freigeben",
+    "choose": "Zugangsdaten wählen …",
+    "noneLeft": "Keine weiteren aktiven Zugangsdaten",
+    "option": "{name} (Zielhost {host})",
+    "add": "Freigeben",
+    "adding": "Wird freigegeben",
+    "kinds": {
+      "personal": "Persönlich",
+      "service": "Dienst"
+    },
+    "errors": {
+      "notFound": "Diese Zugangsdaten oder Freigabe gibt es nicht mehr.",
+      "revoked": "Widerrufene Zugangsdaten können nicht freigegeben werden.",
+      "previewDraft": "Der Vorschau-Agent des Plugin Builders kann nicht konfiguriert werden."
     }
   }
 }

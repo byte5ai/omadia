@@ -63,6 +63,10 @@ Five admin views for service layers that had no surface (#778, admin half). All 
 - **Published apps** (`/admin/published-apps`, #581, ADR-0067): read-only `GET
   /api/v1/admin/publish/apps` and `/apps/:appId/versions`; rollback stays with the
   `publish_rollback` tool.
+- **Agent credential grants** (agent page → Tools, #2319 routes): lists, grants (`PUT`) and
+  removes (`DELETE`) the named credentials of `credentialBroker@1` on
+  `/api/v1/operator/agents/:slug/credential-grants[/:credentialId]`; the offer holds active keychain
+  entries not yet granted, a change re-reads the page, and the reach panel lists `credential_hosts`.
 
 Decisions: ADR-0360 (keychain admin surface: owner-only revocation of personal credentials,
 operators read metadata) and ADR-0361 (sandbox registry wired, idle sweep is an operator action;

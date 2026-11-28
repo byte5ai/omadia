@@ -19,7 +19,7 @@ function botApi(path: string): string {
 
 export async function adminJson<T>(
   path: string,
-  init: { readonly method?: 'GET' | 'POST' | 'DELETE'; readonly body?: unknown } = {},
+  init: { readonly method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; readonly body?: unknown } = {},
 ): Promise<T> {
   const method = init.method ?? 'GET';
   const res = await fetch(botApi(path), {
@@ -37,6 +37,8 @@ export async function adminJson<T>(
   if (!res.ok) {
     throw new ApiError(res.status, `${method} ${path} failed: ${res.status}`, text);
   }
+  // A 204 (e.g. DELETE of an agent credential grant) has no body.
+  if (res.status === 204) return undefined as T;
   try {
     return JSON.parse(text) as T;
   } catch {

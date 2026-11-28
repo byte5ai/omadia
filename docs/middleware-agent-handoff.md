@@ -8377,11 +8377,12 @@ prüft die Mounts im Quelltext der Composition Root.
 | `/admin/skills` | `GET /api/v1/admin/skills`, `POST /:skillId/promote` | `promotable` = `published` und Owner gesetzt; Prüfung/Veröffentlichung hat weiter keine Route (ADR-0068) |
 | `/admin/sandboxes` | `GET /api/v1/admin/sandboxes`, `POST /reap`, `POST /teardown` (`routes/adminSandboxes.ts`) | Registry kommt aus `sandbox_registry` (der Orchestrator-Plugin schreibt sie nur mit Graph-Pool); Sweep ist manuell, persistente Sandboxes nie; ohne Pool 503 |
 | `/admin/published-apps` | `GET /api/v1/admin/publish/apps`, `/apps/:appId/versions` (`routes/adminPublish.ts`, `services/publishAppCatalog.ts`) | nur lesend, nur Postgres; Rollback bleibt beim Tool |
+| `/operator/agents/:slug?tab=tools` (Abschnitt „Zugangsdaten“) | `GET/PUT/DELETE /api/v1/operator/agents/:slug/credential-grants[/:credentialId]` aus #2319 | benannte Credentials für `credentialBroker@1`; Angebot = aktive Keychain-Einträge ohne Grant; die Reach zeigt `credential_hosts` |
 
 Entscheidungen: ADR-0360 (Keychain-Admin) und ADR-0361 (Sandbox-Registry, manueller
 Sweep; löst ADR-0055 teilweise ab). Audit-Aktionen: `credential.revoke`, `credential.grant_revoke`, `skill.promote`,
-`sandbox.teardown`, `sandbox.reap`. Offen: eine Grant-Ansicht pro Agent (kommt nach
-#2319), ein geplanter Reaper, Prüfung/Veröffentlichung von Skills.
+`sandbox.teardown`, `sandbox.reap`. Offen: ein geplanter Reaper,
+Prüfung/Veröffentlichung von Skills.
 
 ### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up) — erledigt (#1394)
 
