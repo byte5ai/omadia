@@ -326,6 +326,10 @@
         "privacyFields": {
           "title": "Field classification",
           "description": "Review masked fields the Privacy Guard could show in clear text. Nothing is unmasked until you confirm it."
+        },
+        "credentials": {
+          "title": "Credentials",
+          "description": "The keychain agents use without seeing a secret: credentials, grants, revocation, and the asks waiting for your answer."
         }
       }
     },
@@ -6458,7 +6462,8 @@
         "privacyFieldClassification": "Privacy field decisions",
         "privacyFieldPreview": "Privacy field value previews",
         "privacyFieldAutoApprove": "Privacy field auto-approvals",
-        "privacyFieldAutoRevoke": "Privacy field auto-approvals revoked"
+        "privacyFieldAutoRevoke": "Privacy field auto-approvals revoked",
+        "credential": "Credentials"
       }
     },
     "table": {
@@ -8218,5 +8223,106 @@
     "after": "after:",
     "deleted": "(deleted)",
     "ownersDelta": "owners {delta}"
+  },
+  "adminSurface": {
+    "working": "Working",
+    "cancel": "Cancel",
+    "never": "—",
+    "errors": {
+      "authRequired": "Your session has ended. Sign in again.",
+      "unavailable": "This feature needs the Postgres database, and this instance runs without one.",
+      "generic": "The request failed (HTTP {status}).",
+      "network": "The server could not be reached."
+    }
+  },
+  "adminCredentials": {
+    "title": "Credentials",
+    "intro": "The keychain agents use without ever seeing a secret: who owns which credential, who may use it, and the asks waiting for your answer. Secrets and fingerprints are never shown here.",
+    "loading": "Loading credentials…",
+    "inbox": {
+      "heading": "Asks waiting for you",
+      "hint": "Only the owner of a personal credential can approve or deny an ask for it. An approval creates the grant.",
+      "empty": "No ask is waiting for you."
+    },
+    "mine": {
+      "heading": "Your asks",
+      "empty": "You have not asked for a credential."
+    },
+    "list": {
+      "heading": "Keychain",
+      "hint": "A personal credential can be revoked by its owner only; a service credential by any administrator.",
+      "empty": "The keychain holds no credential yet.",
+      "name": "Name",
+      "kind": "Kind",
+      "owner": "Owner",
+      "broker": "Allowed use",
+      "created": "Created",
+      "state": "State",
+      "actions": "Actions",
+      "kinds": {
+        "personal": "Personal",
+        "service": "Service"
+      },
+      "noOwner": "Organisation",
+      "noBroker": "Asks only",
+      "active": "Active",
+      "revokedAt": "Revoked {date}",
+      "showGrants": "Grants",
+      "hideGrants": "Hide grants",
+      "revoke": "Revoke",
+      "confirmRevoke": "Revoke for good",
+      "errors": {
+        "forbidden": "Only the owner can revoke this personal credential.",
+        "alreadyRevoked": "This credential is already revoked.",
+        "notFound": "This credential no longer exists."
+      }
+    },
+    "grants": {
+      "loading": "Loading grants…",
+      "empty": "Nobody holds a grant for this credential.",
+      "modes": {
+        "once": "once",
+        "standing": "standing"
+      },
+      "meta": "Granted by {grantedBy} on {grantedAt} · expires {expiresAt}",
+      "revokedAt": "Revoked {date}",
+      "consumedAt": "Used {date}",
+      "revoke": "Revoke",
+      "confirmRevoke": "Revoke grant",
+      "errors": {
+        "forbidden": "Only the owner of the credential can revoke this grant.",
+        "alreadyRevoked": "This grant is already revoked.",
+        "notFound": "This grant no longer exists."
+      }
+    },
+    "asks": {
+      "credential": "Credential",
+      "requester": "Asked by",
+      "owner": "Owner",
+      "purpose": "Purpose",
+      "mode": "Grant",
+      "status": "Status",
+      "expires": "Ask expires",
+      "actions": "Actions",
+      "modes": {
+        "once": "once",
+        "standing": "standing"
+      },
+      "statuses": {
+        "pending": "Waiting",
+        "approved": "Approved",
+        "denied": "Denied",
+        "expired": "Expired",
+        "cancelled": "Withdrawn"
+      },
+      "approve": "Approve",
+      "deny": "Deny",
+      "cancel": "Withdraw",
+      "errors": {
+        "forbidden": "Only the owner of the credential can answer this ask.",
+        "notActionable": "This ask is already answered, has expired, or its credential was revoked.",
+        "notFound": "This ask no longer exists."
+      }
+    }
   }
 }

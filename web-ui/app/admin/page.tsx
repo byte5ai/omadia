@@ -89,6 +89,8 @@ const GROUPS: readonly GroupDef[] = [
       // ADR-0300 — Entra directory people (not accounts).
       { href: '/admin/directory', key: 'directory' },
       { href: '/admin/api-keys', key: 'apiKeys' },
+      // #2320 — the credential keychain (ADR-0102): grants, revocation, asks.
+      { href: '/admin/credentials', key: 'credentials' },
       // #1315 — read-only admin audit log.
       { href: '/admin/audit', key: 'audit' },
     ],

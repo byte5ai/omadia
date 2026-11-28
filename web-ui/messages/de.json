@@ -326,6 +326,10 @@
         "privacyFields": {
           "title": "Feldklassifizierung",
           "description": "Maskierte Felder prüfen, die der Privacy Guard im Klartext zeigen könnte. Nichts wird demaskiert, bevor du es bestätigst."
+        },
+        "credentials": {
+          "title": "Zugangsdaten",
+          "description": "Der Schlüsselbund, den Agenten ohne Einblick ins Geheimnis nutzen: Zugangsdaten, Berechtigungen, Widerruf und Anfragen, die auf deine Antwort warten."
         }
       }
     },
@@ -6458,7 +6462,8 @@
         "privacyFieldClassification": "Entscheidungen zur Feldklassifizierung",
         "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)",
         "privacyFieldAutoApprove": "Automatische Feldfreigaben",
-        "privacyFieldAutoRevoke": "Zurückgenommene automatische Feldfreigaben"
+        "privacyFieldAutoRevoke": "Zurückgenommene automatische Feldfreigaben",
+        "credential": "Zugangsdaten"
       }
     },
     "table": {
@@ -8218,5 +8223,106 @@
     "after": "nachher:",
     "deleted": "(gelöscht)",
     "ownersDelta": "Owner {delta}"
+  },
+  "adminSurface": {
+    "working": "Läuft",
+    "cancel": "Abbrechen",
+    "never": "—",
+    "errors": {
+      "authRequired": "Deine Sitzung ist abgelaufen. Bitte melde dich neu an.",
+      "unavailable": "Diese Funktion braucht die Postgres-Datenbank, und diese Instanz läuft ohne.",
+      "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
+      "network": "Der Server ist nicht erreichbar."
+    }
+  },
+  "adminCredentials": {
+    "title": "Zugangsdaten",
+    "intro": "Der Schlüsselbund, den Agenten nutzen, ohne je ein Geheimnis zu sehen: wem welche Zugangsdaten gehören, wer sie nutzen darf und welche Anfragen auf deine Antwort warten. Geheimnisse und Fingerprints werden hier nie angezeigt.",
+    "loading": "Zugangsdaten werden geladen…",
+    "inbox": {
+      "heading": "Anfragen an dich",
+      "hint": "Nur wem die persönlichen Zugangsdaten gehören, kann eine Anfrage dafür annehmen oder ablehnen. Eine Zustimmung legt die Berechtigung an.",
+      "empty": "Keine Anfrage wartet auf dich."
+    },
+    "mine": {
+      "heading": "Deine Anfragen",
+      "empty": "Du hast noch keine Zugangsdaten angefragt."
+    },
+    "list": {
+      "heading": "Schlüsselbund",
+      "hint": "Persönliche Zugangsdaten kann nur ihr Besitzer widerrufen, Dienst-Zugangsdaten jede Administratorin und jeder Administrator.",
+      "empty": "Der Schlüsselbund enthält noch keine Zugangsdaten.",
+      "name": "Name",
+      "kind": "Art",
+      "owner": "Besitzer",
+      "broker": "Erlaubte Nutzung",
+      "created": "Angelegt",
+      "state": "Status",
+      "actions": "Aktionen",
+      "kinds": {
+        "personal": "Persönlich",
+        "service": "Dienst"
+      },
+      "noOwner": "Organisation",
+      "noBroker": "Nur über Anfragen",
+      "active": "Aktiv",
+      "revokedAt": "Widerrufen am {date}",
+      "showGrants": "Berechtigungen",
+      "hideGrants": "Berechtigungen ausblenden",
+      "revoke": "Widerrufen",
+      "confirmRevoke": "Endgültig widerrufen",
+      "errors": {
+        "forbidden": "Nur der Besitzer kann diese persönlichen Zugangsdaten widerrufen.",
+        "alreadyRevoked": "Diese Zugangsdaten sind bereits widerrufen.",
+        "notFound": "Diese Zugangsdaten gibt es nicht mehr."
+      }
+    },
+    "grants": {
+      "loading": "Berechtigungen werden geladen…",
+      "empty": "Niemand hat eine Berechtigung für diese Zugangsdaten.",
+      "modes": {
+        "once": "einmalig",
+        "standing": "dauerhaft"
+      },
+      "meta": "Erteilt von {grantedBy} am {grantedAt} · läuft ab {expiresAt}",
+      "revokedAt": "Widerrufen am {date}",
+      "consumedAt": "Genutzt am {date}",
+      "revoke": "Widerrufen",
+      "confirmRevoke": "Berechtigung widerrufen",
+      "errors": {
+        "forbidden": "Nur der Besitzer der Zugangsdaten kann diese Berechtigung widerrufen.",
+        "alreadyRevoked": "Diese Berechtigung ist bereits widerrufen.",
+        "notFound": "Diese Berechtigung gibt es nicht mehr."
+      }
+    },
+    "asks": {
+      "credential": "Zugangsdaten",
+      "requester": "Angefragt von",
+      "owner": "Besitzer",
+      "purpose": "Zweck",
+      "mode": "Berechtigung",
+      "status": "Status",
+      "expires": "Anfrage läuft ab",
+      "actions": "Aktionen",
+      "modes": {
+        "once": "einmalig",
+        "standing": "dauerhaft"
+      },
+      "statuses": {
+        "pending": "Wartet",
+        "approved": "Angenommen",
+        "denied": "Abgelehnt",
+        "expired": "Abgelaufen",
+        "cancelled": "Zurückgezogen"
+      },
+      "approve": "Annehmen",
+      "deny": "Ablehnen",
+      "cancel": "Zurückziehen",
+      "errors": {
+        "forbidden": "Nur der Besitzer der Zugangsdaten kann diese Anfrage beantworten.",
+        "notActionable": "Diese Anfrage ist schon beantwortet, abgelaufen, oder ihre Zugangsdaten wurden widerrufen.",
+        "notFound": "Diese Anfrage gibt es nicht mehr."
+      }
+    }
   }
 }

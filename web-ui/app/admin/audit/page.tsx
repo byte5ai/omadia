@@ -45,6 +45,8 @@ const ACTION_FILTERS = [
   // The auto-classifier's approvals and revocations (actor system:auto-classifier).
   { key: 'privacyFieldAutoApprove', prefix: 'privacy.field_auto_approve' },
   { key: 'privacyFieldAutoRevoke', prefix: 'privacy.field_auto_revoke' },
+  // #2320 — keychain revocations (credentials and grants).
+  { key: 'credential', prefix: 'credential.' },
 ] as const;
 
 type Formatter = ReturnType<typeof useFormatter>;

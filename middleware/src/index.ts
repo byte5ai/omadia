@@ -190,6 +190,7 @@ import { createSkillPromotionRouter } from './routes/skillPromotion.js';
 import { PgSkillOwnershipLifecycleStore } from './services/skillLifecycleStore.js';
 import { resolveSkillManifestSigningKey } from './services/skillManifestSigningKey.js';
 import { createCredentialAskRouter } from './routes/credentialAsks.js';
+import { createAdminCredentialsRouter } from './routes/adminCredentials.js';
 import { InMemoryCredentialAskStore } from './credentials/asks.js';
 import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
 import {
@@ -4782,6 +4783,18 @@ async function main(): Promise<void> {
   );
   console.log(
     `[middleware] credential-asks endpoint ready at /api/v1/admin/credential-asks (backend=${graphPool ? 'postgres' : 'in-memory'})`,
+  );
+
+  // #2320 — the admin read + revoke surface of the keychain (ADR-0102).
+  // Shares the asks router's store instance, so the in-memory backend shows
+  // the grants an approved ask minted.
+  app.use(
+    '/api/v1/admin/credentials',
+    requireAuth,
+    createAdminCredentialsRouter({
+      store: credentialStoreForAsks,
+      ...(graphPool ? { adminAudit: new AdminAuditLog(graphPool) } : {}),
+    }),
   );
 
   // Slice 9 — inconsistency detection workflow. Always mount (the
