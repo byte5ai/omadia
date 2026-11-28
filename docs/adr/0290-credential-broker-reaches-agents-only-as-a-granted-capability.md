@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0355](0355-credential-broker-tools-run-as-the-turns-account.md) (the broker's principal is the turn's account; without one, service credentials are refused too)
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers. Design record for the agent-tool half of #778

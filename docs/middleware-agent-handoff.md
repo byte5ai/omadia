@@ -550,6 +550,46 @@ liest pro Aufruf (`PrivacyGuardServiceDeps.agentNames`) und nimmt die Namen in
 jeder Turn-Maskierung und in jedem Stored-Text-Scope aus. Regeln:
 `docs/security-architecture.md` §6f.
 
+### Credential-Broker als Kernel-Capability `credentialBroker@1` (#2319, ADR-0290, ADR-0355)
+
+Zwei native Kernel-Tools, registriert in `credentials/credentialBrokerWiring.ts` (der
+einzige Ort, an dem `CredentialBroker` gebaut wird; bewusst **nicht** im Service-Registry,
+sonst könnte ein Plugin ihn ohne Agent-Envelope rufen):
+
+- `credential_request` `{ credential, host, method, path, headers?, body? }` — ruft einen
+  deklarierten Dienst; der Kernel stempelt das Secret. Antwort ans Modell: `status`,
+  `headers` (nur `content-type`, `location`, `retry-after`), `body` (≤ 32 000 Zeichen),
+  `truncated`. Gesendet ohne Antwort → `{ status: "outcome_unknown" }`, keine Ablehnung.
+  Ablehnungen als `Error: (denied:<BrokerDenialReason>) …`.
+- `credential_ask` `{ credential, purpose, mode?: once|standing, valid_minutes? }` — legt ein
+  Ask für ein `personal`-Credential an; Antwort `{ status: "pending", askId }`. Ein offenes Ask
+  pro Person und Credential (Wiederholung liefert dasselbe Ask, keine zweite Notice).
+
+Reihenfolge pro Aufruf (`credentialBrokerTools.ts`, fail-closed): Turn mit Agent →
+Account der Runde (`TurnContextValue.accountUserId`, gesetzt über `turnAccountUserId` in
+`harness-orchestrator/src/resolveTurnOwnerIdentity.ts`: Web-Session-Account oder per
+ADR-0225 verknüpfter Account, sonst nichts → `account_not_linked`) → Principal-Felder im
+Input → `identity_from_turn` → Grant des Credentials für **diesen** Agenten (live gelesen,
+`agent_credential_grants`, Migration 0125) → Broker mit `user:<accountUserId>` (prüft den
+`CredentialGrant` des Accounts, ADR-0102). Angeboten (`isAvailable`) nur Agenten mit
+mindestens einem Grant, aus einem Snapshot (`AgentCredentialGrantSnapshot`, Reload nach
+jeder Grant-Änderung und alle 60 s).
+
+Operator-Routen (`routes/operatorCredentialGrants.ts`, unter `/api/v1/operator`, `requireAuth`):
+`GET /agents/:slug/credential-grants` → `{ slug, capability: "credentialBroker@1", grants:
+[{ credentialId, name, kind, host, revoked, grantedBy, grantedAt }] }`, `PUT
+/agents/:slug/credential-grants/:credentialId` (201 neu / 200 vorhanden / 404 / 409
+`credential_revoked`), `DELETE …` (204 / 404). Audit `agent.credential_grant_change`. Die
+Reach (`GET /operator/agents/:slug/reach`, Directory) trägt zusätzlich `credential_hosts`.
+
+Asks: die Notice an den Owner geht als `system`-DM an eine Kanal-Identität seines
+Account-Clusters (`kg.listUserChannelIdentities`, ohne `web`/`http`/`api`; erste erfolgreiche
+Zustellung gewinnt) mit Link `${PUBLIC_BASE_URL}/admin/credentials/asks?ask=<id>` (UI #2320).
+Kein erreichbarer Kanal → Log, das Ask wartet in der Inbox. Approve/Deny über
+`/api/v1/admin/credential-asks` ruft `onResolved` → `credential_ask_deliveries` wird genau
+einmal gelesen und gelöscht → Entscheidung als `system` über den `ProactiveSender` des Kanals in
+die anfragende Konversation. Abgelaufene Asks melden nichts zurück.
+
 ### Plugin-Tool-Readiness-Gate (#474)
 
 `Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem
@@ -5755,6 +5795,13 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 
 ## 10. Konfiguration
 
+### Credential-Broker (#2319)
+
+Keine neue Variable. `CREDENTIAL_KEYCHAIN_KEY` (`.env.example`) verschlüsselt den Keychain und
+ist seit #2319 auch der Schlüssel, mit dem der Broker das Secret für den Stempel entschlüsselt.
+`PUBLIC_BASE_URL` bildet den Approve/Deny-Link der Ask-Notice; ungesetzt nennt die Notice den Ort
+in der Admin-UI ohne Link.
+
 ### Admin-UI-Sitzung (#965)
 
 | Variable | Wirkung |
@@ -8153,6 +8200,14 @@ Upstream-Fehler. Die folgenden Punkte lässt der Slice
 bewusst offen; sie müssen stehen, **bevor** das Agent-Tool (#778 S3b) den
 Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 
+> **Stand #2319 (2026-11-28):** das Agent-Tool steht (§3 „Credential-Broker als
+> Kernel-Capability“). Erledigt davon: kurze Secrets werden bei der Nutzung abgelehnt
+> (`secret-too-short`, vor dem `once`-Gate; die Ablehnung beim Anlegen bleibt S2), die grobe
+> Capability ist der Agent-Grant (`agent_credential_grants`), `set-cookie` und alle übrigen
+> Upstream-Header erreichen das Modell nicht, `upstream-*` heißt im Tool `outcome_unknown`. Offen
+> bleiben ungesalzener Fingerprint, `allowedHeaders`, die Transformationen, `%2F` und der
+> SSRF-Opt-in.
+
 - **Kurze Secrets werden nicht gescrubbt (S2).** `brokerResponse.ts`
   scrubbt Secrets und `basic-password`-Passwortsegmente erst ab
   `MIN_SCRUBBABLE_SECRET_LENGTH` = 8 Zeichen; ein kürzeres Secret, das ein
@@ -8274,7 +8329,9 @@ nicht als `sub`/E-Mail, nicht als `role:`. Sonst stimmt kein Session-Principal j
 mit `ask.owner` überein, und niemand kann das Ask beantworten
 (`role`-Owner lehnt `assertAskableCredential` deshalb schon als `not_askable`
 ab). Offen im Epic: das agent-aufrufbare Broker-/Ask-Tool, die Benachrichtigung
-des Owners (heute nur per `GET /pending` auffindbar) und die Admin-UIs (P4).
+des Owners (heute nur per `GET /pending` auffindbar) und die Admin-UIs (P4). Seit #2319: Tool und
+Owner-Benachrichtigung stehen; offen sind die Admin-UIs (#2320) und die Einlösung eines
+genehmigten `personal`-Grants (#2383, der Broker bedient nur `service`).
 
 ### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up) — erledigt (#1394)
 
