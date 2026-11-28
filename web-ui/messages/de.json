@@ -337,6 +337,10 @@
         "skills": {
           "title": "Skills",
           "description": "Alle Skills mit Zuhause und Lebenszyklus; veröffentlichte Skills an ein Team oder die Organisation befördern."
+        },
+        "sandboxes": {
+          "title": "Sandboxes",
+          "description": "Die Container pro Bereich, in denen Agenten Befehle ausführen; einzelne entfernen oder ungenutzte aufräumen."
         }
       }
     },
@@ -6471,7 +6475,8 @@
         "privacyFieldAutoApprove": "Automatische Feldfreigaben",
         "privacyFieldAutoRevoke": "Zurückgenommene automatische Feldfreigaben",
         "credential": "Zugangsdaten",
-        "skill": "Skills"
+        "skill": "Skills",
+        "sandbox": "Sandboxes"
       }
     },
     "table": {
@@ -8374,6 +8379,45 @@
         "notFound": "Diesen Skill gibt es nicht mehr.",
         "rejected": "Die Lebenszyklus-Regeln haben die Beförderung abgelehnt.",
         "invalid": "Gib die ID des Teams oder der Organisation ein."
+      }
+    }
+  },
+  "adminSandboxes": {
+    "title": "Sandboxes",
+    "intro": "Die Container, in denen Agenten Befehle ausführen und Apps bauen, einer pro Gesprächsbereich. Installierte Werkzeuge und Dateien bleiben, bis die Sandbox entfernt wird. Untätige Sandboxes räumt nichts von selbst auf; starte hier einen Durchlauf.",
+    "loading": "Sandboxes werden geladen…",
+    "reaper": {
+      "heading": "Aufräumen nach Leerlauf",
+      "hint": "Entfernt jede Sandbox, die länger als die Schwelle nicht genutzt wurde. Dauerhafte Sandboxes entfernt ein Durchlauf nie. Sieh dir zuerst die Vorschau an.",
+      "idleLabel": "Ungenutzt seit mehr als (Stunden)",
+      "preview": "Vorschau",
+      "sweep": "Aufräumen",
+      "confirmSweep": "Ungenutzte Sandboxes entfernen",
+      "bounds": "Wähle zwischen {min} und {max} Stunden.",
+      "previewResult": "{count, plural, =0 {Keine Sandbox würde entfernt.} one {# Sandbox würde entfernt:} other {# Sandboxes würden entfernt:}}",
+      "sweepResult": "{reaped} entfernt, {failed} nicht entfernbar. Fehlgeschlagene bleiben gelistet und werden beim nächsten Durchlauf erneut versucht.",
+      "errors": {
+        "invalidIdle": "Die Schwelle liegt außerhalb des erlaubten Bereichs."
+      }
+    },
+    "list": {
+      "heading": "Sandboxes",
+      "empty": "Keine Sandbox ist registriert. Sandboxes erscheinen hier, sobald ein Agent das Execute- oder Publish-Werkzeug nutzt.",
+      "scope": "Bereich",
+      "container": "Container",
+      "profile": "Profil",
+      "lastUsed": "Zuletzt genutzt",
+      "created": "Angelegt",
+      "actions": "Aktionen",
+      "persistent": "dauerhaft",
+      "ephemeral": "bei Leerlauf entfernbar",
+      "egressOn": "Netzwerk an",
+      "egressOff": "kein Netzwerk",
+      "teardown": "Entfernen",
+      "confirmTeardown": "Mit Dateien entfernen",
+      "errors": {
+        "teardownFailed": "Der Container konnte nicht entfernt werden. Die Sandbox bleibt gelistet.",
+        "notFound": "Diese Sandbox gibt es nicht mehr."
       }
     }
   }

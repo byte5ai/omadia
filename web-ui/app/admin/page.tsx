@@ -85,7 +85,10 @@ const GROUPS: readonly GroupDef[] = [
     // #2320 — what agents build and run: skills (ADR-0068), and below the
     // sandboxes (#576) and published apps (#581).
     key: 'workspace',
-    cards: [{ href: '/admin/skills', key: 'skills' }],
+    cards: [
+      { href: '/admin/skills', key: 'skills' },
+      { href: '/admin/sandboxes', key: 'sandboxes' },
+    ],
   },
   {
     key: 'access',

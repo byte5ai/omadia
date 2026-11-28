@@ -48,6 +48,7 @@ const ACTION_FILTERS = [
   // #2320 — keychain revocations (credentials and grants).
   { key: 'credential', prefix: 'credential.' },
   { key: 'skill', prefix: 'skill.' },
+  { key: 'sandbox', prefix: 'sandbox.' },
 ] as const;
 
 type Formatter = ReturnType<typeof useFormatter>;

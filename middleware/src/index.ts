@@ -191,6 +191,8 @@ import { PgSkillOwnershipLifecycleStore } from './services/skillLifecycleStore.j
 import { resolveSkillManifestSigningKey } from './services/skillManifestSigningKey.js';
 import { createCredentialAskRouter } from './routes/credentialAsks.js';
 import { createAdminCredentialsRouter } from './routes/adminCredentials.js';
+import { createAdminSandboxesRouter } from './routes/adminSandboxes.js';
+import { PostgresSandboxRegistry } from '@omadia/sandbox';
 import { InMemoryCredentialAskStore } from './credentials/asks.js';
 import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
 import {
@@ -4766,6 +4768,19 @@ async function main(): Promise<void> {
       '[middleware] skill-promotion endpoint skipped — no graphPool (Neon backend missing?)',
     );
   }
+
+  // #2320 — admin view of the agent sandboxes (#576, ADR-0055) and the
+  // manual idle sweep. Same table the orchestrator plugin writes when it has
+  // the graph pool; without one the router answers 503.
+  app.use(
+    '/api/v1/admin/sandboxes',
+    requireAuth,
+    createAdminSandboxesRouter(
+      graphPool
+        ? { registry: new PostgresSandboxRegistry(graphPool), adminAudit: new AdminAuditLog(graphPool) }
+        : {},
+    ),
+  );
 
   // #778 W1 — #578 Phase 3's keychain-asks HTTP surface. Built and
   // route-tested by #774 but deliberately left unmounted (same "new files

@@ -29,6 +29,7 @@ interface Mount {
 const MOUNTS: readonly Mount[] = [
   { path: '/api/v1/admin/credentials', factory: 'createAdminCredentialsRouter', module: 'adminCredentials' },
   { path: '/api/v1/admin/skills', factory: 'createSkillPromotionRouter', module: 'skillPromotion' },
+  { path: '/api/v1/admin/sandboxes', factory: 'createAdminSandboxesRouter', module: 'adminSandboxes' },
 ];
 
 function escape(text: string): string {

@@ -96,3 +96,34 @@ describe('DockerSandboxBackend — with a registry', () => {
     assert.ok(secondSeen.getTime() >= firstSeen.getTime());
   });
 });
+
+describe('DockerSandboxBackend — torn down from outside (#2320)', () => {
+  it('re-provisions a cached scope whose registry row is gone', async () => {
+    const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()));
+    const registry = new InMemorySandboxRegistry();
+    const backend = new DockerSandboxBackend({ execDocker: exec, registry });
+    const profile = resolveAgentComputerProfile();
+    const first = await backend.provision({ scopeKey: 'personal:reaped', profile });
+    const runsBefore = calls.filter((c) => c.args[0] === 'run').length;
+
+    // The admin view (or the reaper) removed the container and its row.
+    await registry.delete('personal:reaped');
+
+    const second = await backend.provision({ scopeKey: 'personal:reaped', profile });
+    assert.notEqual(second, first, 'the stale cached handle is not reused');
+    assert.equal(calls.filter((c) => c.args[0] === 'run').length, runsBefore + 1, 'a new container is created');
+    assert.ok(await registry.get('personal:reaped'), 'the scope is registered again');
+  });
+
+  it('keeps the cached handle while the row exists', async () => {
+    const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()));
+    const registry = new InMemorySandboxRegistry();
+    const backend = new DockerSandboxBackend({ execDocker: exec, registry });
+    const profile = resolveAgentComputerProfile();
+    const first = await backend.provision({ scopeKey: 'personal:live', profile });
+    const callsBefore = calls.length;
+    const second = await backend.provision({ scopeKey: 'personal:live', profile });
+    assert.equal(second, first);
+    assert.equal(calls.length, callsBefore, 'no docker call on a cache hit');
+  });
+});

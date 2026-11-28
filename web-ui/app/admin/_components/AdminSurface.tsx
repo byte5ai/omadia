@@ -77,18 +77,20 @@ export function ConfirmButton({
   label,
   confirmLabel,
   busy,
+  disabled = false,
   onConfirm,
 }: {
   label: string;
   confirmLabel: string;
   busy: boolean;
+  disabled?: boolean;
   onConfirm: () => void;
 }): React.ReactElement {
   const t = useTranslations('adminSurface');
   const [armed, setArmed] = useState(false);
   if (!armed) {
     return (
-      <Button variant="danger" size="sm" disabled={busy} onClick={() => setArmed(true)}>
+      <Button variant="danger" size="sm" disabled={busy || disabled} onClick={() => setArmed(true)}>
         {label}
       </Button>
     );

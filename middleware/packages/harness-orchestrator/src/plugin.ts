@@ -164,7 +164,7 @@ import {
   createGrantCheckedPublishHandler,
   createGrantCheckedPublishRollbackHandler,
 } from './tools/publishGrantedTools.js';
-import { DockerSandboxBackend } from '@omadia/sandbox';
+import { DockerSandboxBackend, PostgresSandboxRegistry } from '@omadia/sandbox';
 import { DockerPublishRuntime, InMemoryPublishStore, PostgresPublishStore, type PublishStore } from '@omadia/publish';
 import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sandboxLimitsConfig.js';
 /**
@@ -1118,10 +1118,19 @@ export async function activate(
   const sandboxLimits = readSandboxResourceLimits((key) => ctx.config.get<unknown>(key));
   const sandboxLimitsSummary = describeSandboxResourceLimits(sandboxLimits);
   const logSandboxWarning = (msg: string): void => ctx.log(`[harness-orchestrator] ${msg}`);
+  // #2320 — with the graph pool, both Docker paths record their scope
+  // containers in `sandbox_registry` (migration 0044): last use for the
+  // reaper and the admin view (`/admin/sandboxes`), which tears down idle or
+  // single sandboxes. Without a pool there is no registry, as before.
+  const sandboxRegistry = graphPool ? new PostgresSandboxRegistry(graphPool) : undefined;
   const disposeExecuteTool: Array<() => void> = [];
   const sandboxExecuteEnabled = ctx.config.get<boolean>('sandbox_execute_enabled') === true;
   if (sandboxExecuteEnabled) {
-    const sandboxBackend = new DockerSandboxBackend({ resourceLimits: sandboxLimits, log: logSandboxWarning });
+    const sandboxBackend = new DockerSandboxBackend({
+      resourceLimits: sandboxLimits,
+      log: logSandboxWarning,
+      ...(sandboxRegistry ? { registry: sandboxRegistry } : {}),
+    });
     // No `writeCapabilities` annotation: that contract is a `{dataClass,
     // operation}` pair for canvas inline-edit + idempotency dedupe of
     // STRUCTURED writes (an Odoo record, a Jira ticket) — `execute`'s
@@ -1172,7 +1181,11 @@ export async function activate(
   const disposePublishTools: Array<() => void> = [];
   const sandboxPublishEnabled = ctx.config.get<boolean>('sandbox_publish_enabled') === true;
   if (sandboxPublishEnabled) {
-    const publishSandboxBackend = new DockerSandboxBackend({ resourceLimits: sandboxLimits, log: logSandboxWarning });
+    const publishSandboxBackend = new DockerSandboxBackend({
+      resourceLimits: sandboxLimits,
+      log: logSandboxWarning,
+      ...(sandboxRegistry ? { registry: sandboxRegistry } : {}),
+    });
     const publishRuntime = new DockerPublishRuntime({ resourceLimits: sandboxLimits });
     const publishStore: PublishStore = graphPool ? new PostgresPublishStore(graphPool) : new InMemoryPublishStore();
     const publishSharing = audienceGrants
