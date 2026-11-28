@@ -224,6 +224,9 @@
         },
         "privacy": {
           "heading": "Datenschutz"
+        },
+        "workspace": {
+          "heading": "Arbeitsbereich der Agenten"
         }
       },
       "cards": {
@@ -330,6 +333,10 @@
         "credentials": {
           "title": "Zugangsdaten",
           "description": "Der Schlüsselbund, den Agenten ohne Einblick ins Geheimnis nutzen: Zugangsdaten, Berechtigungen, Widerruf und Anfragen, die auf deine Antwort warten."
+        },
+        "skills": {
+          "title": "Skills",
+          "description": "Alle Skills mit Zuhause und Lebenszyklus; veröffentlichte Skills an ein Team oder die Organisation befördern."
         }
       }
     },
@@ -6463,7 +6470,8 @@
         "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)",
         "privacyFieldAutoApprove": "Automatische Feldfreigaben",
         "privacyFieldAutoRevoke": "Zurückgenommene automatische Feldfreigaben",
-        "credential": "Zugangsdaten"
+        "credential": "Zugangsdaten",
+        "skill": "Skills"
       }
     },
     "table": {
@@ -8322,6 +8330,50 @@
         "forbidden": "Nur der Besitzer der Zugangsdaten kann diese Anfrage beantworten.",
         "notActionable": "Diese Anfrage ist schon beantwortet, abgelaufen, oder ihre Zugangsdaten wurden widerrufen.",
         "notFound": "Diese Anfrage gibt es nicht mehr."
+      }
+    }
+  },
+  "adminSkills": {
+    "title": "Skills",
+    "intro": "Alle Skills mit ihrem Zuhause und Lebenszyklus. Ein Skill beginnt persönlich; ein Team oder die ganze Organisation erreicht er nur, wenn er nach der Veröffentlichung befördert wird. Die Beförderung signiert sein Manifest neu.",
+    "loading": "Skills werden geladen…",
+    "list": {
+      "heading": "Skills",
+      "hint": "Befördert werden kann nur ein veröffentlichter Skill mit Besitzer. Für Prüfung und Veröffentlichung gibt es noch keine Admin-Steuerung.",
+      "empty": "Es gibt noch keine Skills.",
+      "name": "Skill",
+      "owner": "Zuhause",
+      "status": "Lebenszyklus",
+      "capabilities": "Braucht",
+      "signed": "Signiert",
+      "promote": "Befördern",
+      "unowned": "Kein Besitzer (Altbestand)",
+      "statuses": {
+        "draft": "Entwurf",
+        "reviewed": "Geprüft",
+        "published": "Veröffentlicht",
+        "archived": "Archiviert"
+      },
+      "capabilitiesNone": "Nichts",
+      "capabilitiesInvalid": "Ungültige Angabe",
+      "notPromotableUnowned": "Braucht zuerst einen Besitzer",
+      "notPromotableStatus": "Nur veröffentlichte Skills"
+    },
+    "promoteForm": {
+      "kindLabel": "Befördern nach",
+      "kinds": {
+        "group": "Team",
+        "org": "Organisation"
+      },
+      "groupRef": "Team-ID",
+      "orgId": "Organisations-ID",
+      "submit": "Befördern",
+      "working": "Wird befördert",
+      "errors": {
+        "notEligible": "Dieser Skill ist nicht veröffentlicht oder hat keinen Besitzer und kann daher nicht befördert werden.",
+        "notFound": "Diesen Skill gibt es nicht mehr.",
+        "rejected": "Die Lebenszyklus-Regeln haben die Beförderung abgelehnt.",
+        "invalid": "Gib die ID des Teams oder der Organisation ein."
       }
     }
   }

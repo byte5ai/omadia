@@ -63,6 +63,19 @@ describe('PgSkillOwnershipLifecycleStore (pg)', { skip: !pgAvailable }, () => {
     return row.id;
   }
 
+  it('#2320 listSkills returns ownership + lifecycle columns and required capabilities', async () => {
+    const id = await seedDraftSkill('list', ['mcp.web-search']);
+    await store.assignPersonalOwner(id, { kind: 'personal', userId: 'u-list' }, { kind: 'personal', userId: 'u-actor' });
+    const rows = await store.listSkills();
+    const row = rows.find((r) => r.id === id);
+    assert.ok(row, 'the seeded skill is listed');
+    assert.equal(row.ownerScope, 'personal:u-list');
+    assert.equal(row.lifecycleStatus, 'draft');
+    assert.deepEqual(row.requiredCapabilities, ['mcp.web-search']);
+    assert.ok(row.updatedAt instanceof Date);
+    assert.ok(!('body' in row), 'the list row carries no body');
+  });
+
   it('a freshly imported skill has no owner and starts in draft', async () => {
     const id = await seedDraftSkill('fresh');
     const row = await store.getSkill(id);

@@ -47,6 +47,7 @@ const ACTION_FILTERS = [
   { key: 'privacyFieldAutoRevoke', prefix: 'privacy.field_auto_revoke' },
   // #2320 — keychain revocations (credentials and grants).
   { key: 'credential', prefix: 'credential.' },
+  { key: 'skill', prefix: 'skill.' },
 ] as const;
 
 type Formatter = ReturnType<typeof useFormatter>;

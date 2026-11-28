@@ -8,16 +8,20 @@ import {
   type SkillOwnershipLifecycleRow,
 } from '../services/skillLifecycleStore.js';
 import { SkillAutomationWriteBlocked } from '../services/skillLifecycle.js';
+import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 
 /**
  * #778 W1 — REST surface for `PgSkillOwnershipLifecycleStore.promoteSkillOwnerScope`
  * (#577 P3), the only path a skill ever reaches `group`/`org` ownership.
  * Mounted under `/api/v1/admin/skills`.
  *
- * One endpoint:
+ * Endpoints:
+ *   GET  /                   → #2320: every skill's owner scope, lifecycle
+ *                               status and required capabilities (admin view).
  *   POST /:skillId/promote   → promote an already-published skill to a
  *                               team (group) or org home, re-signing its
- *                               manifest at the new owner scope.
+ *                               manifest at the new owner scope. Written to
+ *                               the admin audit trail as `skill.promote`.
  *
  * Auth follows the EXACT `routes/bulkPromotion.ts` precedent
  * (`req.session.omadia_user_id`, single-tenant byte5 — every authenticated
@@ -64,14 +68,39 @@ function errMsg(err: unknown): string {
 export interface SkillPromotionRouteDeps {
   /** Narrowed to the one method this route calls (`Pick`, not the concrete
    *  class) so a test double can stand in without a real `Pool`. */
-  readonly store: Pick<PgSkillOwnershipLifecycleStore, 'promoteSkillOwnerScope'>;
+  readonly store: Pick<PgSkillOwnershipLifecycleStore, 'promoteSkillOwnerScope' | 'listSkills'>;
   /** HMAC key `promoteSkillOwnerScope` re-signs the manifest with — see
    *  `services/skillManifestSigningKey.ts`. */
   readonly signingKey: string;
+  /** #2320 — ADR-0100 trail for promotions; absent in tests and without a pool. */
+  readonly adminAudit?: Pick<AdminAuditLog, 'record'>;
 }
 
 export function createSkillPromotionRouter(deps: SkillPromotionRouteDeps): Router {
   const router = Router();
+
+  router.get('/', async (req: Request, res: Response): Promise<void> => {
+    if (!requireSessionUserId(req, res)) return;
+    try {
+      const rows = await deps.store.listSkills();
+      res.json({
+        skills: rows.map((row) => ({
+          id: row.id,
+          slug: row.slug,
+          name: row.name,
+          owner_scope: row.ownerScope,
+          lifecycle_status: row.lifecycleStatus,
+          manifest_signed_at: row.manifestSignedAt ? row.manifestSignedAt.toISOString() : null,
+          updated_at: row.updatedAt.toISOString(),
+          required_capabilities: row.requiredCapabilities,
+          promotable: row.lifecycleStatus === 'published' && row.ownerScope !== null,
+        })),
+      });
+    } catch (err) {
+      console.error('[skill-promotion] list failed:', err);
+      res.status(500).json({ code: 'skill_promotion.list_failed', message: 'could not list skills' });
+    }
+  });
 
   router.post('/:skillId/promote', async (req: Request, res: Response): Promise<void> => {
     const sessionUserId = requireSessionUserId(req, res);
@@ -88,6 +117,11 @@ export function createSkillPromotionRouter(deps: SkillPromotionRouteDeps): Route
       const updated = await deps.store.promoteSkillOwnerScope(skillId, parsed.data.targetScope, {
         actorScope: { kind: 'personal', userId: sessionUserId },
         signingKey: deps.signingKey,
+      });
+      await recordOperatorAudit(deps.adminAudit, req, {
+        action: 'skill.promote',
+        target: `skill:${updated.id}`,
+        after: { slug: updated.slug, ownerScope: updated.ownerScope },
       });
       res.json(toSkillBody(updated));
     } catch (err) {

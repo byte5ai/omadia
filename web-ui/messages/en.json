@@ -224,6 +224,9 @@
         },
         "privacy": {
           "heading": "Privacy"
+        },
+        "workspace": {
+          "heading": "Agent workspace"
         }
       },
       "cards": {
@@ -330,6 +333,10 @@
         "credentials": {
           "title": "Credentials",
           "description": "The keychain agents use without seeing a secret: credentials, grants, revocation, and the asks waiting for your answer."
+        },
+        "skills": {
+          "title": "Skills",
+          "description": "Every skill with its home and lifecycle; promote a published skill to a team or the organisation."
         }
       }
     },
@@ -6463,7 +6470,8 @@
         "privacyFieldPreview": "Privacy field value previews",
         "privacyFieldAutoApprove": "Privacy field auto-approvals",
         "privacyFieldAutoRevoke": "Privacy field auto-approvals revoked",
-        "credential": "Credentials"
+        "credential": "Credentials",
+        "skill": "Skills"
       }
     },
     "table": {
@@ -8322,6 +8330,50 @@
         "forbidden": "Only the owner of the credential can answer this ask.",
         "notActionable": "This ask is already answered, has expired, or its credential was revoked.",
         "notFound": "This ask no longer exists."
+      }
+    }
+  },
+  "adminSkills": {
+    "title": "Skills",
+    "intro": "Every skill with its home and lifecycle. A skill starts personal; it reaches a team or the whole organisation only by promoting it once it is published. Promotion signs its manifest again.",
+    "loading": "Loading skills…",
+    "list": {
+      "heading": "Skills",
+      "hint": "Only a published skill with an owner can be promoted. Moving a skill through review and publishing has no admin control yet.",
+      "empty": "There are no skills yet.",
+      "name": "Skill",
+      "owner": "Home",
+      "status": "Lifecycle",
+      "capabilities": "Needs",
+      "signed": "Signed",
+      "promote": "Promote",
+      "unowned": "No owner (legacy)",
+      "statuses": {
+        "draft": "Draft",
+        "reviewed": "Reviewed",
+        "published": "Published",
+        "archived": "Archived"
+      },
+      "capabilitiesNone": "Nothing",
+      "capabilitiesInvalid": "Invalid declaration",
+      "notPromotableUnowned": "Needs an owner first",
+      "notPromotableStatus": "Only published skills"
+    },
+    "promoteForm": {
+      "kindLabel": "Promote to",
+      "kinds": {
+        "group": "Team",
+        "org": "Organisation"
+      },
+      "groupRef": "Team id",
+      "orgId": "Organisation id",
+      "submit": "Promote",
+      "working": "Promoting",
+      "errors": {
+        "notEligible": "This skill is not published or has no owner, so it cannot be promoted.",
+        "notFound": "This skill no longer exists.",
+        "rejected": "The promotion was refused by the lifecycle rules.",
+        "invalid": "Enter the id of the team or organisation."
       }
     }
   }

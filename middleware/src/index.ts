@@ -4752,10 +4752,14 @@ async function main(): Promise<void> {
     app.use(
       '/api/v1/admin/skills',
       requireAuth,
-      createSkillPromotionRouter({ store: skillLifecycleStore, signingKey: skillManifestSigningKey }),
+      createSkillPromotionRouter({
+        store: skillLifecycleStore,
+        signingKey: skillManifestSigningKey,
+        adminAudit: new AdminAuditLog(graphPool),
+      }),
     );
     console.log(
-      '[middleware] skill-promotion endpoint ready at /api/v1/admin/skills/:skillId/promote',
+      '[middleware] skill admin endpoints ready at /api/v1/admin/skills (list, /:skillId/promote)',
     );
   } else {
     console.log(
