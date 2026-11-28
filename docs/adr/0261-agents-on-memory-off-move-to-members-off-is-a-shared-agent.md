@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** Owner (decision 2026-11-27, issue #2290), W31 cluster lead

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers. Design record for #584 Workstream S (wave 6, W36).

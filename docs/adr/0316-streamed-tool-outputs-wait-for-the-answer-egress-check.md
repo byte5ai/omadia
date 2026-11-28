@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** W42 cluster lead (issue #2342, decision after the recommendation, reversible)

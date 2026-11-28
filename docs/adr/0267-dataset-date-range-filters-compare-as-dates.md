@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** Maintainers (wave 5, W05-06), from #2302 (residual of #2261).

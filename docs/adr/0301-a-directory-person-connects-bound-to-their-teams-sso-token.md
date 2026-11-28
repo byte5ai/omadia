@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers (wave 7, W40; issues #2312, #2335). Owner decision of 2026-11-27: no bearer connect link. Refines [ADR-0175](0175-mcp-oauth-callback-completes-only-for-the-starter.md); can be reversed.

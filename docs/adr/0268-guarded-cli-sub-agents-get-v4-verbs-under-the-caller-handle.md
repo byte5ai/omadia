@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** Wave 6 cluster W32, under the owner's autonomy grant; tracked by #2301.

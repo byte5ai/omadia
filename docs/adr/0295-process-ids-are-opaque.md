@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** Wave lead (technical decision 2026-11-27, issue #2296), W31 cluster lead

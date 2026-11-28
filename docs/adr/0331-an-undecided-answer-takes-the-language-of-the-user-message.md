@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** W45 cluster lead (wave 8, issue #2367; decision after the recommendation, reversible)

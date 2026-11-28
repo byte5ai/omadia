@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** W46 cluster lead (wave 8 follow-up, issue #2376; decision after the

@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Docs — ADRs of waves 6–8 set to Accepted (2026-11-28)
+
+43 ADRs that were Proposed are now Accepted: 0225, 0260–0280 (all Proposed ones in that range), 0287, 0295–0302, 0310, 0315–0317, 0320–0324, 0330–0333 and 0340. Their pull requests are merged and their code is live (Fly sha-4f632d1a). The design ADRs for the roadmap were accepted as designs on the owner's decision.
+
+ADR-0067 and ADR-0068 stay Proposed, because each names its own wiring condition and that condition is still open. Only the status line and the index row change; no ADR content changes.
+
 ### Fix — chat turns know the clock time, frozen at turn start (#2376) (2026-11-27)
 
 A web chat turn answered "What time is it?" with "I don't have the current clock time": the date

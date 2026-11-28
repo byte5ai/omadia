@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-27
 - **Deciders:** omadia maintainers (wave 7, W40; issue #2335). Owner direction of 2026-11-27: not every Teams user gets an omadia web login. The shape below follows the wave 7 recommendation and can be reversed.
