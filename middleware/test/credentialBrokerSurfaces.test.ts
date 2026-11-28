@@ -237,7 +237,9 @@ describe('#2319 · wireCredentialBroker', () => {
       unseal,
       asks: new InMemoryCredentialAskStore(credentials),
       registerNativeTool: (name, registration) => {
-        registered.push(`${name}:${registration.sideEffects}:${registration.kernelSystem}:${String(registration.modelDispatchOnly)}`);
+        registered.push(
+          `${name}:${registration.sideEffects}:${registration.kernelSystem({ credential: 'github' })}:${String(registration.modelDispatchOnly)}`,
+        );
         return () => undefined;
       },
       agentBySlug: (slug) => (slug === agent.slug ? agent : undefined),
@@ -256,8 +258,8 @@ describe('#2319 · wireCredentialBroker', () => {
       log: () => undefined,
     });
     assert.deepEqual(registered, [
-      'credential_request:write:credential-broker:true',
-      'credential_ask:write:credential-broker:true',
+      'credential_request:write:credential:github:true',
+      'credential_ask:write:credential:github:true',
     ]);
     await wiring.grants.put(agent.id, svc.id, 'op');
     assert.deepEqual(await wiring.reachOf(agent.id), [{ credentialId: svc.id, name: 'github', kind: 'service', host: 'api.github.com' }]);
@@ -291,5 +293,22 @@ describe('#2319 · grant validity counts from the approval', () => {
     const approved = await store.approve(ask.id, 'otto-cluster', approvedAt);
     const grant = await credentials.getGrant(approved!.grantId!);
     assert.equal(grant?.expiresAt?.toISOString(), new Date(approvedAt.getTime() + 3600_000).toISOString());
+  });
+});
+
+describe('#2319 · helpers never get the credential tools', () => {
+  it('a Builder native grant of a model-dispatch-only tool resolves to nothing', async () => {
+    const { NativeToolRegistry } = await import('@omadia/orchestrator');
+    const { adaptNativeToolForSubAgent } = await import('../src/agents/subAgentToolHydration.js');
+    const { credentialSystemOf } = await import('../src/credentials/credentialBrokerWiring.js');
+    const registry = new NativeToolRegistry();
+    const spec = { name: 'credential_request', description: 'x', input_schema: { type: 'object' as const, properties: {} } };
+    registry.register('credential_request', { handler: async () => 'ok', spec, modelDispatchOnly: true });
+    registry.register('other_tool', { handler: async () => 'ok', spec: { ...spec, name: 'other_tool' } });
+    const memory = (() => undefined) as unknown as Parameters<typeof adaptNativeToolForSubAgent>[2];
+    assert.equal(adaptNativeToolForSubAgent(registry, 'credential_request', memory), undefined);
+    assert.ok(adaptNativeToolForSubAgent(registry, 'other_tool', memory));
+    assert.equal(credentialSystemOf({ credential: ' github ' }), 'credential:github');
+    assert.equal(credentialSystemOf({}), 'credential-broker');
   });
 });

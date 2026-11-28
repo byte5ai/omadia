@@ -102,13 +102,16 @@ export interface NativeToolRegistration {
    *  (`ToolRegistrationOptions.sideEffects`); wins over the manifest. */
   readonly sideEffects?: 'read' | 'write' | 'none';
   /**
-   * #2319 — the discretion system (Spec 2042 §5.11) a KERNEL tool reaches,
-   * e.g. `credential-broker`. Without it a kernel tool belongs to no system
-   * and skips the integration egress check and read labelling; with it the
-   * tool is checked like an integration (`Orchestrator.toolSystemOf`), with
-   * `sideEffects` as its effect. Ignored for plugin tools (`agentId` wins).
+   * #2319 — the discretion system (Spec 2042 §5.11) a KERNEL tool reaches.
+   * Without it a kernel tool belongs to no system and skips the integration
+   * egress check and read labelling; with it the tool is checked like an
+   * integration (`Orchestrator.toolSystemOf`), with `sideEffects` as its
+   * effect. A function derives the system from the call's input (the
+   * credential broker: one system per named credential, so data read through
+   * one credential is checked before it leaves through another). Ignored for
+   * plugin tools (`agentId` wins).
    */
-  readonly kernelSystem?: string;
+  readonly kernelSystem?: string | ((input: unknown) => string);
   /**
    * #2319 — only the model's tool loop may dispatch this tool. A plugin's
    * `ctx.tools.invoke` is refused, because that path skips the Privacy
@@ -179,7 +182,7 @@ export interface NativeToolRegistrationOptions {
   /** #2338 — see `NativeToolRegistration.sideEffects`. */
   sideEffects?: 'read' | 'write' | 'none';
   /** #2319 — see `NativeToolRegistration.kernelSystem`. */
-  kernelSystem?: string;
+  kernelSystem?: string | ((input: unknown) => string);
   /** #2319 — see `NativeToolRegistration.modelDispatchOnly`. */
   modelDispatchOnly?: boolean;
   /** #1346 — see `NativeToolRegistration.isAvailable`. */

@@ -568,10 +568,13 @@ sonst könnte ein Plugin ihn ohne Agent-Envelope rufen):
   Migration 0125), Obergrenze bleibt `requested_grant_expires_at`; `standing` ohne
   `valid_minutes` gilt bis zum Widerruf.
 
-Beide Tools sind `modelDispatchOnly` (ein Plugin-`ctx.tools.invoke` wird abgelehnt) und haben
-das Discretion-System `credential-broker` (`kernelSystem` in `NativeToolRegistrationOptions`,
-gelesen von `Orchestrator.toolSystemOf`), also Integrations-Egress-Check und Read-Labels wie ein
-Plugin-Tool.
+Beide Tools sind `modelDispatchOnly` (ein Plugin-`ctx.tools.invoke` wird abgelehnt, ein
+Helfer-Sub-Agent bekommt sie nicht, `adaptNativeToolForSubAgent`) und haben pro Aufruf das
+Discretion-System `credential:<name>` (`kernelSystem` als Funktion des Inputs in
+`NativeToolRegistrationOptions`, gelesen von `Orchestrator.toolSystemOf(name, input)`), also
+Integrations-Egress-Check und Read-Labels wie ein Plugin-Tool, getrennt je Credential. Auf dem
+Subscription-CLI-Pfad fehlt `accountUserId`; dort lehnen beide mit `account_not_linked` ab
+(`ToolDispatchService` hat keinen Discretion-Egress-Check, s. security-architecture §10ze).
 
 Reihenfolge pro Aufruf (`credentialBrokerTools.ts`, fail-closed): Turn mit Agent →
 Account der Runde (`TurnContextValue.accountUserId`, gesetzt über `turnAccountUserId` in

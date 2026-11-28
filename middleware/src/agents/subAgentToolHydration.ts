@@ -286,6 +286,10 @@ export function adaptNativeToolForSubAgent(
   }
   const reg = registry.get(toolRef);
   if (!reg?.handler || !reg.spec) return undefined;
+  // #2319 — a model-dispatch-only tool (the credential broker) runs only in
+  // the agent's own tool loop: a helper has neither the discretion egress
+  // check nor read labelling, so it is never granted one.
+  if (reg.modelDispatchOnly === true) return undefined;
   const handler = reg.handler;
   return {
     spec: {

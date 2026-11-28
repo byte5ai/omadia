@@ -8180,11 +8180,19 @@ required: an agent grant never lets one person use another person's grant.
 **Only the model's tool loop.** Both tools are registered `modelDispatchOnly`: a plugin's
 `ctx.tools.invoke` (which skips the Privacy Shield and the dispatch guards, while the ambient
 turn would still name the agent and the person) is refused with `ToolInvokePermissionError`.
-They declare the discretion system `credential-broker` (`kernelSystem`, effect `write`), so
-`toolSystemOf` gives them the integration egress check and read labelling of Spec 2042 §5.11:
-restricted or cross-context labels do not leave through a request body or an ask purpose, and
-what a request reads labels the turn. `credential-broker` has no declared readership, so the
-check is as strict as for an undeclared integration.
+A helper (DB sub-agent) is never granted them either (`adaptNativeToolForSubAgent` drops
+`modelDispatchOnly` tools): `LocalSubAgent` has no discretion egress check. Each call declares
+the discretion system `credential:<name>` of the credential it names (`kernelSystem` as a
+function of the input, effect `write`), so `toolSystemOf` gives it the integration egress check
+and read labelling of Spec 2042 §5.11: restricted or cross-context labels do not leave through a
+request body or an ask purpose, data read through one credential is checked before it leaves
+through another, and what a request reads labels the turn. Without a declared readership the
+check is as strict as for an undeclared integration; an operator can declare one per credential.
+
+Residual: the subscription-CLI path (`ToolDispatchService`) has no discretion egress check for
+any tool. The credential tools are safe there today only because that path sets no
+`accountUserId`, so both refuse with `account_not_linked`. Whoever threads the account into the
+CLI scope must add the egress check and labelling to `ToolDispatchService` in the same change.
 
 **What the model sees.** Status, `content-type`, `location`, `retry-after` and a body capped
 at 32 000 characters, after the broker's scrub (§10n). Every other upstream header is dropped,

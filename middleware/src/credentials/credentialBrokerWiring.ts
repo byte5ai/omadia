@@ -54,7 +54,7 @@ export interface CredentialBrokerWiringDeps {
       readonly spec: NativeToolSpec;
       readonly isAvailable: () => boolean;
       readonly sideEffects: 'write';
-      readonly kernelSystem: string;
+      readonly kernelSystem: (input: unknown) => string;
       readonly modelDispatchOnly: true;
     },
   ) => () => void;
@@ -108,16 +108,29 @@ export function brokerAuditEntry(event: BrokerAuditEvent, agentSlug: string | un
   };
 }
 
-/** The discretion system both tools reach (Spec 2042 §5.11, `toolSystemOf`). */
+/** The discretion system of a call without a credential name (refused anyway). */
 export const CREDENTIAL_BROKER_SYSTEM = 'credential-broker';
 
 /**
+ * Spec 2042 §5.11 — one discretion system per named credential
+ * (`credential:<name>`), so what one credential read is checked before it
+ * leaves through another, and an operator can declare a readership per
+ * credential. The name is the one the tool resolves (exact, live
+ * credentials are unique by name); a call naming none is refused.
+ */
+export function credentialSystemOf(input: unknown): string {
+  const raw = typeof input === 'object' && input !== null ? (input as Record<string, unknown>)['credential'] : undefined;
+  const name = typeof raw === 'string' ? raw.trim() : '';
+  return name ? `credential:${name}` : CREDENTIAL_BROKER_SYSTEM;
+}
+
+/**
  * Both tools write (a request may change data upstream; an ask sends the
- * purpose to the owner), count as the `credential-broker` system for the
+ * purpose to the owner), count as the system `credential:<name>` for the
  * discretion egress check and read labels, and are refused on a plugin's
  * `ctx.tools.invoke`, which skips the Privacy Shield.
  */
-const TOOL_GUARDS = { sideEffects: 'write', kernelSystem: CREDENTIAL_BROKER_SYSTEM, modelDispatchOnly: true } as const;
+const TOOL_GUARDS = { sideEffects: 'write', kernelSystem: credentialSystemOf, modelDispatchOnly: true } as const;
 
 /** Audit rows hold at most this many dropped header names, each this long. */
 const MAX_AUDITED_HEADER_NAMES = 20;

@@ -9996,7 +9996,7 @@ export class Orchestrator {
         meta.modelImages = images;
       }
       // Spec 2042 §5.11 — what the call brought in joins the turn's labels.
-      await labelToolRead(this.discretion, this.toolSystemOf(name));
+      await labelToolRead(this.discretion, this.toolSystemOf(name, input));
       return remaskEchoedValues(privacy, out);
     } catch (err) {
       const outcome = await withholdThrownToolError({
@@ -10048,7 +10048,7 @@ export class Orchestrator {
 
     // Spec 2042 §5.11 — a call that may write data out is checked against the
     // integration's declared readership before it runs.
-    const discretionRefusal = await guardIntegrationEgress(this.discretion, name, this.toolSystemOf(name));
+    const discretionRefusal = await guardIntegrationEgress(this.discretion, name, this.toolSystemOf(name, input));
     if (discretionRefusal !== undefined) return discretionRefusal;
 
     // #580 — the command policy's enforcement seam, at the same choke point.
@@ -12025,7 +12025,7 @@ export class Orchestrator {
    * manifest at the egress). Kernel tools belong to no system, unless they
    * declare one (`kernelSystem`, #2319).
    */
-  private toolSystemOf(name: string): ToolSystem | undefined {
+  private toolSystemOf(name: string, input?: unknown): ToolSystem | undefined {
     const native = this.nativeTools.get(name);
     if (native?.agentId !== undefined) {
       // #2338 / ADR-0299 — a declared write capability is a write; else the
@@ -12036,7 +12036,8 @@ export class Orchestrator {
     // #2319 — a kernel tool that reaches an outside system (the credential
     // broker) is checked like an integration, with its declared effect.
     if (native?.kernelSystem !== undefined) {
-      return { system: native.kernelSystem, effect: native.sideEffects ?? 'unknown' };
+      const system = typeof native.kernelSystem === 'function' ? native.kernelSystem(input) : native.kernelSystem;
+      return { system, effect: native.sideEffects ?? 'unknown' };
     }
     const domain = this.domainToolsByName.get(name);
     if (!domain || domain === this.consultTool) return undefined;

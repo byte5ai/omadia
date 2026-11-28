@@ -64,8 +64,9 @@ supersedes ADR-0290 in part).
   read and unsealed before the `once` gate. Every broker decision is audited as
   `credential.broker_use` (system actor `system:credential-broker`, never the query or the secret).
 - **Only the model's own tool call.** Both tools are `modelDispatchOnly` (a plugin's
-  `ctx.tools.invoke` is refused) and declare the discretion system `credential-broker`
-  (`kernelSystem`), so the Spec 2042 §5.11 integration egress check and read labels apply.
+  `ctx.tools.invoke` is refused, a helper sub-agent never gets them) and each call declares the
+  discretion system `credential:<name>` (`kernelSystem`), so the Spec 2042 §5.11 integration
+  egress check and read labels apply per credential.
 - **Ask notices.** A new ask sends a `system` direct message to the owner in a channel of their
   account cluster, with the link `/admin/credentials/asks?ask=<id>` (UI: #2320) and without the
   agent-written purpose. One open ask per person and credential, so a looping agent cannot flood
