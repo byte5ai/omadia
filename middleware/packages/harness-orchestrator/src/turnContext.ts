@@ -128,6 +128,14 @@ export interface TurnContextValue {
    */
   resolvedOmadiaUserId?: string;
   /**
+   * ADR-0290 / ADR-0355 — the omadia account this turn speaks for
+   * (`turnAccountUserId`): the session's account on a web turn, the linked
+   * account on a channel turn (ADR-0225). Absent for every other turn. The
+   * credential broker tools run as `user:<accountUserId>` and refuse without
+   * it; never fall back to `userId` or `resolvedOmadiaUserId`.
+   */
+  accountUserId?: string;
+  /**
    * The User-Cluster the turn's run trace is filed under, resolved at the
    * start of the turn (`resolveRunTraceOwner`). A holder rather than a plain
    * id so "resolved to nobody" (`{}` — trace without a user link) is told

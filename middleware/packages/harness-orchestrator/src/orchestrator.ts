@@ -442,6 +442,7 @@ import {
   type TurnIdentityDirectory,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
+  turnAccountUserId,
   runTraceOwnerId,
 } from './resolveTurnOwnerIdentity.js';
 import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
@@ -6204,6 +6205,7 @@ export class Orchestrator {
     // re-deriving it independently.
     const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input, this.identityDirectory?.());
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    const accountUserId = turnAccountUserId(input, turnOwner);
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
     const runTraceUserId = await resolveRunTraceOwner(
@@ -6286,6 +6288,7 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        ...(accountUserId ? { accountUserId } : {}),
         runTraceOwner,
         // W2-1 (#544) — one component of the MCP pending-input store key. Never
         // the whole key; see TurnContextValue.sessionScope.
@@ -8189,6 +8192,7 @@ export class Orchestrator {
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
     const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input, this.identityDirectory?.());
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    const accountUserId = turnAccountUserId(input, turnOwner);
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
     const runTraceUserId = await resolveRunTraceOwner(
@@ -8262,6 +8266,7 @@ export class Orchestrator {
       // answer the card, and channel turns (Teams/Telegram) come through here.
       ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      ...(accountUserId ? { accountUserId } : {}),
       runTraceOwner,
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,

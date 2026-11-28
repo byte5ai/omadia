@@ -184,7 +184,7 @@ describe('#578 CredentialBroker', () => {
     const cred = await store.createCredential({
       name: 'basic-svc',
       kind: 'service',
-      secret: 'user:pass',
+      secret: 'user:pass-word-long',
       createdBy: 'op',
       broker: {
         host: 'api.example.com',
@@ -195,7 +195,7 @@ describe('#578 CredentialBroker', () => {
     });
     await grant(store, { credentialId: cred.id });
     await broker.request(cred.id, ALICE, { host: 'api.example.com', method: 'GET', path: '/v1/x' });
-    assert.equal(fetchStub.calls[0]?.headers.Authorization, `Basic ${Buffer.from('user:pass').toString('base64')}`);
+    assert.equal(fetchStub.calls[0]?.headers.Authorization, `Basic ${Buffer.from('user:pass-word-long').toString('base64')}`);
   });
 
   it('query-param scheme appends the secret to the URL, preserving existing query params', async () => {
@@ -361,6 +361,46 @@ describe('#578 CredentialBroker', () => {
           path: '/v1/messages/../../admin',
         }),
       (err: unknown) => err instanceof BrokerDenialError && err.reason === 'path-not-allowed',
+    );
+    assert.equal(fetchStub.calls.length, 0);
+  });
+
+  it('denies: a secret too short for the response scrub, before a once grant is consumed (#2319)', async () => {
+    const cred = await store.createCredential({
+      name: 'short-svc',
+      kind: 'service',
+      secret: 'short',
+      createdBy: 'op',
+      broker: { host: 'api.example.com', injectionScheme: 'bearer', allowedMethods: ['GET'], pathPrefixes: ['/v1'] },
+    });
+    const g = await store.createGrant({
+      credentialId: cred.id,
+      principal: ALICE,
+      mode: 'once',
+      purpose: 'p',
+      grantedBy: 'op',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await assert.rejects(
+      () => broker.request(cred.id, ALICE, { host: 'api.example.com', method: 'GET', path: '/v1/x' }),
+      (err: unknown) => err instanceof BrokerDenialError && err.reason === 'secret-too-short',
+    );
+    assert.equal(fetchStub.calls.length, 0);
+    assert.equal((await store.getGrant(g.id))?.consumedAt, undefined);
+  });
+
+  it('denies: a basic-password secret whose password segment is too short (#2319)', async () => {
+    const cred = await store.createCredential({
+      name: 'short-basic',
+      kind: 'service',
+      secret: 'a-long-user-name:pw',
+      createdBy: 'op',
+      broker: { host: 'api.example.com', injectionScheme: 'basic-password', allowedMethods: ['GET'], pathPrefixes: ['/v1'] },
+    });
+    await grant(store, { credentialId: cred.id });
+    await assert.rejects(
+      () => broker.request(cred.id, ALICE, { host: 'api.example.com', method: 'GET', path: '/v1/x' }),
+      (err: unknown) => err instanceof BrokerDenialError && err.reason === 'secret-too-short',
     );
     assert.equal(fetchStub.calls.length, 0);
   });

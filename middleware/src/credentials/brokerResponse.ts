@@ -73,6 +73,20 @@ export interface CappedBody {
 }
 
 /**
+ * #2319 — whether the response scrub can protect this secret at all: the
+ * secret (whitespace-trimmed, as it travels) and, for `basic-password`, its
+ * password segment must reach {@link MIN_SCRUBBABLE_SECRET_LENGTH}. The broker
+ * refuses to dispatch one that does not (`secret-too-short`), so the floor
+ * below never lets a reflected secret through to an agent.
+ */
+export function isScrubbableSecret(secret: string, scheme: CredentialInjectionScheme): boolean {
+  if (secret.trim().length < MIN_SCRUBBABLE_SECRET_LENGTH) return false;
+  if (scheme !== 'basic-password') return true;
+  const colon = secret.indexOf(':');
+  return colon < 0 || secret.slice(colon + 1).trim().length >= MIN_SCRUBBABLE_SECRET_LENGTH;
+}
+
+/**
  * Every form of the secret worth scrubbing, longest first. Empty when the
  * secret is below the floor.
  */

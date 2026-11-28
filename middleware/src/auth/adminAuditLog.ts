@@ -269,6 +269,12 @@ export type AuditAction =
   // grant change is written twice, once per agent (`target` `agent:<slug>`),
   // so the trail of either agent shows it. `before`/`after` carry the grant.
   | 'agent.consultation_change'
+  // #2319 / ADR-0290 — the credential broker capability. A grant change names
+  // one credential (`target` `agent:<slug>`); a broker decision is written
+  // per call with the system actor `system:credential-broker` (`target`
+  // `credential:<id>`), never with the secret, the query or a body.
+  | 'agent.credential_grant_change'
+  | 'credential.broker_use'
   // Spec 2042 §5.11 (#2079) — an integration's declared readership and
   // sensitivity (`target` `integration:<id>`), and an agent's context-memory
   // mode (`target` `agent:<slug>`).
