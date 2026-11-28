@@ -190,6 +190,12 @@ import { createSkillPromotionRouter } from './routes/skillPromotion.js';
 import { PgSkillOwnershipLifecycleStore } from './services/skillLifecycleStore.js';
 import { resolveSkillManifestSigningKey } from './services/skillManifestSigningKey.js';
 import { createCredentialAskRouter } from './routes/credentialAsks.js';
+import { createAdminCredentialsRouter } from './routes/adminCredentials.js';
+import { createAdminSandboxesRouter } from './routes/adminSandboxes.js';
+import { createAdminPublishRouter } from './routes/adminPublish.js';
+import { listPublishApps } from './services/publishAppCatalog.js';
+import { PostgresPublishStore } from '@omadia/publish';
+import { PostgresSandboxRegistry } from '@omadia/sandbox';
 import { InMemoryCredentialAskStore } from './credentials/asks.js';
 import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
 import {
@@ -4759,16 +4765,44 @@ async function main(): Promise<void> {
     app.use(
       '/api/v1/admin/skills',
       requireAuth,
-      createSkillPromotionRouter({ store: skillLifecycleStore, signingKey: skillManifestSigningKey }),
+      createSkillPromotionRouter({
+        store: skillLifecycleStore,
+        signingKey: skillManifestSigningKey,
+        adminAudit: new AdminAuditLog(graphPool),
+      }),
     );
     console.log(
-      '[middleware] skill-promotion endpoint ready at /api/v1/admin/skills/:skillId/promote',
+      '[middleware] skill admin endpoints ready at /api/v1/admin/skills (list, /:skillId/promote)',
     );
   } else {
     console.log(
       '[middleware] skill-promotion endpoint skipped — no graphPool (Neon backend missing?)',
     );
   }
+
+  // #2320 — admin view of the agent sandboxes (#576, ADR-0055) and the
+  // manual idle sweep. Same table the orchestrator plugin writes when it has
+  // the graph pool; without one the router answers 503.
+  app.use(
+    '/api/v1/admin/sandboxes',
+    requireAuth,
+    createAdminSandboxesRouter(
+      graphPool
+        ? { registry: new PostgresSandboxRegistry(graphPool), adminAudit: new AdminAuditLog(graphPool) }
+        : {},
+    ),
+  );
+
+  // #2320 — read-only version list of published apps (#581, ADR-0067).
+  app.use(
+    '/api/v1/admin/publish',
+    requireAuth,
+    createAdminPublishRouter(
+      graphPool
+        ? { store: new PostgresPublishStore(graphPool), listApps: () => listPublishApps(graphPool) }
+        : {},
+    ),
+  );
 
   // #778 W1 — #578 Phase 3's keychain-asks HTTP surface. Built and
   // route-tested by #774 but deliberately left unmounted (same "new files
@@ -4793,6 +4827,18 @@ async function main(): Promise<void> {
   );
   console.log(
     `[middleware] credential-asks endpoint ready at /api/v1/admin/credential-asks (backend=${graphPool ? 'postgres' : 'in-memory'})`,
+  );
+
+  // #2320 — the admin read + revoke surface of the keychain (ADR-0102).
+  // Shares the asks router's store instance, so the in-memory backend shows
+  // the grants an approved ask minted.
+  app.use(
+    '/api/v1/admin/credentials',
+    requireAuth,
+    createAdminCredentialsRouter({
+      store: credentialStoreForAsks,
+      ...(graphPool ? { adminAudit: new AdminAuditLog(graphPool) } : {}),
+    }),
   );
 
   // Slice 9 — inconsistency detection workflow. Always mount (the

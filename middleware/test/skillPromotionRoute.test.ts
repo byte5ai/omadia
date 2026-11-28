@@ -33,6 +33,47 @@ class FakeSkillLifecycleStore {
   public calls: PromoteArgs[] = [];
   public behavior: 'ok' | 'not-found' | 'not-published' | 'automation-blocked' = 'ok';
 
+  // #2320 — the prior owner for the audit row.
+  async getSkill(skillId: string) {
+    return {
+      id: skillId,
+      slug: 'demo-skill',
+      name: 'Demo Skill',
+      frontmatter: {},
+      body: '',
+      ownerScope: 'personal:op-1',
+      lifecycleStatus: 'published' as const,
+      manifestSignature: 'deadbeef',
+      manifestSignedAt: new Date('2026-08-20T12:00:00Z'),
+    };
+  }
+
+  // #2320 — the admin list read.
+  async listSkills() {
+    return [
+      {
+        id: 'skill-1',
+        slug: 'demo-skill',
+        name: 'Demo Skill',
+        ownerScope: 'personal:op-1',
+        lifecycleStatus: 'published' as const,
+        manifestSignedAt: new Date('2026-08-20T12:00:00Z'),
+        updatedAt: new Date('2026-08-21T12:00:00Z'),
+        requiredCapabilities: ['tool:send_email'],
+      },
+      {
+        id: 'skill-2',
+        slug: 'draft-skill',
+        name: 'Draft Skill',
+        ownerScope: null,
+        lifecycleStatus: 'draft' as const,
+        manifestSignedAt: null,
+        updatedAt: new Date('2026-08-21T12:00:00Z'),
+        requiredCapabilities: null,
+      },
+    ];
+  }
+
   async promoteSkillOwnerScope(...args: PromoteArgs) {
     this.calls.push(args);
     const [skillId, targetScope] = args;
@@ -194,5 +235,53 @@ describe('#778 W1 skill-promotion route', () => {
       assert.equal(res.status, 403);
       assert.equal(res.body['code'], 'skill_promotion.automation_blocked');
     });
+  });
+});
+
+describe('#2320 skill admin list + promotion audit', () => {
+  it('401s the list without a session', async () => {
+    const app = buildApp(new FakeSkillLifecycleStore());
+    await withServer(app, async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/?noSession=1`);
+      assert.equal(res.status, 401);
+    });
+  });
+
+  it('lists skills with promotable = published and owned', async () => {
+    const app = buildApp(new FakeSkillLifecycleStore());
+    await withServer(app, async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { skills: Array<Record<string, unknown>> };
+      assert.deepEqual(
+        body.skills.map((s) => [s['id'], s['promotable'], s['required_capabilities']]),
+        [
+          ['skill-1', true, ['tool:send_email']],
+          ['skill-2', false, null],
+        ],
+      );
+      assert.ok(!('body' in (body.skills[0] ?? {})), 'no skill body in the list');
+    });
+  });
+
+  it('writes one skill.promote audit row on success and none on refusal', async () => {
+    const store = new FakeSkillLifecycleStore();
+    const rows: Array<{ action: string; target: string; before: unknown }> = [];
+    const adminAudit = {
+      record: async (entry: { action: string; target: string; before?: unknown }) => {
+        rows.push({ action: entry.action, target: entry.target, before: entry.before });
+      },
+    };
+    const app = buildApp(store, { adminAudit });
+    await withServer(app, async (baseUrl) => {
+      const ok = await postJson(`${baseUrl}/skill-1/promote`, { targetScope: { kind: 'org', orgId: 'byte5' } });
+      assert.equal(ok.status, 200);
+      store.behavior = 'not-published';
+      const refused = await postJson(`${baseUrl}/skill-1/promote`, { targetScope: { kind: 'org', orgId: 'byte5' } });
+      assert.equal(refused.status, 409);
+    });
+    assert.deepEqual(rows, [
+      { action: 'skill.promote', target: 'skill:skill-1', before: { slug: 'demo-skill', ownerScope: 'personal:op-1' } },
+    ]);
   });
 });

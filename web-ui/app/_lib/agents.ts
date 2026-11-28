@@ -127,6 +127,17 @@ export interface AgentReachDto {
   covers_every_system: boolean;
   /** Every connected system, and at least two: the master key. */
   broad: boolean;
+  /** #2319 — the named credentials granted to the agent and their declared
+   *  hosts (`credentialBroker@1`). Absent on an older middleware. */
+  credential_hosts?: AgentCredentialHostDto[];
+}
+
+/** #2319 — one credential in an agent's reach; `host` is null for `personal`. */
+export interface AgentCredentialHostDto {
+  credential_id: string;
+  name: string;
+  kind: string;
+  host: string | null;
 }
 
 /** #2054 — the API's refusal of a grant that would make a reach broad. */

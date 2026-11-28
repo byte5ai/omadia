@@ -224,6 +224,9 @@
         },
         "privacy": {
           "heading": "Datenschutz"
+        },
+        "workspace": {
+          "heading": "Arbeitsbereich der Agenten"
         }
       },
       "cards": {
@@ -326,6 +329,22 @@
         "privacyFields": {
           "title": "Feldklassifizierung",
           "description": "Maskierte Felder prüfen, die der Privacy Guard im Klartext zeigen könnte. Nichts wird demaskiert, bevor du es bestätigst."
+        },
+        "credentials": {
+          "title": "Zugangsdaten",
+          "description": "Der Schlüsselbund, den Agenten ohne Einblick ins Geheimnis nutzen: Zugangsdaten, Berechtigungen, Widerruf und Anfragen, die auf deine Antwort warten."
+        },
+        "skills": {
+          "title": "Skills",
+          "description": "Alle Skills mit Zuhause und Lebenszyklus; veröffentlichte Skills an ein Team oder die Organisation befördern."
+        },
+        "sandboxes": {
+          "title": "Sandboxes",
+          "description": "Die Container pro Bereich, in denen Agenten Befehle ausführen; einzelne entfernen oder ungenutzte aufräumen."
+        },
+        "publishedApps": {
+          "title": "Veröffentlichte Apps",
+          "description": "Interne Web-Apps, die Agenten veröffentlicht haben, mit Live-Version und vollständiger Versionsgeschichte."
         }
       }
     },
@@ -6458,7 +6477,10 @@
         "privacyFieldClassification": "Entscheidungen zur Feldklassifizierung",
         "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)",
         "privacyFieldAutoApprove": "Automatische Feldfreigaben",
-        "privacyFieldAutoRevoke": "Zurückgenommene automatische Feldfreigaben"
+        "privacyFieldAutoRevoke": "Zurückgenommene automatische Feldfreigaben",
+        "credential": "Zugangsdaten",
+        "skill": "Skills",
+        "sandbox": "Sandboxes"
       }
     },
     "table": {
@@ -8196,7 +8218,9 @@
     },
     "confirmDefaultTitle": "{agent} zum Default-Agenten machen?",
     "confirmDefaultBody": "{agent} erreicht alle {count} angebundenen Systeme. Als Default-Agent beantwortet er Nachrichten, die an keinen Agenten gerichtet sind; wer schreibt, ohne einen Agenten zu nennen, erreicht damit jedes dieser Systeme. Die Änderung wird im Audit-Log festgehalten.",
-    "confirmDefaultYes": "Zum Default-Agenten machen"
+    "confirmDefaultYes": "Zum Default-Agenten machen",
+    "credentialsHeading": "Zugangsdaten (Credential-Broker)",
+    "credentialNoHost": "persönlich, kein fester Host"
   },
   "agentAvailability": {
     "legend": "Wer diesen Agenten erreichen kann",
@@ -8218,5 +8242,260 @@
     "after": "nachher:",
     "deleted": "(gelöscht)",
     "ownersDelta": "Owner {delta}"
+  },
+  "adminSurface": {
+    "working": "Läuft",
+    "cancel": "Abbrechen",
+    "never": "—",
+    "errors": {
+      "authRequired": "Deine Sitzung ist abgelaufen. Bitte melde dich neu an.",
+      "unavailable": "Diese Funktion braucht die Postgres-Datenbank, und diese Instanz läuft ohne.",
+      "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
+      "network": "Der Server ist nicht erreichbar."
+    }
+  },
+  "adminCredentials": {
+    "title": "Zugangsdaten",
+    "intro": "Der Schlüsselbund, den Agenten nutzen, ohne je ein Geheimnis zu sehen: wem welche Zugangsdaten gehören, wer sie nutzen darf und welche Anfragen auf deine Antwort warten. Geheimnisse und Fingerprints werden hier nie angezeigt.",
+    "loading": "Zugangsdaten werden geladen…",
+    "inbox": {
+      "heading": "Anfragen an dich",
+      "hint": "Nur wem die persönlichen Zugangsdaten gehören, kann eine Anfrage dafür annehmen oder ablehnen. Eine Zustimmung legt die Berechtigung an.",
+      "empty": "Keine Anfrage wartet auf dich."
+    },
+    "mine": {
+      "heading": "Deine Anfragen",
+      "empty": "Du hast noch keine Zugangsdaten angefragt."
+    },
+    "list": {
+      "heading": "Schlüsselbund",
+      "hint": "Persönliche Zugangsdaten kann nur ihr Besitzer widerrufen, Dienst-Zugangsdaten jede Administratorin und jeder Administrator.",
+      "empty": "Der Schlüsselbund enthält noch keine Zugangsdaten.",
+      "name": "Name",
+      "kind": "Art",
+      "owner": "Besitzer",
+      "broker": "Erlaubte Nutzung",
+      "created": "Angelegt",
+      "state": "Status",
+      "actions": "Aktionen",
+      "kinds": {
+        "personal": "Persönlich",
+        "service": "Dienst"
+      },
+      "noOwner": "Organisation",
+      "noBroker": "Nur über Anfragen",
+      "active": "Aktiv",
+      "revokedAt": "Widerrufen am {date}",
+      "showGrants": "Berechtigungen",
+      "hideGrants": "Berechtigungen ausblenden",
+      "revoke": "Widerrufen",
+      "confirmRevoke": "Endgültig widerrufen",
+      "errors": {
+        "forbidden": "Nur der Besitzer kann diese persönlichen Zugangsdaten widerrufen.",
+        "alreadyRevoked": "Diese Zugangsdaten sind bereits widerrufen.",
+        "notFound": "Diese Zugangsdaten gibt es nicht mehr."
+      }
+    },
+    "grants": {
+      "loading": "Berechtigungen werden geladen…",
+      "empty": "Niemand hat eine Berechtigung für diese Zugangsdaten.",
+      "modes": {
+        "once": "einmalig",
+        "standing": "dauerhaft"
+      },
+      "meta": "Erteilt von {grantedBy} am {grantedAt} · läuft ab {expiresAt}",
+      "revokedAt": "Widerrufen am {date}",
+      "consumedAt": "Genutzt am {date}",
+      "revoke": "Widerrufen",
+      "confirmRevoke": "Berechtigung widerrufen",
+      "errors": {
+        "forbidden": "Nur der Besitzer der Zugangsdaten kann diese Berechtigung widerrufen.",
+        "alreadyRevoked": "Diese Berechtigung ist bereits widerrufen.",
+        "notFound": "Diese Berechtigung gibt es nicht mehr."
+      }
+    },
+    "asks": {
+      "credential": "Zugangsdaten",
+      "requester": "Angefragt von",
+      "owner": "Besitzer",
+      "purpose": "Zweck",
+      "mode": "Berechtigung",
+      "status": "Status",
+      "expires": "Anfrage läuft ab",
+      "actions": "Aktionen",
+      "modes": {
+        "once": "einmalig",
+        "standing": "dauerhaft"
+      },
+      "statuses": {
+        "pending": "Wartet",
+        "approved": "Angenommen",
+        "denied": "Abgelehnt",
+        "expired": "Abgelaufen",
+        "cancelled": "Zurückgezogen"
+      },
+      "approve": "Annehmen",
+      "deny": "Ablehnen",
+      "cancel": "Zurückziehen",
+      "errors": {
+        "forbidden": "Nur der Besitzer der Zugangsdaten kann diese Anfrage beantworten.",
+        "notActionable": "Diese Anfrage ist schon beantwortet, abgelaufen, oder ihre Zugangsdaten wurden widerrufen.",
+        "notFound": "Diese Anfrage gibt es nicht mehr."
+      }
+    },
+    "asksLink": {
+      "count": "{count, plural, =0 {Anfragen öffnen — nichts wartet auf dich} one {Anfragen öffnen — # Anfrage wartet auf dich} other {Anfragen öffnen — # Anfragen warten auf dich}}",
+      "unknown": "Anfragen öffnen"
+    },
+    "asksPage": {
+      "title": "Anfragen für Zugangsdaten",
+      "intro": "Anfragen, persönliche Zugangsdaten zu nutzen. Du beantwortest die an dich gerichteten; eine Zustimmung legt die Berechtigung an. Darunter stehen die Anfragen, die du selbst gestellt hast.",
+      "back": "← Zurück zum Schlüsselbund",
+      "focusMissing": "Die verlinkte Anfrage steht nicht mehr in der Liste: Sie wurde beantwortet, ist abgelaufen oder nicht an dich gerichtet."
+    }
+  },
+  "adminSkills": {
+    "title": "Skills",
+    "intro": "Alle Skills mit ihrem Zuhause und Lebenszyklus. Ein Skill beginnt persönlich; ein Team oder die ganze Organisation erreicht er nur, wenn er nach der Veröffentlichung befördert wird. Die Beförderung signiert sein Manifest neu.",
+    "loading": "Skills werden geladen…",
+    "list": {
+      "heading": "Skills",
+      "hint": "Befördert werden kann nur ein veröffentlichter Skill mit Besitzer. Für Prüfung und Veröffentlichung gibt es noch keine Admin-Steuerung.",
+      "empty": "Es gibt noch keine Skills.",
+      "name": "Skill",
+      "owner": "Zuhause",
+      "status": "Lebenszyklus",
+      "capabilities": "Braucht",
+      "signed": "Signiert",
+      "promote": "Befördern",
+      "unowned": "Kein Besitzer (Altbestand)",
+      "statuses": {
+        "draft": "Entwurf",
+        "reviewed": "Geprüft",
+        "published": "Veröffentlicht",
+        "archived": "Archiviert"
+      },
+      "capabilitiesNone": "Nichts",
+      "capabilitiesInvalid": "Ungültige Angabe",
+      "notPromotableUnowned": "Braucht zuerst einen Besitzer",
+      "notPromotableStatus": "Nur veröffentlichte Skills"
+    },
+    "promoteForm": {
+      "kindLabel": "Befördern nach",
+      "kinds": {
+        "group": "Team",
+        "org": "Organisation"
+      },
+      "groupRef": "Team-ID",
+      "orgId": "Organisations-ID",
+      "submit": "Befördern",
+      "working": "Wird befördert",
+      "errors": {
+        "notEligible": "Dieser Skill ist nicht veröffentlicht oder hat keinen Besitzer und kann daher nicht befördert werden.",
+        "notFound": "Diesen Skill gibt es nicht mehr.",
+        "rejected": "Die Lebenszyklus-Regeln haben die Beförderung abgelehnt.",
+        "invalid": "Gib die ID des Teams oder der Organisation ein."
+      }
+    }
+  },
+  "adminSandboxes": {
+    "title": "Sandboxes",
+    "intro": "Die Container, in denen Agenten Befehle ausführen und Apps bauen, einer pro Gesprächsbereich. Installierte Werkzeuge und Dateien bleiben, bis die Sandbox entfernt wird. Untätige Sandboxes räumt nichts von selbst auf; starte hier einen Durchlauf.",
+    "loading": "Sandboxes werden geladen…",
+    "reaper": {
+      "heading": "Aufräumen nach Leerlauf",
+      "hint": "Entfernt jede Sandbox, die länger als die Schwelle nicht genutzt wurde. Dauerhafte Sandboxes entfernt ein Durchlauf nie. Sieh dir zuerst die Vorschau an.",
+      "idleLabel": "Ungenutzt seit mehr als (Stunden)",
+      "preview": "Vorschau",
+      "sweep": "Aufräumen",
+      "confirmSweep": "Ungenutzte Sandboxes entfernen",
+      "bounds": "Wähle zwischen {min} und {max} Stunden.",
+      "previewResult": "{count, plural, =0 {Keine Sandbox würde entfernt.} one {# Sandbox würde entfernt:} other {# Sandboxes würden entfernt:}}",
+      "sweepResult": "{reaped} entfernt, {failed} nicht entfernbar. Fehlgeschlagene bleiben gelistet und werden beim nächsten Durchlauf erneut versucht.",
+      "errors": {
+        "invalidIdle": "Die Schwelle liegt außerhalb des erlaubten Bereichs."
+      }
+    },
+    "list": {
+      "heading": "Sandboxes",
+      "empty": "Keine Sandbox ist registriert. Sandboxes erscheinen hier, sobald ein Agent das Execute- oder Publish-Werkzeug nutzt.",
+      "scope": "Bereich",
+      "container": "Container",
+      "profile": "Profil",
+      "lastUsed": "Zuletzt genutzt",
+      "created": "Angelegt",
+      "actions": "Aktionen",
+      "persistent": "dauerhaft",
+      "ephemeral": "bei Leerlauf entfernbar",
+      "egressOn": "Netzwerk an",
+      "egressOff": "kein Netzwerk",
+      "teardown": "Entfernen",
+      "confirmTeardown": "Mit Dateien entfernen",
+      "errors": {
+        "teardownFailed": "Der Container konnte nicht entfernt werden. Die Sandbox bleibt gelistet.",
+        "notFound": "Diese Sandbox gibt es nicht mehr."
+      }
+    }
+  },
+  "adminPublish": {
+    "title": "Veröffentlichte Apps",
+    "intro": "Interne Web-Apps, die Agenten aus ihrer Sandbox veröffentlicht haben. Jede Veröffentlichung ist eine neue, unveränderliche Version; eine davon ist live. Ein Zurückrollen verschiebt den Live-Zeiger und erledigt das Rollback-Werkzeug des Agenten, nicht diese Seite.",
+    "loading": "Veröffentlichte Apps werden geladen…",
+    "list": {
+      "heading": "Apps",
+      "hint": "Nur lesend. Die Versionsliste braucht die Postgres-Datenbank.",
+      "empty": "Es wurde noch keine App veröffentlicht.",
+      "app": "App",
+      "live": "Live",
+      "versions": "Versionen",
+      "updated": "Letzte Änderung",
+      "actions": "Aktionen",
+      "notLive": "Keine Live-Version",
+      "liveLatest": "Version {version} (neueste)",
+      "liveOlder": "Version {version} (neueste ist {latest})",
+      "showVersions": "Versionen",
+      "hideVersions": "Versionen ausblenden"
+    },
+    "versions": {
+      "loading": "Versionen werden geladen…",
+      "notFound": "Für diese App sind keine Versionen erfasst.",
+      "label": "Version {version}",
+      "live": "aktiv",
+      "meta": "Veröffentlicht am {date} · Einstiegspunkt {entrypoint}",
+      "source": "Aus",
+      "hash": "Inhalt"
+    }
+  },
+  "agentCredentialGrants": {
+    "heading": "Zugangsdaten",
+    "hint": "Benannte Zugangsdaten aus dem Schlüsselbund, die dieser Agent über den Credential-Broker nutzen darf. Eine Freigabe teilt kein Geheimnis: Ein Turn kann nur Zugangsdaten nutzen, die sein Konto selbst nutzen darf.",
+    "loading": "Freigaben werden geladen …",
+    "empty": "Dieser Agent hat keine freigegebenen Zugangsdaten.",
+    "name": "Zugangsdaten",
+    "kind": "Art",
+    "host": "Zielhost",
+    "granted": "Freigegeben",
+    "actions": "Aktionen",
+    "revoked": "widerrufen",
+    "unknown": "unbekannt",
+    "noHost": "kein fester Host",
+    "grantedBy": "von {who}, {date}",
+    "remove": "Entfernen",
+    "confirmRemove": "Freigabe entfernen",
+    "addLabel": "Zugangsdaten freigeben",
+    "choose": "Zugangsdaten wählen …",
+    "noneLeft": "Keine weiteren aktiven Zugangsdaten",
+    "option": "{name} (Zielhost {host})",
+    "add": "Freigeben",
+    "adding": "Wird freigegeben",
+    "kinds": {
+      "personal": "Persönlich",
+      "service": "Dienst"
+    },
+    "errors": {
+      "notFound": "Diese Zugangsdaten oder Freigabe gibt es nicht mehr.",
+      "revoked": "Widerrufene Zugangsdaten können nicht freigegeben werden.",
+      "previewDraft": "Der Vorschau-Agent des Plugin Builders kann nicht konfiguriert werden."
+    }
   }
 }

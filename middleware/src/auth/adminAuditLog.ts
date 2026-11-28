@@ -208,6 +208,16 @@ export type AuditAction =
   // `target` is `privacy-field:<tool>:<scope>/<path>`. Never a value.
   | 'privacy.field_auto_approve'
   | 'privacy.field_auto_revoke'
+  // #2320 — admin surfaces of the keychain, skills, sandboxes (ADR-0102,
+  // #577, #576). A revoked credential or grant, a skill moved to a team or
+  // org home, a sandbox torn down by hand or by a manual reaper sweep.
+  // `before`/`after` carry names, scopes and ids — never a secret, a
+  // fingerprint or a sandbox's file content.
+  | 'credential.revoke'
+  | 'credential.grant_revoke'
+  | 'skill.promote'
+  | 'sandbox.teardown'
+  | 'sandbox.reap'
   // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
   | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs

@@ -5701,6 +5701,16 @@ own. The rules below replace that.
    bound to the session principal, which is always a user. An ask addressed
    to a `role` owner could never be answered by anyone, so creating one is
    refused as `not_askable`.
+8. **Revocation follows the same owner rule (#2320).** The admin keychain
+   surface (`routes/adminCredentials.ts`, `/api/v1/admin/credentials`) lets
+   only the owner of a `personal` credential revoke it or any grant against
+   it (403 `credential.forbidden` otherwise, identity from
+   `omadia_user_id` exactly as above); a `service` credential has no single
+   owner and any operator session may revoke it. The route reads metadata
+   only — `getSecretMaterial` is not in its dependency type — and its bodies
+   carry neither the secret nor the fingerprint. Each revocation is an admin
+   audit row (`credential.revoke`, `credential.grant_revoke`) without secret
+   material. ADR-0360 records this rule.
 
 Two consequences follow. A credential-creation surface must store a personal
 credential's owner as `user:<omadia_user_id>`, or nobody can ever approve an

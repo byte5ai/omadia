@@ -53,6 +53,40 @@ interface SkillOwnershipLifecycleDbRow {
   manifest_signed_at: Date | null;
 }
 
+/** #2320 — the admin list row: no body, no signature bytes. */
+export interface SkillOwnershipLifecycleListRow {
+  readonly id: string;
+  readonly slug: string;
+  readonly name: string;
+  readonly ownerScope: string | null;
+  readonly lifecycleStatus: SkillLifecycleStatus;
+  readonly manifestSignedAt: Date | null;
+  readonly updatedAt: Date;
+  /** `null` when the frontmatter value is malformed (publishing it throws). */
+  readonly requiredCapabilities: readonly string[] | null;
+}
+
+interface SkillListDbRow {
+  id: string;
+  slug: string;
+  name: string;
+  owner_scope: string | null;
+  lifecycle_status: SkillLifecycleStatus;
+  manifest_signed_at: Date | null;
+  updated_at: Date;
+  required_capabilities: unknown;
+}
+
+const SKILL_LIST_LIMIT = 500;
+
+function readRequiredCapabilities(raw: unknown): readonly string[] | null {
+  try {
+    return requiredCapabilitiesFromFrontmatter(raw === null ? {} : { requiredCapabilities: raw });
+  } catch {
+    return null;
+  }
+}
+
 function mapRow(r: SkillOwnershipLifecycleDbRow): SkillOwnershipLifecycleRow {
   return {
     id: r.id,
@@ -100,6 +134,31 @@ export class PgSkillOwnershipLifecycleStore {
       [skillId],
     );
     return result.rows[0] ? mapRow(result.rows[0]) : undefined;
+  }
+
+  /**
+   * #2320 — every skill's ownership + lifecycle columns for the admin view,
+   * ordered by name. No `body` and no `frontmatter` beyond what the view needs
+   * (`requiredCapabilities`); bounded by `limit` (default and ceiling 500).
+   */
+  async listSkills(limit = SKILL_LIST_LIMIT): Promise<SkillOwnershipLifecycleListRow[]> {
+    const bounded = Math.max(1, Math.min(Math.trunc(limit), SKILL_LIST_LIMIT));
+    const result = await this.pool.query<SkillListDbRow>(
+      `SELECT id, slug, name, owner_scope, lifecycle_status, manifest_signed_at, updated_at,
+              frontmatter -> 'requiredCapabilities' AS required_capabilities
+         FROM skills ORDER BY lower(name), id LIMIT $1`,
+      [bounded],
+    );
+    return result.rows.map((r) => ({
+      id: r.id,
+      slug: r.slug,
+      name: r.name,
+      ownerScope: r.owner_scope,
+      lifecycleStatus: r.lifecycle_status,
+      manifestSignedAt: r.manifest_signed_at,
+      updatedAt: r.updated_at,
+      requiredCapabilities: readRequiredCapabilities(r.required_capabilities),
+    }));
   }
 
   /**

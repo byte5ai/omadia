@@ -132,12 +132,29 @@ export class DockerSandboxBackend implements SandboxBackend {
     readonly profile: AgentComputerProfile;
   }): Promise<Sandbox> {
     const cached = this.live.get(args.scopeKey);
-    if (cached) {
-      // #576 P3: even a process-local cache hit is real usage — the reaper
-      // must not treat a scope as idle while its sandbox is actively being
-      // reused just because Docker itself wasn't consulted this call.
-      if (this.registry) await this.registry.touch(args.scopeKey, new Date());
-      return cached;
+    if (cached && !this.registry) return cached;
+    if (cached && this.registry) {
+      // #2320: a registered scope whose row is gone was torn down from
+      // outside this process (the reaper, or an operator in the admin view).
+      // The cached handle points at a removed container — drop it and
+      // provision again instead of failing the next command.
+      let registered: boolean;
+      try {
+        registered = (await this.registry.get(args.scopeKey)) !== undefined;
+      } catch (err) {
+        // A registry outage must not break a container that is running fine:
+        // keep the cached handle and let the next call check again.
+        this.log(`DockerSandboxBackend: registry read failed for a cached scope, keeping the handle: ${String(err)}`);
+        return cached;
+      }
+      if (registered) {
+        // #576 P3: even a process-local cache hit is real usage — the reaper
+        // must not treat a scope as idle while its sandbox is actively being
+        // reused just because Docker itself wasn't consulted this call.
+        await this.registry.touch(args.scopeKey, new Date());
+        return cached;
+      }
+      this.live.delete(args.scopeKey);
     }
 
     // #576 P3: a registered scope re-attaches via its STORED reference

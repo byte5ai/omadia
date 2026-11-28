@@ -82,6 +82,16 @@ const GROUPS: readonly GroupDef[] = [
     ],
   },
   {
+    // #2320 — what agents build and run: skills (ADR-0068), and below the
+    // sandboxes (#576) and published apps (#581).
+    key: 'workspace',
+    cards: [
+      { href: '/admin/skills', key: 'skills' },
+      { href: '/admin/sandboxes', key: 'sandboxes' },
+      { href: '/admin/published-apps', key: 'publishedApps' },
+    ],
+  },
+  {
     key: 'access',
     cards: [
       { href: '/admin/auth', key: 'auth' },
@@ -89,6 +99,8 @@ const GROUPS: readonly GroupDef[] = [
       // ADR-0300 — Entra directory people (not accounts).
       { href: '/admin/directory', key: 'directory' },
       { href: '/admin/api-keys', key: 'apiKeys' },
+      // #2320 — the credential keychain (ADR-0102): grants, revocation, asks.
+      { href: '/admin/credentials', key: 'credentials' },
       // #1315 — read-only admin audit log.
       { href: '/admin/audit', key: 'audit' },
     ],

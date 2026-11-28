@@ -105,6 +105,21 @@ export function AgentReachPanel({
               })}
             </ul>
           )}
+          {reach.credential_hosts && reach.credential_hosts.length > 0 ? (
+            <div data-testid="agent-reach-credentials" className="mt-3">
+              <h3 className="mb-1 text-sm font-medium">{t('credentialsHeading')}</h3>
+              <ul className="space-y-1">
+                {reach.credential_hosts.map((c) => (
+                  <li key={c.credential_id} className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium">{c.name}</span>
+                    <span className="type-mono-data text-xs text-[color:var(--fg-muted)]">
+                      {c.host ?? t('credentialNoHost')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <p className="mt-3 text-xs text-[color:var(--fg-muted)]">
             {t('connected', { count: reach.connected_systems })}
           </p>

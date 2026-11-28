@@ -115,6 +115,10 @@ export const ROUTES: Readonly<Record<string, Classification>> = {
   'src/index.ts USE /api/v1/admin/auth createAdminAuthRouter': none('auth provider settings'),
   'src/index.ts USE /api/v1/admin/cli-backends createAdminCliBackendsRouter': none('CLI backend settings'),
   'src/index.ts USE /api/v1/admin/credential-asks createCredentialAskRouter': none('credential requests and grants'),
+  // #2320 — admin surfaces of the keychain, sandboxes and published apps.
+  'src/index.ts USE /api/v1/admin/credentials createAdminCredentialsRouter': none('keychain metadata, grants and revocation (credentials tables); never memory, never a secret'),
+  'src/index.ts USE /api/v1/admin/sandboxes createAdminSandboxesRouter': none('sandbox_registry rows (scope key, container ref, last use) and docker rm; no memory, no sandbox file content'),
+  'src/index.ts USE /api/v1/admin/publish createAdminPublishRouter': none('publish_apps / publish_versions metadata (version, name, hash); no memory, no app content'),
   'src/index.ts USE /api/v1/admin/model-gateway createModelGatewayStatusRouter': none('model gateway status'),
   'src/index.ts USE /api/v1/admin/model-work createModelWorkRouter': none('operator job status'),
   'src/index.ts USE /api/v1/admin/privacy/field-classification createFieldClassificationRoutes': none('privacy field classification settings'),
