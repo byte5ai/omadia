@@ -192,6 +192,9 @@ import { resolveSkillManifestSigningKey } from './services/skillManifestSigningK
 import { createCredentialAskRouter } from './routes/credentialAsks.js';
 import { createAdminCredentialsRouter } from './routes/adminCredentials.js';
 import { createAdminSandboxesRouter } from './routes/adminSandboxes.js';
+import { createAdminPublishRouter } from './routes/adminPublish.js';
+import { listPublishApps } from './services/publishAppCatalog.js';
+import { PostgresPublishStore } from '@omadia/publish';
 import { PostgresSandboxRegistry } from '@omadia/sandbox';
 import { InMemoryCredentialAskStore } from './credentials/asks.js';
 import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
@@ -4778,6 +4781,17 @@ async function main(): Promise<void> {
     createAdminSandboxesRouter(
       graphPool
         ? { registry: new PostgresSandboxRegistry(graphPool), adminAudit: new AdminAuditLog(graphPool) }
+        : {},
+    ),
+  );
+
+  // #2320 — read-only version list of published apps (#581, ADR-0067).
+  app.use(
+    '/api/v1/admin/publish',
+    requireAuth,
+    createAdminPublishRouter(
+      graphPool
+        ? { store: new PostgresPublishStore(graphPool), listApps: () => listPublishApps(graphPool) }
         : {},
     ),
   );

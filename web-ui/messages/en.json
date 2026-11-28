@@ -341,6 +341,10 @@
         "sandboxes": {
           "title": "Sandboxes",
           "description": "The per-scope containers agents run commands in; remove one, or sweep idle ones."
+        },
+        "publishedApps": {
+          "title": "Published apps",
+          "description": "Internal web apps agents published, with their live version and the full version history."
         }
       }
     },
@@ -8429,6 +8433,35 @@
         "teardownFailed": "The container could not be removed. The sandbox stays listed.",
         "notFound": "This sandbox is already gone."
       }
+    }
+  },
+  "adminPublish": {
+    "title": "Published apps",
+    "intro": "Internal web apps agents published from their sandbox. Every publish is a new, unchangeable version; one of them is live. Rolling back moves the live pointer and is done by the agent's rollback tool, not here.",
+    "loading": "Loading published apps…",
+    "list": {
+      "heading": "Apps",
+      "hint": "Read-only. The version list needs the Postgres database.",
+      "empty": "No app has been published yet.",
+      "app": "App",
+      "live": "Live",
+      "versions": "Versions",
+      "updated": "Last change",
+      "actions": "Actions",
+      "notLive": "No live version",
+      "liveLatest": "Version {version} (newest)",
+      "liveOlder": "Version {version} (newest is {latest})",
+      "showVersions": "Versions",
+      "hideVersions": "Hide versions"
+    },
+    "versions": {
+      "loading": "Loading versions…",
+      "notFound": "This app has no recorded versions.",
+      "label": "Version {version}",
+      "live": "live",
+      "meta": "Published {date} · entry point {entrypoint}",
+      "source": "From",
+      "hash": "content"
     }
   }
 }

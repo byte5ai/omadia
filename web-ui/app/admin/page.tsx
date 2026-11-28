@@ -88,6 +88,7 @@ const GROUPS: readonly GroupDef[] = [
     cards: [
       { href: '/admin/skills', key: 'skills' },
       { href: '/admin/sandboxes', key: 'sandboxes' },
+      { href: '/admin/published-apps', key: 'publishedApps' },
     ],
   },
   {

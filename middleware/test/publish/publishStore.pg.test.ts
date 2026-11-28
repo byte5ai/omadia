@@ -13,6 +13,7 @@ import { Pool } from 'pg';
 import { probePgTest } from '../_helpers/pgTestDb.js';
 
 import { PostgresPublishStore } from '../../packages/harness-publish/src/postgresPublishStore.js';
+import { listPublishApps } from '../../src/services/publishAppCatalog.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'postgresPublishStore',
@@ -83,6 +84,19 @@ describeIf('PostgresPublishStore (#581)', () => {
     const v2 = await store.createVersion({ appId, name: 'A', entrypoint: 'x.js', dirHash: 'h2', sourceScopeKey: 's', now: new Date() });
     assert.equal(v1.version, 1);
     assert.equal(v2.version, 2);
+  });
+
+  it('#2320 listPublishApps reports the live pointer, newest name and version count', async () => {
+    const appId = `pg-catalog-${String(Date.now())}`;
+    await store.createVersion({ appId, name: 'Old', entrypoint: 'x.js', dirHash: 'h1', sourceScopeKey: 's', now: new Date() });
+    await store.createVersion({ appId, name: 'New', entrypoint: 'x.js', dirHash: 'h2', sourceScopeKey: 's', now: new Date() });
+    await store.setPointer(appId, 1, new Date());
+    const app = (await listPublishApps(pool)).find((a) => a.appId === appId);
+    assert.ok(app, 'the app is listed');
+    assert.equal(app.name, 'New');
+    assert.equal(app.currentVersion, 1, 'a rollback pointer is reported as is');
+    assert.equal(app.latestVersion, 2);
+    assert.equal(app.versionCount, 2);
   });
 
   it('concurrent createVersion calls for the same app never collide, and neither version is overwritten', async () => {

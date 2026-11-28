@@ -341,6 +341,10 @@
         "sandboxes": {
           "title": "Sandboxes",
           "description": "Die Container pro Bereich, in denen Agenten Befehle ausführen; einzelne entfernen oder ungenutzte aufräumen."
+        },
+        "publishedApps": {
+          "title": "Veröffentlichte Apps",
+          "description": "Interne Web-Apps, die Agenten veröffentlicht haben, mit Live-Version und vollständiger Versionsgeschichte."
         }
       }
     },
@@ -8429,6 +8433,35 @@
         "teardownFailed": "Der Container konnte nicht entfernt werden. Die Sandbox bleibt gelistet.",
         "notFound": "Diese Sandbox gibt es nicht mehr."
       }
+    }
+  },
+  "adminPublish": {
+    "title": "Veröffentlichte Apps",
+    "intro": "Interne Web-Apps, die Agenten aus ihrer Sandbox veröffentlicht haben. Jede Veröffentlichung ist eine neue, unveränderliche Version; eine davon ist live. Ein Zurückrollen verschiebt den Live-Zeiger und erledigt das Rollback-Werkzeug des Agenten, nicht diese Seite.",
+    "loading": "Veröffentlichte Apps werden geladen…",
+    "list": {
+      "heading": "Apps",
+      "hint": "Nur lesend. Die Versionsliste braucht die Postgres-Datenbank.",
+      "empty": "Es wurde noch keine App veröffentlicht.",
+      "app": "App",
+      "live": "Live",
+      "versions": "Versionen",
+      "updated": "Letzte Änderung",
+      "actions": "Aktionen",
+      "notLive": "Keine Live-Version",
+      "liveLatest": "Version {version} (neueste)",
+      "liveOlder": "Version {version} (neueste ist {latest})",
+      "showVersions": "Versionen",
+      "hideVersions": "Versionen ausblenden"
+    },
+    "versions": {
+      "loading": "Versionen werden geladen…",
+      "notFound": "Für diese App sind keine Versionen erfasst.",
+      "label": "Version {version}",
+      "live": "aktiv",
+      "meta": "Veröffentlicht am {date} · Einstiegspunkt {entrypoint}",
+      "source": "Aus",
+      "hash": "Inhalt"
     }
   }
 }
