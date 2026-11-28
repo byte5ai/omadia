@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS credential_asks (
   purpose                     TEXT NOT NULL CHECK (length(trim(purpose)) > 0),
   mode                        TEXT NOT NULL CHECK (mode IN ('once', 'standing')),
   requested_grant_expires_at  TIMESTAMPTZ,
+  requested_grant_valid_seconds INTEGER,
   ask_expires_at              TIMESTAMPTZ NOT NULL,
   status                      TEXT NOT NULL DEFAULT 'pending'
                                CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'cancelled')),

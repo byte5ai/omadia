@@ -34,8 +34,12 @@ const MIGRATION = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'migrat
 
 const STUBS = `
 CREATE TABLE agents (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), slug TEXT NOT NULL);
-CREATE TABLE credentials (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT NOT NULL);
-CREATE TABLE credential_asks (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE credentials (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT NOT NULL, revoked_at TIMESTAMPTZ);
+CREATE TABLE credential_asks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  status TEXT NOT NULL DEFAULT 'pending',
+  ask_expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '1 day'
+);
 `;
 
 describe('agent credential grants (pg, migration 0125)', { skip: !pgAvailable }, () => {
@@ -81,6 +85,28 @@ describe('agent credential grants (pg, migration 0125)', { skip: !pgAvailable },
     assert.equal((await grants.listAll()).length, 1);
     assert.equal(await grants.remove(agent, cred), true);
     assert.equal(await grants.remove(agent, cred), false);
+  });
+
+  it('leaves grants of revoked credentials out of the offer list', async () => {
+    const agent = await insertId(`INSERT INTO agents (slug) VALUES ('clara') RETURNING id`);
+    const live = await insertId(`INSERT INTO credentials (name) VALUES ('live') RETURNING id`);
+    const revoked = await insertId(`INSERT INTO credentials (name, revoked_at) VALUES ('old', now()) RETURNING id`);
+    await grants.put(agent, live, 'op');
+    await grants.put(agent, revoked, 'op');
+    assert.deepEqual((await grants.listAll()).map((g) => g.credentialId), [live]);
+    assert.equal((await grants.list(agent)).length, 2);
+  });
+
+  it('sweeps deliveries of asks that can no longer be decided', async () => {
+    const agent = await insertId(`INSERT INTO agents (slug) VALUES ('clara') RETURNING id`);
+    const open = await insertId('INSERT INTO credential_asks DEFAULT VALUES RETURNING id');
+    const denied = await insertId(`INSERT INTO credential_asks (status) VALUES ('denied') RETURNING id`);
+    const expired = await insertId(`INSERT INTO credential_asks (ask_expires_at) VALUES (now() - interval '1 minute') RETURNING id`);
+    for (const askId of [open, denied, expired]) {
+      await deliveries.put({ askId, agentId: agent, channel: 'web', conversationRef: {} });
+    }
+    assert.equal(await deliveries.purgeStale(new Date()), 2);
+    assert.ok(await deliveries.take(open));
   });
 
   it('drops grants with their agent or credential', async () => {

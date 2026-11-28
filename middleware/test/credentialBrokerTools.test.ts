@@ -229,6 +229,7 @@ describe('#2319 · credential_ask', () => {
     assert.equal(stored.length, 1);
     assert.equal(stored[0]?.mode, 'once');
     assert.ok(stored[0]?.requestedGrantExpiresAt);
+    assert.equal(stored[0]?.requestedGrantValidSeconds, 3600);
     assert.deepEqual(h.notified, [askId]);
     // A second ask while one is pending returns the same ask and sends no second notice.
     const second = JSON.parse(await inTurn(() => ask({ credential: 'otto-token', purpose: 'again' }))) as Record<string, unknown>;
@@ -236,6 +237,19 @@ describe('#2319 · credential_ask', () => {
     assert.deepEqual(h.notified, [askId]);
     const delivery = await h.deliveries.take(askId);
     assert.deepEqual(delivery, { askId, agentId: AGENT.id, channel: 'telegram', conversationRef: { chatId: '42' } });
+  });
+
+  it('creates one ask for parallel calls of one model message', async () => {
+    const id = await personalCredential(h);
+    await h.grants.put(AGENT.id, id, 'op');
+    const ask = createCredentialAskHandler(h.deps);
+    const outs = await inTurn(() =>
+      Promise.all([1, 2, 3].map(() => ask({ credential: 'otto-token', purpose: 'read my calendar' }))),
+    );
+    const ids = new Set(outs.map((o) => (JSON.parse(o) as { askId: string }).askId));
+    assert.equal(ids.size, 1);
+    assert.equal(h.notified.length, 1);
+    assert.equal((await h.deps.asks.listForRequester(ANNA)).length, 1);
   });
 
   it('refuses a service credential: it has no owner to ask', async () => {
@@ -278,6 +292,33 @@ describe('ADR-0355 · the account a turn speaks for', () => {
       target: { omadiaUserId: web.omadiaUserId, userId: 'users-id-1' },
     });
     assert.equal(turnAccountUserId(turn, await resolveTurnOwnerIdentity(kg, turn)), web.omadiaUserId);
+  });
+
+  it('is nothing for a channel identity linked to a disabled account', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const web = await kg.resolveOrCreateChannelIdentity({ channelKind: 'web', channelUserId: 'users-id-2', emailVerified: true });
+    const turn = {
+      userId: 'telegram:4712',
+      origin: { channelType: 'telegram', scope: { kind: 'personal', userId: '4712' } },
+    } as Parameters<typeof resolveTurnOwnerIdentity>[1];
+    await kg.linkChannelIdentity({ channelKind: 'telegram', channelUserId: 'telegram:4712', target: { omadiaUserId: web.omadiaUserId, userId: 'users-id-2' } });
+    const directory = {
+      isAccountActive: async () => false,
+      activePersonKeyByObjectId: async () => undefined,
+      activePersonKeyById: async () => undefined,
+    };
+    assert.equal(turnAccountUserId(turn, await resolveTurnOwnerIdentity(kg, turn, directory)), undefined);
+  });
+
+  it('is the linked account on a minted channel identity too', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const web = await kg.resolveOrCreateChannelIdentity({ channelKind: 'web', channelUserId: 'users-id-3', emailVerified: true });
+    await kg.resolveOrCreateChannelIdentity({ channelKind: 'slack', channelUserId: 'U77' });
+    await kg.linkChannelIdentity({ channelKind: 'slack', channelUserId: 'U77', target: { omadiaUserId: web.omadiaUserId, userId: 'users-id-3' } });
+    const turn = { userId: 'U77', channelIdentity: { channelKind: 'slack', channelUserId: 'U77' } } as Parameters<typeof resolveTurnOwnerIdentity>[1];
+    const owner = await resolveTurnOwnerIdentity(kg, turn);
+    assert.equal(owner.linkedUserId, 'users-id-3');
+    assert.equal(turnAccountUserId(turn, owner), web.omadiaUserId);
   });
 
   it('is nothing for an HTTP turn without the session origin', () => {

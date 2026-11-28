@@ -54,6 +54,8 @@ export interface CredentialBrokerWiringDeps {
       readonly spec: NativeToolSpec;
       readonly isAvailable: () => boolean;
       readonly sideEffects: 'write';
+      readonly kernelSystem: string;
+      readonly modelDispatchOnly: true;
     },
   ) => () => void;
   readonly agentBySlug: (slug: string) => CredentialBrokerAgent | undefined;
@@ -94,10 +96,35 @@ export function brokerAuditEntry(event: BrokerAuditEvent, agentSlug: string | un
       ...(agentSlug ? { agent: agentSlug } : {}),
       ...(event.reason ? { reason: event.reason } : {}),
       ...(event.credentialFingerprint ? { fingerprint: event.credentialFingerprint } : {}),
-      ...(event.droppedHeaderNames ? { droppedHeaderNames: event.droppedHeaderNames } : {}),
+      // Header names are chosen by the model: bounded, like everything else here.
+      ...(event.droppedHeaderNames
+        ? {
+            droppedHeaderNames: event.droppedHeaderNames
+              .slice(0, MAX_AUDITED_HEADER_NAMES)
+              .map((n) => n.slice(0, MAX_AUDITED_HEADER_NAME_CHARS)),
+          }
+        : {}),
     },
   };
 }
+
+/** The discretion system both tools reach (Spec 2042 §5.11, `toolSystemOf`). */
+export const CREDENTIAL_BROKER_SYSTEM = 'credential-broker';
+
+/**
+ * Both tools write (a request may change data upstream; an ask sends the
+ * purpose to the owner), count as the `credential-broker` system for the
+ * discretion egress check and read labels, and are refused on a plugin's
+ * `ctx.tools.invoke`, which skips the Privacy Shield.
+ */
+const TOOL_GUARDS = { sideEffects: 'write', kernelSystem: CREDENTIAL_BROKER_SYSTEM, modelDispatchOnly: true } as const;
+
+/** Audit rows hold at most this many dropped header names, each this long. */
+const MAX_AUDITED_HEADER_NAMES = 20;
+const MAX_AUDITED_HEADER_NAME_CHARS = 64;
+
+/** How often stale ask deliveries (resolved elsewhere, expired) are swept. */
+const DELIVERY_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 export function wireCredentialBroker(deps: CredentialBrokerWiringDeps): CredentialBrokerWiring {
   const grants: AgentCredentialGrantStore = deps.pool
@@ -138,15 +165,27 @@ export function wireCredentialBroker(deps: CredentialBrokerWiringDeps): Credenti
       handler: createCredentialRequestHandler(toolDeps),
       spec: credentialRequestToolSpec,
       isAvailable,
-      sideEffects: 'write',
+      ...TOOL_GUARDS,
     }),
     deps.registerNativeTool(CREDENTIAL_ASK_TOOL_NAME, {
       handler: createCredentialAskHandler(toolDeps),
       spec: credentialAskToolSpec,
       isAvailable,
-      sideEffects: 'write',
+      ...TOOL_GUARDS,
     }),
   ];
+
+  // A delivery row holds a conversation reference; once its ask can no longer
+  // be decided (expired, cancelled, resolved without the hook) it goes.
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+  const sweepDeliveries = async (): Promise<void> => {
+    try {
+      const removed = await deliveries.purgeStale(new Date());
+      if (removed > 0) deps.log(`[credential-broker] swept ${String(removed)} stale ask deliveries`);
+    } catch (err) {
+      deps.log(`[credential-broker] ask delivery sweep failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   const operatorRouter = createOperatorCredentialGrantRouter({
     getConfigStore: deps.getConfigStore,
@@ -172,20 +211,21 @@ export function wireCredentialBroker(deps: CredentialBrokerWiringDeps): Credenti
     },
     async reachOf(agentId) {
       const held = await grants.list(agentId);
-      const out: AgentCredentialReach[] = [];
-      for (const grant of held) {
-        const credential = await deps.credentials.getCredential(grant.credentialId);
-        if (!credential || credential.revokedAt) continue;
-        out.push({ credentialId: credential.id, name: credential.name, kind: credential.kind, host: credential.broker?.host ?? null });
-      }
-      return out;
+      const credentials = await Promise.all(held.map((g) => deps.credentials.getCredential(g.credentialId)));
+      return credentials.flatMap((c): AgentCredentialReach[] =>
+        c && !c.revokedAt ? [{ credentialId: c.id, name: c.name, kind: c.kind, host: c.broker?.host ?? null }] : [],
+      );
     },
     async start() {
       await snapshot.refresh();
       snapshot.start();
+      sweepTimer ??= setInterval(() => void sweepDeliveries(), DELIVERY_SWEEP_INTERVAL_MS);
+      sweepTimer.unref?.();
     },
     stop() {
       snapshot.stop();
+      if (sweepTimer) clearInterval(sweepTimer);
+      sweepTimer = undefined;
       for (const dispose of disposers) dispose();
     },
   };

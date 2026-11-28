@@ -20,7 +20,7 @@
  * non-idempotent request is not repeated blindly.
  */
 
-import { makePrincipal, type CredentialStore, type Principal } from '@omadia/channel-sdk';
+import { formatPrincipal, makePrincipal, type CredentialStore, type Principal } from '@omadia/channel-sdk';
 import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
 import type { NativeToolSpec } from '@omadia/plugin-api';
 
@@ -68,14 +68,17 @@ export const credentialRequestToolSpec: NativeToolSpec = {
 export const credentialAskToolSpec: NativeToolSpec = {
   name: CREDENTIAL_ASK_TOOL_NAME,
   description:
-    'Ask the owner of a personal credential you were granted for permission to use it for the person you work for. The owner gets a notice and decides; you get "pending" now, and the decision is posted to this conversation later. Do not ask again while an ask is pending. State the purpose plainly; the owner reads it.',
+    'Ask the owner of a personal credential you were granted for permission to use it for the person you work for. The owner gets a notice and decides; you get "pending" now, and the decision is posted to this conversation later. Do not ask again while an ask is pending. State the purpose plainly; the owner reads it. Note: an approved personal credential cannot be used through credential_request yet; tell the user that the permission is recorded.',
   input_schema: {
     type: 'object',
     properties: {
       credential: { type: 'string', description: 'Name of a credential you were granted.' },
       purpose: { type: 'string', description: 'Why it is needed, in one or two sentences.' },
       mode: { type: 'string', enum: ['once', 'standing'], description: 'once (default): a single use; standing: repeated use.' },
-      valid_minutes: { type: 'number', description: 'How long the permission should last once approved. Default 60 for once.' },
+      valid_minutes: {
+        type: 'number',
+        description: 'How long the permission lasts, counted from the approval. Default 60 for once; a standing permission without it lasts until revoked.',
+      },
     },
     required: ['credential', 'purpose'],
   },
@@ -250,7 +253,9 @@ export function createCredentialRequestHandler(deps: CredentialBrokerToolDeps): 
       return formatBrokerResponse(response);
     } catch (err) {
       if (err instanceof BrokerDenialError) return denialText(err);
-      deps.log?.(`[credential-broker] request failed unexpectedly — ${err instanceof Error ? err.name : 'error'}`);
+      // Broker errors carry no secret (BrokerDenialError is handled above);
+      // anything else is a programming or store error worth its message.
+      deps.log?.(`[credential-broker] request failed unexpectedly — ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
       return refuse('failed', 'the request could not be made.');
     }
   };
@@ -275,6 +280,31 @@ function askTerms(input: Record<string, unknown>): AskTerms | string {
   }
   const validMinutes = typeof raw === 'number' ? raw : rawMode === 'once' ? DEFAULT_ONCE_VALID_MINUTES : undefined;
   return { purpose, mode: rawMode, ...(validMinutes !== undefined ? { validMinutes } : {}) };
+}
+
+/** One ask at a time per person and credential, so parallel tool calls in one
+ *  model message cannot each pass the "already pending?" check. In-process:
+ *  a second machine could still race, and then the owner gets two notices. */
+const askLocks = new Map<string, Promise<unknown>>();
+
+async function withAskLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = askLocks.get(key) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  const settled = run.catch(() => undefined);
+  askLocks.set(key, settled);
+  try {
+    return await run;
+  } finally {
+    if (askLocks.get(key) === settled) askLocks.delete(key);
+  }
+}
+
+function alreadyPendingText(ask: CredentialAsk): string {
+  return JSON.stringify({
+    status: 'pending',
+    askId: ask.id,
+    note: 'An ask for this credential is already pending for this person; no new ask was sent. Tell the user it is still pending.',
+  });
 }
 
 function pendingText(ask: CredentialAsk, ownerNotified: boolean, deliversHere: boolean): string {
@@ -309,31 +339,39 @@ export function createCredentialAskHandler(deps: CredentialBrokerToolDeps): Hand
     }
 
     const now = (deps.now ?? (() => new Date()))();
+    const lockKey = `${formatPrincipal(frame.principal)}\u0000${credential.id}`;
     try {
-      // One open ask per person and credential: a looping agent must not
-      // flood the owner with notices.
-      const open = (await deps.asks.listForRequester(frame.principal)).find(
-        (a) => a.credentialId === credential.id && isAskActionable(a, now),
-      );
-      if (open) return pendingText(open, true, true);
+      return await withAskLock(lockKey, async () => {
+        // One open ask per person and credential: a looping agent must not
+        // flood the owner with notices.
+        const open = (await deps.asks.listForRequester(frame.principal)).find(
+          (a) => a.credentialId === credential.id && isAskActionable(a, now),
+        );
+        if (open) return alreadyPendingText(open);
 
-      const askExpiresAt = new Date(now.getTime() + CREDENTIAL_ASK_TTL_MS);
-      const ask = await deps.asks.createAsk({
-        credentialId: credential.id,
-        requester: frame.principal,
-        purpose: terms.purpose,
-        mode: terms.mode,
-        askExpiresAt,
-        ...(terms.validMinutes !== undefined
-          ? { requestedGrantExpiresAt: new Date(askExpiresAt.getTime() + terms.validMinutes * 60_000) }
-          : {}),
+        const askExpiresAt = new Date(now.getTime() + CREDENTIAL_ASK_TTL_MS);
+        const ask = await deps.asks.createAsk({
+          credentialId: credential.id,
+          requester: frame.principal,
+          purpose: terms.purpose,
+          mode: terms.mode,
+          askExpiresAt,
+          // Counted from approval; the absolute bound covers an approval at
+          // the very end of the ask window.
+          ...(terms.validMinutes !== undefined
+            ? {
+                requestedGrantValidSeconds: terms.validMinutes * 60,
+                requestedGrantExpiresAt: new Date(askExpiresAt.getTime() + terms.validMinutes * 60_000),
+              }
+            : {}),
+        });
+        const conversation = deps.currentConversation();
+        if (conversation) {
+          await deps.deliveries.put({ askId: ask.id, agentId: frame.agent.id, ...conversation });
+        }
+        const notified = await deps.notices.notifyOwner(ask, { credentialName: credential.name, agentName: frame.agent.name });
+        return pendingText(ask, notified, conversation !== undefined);
       });
-      const conversation = deps.currentConversation();
-      if (conversation) {
-        await deps.deliveries.put({ askId: ask.id, agentId: frame.agent.id, ...conversation });
-      }
-      const notified = await deps.notices.notifyOwner(ask, { credentialName: credential.name, agentName: frame.agent.name });
-      return pendingText(ask, notified, conversation !== undefined);
     } catch (err) {
       if (err instanceof CredentialAskRejectedError) return refuse(`ask_rejected:${err.reason}`, 'the ask was not accepted.');
       deps.log?.(`[credential-broker] ask failed — ${err instanceof Error ? err.message : String(err)}`);

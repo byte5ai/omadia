@@ -101,3 +101,24 @@ describe('effect declared at registration (#2338, ADR-0299)', () => {
     assert.equal(systemOf('posting_tool')?.effect, 'write');
   });
 });
+
+describe('a kernel tool that declares its system (#2319)', () => {
+  it('is checked as that system with its declared effect; a plain kernel tool belongs to none', () => {
+    const nativeTools = new NativeToolRegistry();
+    const handler = async (): Promise<string> => 'ok';
+    nativeTools.register('credential_request', {
+      handler,
+      spec: spec('credential_request'),
+      sideEffects: 'write',
+      kernelSystem: 'credential-broker',
+      modelDispatchOnly: true,
+    });
+    nativeTools.register('plain_kernel_tool', { handler, spec: spec('plain_kernel_tool') });
+    assert.equal(nativeTools.get('credential_request')?.modelDispatchOnly, true);
+    const { orchestrator } = verifiedTurn({ responses: [text('ok')], verdicts: [approved()], registry: nativeTools });
+    const systemOf = (name: string): ToolSystem | undefined =>
+      (orchestrator as unknown as { toolSystemOf(n: string): ToolSystem | undefined }).toolSystemOf(name);
+    assert.deepEqual(systemOf('credential_request'), { system: 'credential-broker', effect: 'write' });
+    assert.equal(systemOf('plain_kernel_tool'), undefined);
+  });
+});

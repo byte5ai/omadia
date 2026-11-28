@@ -78,8 +78,11 @@ Chosen option: **A**.
   expiry and revocation are checked for one person, as in ADR-0102.
 - 🟢 **Good:** An agent granted a credential cannot use it for someone who holds no grant.
 - 🔴 **Bad:** An operator must grant a service credential to every account that may use it
-  through an agent, not once to the agent. Group grants through a role principal are
-  possible with the existing model.
+  through an agent, not once to the agent. A `role:` credential grant does not help today:
+  the stores match the principal exactly and the broker passes only `user:<id>`.
+- 🔴 **Bad:** An approved ask for a `personal` credential records a grant the broker cannot
+  redeem yet, because the broker serves only `service` credentials (ADR-0102); tracked in
+  [#2383](https://github.com/byte5ai/omadia/issues/2383).
 - 🔴 **Bad:** Unlinked channel accounts cannot use any credential until an operator links them.
 - ⚪ **Neutral:** Reversible: option B can be added later without changing the tool contract.
 

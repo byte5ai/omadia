@@ -315,6 +315,7 @@ function toAskBody(ask: CredentialAsk): Record<string, unknown> {
     purpose: ask.purpose,
     mode: ask.mode,
     requested_grant_expires_at: ask.requestedGrantExpiresAt?.toISOString() ?? null,
+    requested_grant_valid_seconds: ask.requestedGrantValidSeconds ?? null,
     ask_expires_at: ask.askExpiresAt.toISOString(),
     status: ask.status,
     created_at: ask.createdAt.toISOString(),

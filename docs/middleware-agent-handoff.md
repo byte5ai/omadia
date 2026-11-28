@@ -563,7 +563,15 @@ sonst könnte ein Plugin ihn ohne Agent-Envelope rufen):
   Ablehnungen als `Error: (denied:<BrokerDenialReason>) …`.
 - `credential_ask` `{ credential, purpose, mode?: once|standing, valid_minutes? }` — legt ein
   Ask für ein `personal`-Credential an; Antwort `{ status: "pending", askId }`. Ein offenes Ask
-  pro Person und Credential (Wiederholung liefert dasselbe Ask, keine zweite Notice).
+  pro Person und Credential (Wiederholung liefert dasselbe Ask, keine zweite Notice; im Prozess
+  serialisiert). `valid_minutes` zählt ab der Genehmigung (`requested_grant_valid_seconds`,
+  Migration 0125), Obergrenze bleibt `requested_grant_expires_at`; `standing` ohne
+  `valid_minutes` gilt bis zum Widerruf.
+
+Beide Tools sind `modelDispatchOnly` (ein Plugin-`ctx.tools.invoke` wird abgelehnt) und haben
+das Discretion-System `credential-broker` (`kernelSystem` in `NativeToolRegistrationOptions`,
+gelesen von `Orchestrator.toolSystemOf`), also Integrations-Egress-Check und Read-Labels wie ein
+Plugin-Tool.
 
 Reihenfolge pro Aufruf (`credentialBrokerTools.ts`, fail-closed): Turn mit Agent →
 Account der Runde (`TurnContextValue.accountUserId`, gesetzt über `turnAccountUserId` in
@@ -582,13 +590,14 @@ Operator-Routen (`routes/operatorCredentialGrants.ts`, unter `/api/v1/operator`,
 `credential_revoked`), `DELETE …` (204 / 404). Audit `agent.credential_grant_change`. Die
 Reach (`GET /operator/agents/:slug/reach`, Directory) trägt zusätzlich `credential_hosts`.
 
-Asks: die Notice an den Owner geht als `system`-DM an eine Kanal-Identität seines
+Asks: die Notice an den Owner (ohne den Zweck, den liest der Owner in der Inbox) geht als `system`-DM an eine Kanal-Identität seines
 Account-Clusters (`kg.listUserChannelIdentities`, ohne `web`/`http`/`api`; erste erfolgreiche
 Zustellung gewinnt) mit Link `${PUBLIC_BASE_URL}/admin/credentials/asks?ask=<id>` (UI #2320).
 Kein erreichbarer Kanal → Log, das Ask wartet in der Inbox. Approve/Deny über
 `/api/v1/admin/credential-asks` ruft `onResolved` → `credential_ask_deliveries` wird genau
 einmal gelesen und gelöscht → Entscheidung als `system` über den `ProactiveSender` des Kanals in
-die anfragende Konversation. Abgelaufene Asks melden nichts zurück.
+die anfragende Konversation. Abgelaufene Asks melden nichts zurück; ihre Zustell-Zeilen räumt ein
+stündlicher Sweep weg.
 
 ### Plugin-Tool-Readiness-Gate (#474)
 

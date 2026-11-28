@@ -12022,7 +12022,8 @@ export class Orchestrator {
    * server) and what the runtime itself knows of its effect: `write` for a
    * declared write capability or an MCP tool without `readOnlyHint`, `read`
    * for an MCP tool with it, else `unknown` (refined from the plugin's
-   * manifest at the egress). Kernel tools belong to no system.
+   * manifest at the egress). Kernel tools belong to no system, unless they
+   * declare one (`kernelSystem`, #2319).
    */
   private toolSystemOf(name: string): ToolSystem | undefined {
     const native = this.nativeTools.get(name);
@@ -12031,6 +12032,11 @@ export class Orchestrator {
       // effect the plugin declared at registration; else the manifest decides.
       const effect = isWriteCapableTool(native.writeCapabilities) ? 'write' : (native.sideEffects ?? 'unknown');
       return { system: native.agentId, effect };
+    }
+    // #2319 — a kernel tool that reaches an outside system (the credential
+    // broker) is checked like an integration, with its declared effect.
+    if (native?.kernelSystem !== undefined) {
+      return { system: native.kernelSystem, effect: native.sideEffects ?? 'unknown' };
     }
     const domain = this.domainToolsByName.get(name);
     if (!domain || domain === this.consultTool) return undefined;

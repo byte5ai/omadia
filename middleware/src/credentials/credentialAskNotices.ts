@@ -12,7 +12,12 @@
  *
  * Delivery is best effort and never throws: a missing channel leaves the ask
  * in the owner's inbox, a failed post is logged. Neither message carries the
- * secret; the purpose is the agent's text and is shortened to one line.
+ * secret. The purpose is the agent's text, so it never goes into the chat
+ * notice — a `system`-voiced message must not carry model-written links or
+ * mentions (phishing); the owner reads the purpose in the inbox.
+ *
+ * Language: German unless the instance locale says English, like the routine
+ * texts (`triggers/routineTexts.ts`, `ai_disclosure_locale`).
  */
 
 import type { CredentialAsk } from './asks.js';
@@ -22,8 +27,6 @@ export const CREDENTIAL_ASK_INBOX_PATH = '/admin/credentials/asks';
 
 /** Channel kinds that are accounts or keys themselves, not a place to post to. */
 const NON_MESSAGING_KINDS: ReadonlySet<string> = new Set(['web', 'http', 'api']);
-
-const MAX_PURPOSE_CHARS = 300;
 
 export interface OwnerChannelIdentity {
   readonly channelType: string;
@@ -63,8 +66,8 @@ function oneLine(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-function isGerman(language: string | undefined): boolean {
-  return (language ?? '').trim().toLowerCase().startsWith('de');
+function isEnglish(language: string | undefined): boolean {
+  return (language ?? '').trim().toLowerCase().startsWith('en');
 }
 
 export function inboxLink(baseUrl: string | undefined, askId: string): string | undefined {
@@ -79,31 +82,29 @@ export function ownerNoticeText(
   link: string | undefined,
   language: string | undefined,
 ): string {
-  const purpose = oneLine(ask.purpose, MAX_PURPOSE_CHARS);
   const name = oneLine(facts.credentialName, 120);
   const agent = oneLine(facts.agentName, 120);
-  if (isGerman(language)) {
+  if (!isEnglish(language)) {
     const mode = ask.mode === 'once' ? 'einmalig' : 'dauerhaft';
-    const where = link ? `Freigeben oder ablehnen: ${link}` : 'Freigeben oder ablehnen in omadia unter Zugangsdaten → Anfragen.';
-    return `${agent} bittet darum, deine Zugangsdaten „${name}“ ${mode} zu nutzen. Zweck: „${purpose}“. ${where}`;
+    const where = link
+      ? `Zweck ansehen, freigeben oder ablehnen: ${link}`
+      : 'Zweck ansehen, freigeben oder ablehnen in omadia unter Zugangsdaten → Anfragen.';
+    return `${agent} bittet darum, deine Zugangsdaten „${name}“ ${mode} zu nutzen. ${where}`;
   }
   const mode = ask.mode === 'once' ? 'once' : 'on a standing basis';
-  const where = link ? `Approve or deny: ${link}` : 'Approve or deny in omadia under Credentials → Asks.';
-  return `${agent} asks to use your credential "${name}" ${mode}. Purpose: "${purpose}". ${where}`;
+  const where = link ? `See the purpose, approve or deny: ${link}` : 'See the purpose, approve or deny in omadia under Credentials → Asks.';
+  return `${agent} asks to use your credential "${name}" ${mode}. ${where}`;
 }
 
 export function decisionText(ask: CredentialAsk, facts: CredentialAskNoticeFacts, language: string | undefined): string {
   const name = oneLine(facts.credentialName, 120);
-  const agent = oneLine(facts.agentName, 120);
   const approved = ask.status === 'approved';
-  if (isGerman(language)) {
+  if (!isEnglish(language)) {
     return approved
-      ? `Die Inhaberin oder der Inhaber hat die Nutzung von „${name}“ freigegeben. ${agent} kann die Anfrage jetzt ausführen.`
-      : `Die Inhaberin oder der Inhaber hat die Nutzung von „${name}“ abgelehnt.`;
+      ? `Die Nutzung von „${name}“ wurde freigegeben; die Berechtigung ist erfasst.`
+      : `Die Nutzung von „${name}“ wurde abgelehnt.`;
   }
-  return approved
-    ? `The owner approved the use of "${name}". ${agent} can carry out the request now.`
-    : `The owner denied the use of "${name}".`;
+  return approved ? `The use of "${name}" was approved; the permission is recorded.` : `The use of "${name}" was denied.`;
 }
 
 function errText(err: unknown): string {

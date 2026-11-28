@@ -160,7 +160,7 @@ export function createOperatorCredentialGrantRouter(options: OperatorCredentialG
         return;
       }
       const actor = auditActorFromRequest(req);
-      const { grant, created } = await options.grants.put(agent.id, credential.id, actor.email ?? actor.id ?? 'operator');
+      const { grant, created } = await options.grants.put(agent.id, credential.id, actor.id ?? actor.email ?? 'operator');
       const view = grantView(grant, credential);
       if (created) {
         await recordAudit({

@@ -801,6 +801,14 @@ export function createPluginContext(
       if (!entry?.handler) {
         throw new Error(`tools.invoke: '${name}' is unknown or handler-less`);
       }
+      // #2319 — this path skips the Privacy Shield and the dispatch guards;
+      // a tool that acts for the turn's person (the credential broker) runs
+      // only from the model's own tool loop.
+      if (entry.modelDispatchOnly === true) {
+        throw new ToolInvokePermissionError(
+          `tools.invoke: plugin '${agentId}' may not invoke '${name}' — it runs only as the agent's own tool call`,
+        );
+      }
       // S3c — the caller gets the model-facing text of a structured result.
       return nativeToolResultText(await entry.handler(input));
     },

@@ -45,8 +45,8 @@ offered to agents as the kernel capability `credentialBroker@1` with two native 
 supersedes ADR-0290 in part).
 
 - **Per-agent grant, named credentials only.** Migration **0125** `agent_credential_grants`
-  (agent × credential, no wildcard) and `credential_ask_deliveries` (where an owner's decision is
-  posted back). Operator routes under `/api/v1/operator`: `GET /agents/:slug/credential-grants`,
+  (agent × credential, no wildcard), `credential_ask_deliveries` (where an owner's decision is
+  posted back, swept hourly once undecidable) and `credential_asks.requested_grant_valid_seconds`. Operator routes under `/api/v1/operator`: `GET /agents/:slug/credential-grants`,
   `PUT|DELETE /agents/:slug/credential-grants/:credentialId`, audited as
   `agent.credential_grant_change`. The tools are offered only to an agent with at least one grant;
   every call reads the grant live.
@@ -63,9 +63,14 @@ supersedes ADR-0290 in part).
   floor is now refused as `secret-too-short` before a `once` grant is consumed; the secret is
   read and unsealed before the `once` gate. Every broker decision is audited as
   `credential.broker_use` (system actor `system:credential-broker`, never the query or the secret).
+- **Only the model's own tool call.** Both tools are `modelDispatchOnly` (a plugin's
+  `ctx.tools.invoke` is refused) and declare the discretion system `credential-broker`
+  (`kernelSystem`), so the Spec 2042 §5.11 integration egress check and read labels apply.
 - **Ask notices.** A new ask sends a `system` direct message to the owner in a channel of their
-  account cluster, with the link `/admin/credentials/asks?ask=<id>` (UI: #2320). One open ask per
-  person and credential, so a looping agent cannot flood the owner. When the owner approves or
+  account cluster, with the link `/admin/credentials/asks?ask=<id>` (UI: #2320) and without the
+  agent-written purpose. One open ask per person and credential, so a looping agent cannot flood
+  the owner. `valid_minutes` counts from the approval (new column
+  `credential_asks.requested_grant_valid_seconds`). When the owner approves or
   denies (`/api/v1/admin/credential-asks`, new internal `onResolved` hook), the decision is posted
   as `system` to the asking conversation.
 - **Reach.** `GET /api/v1/operator/agents/:slug/reach` and the directory add `credential_hosts`

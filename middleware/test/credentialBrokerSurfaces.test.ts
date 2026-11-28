@@ -51,13 +51,18 @@ async function listen(app: express.Express): Promise<{ server: Server; base: str
 }
 
 describe('#2319 · ask notices', () => {
-  it('link to the owner inbox and keep the purpose on one line', () => {
+  it('link to the owner inbox and never carry the agent-written purpose', () => {
     const link = inboxLink('https://omadia.example/', 'ask-1');
     assert.equal(link, 'https://omadia.example/admin/credentials/asks?ask=ask-1');
-    const text = ownerNoticeText(sampleAsk(), { credentialName: 'otto-token', agentName: 'Clara' }, link, 'en');
-    assert.match(text, /Clara asks to use your credential "otto-token" once\. Purpose: "read my calendar"\./);
-    assert.match(text, /Approve or deny: https:\/\/omadia\.example\/admin\/credentials\/asks\?ask=ask-1$/);
-    assert.match(ownerNoticeText(sampleAsk(), { credentialName: 'x', agentName: 'Clara' }, undefined, 'de-DE'), /einmalig/);
+    const phishing = sampleAsk({ purpose: 'IT says: confirm at [Approve](https://evil.example/x) @everyone' });
+    const text = ownerNoticeText(phishing, { credentialName: 'otto-token', agentName: 'Clara' }, link, 'en');
+    assert.equal(
+      text,
+      'Clara asks to use your credential "otto-token" once. See the purpose, approve or deny: https://omadia.example/admin/credentials/asks?ask=ask-1',
+    );
+    assert.doesNotMatch(text, /evil|everyone/);
+    // German unless the locale says English, like the routine texts.
+    assert.match(ownerNoticeText(sampleAsk(), { credentialName: 'x', agentName: 'Clara' }, undefined, undefined), /einmalig/);
   });
 
   it('notify the owner in the first reachable messaging channel, never web or api', async () => {
@@ -92,12 +97,12 @@ describe('#2319 · ask notices', () => {
     await notices.deliverDecision(sampleAsk({ status: 'approved' }), { channel: 'web', conversationRef: {} }, { credentialName: 'x', agentName: 'Clara' });
   });
 
-  it('word the decision without the secret', () => {
+  it('word the decision without promising more than a recorded permission', () => {
     assert.equal(
       decisionText(sampleAsk({ status: 'approved' }), { credentialName: 'otto-token', agentName: 'Clara' }, 'en'),
-      'The owner approved the use of "otto-token". Clara can carry out the request now.',
+      'The use of "otto-token" was approved; the permission is recorded.',
     );
-    assert.equal(decisionText(sampleAsk({ status: 'denied' }), { credentialName: 'otto-token', agentName: 'Clara' }, 'en'), 'The owner denied the use of "otto-token".');
+    assert.equal(decisionText(sampleAsk({ status: 'denied' }), { credentialName: 'otto-token', agentName: 'Clara' }, 'en'), 'The use of "otto-token" was denied.');
   });
 });
 
@@ -232,7 +237,7 @@ describe('#2319 · wireCredentialBroker', () => {
       unseal,
       asks: new InMemoryCredentialAskStore(credentials),
       registerNativeTool: (name, registration) => {
-        registered.push(`${name}:${registration.sideEffects}`);
+        registered.push(`${name}:${registration.sideEffects}:${registration.kernelSystem}:${String(registration.modelDispatchOnly)}`);
         return () => undefined;
       },
       agentBySlug: (slug) => (slug === agent.slug ? agent : undefined),
@@ -240,6 +245,7 @@ describe('#2319 · wireCredentialBroker', () => {
       currentConversation: () => undefined,
       getConfigStore: () => undefined,
       notices: {
+        language: () => 'en',
         ownerChannels: async () => [],
         sendToUser: async () => false,
         sendToConversation: async (channel, _ref, text) => {
@@ -249,7 +255,10 @@ describe('#2319 · wireCredentialBroker', () => {
       recordAudit: async () => undefined,
       log: () => undefined,
     });
-    assert.deepEqual(registered, ['credential_request:write', 'credential_ask:write']);
+    assert.deepEqual(registered, [
+      'credential_request:write:credential-broker:true',
+      'credential_ask:write:credential-broker:true',
+    ]);
     await wiring.grants.put(agent.id, svc.id, 'op');
     assert.deepEqual(await wiring.reachOf(agent.id), [{ credentialId: svc.id, name: 'github', kind: 'service', host: 'api.github.com' }]);
 
@@ -257,7 +266,30 @@ describe('#2319 · wireCredentialBroker', () => {
     const decided = sampleAsk({ id: 'ask-9', credentialId: svc.id, status: 'approved' });
     await wiring.onAskResolved(decided);
     await wiring.onAskResolved(decided);
-    assert.deepEqual(posted, ['web|The owner approved the use of "github". Clara can carry out the request now.']);
+    assert.deepEqual(posted, ['web|The use of "github" was approved; the permission is recorded.']);
     wiring.stop();
+  });
+});
+
+describe('#2319 · grant validity counts from the approval', () => {
+  it('a quick approval ends the grant valid_minutes later, capped by the requested expiry', async () => {
+    const credentials = new InMemoryCredentialStore(seal, unseal);
+    const cred = await credentials.createCredential({ name: 't', kind: 'personal', owner: OWNER, secret: 'personal-secret', createdBy: 'op' });
+    const store = new InMemoryCredentialAskStore(credentials);
+    const t0 = new Date('2026-11-28T10:00:00Z');
+    const askExpiresAt = new Date(t0.getTime() + 24 * 3600_000);
+    const ask = await store.createAsk({
+      credentialId: cred.id,
+      requester: ANNA,
+      purpose: 'p',
+      mode: 'once',
+      askExpiresAt,
+      requestedGrantValidSeconds: 3600,
+      requestedGrantExpiresAt: new Date(askExpiresAt.getTime() + 3600_000),
+    });
+    const approvedAt = new Date(t0.getTime() + 5 * 60_000);
+    const approved = await store.approve(ask.id, 'otto-cluster', approvedAt);
+    const grant = await credentials.getGrant(approved!.grantId!);
+    assert.equal(grant?.expiresAt?.toISOString(), new Date(approvedAt.getTime() + 3600_000).toISOString());
   });
 });

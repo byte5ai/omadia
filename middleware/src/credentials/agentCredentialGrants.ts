@@ -35,6 +35,8 @@ export interface AgentCredentialReach {
 
 export interface AgentCredentialGrantStore {
   list(agentId: string): Promise<readonly AgentCredentialGrant[]>;
+  /** Every grant whose credential is not revoked (the offer snapshot). The
+   *  in-memory store has no credentials to look at and returns all. */
   listAll(): Promise<readonly AgentCredentialGrant[]>;
   /** Idempotent: `created` is false when the grant already existed. */
   put(agentId: string, credentialId: string, grantedBy: string): Promise<{ grant: AgentCredentialGrant; created: boolean }>;
@@ -67,7 +69,10 @@ export class PostgresAgentCredentialGrantStore implements AgentCredentialGrantSt
 
   async listAll(): Promise<readonly AgentCredentialGrant[]> {
     const { rows } = await this.pool.query<GrantRow>(
-      'SELECT agent_id, credential_id, granted_by, granted_at FROM agent_credential_grants',
+      `SELECT g.agent_id, g.credential_id, g.granted_by, g.granted_at
+         FROM agent_credential_grants g
+         JOIN credentials c ON c.id = g.credential_id
+        WHERE c.revoked_at IS NULL`,
     );
     return rows.map(toGrant);
   }
@@ -185,6 +190,9 @@ export interface CredentialAskDeliveryStore {
   put(delivery: CredentialAskDelivery): Promise<void>;
   /** Reads and removes the delivery in one step, so a decision is posted at most once. */
   take(askId: string): Promise<CredentialAskDelivery | undefined>;
+  /** Removes deliveries whose ask can no longer be decided at `now`.
+   *  @returns how many were removed. */
+  purgeStale(now: Date): Promise<number>;
 }
 
 interface DeliveryRow {
@@ -216,6 +224,16 @@ export class PostgresCredentialAskDeliveryStore implements CredentialAskDelivery
       ? { askId: row.ask_id, agentId: row.agent_id, channel: row.channel, conversationRef: row.conversation_ref }
       : undefined;
   }
+
+  async purgeStale(now: Date): Promise<number> {
+    const result = await this.pool.query(
+      `DELETE FROM credential_ask_deliveries d
+        USING credential_asks a
+        WHERE a.id = d.ask_id AND (a.status <> 'pending' OR a.ask_expires_at <= $1)`,
+      [now],
+    );
+    return result.rowCount ?? 0;
+  }
 }
 
 export class InMemoryCredentialAskDeliveryStore implements CredentialAskDeliveryStore {
@@ -229,5 +247,11 @@ export class InMemoryCredentialAskDeliveryStore implements CredentialAskDelivery
     const delivery = this.deliveries.get(askId);
     this.deliveries.delete(askId);
     return delivery;
+  }
+
+  /** In memory the asks are not visible here; deliveries live until restart
+   *  or until their decision is posted. */
+  async purgeStale(): Promise<number> {
+    return 0;
   }
 }

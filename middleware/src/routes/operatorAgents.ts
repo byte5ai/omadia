@@ -2438,12 +2438,6 @@ export function createOperatorAgentsRouter(
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
 
-  /**
-   * #2054 — the reach of every listed agent. The directory must not fail
-   * because the graph store hiccups: an agent whose reach could not be
-   * computed is listed with `reach: null` (the UI says so), and the cause is
-   * logged.
-   */
   /** #2319 — the credentials an agent reaches, in the reach's wire form. */
   const credentialHosts = async (agentId: string) =>
     ((await options.credentialReach?.(agentId)) ?? []).map((c) => ({
@@ -2452,6 +2446,24 @@ export function createOperatorAgentsRouter(
       kind: c.kind,
       host: c.host,
     }));
+
+  /** #2319 — for the directory: a failed credential lookup lists none for
+   *  that agent (logged) instead of hiding every agent's reach. */
+  const credentialHostsOrNone = async (agentId: string): Promise<Awaited<ReturnType<typeof credentialHosts>>> => {
+    try {
+      return await credentialHosts(agentId);
+    } catch (err) {
+      console.error('[operator-agents] credential hosts for the directory FAILED:', err instanceof Error ? err.message : String(err));
+      return [];
+    }
+  };
+
+  /**
+   * #2054 — the reach of every listed agent. The directory must not fail
+   * because the graph store hiccups: an agent whose reach could not be
+   * computed is listed with `reach: null` (the UI says so), and the cause is
+   * logged.
+   */
 
   const directoryReach = async (
     agents: readonly { id: string; plugins: readonly { pluginId: string; enabled: boolean }[] }[],
@@ -2463,7 +2475,7 @@ export function createOperatorAgentsRouter(
       for (const a of agents) {
         out.set(a.id, {
           ...reachDto(await loadAgentReach(sources, env, a.id, a.plugins)),
-          credential_hosts: await credentialHosts(a.id),
+          credential_hosts: await credentialHostsOrNone(a.id),
         });
       }
     } catch (err) {

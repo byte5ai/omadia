@@ -8177,6 +8177,15 @@ A principal-shaped field in the tool input → `identity_from_turn`. `callerPrin
 is a channel identity and is not used. The account's own `CredentialGrant` (ADR-0102) is still
 required: an agent grant never lets one person use another person's grant.
 
+**Only the model's tool loop.** Both tools are registered `modelDispatchOnly`: a plugin's
+`ctx.tools.invoke` (which skips the Privacy Shield and the dispatch guards, while the ambient
+turn would still name the agent and the person) is refused with `ToolInvokePermissionError`.
+They declare the discretion system `credential-broker` (`kernelSystem`, effect `write`), so
+`toolSystemOf` gives them the integration egress check and read labelling of Spec 2042 §5.11:
+restricted or cross-context labels do not leave through a request body or an ask purpose, and
+what a request reads labels the turn. `credential-broker` has no declared readership, so the
+check is as strict as for an undeclared integration.
+
 **What the model sees.** Status, `content-type`, `location`, `retry-after` and a body capped
 at 32 000 characters, after the broker's scrub (§10n). Every other upstream header is dropped,
 `set-cookie` first. The tool result then takes the ordinary dispatch path, so the Privacy Shield
@@ -8196,9 +8205,15 @@ the secret leaves, as in §10n.
 
 **Asks.** The owner is notified by a `system` direct message in a channel of their account
 cluster with a link to the owner-only approve/deny surface; approval itself never happens in chat
-(ADR-0102 D2). The purpose is agent text, shortened to one line. One open ask per person and
-credential bounds notice spam. The decision is posted back to the asking conversation once
-(`credential_ask_deliveries`, read-and-delete), with no secret and no grant detail.
+(ADR-0102 D2). The purpose is agent text and never goes into the chat notice (no model-written
+links or mentions in a `system` message); the owner reads it in the inbox. One open ask per
+person and credential bounds notice spam, serialised in-process so parallel tool calls of one
+model message cannot each pass the check (a second machine can still race). `valid_minutes`
+counts from the approval (`requested_grant_valid_seconds`, migration 0125); a standing ask
+without it lasts until revoked. The decision is posted back to the asking conversation once
+(`credential_ask_deliveries`, read-and-delete), with no secret and no grant detail; rows whose
+ask expired or was resolved elsewhere are swept hourly. Dropped header names in audit rows are
+capped (20 names, 64 characters).
 
 **Residual risk.** The fingerprint is unsalted, vendor headers have no per-credential allow-list,
 and some secret transformations are not scrubbed (§10n follow-ups). The Privacy Shield is the

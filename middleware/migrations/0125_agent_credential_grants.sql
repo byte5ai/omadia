@@ -40,3 +40,13 @@ CREATE TABLE IF NOT EXISTS credential_ask_deliveries (
   conversation_ref JSONB NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- An agent's ask states how long the grant should last counted from the
+-- owner's APPROVAL (`credential_ask` `valid_minutes`); `requested_grant_expires_at`
+-- stays the upper bound. NULL for asks that state only an absolute expiry.
+ALTER TABLE credential_asks
+  ADD COLUMN IF NOT EXISTS requested_grant_valid_seconds INTEGER
+    CHECK (requested_grant_valid_seconds IS NULL OR requested_grant_valid_seconds > 0);
+
+CREATE INDEX IF NOT EXISTS credential_ask_deliveries_agent
+  ON credential_ask_deliveries (agent_id);
