@@ -876,12 +876,15 @@ export {
   today,
   turnClock,
   TURN_TIME_ZONE,
+  isTurnTimeZone,
+  resolveTurnTimeZone,
   buildDateHeader,
   // Teardown failures are reported, never thrown — see `runGeneratorInContext`.
   onTurnTeardownError,
 } from './turnContext.js';
 export type {
   SubAgentMemoryHandler,
+  TurnClock,
   TurnContextValue,
   GraphReadScope,
 } from './turnContext.js';

@@ -6275,8 +6275,9 @@ export class Orchestrator {
     const core = await turnContext.run(
       {
         turnId,
-        // #2376 — date and start instant frozen from one reading.
-        ...turnClock(),
+        // #2376 — date and start instant frozen from one reading; #2379 /
+        // ADR-0350 — in the speaker's zone when the channel reported one.
+        ...turnClock(new Date(), input.userTimeZone),
         mcpConnectRequests: new Map(),
         // #2043 — what this turn's tool handlers are told about their caller.
         toolCall: buildToolCallContext(this.agentId, input),
@@ -8254,7 +8255,8 @@ export class Orchestrator {
     const streamFloorFields = this.audienceFloorFor(input, parent, runTraceUserId);
     const context: TurnContextValue = {
       turnId,
-      ...turnClock(),
+      // #2376 / #2379 (ADR-0350) — one reading, in the speaker's zone if known.
+      ...turnClock(new Date(), input.userTimeZone),
       mcpConnectRequests: new Map(),
       toolCall: buildToolCallContext(this.agentId, input),
       // #2085 — read back by `attachSideChannelData` on the `done` event.
@@ -8291,6 +8293,10 @@ export class Orchestrator {
       ...(parent?.captureRawToolResult
         ? { captureRawToolResult: parent.captureRawToolResult }
         : {}),
+      // #1743 / #2379 — the user's zone for `manage_routine` and the trigger
+      // tools (ADR-0240, ADR-0297). The streaming path, which channel adapters
+      // and the web chat call, never carried it.
+      ...(input.userTimeZone ? { userTimeZone: input.userTimeZone } : {}),
       // Canvas sentinel tap — canvas turns ARE streaming turns; without this
       // carry-over the ui-orchestrator's sink dies exactly here.
       ...(parent?.canvasSentinelSink

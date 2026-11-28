@@ -300,6 +300,19 @@ Agenten, kein zweites Rendering. Davor steht im Turn nur der
 Quality-Guard-Block; ein Arbeitsmodus folgt direkt auf die Identität,
 Werkzeuge, Datum und Gesprächskontext danach (ADR-0077).
 
+**Turn-Uhr und Zeitzone (#2376, #2379; ADR-0340, ADR-0350):** `turnClock(at, zone)`
+(`harness-orchestrator/src/turnContext.ts`) friert beim Turn-Start `turnDate`,
+`turnStartedAt` und `turnTimeZone` aus einer Ablesung ein. Die Zone ist die der
+sprechenden Person (`ChatTurnInput.userTimeZone`, dieselbe Quelle wie Trigger und
+Routinen; im Web-Chat das Browser-Cookie `omadia-tz`, gelesen von
+`webTurnTimeZone` in `routes/chat.ts`), sonst `TURN_TIME_ZONE` (`Europe/Berlin`).
+Ungültige Zonen fallen über `resolveTurnTimeZone` auf `TURN_TIME_ZONE` zurück. In
+Gruppen-Turns gilt die Zone des Sprechers der auslösenden Nachricht. Der
+Datums-Header nennt Uhrzeit, Zone und Offset und steht nur im ungecachten
+Datumsblock bzw. im `System Hint:` des CLI-Prompts. Wer einen Sub-Scope mit
+explizit kopiertem Kontext öffnet, trägt `turnStartedAt` **und** `turnTimeZone`
+mit; turn-lose Fallbacks nehmen `today()`, nie `toISOString().slice(0, 10)`.
+
 **Charakter-Regler gegen die Modell-Grundhaltung (#1893, ADR-0217):** Ein
 Reglerwert ist eine Zielstufe; `personaDelta.ts` schreibt nur den Abstand zur
 Grundhaltung der Modellfamilie, auf der der Agent läuft. Die Familie liefert
@@ -4998,7 +5011,8 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   `list_triggers`, `cancel_trigger` — nur auf einem Turn mit Routines-Principal
   (`routineTurnContext`). Ein Trigger-Turn hat keinen, kann also keine Trigger
   setzen. `time`/`until` nehmen ISO-Zeitpunkte oder Dauern ab jetzt (`'3m'`,
-  `'+2h'`, `'in 1d'`; das Modell kennt nur das Datum, nicht die Uhrzeit).
+  `'+2h'`, `'in 1d'`; Dauern bleiben der bevorzugte Weg, auch wenn der Turn seit
+  ADR-0340/0350 Uhrzeit und Zone kennt).
   Ablehnungen folgen der Tool-Error-Konvention `Error: (code) …`, damit der
   Privacy Shield sie als Fehler durchreicht statt sie zu internieren.
   Trigger-Turns laufen über den `ChatAgent` des Agenten
@@ -7162,6 +7176,11 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Zeitzone pro Person (#2379, ADR-0350) — Reste:** Telegram sendet fest `Europe/Berlin`,
+  Discord/Slack/WhatsApp senden keine `userTimeZone` (dort gilt `TURN_TIME_ZONE`); eine
+  gespeicherte Zone pro Person (ADR-0350 Option B) wäre der Weg für diese Kanäle. Die Fast Lane
+  löst `{today}` weiter in `fast_path_timezone` auf, nicht in der Zone des Sprechers — kurz vor
+  Mitternacht kann sie ein anderes „heute“ nennen als der Agent.
 - **MCP Welle 6 — Reste (2026-11-27):** #2312 Per-User-OAuth-Connect für Kanal-Nutzer ohne
   omadia-Login — erledigt (ADR-0301, Teams-SSO-gebunden; andere Kanäle nur per Identitäts-Verknüpfung
   mit einer Verzeichnis-Person, Connect dann in Teams oder Web); MCP-Bilder

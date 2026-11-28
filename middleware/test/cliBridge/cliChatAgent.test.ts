@@ -1017,6 +1017,34 @@ describe('CliChatAgent conversation memory (#1087)', () => {
     assert.match(rawPrompt(), /^System Hint: Current date and time: Sunday, 2026-03-29, 01:30 \(Europe\/Berlin, GMT\+01:00\)/);
   });
 
+  it('a CLI turn under a date-only scope freezes the speaker\'s zone (#2379)', async () => {
+    const { agent, rawPrompt } = makeAgent();
+    await turnContext.run({ turnId: '', turnDate: '2026-09-24' }, () =>
+      agent.chat({ userMessage: 'What time is it?', userTimeZone: 'America/New_York' }),
+    );
+    assert.match(rawPrompt(), /^System Hint: Current date and time: [^\n]*\(America\/New_York, GMT-0[45]:00\)/);
+  });
+
+  it('an invalid speaker zone falls back to Europe/Berlin on the CLI path (#2379)', async () => {
+    const { agent, rawPrompt } = makeAgent();
+    await agent.chat({ userMessage: 'Time?', userTimeZone: 'Nowhere/Land' });
+    assert.match(rawPrompt(), /^System Hint: Current date and time: [^\n]*\(Europe\/Berlin, GMT\+0[12]:00\)/);
+  });
+
+  it('a CLI sub-agent keeps the calling turn\'s zone, not its own input\'s (#2379)', async () => {
+    const { agent, rawPrompt } = makeAgent();
+    await turnContext.run(
+      {
+        turnId: 'parent',
+        turnDate: '2026-11-27',
+        turnStartedAt: '2026-11-28T03:30:00.000Z',
+        turnTimeZone: 'America/New_York',
+      },
+      () => agent.chat({ userMessage: 'Time?', userTimeZone: 'Asia/Tokyo' }),
+    );
+    assert.match(rawPrompt(), /^System Hint: Current date and time: Friday, 2026-11-27, 22:30 \(America\/New_York, GMT-05:00\)/);
+  });
+
   function systemPromptOf(argv: readonly string[]): string {
     const idx = argv.indexOf('--system-prompt');
     return idx === -1 ? '' : (argv[idx + 1] ?? '');
