@@ -108,6 +108,10 @@ export interface CredentialAsk {
   /** Required when `mode` is `'once'` — mirrors `CredentialGrant`'s own
    *  invariant, see {@link validateNewAskInput}. */
   readonly requestedGrantExpiresAt?: Date;
+  /** #2319 — how long the grant lasts counted from APPROVAL (seconds). When
+   *  set, approval uses `min(requestedGrantExpiresAt, approval + this)`, so a
+   *  quick approval does not stretch the grant to the end of the ask window. */
+  readonly requestedGrantValidSeconds?: number;
   /** The ASK's own TTL — distinct from `requestedGrantExpiresAt`, which is
    *  the TTL of the grant approval would create. An unanswered ask must
    *  eventually stop being actionable even though nothing about the grant
@@ -131,6 +135,8 @@ export interface NewCredentialAskInput {
   readonly purpose: string;
   readonly mode: CredentialGrantMode;
   readonly requestedGrantExpiresAt?: Date;
+  /** #2319 — see {@link CredentialAsk.requestedGrantValidSeconds}. */
+  readonly requestedGrantValidSeconds?: number;
   readonly askExpiresAt: Date;
 }
 
@@ -154,9 +160,25 @@ export function validateNewAskInput(input: NewCredentialAskInput): void {
   if (input.requestedGrantExpiresAt !== undefined && !isValidDate(input.requestedGrantExpiresAt)) {
     throw new CredentialAskRejectedError('invalid_input', 'requestedGrantExpiresAt must be a valid date');
   }
+  const validSeconds = input.requestedGrantValidSeconds;
+  if (validSeconds !== undefined && (!Number.isSafeInteger(validSeconds) || validSeconds <= 0)) {
+    throw new CredentialAskRejectedError('invalid_input', 'requestedGrantValidSeconds must be a positive integer');
+  }
   if (!isValidDate(input.askExpiresAt)) {
     throw new CredentialAskRejectedError('invalid_input', 'askExpiresAt must be a valid date');
   }
+}
+
+/**
+ * #2319 — the expiry of the grant an approval at `now` creates: the requested
+ * absolute expiry, shortened to `now + requestedGrantValidSeconds` when the
+ * ask states a validity counted from approval. Shared by both stores.
+ */
+export function grantExpiryOnApproval(ask: CredentialAsk, now: Date): Date | undefined {
+  if (ask.requestedGrantValidSeconds === undefined) return ask.requestedGrantExpiresAt;
+  const fromApproval = new Date(now.getTime() + ask.requestedGrantValidSeconds * 1000);
+  const cap = ask.requestedGrantExpiresAt;
+  return cap && cap.getTime() < fromApproval.getTime() ? cap : fromApproval;
 }
 
 function isValidDate(value: Date): boolean {
@@ -240,6 +262,7 @@ export class InMemoryCredentialAskStore implements CredentialAskStore {
       purpose: input.purpose,
       mode: input.mode,
       requestedGrantExpiresAt: input.requestedGrantExpiresAt,
+      ...(input.requestedGrantValidSeconds !== undefined ? { requestedGrantValidSeconds: input.requestedGrantValidSeconds } : {}),
       askExpiresAt: input.askExpiresAt,
       status: 'pending',
       createdAt: new Date(),
@@ -284,7 +307,7 @@ export class InMemoryCredentialAskStore implements CredentialAskStore {
       mode: ask.mode,
       purpose: ask.purpose,
       grantedBy: resolvedBy,
-      expiresAt: ask.requestedGrantExpiresAt,
+      expiresAt: grantExpiryOnApproval(ask, now),
     };
     const grant = await this.credentials.createGrant(grantInput);
     const withGrant: CredentialAsk = { ...claimed, grantId: grant.id };

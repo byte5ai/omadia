@@ -39,6 +39,10 @@ export type BrokerDenialReason =
   // #778 S3a: a request fetch would refuse locally (a GET/HEAD with a body),
   // denied before any grant is consumed.
   | 'invalid-request'
+  // #2319: the stored secret is too short for the response scrub to
+  // recognise, so a reflected secret would reach the caller. Denied before
+  // any grant is consumed and before anything is sent.
+  | 'secret-too-short'
   // #778 S3a: the checks passed and the request left, but the upstream did
   // not answer usably. These count toward the streak alert on purpose: five
   // consecutive upstream timeouts is an operator signal, not noise.
@@ -57,6 +61,7 @@ export const BROKER_DENIAL_REASONS: readonly BrokerDenialReason[] = Object.freez
   'invalid-broker-declaration',
   'store-unavailable',
   'invalid-request',
+  'secret-too-short',
   'upstream-unreachable',
   'upstream-timeout',
 ]);

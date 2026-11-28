@@ -102,6 +102,24 @@ export interface NativeToolRegistration {
    *  (`ToolRegistrationOptions.sideEffects`); wins over the manifest. */
   readonly sideEffects?: 'read' | 'write' | 'none';
   /**
+   * #2319 — the discretion system (Spec 2042 §5.11) a KERNEL tool reaches.
+   * Without it a kernel tool belongs to no system and skips the integration
+   * egress check and read labelling; with it the tool is checked like an
+   * integration (`Orchestrator.toolSystemOf`), with `sideEffects` as its
+   * effect. A function derives the system from the call's input (the
+   * credential broker: one system per named credential, so data read through
+   * one credential is checked before it leaves through another). Ignored for
+   * plugin tools (`agentId` wins).
+   */
+  readonly kernelSystem?: string | ((input: unknown) => string);
+  /**
+   * #2319 — only the model's tool loop may dispatch this tool. A plugin's
+   * `ctx.tools.invoke` is refused, because that path skips the Privacy
+   * Shield and the dispatch guards while the ambient turn would still name
+   * the agent and the person.
+   */
+  readonly modelDispatchOnly?: boolean;
+  /**
    * #1346 — per-turn availability (`ToolRegistrationOptions.isAvailable`).
    * Read through {@link isOfferedThisTurn}, never directly. Absent ⇒ offered.
    */
@@ -163,6 +181,10 @@ export interface NativeToolRegistrationOptions {
   piiFields?: readonly ToolPIIField[];
   /** #2338 — see `NativeToolRegistration.sideEffects`. */
   sideEffects?: 'read' | 'write' | 'none';
+  /** #2319 — see `NativeToolRegistration.kernelSystem`. */
+  kernelSystem?: string | ((input: unknown) => string);
+  /** #2319 — see `NativeToolRegistration.modelDispatchOnly`. */
+  modelDispatchOnly?: boolean;
   /** #1346 — see `NativeToolRegistration.isAvailable`. */
   isAvailable?: () => boolean;
 }
@@ -243,6 +265,8 @@ export class NativeToolRegistry {
             : {}),
           ...(options.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
           ...(options.sideEffects !== undefined ? { sideEffects: options.sideEffects } : {}),
+          ...(options.kernelSystem !== undefined ? { kernelSystem: options.kernelSystem } : {}),
+          ...(options.modelDispatchOnly === true ? { modelDispatchOnly: true } : {}),
           ...(options.isAvailable !== undefined
             ? { isAvailable: options.isAvailable }
             : {}),

@@ -968,7 +968,7 @@ export {
   MEMBER_BASELINE_CAPABILITIES,
   MemberBaselineGrantStore,
 } from './memberBaselineGrantStore.js';
-export { CHANNEL_KIND_BY_ORIGIN, turnChannelKind } from './resolveTurnOwnerIdentity.js';
+export { CHANNEL_KIND_BY_ORIGIN, turnAccountUserId, turnChannelKind } from './resolveTurnOwnerIdentity.js';
 export type { TurnIdentityDirectory } from './resolveTurnOwnerIdentity.js';
 export { TURN_IDENTITY_DIRECTORY_SERVICE } from './plugin.js';
 export {

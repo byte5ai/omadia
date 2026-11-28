@@ -79,6 +79,7 @@ import {
   reachDto,
   type ReachSources,
 } from '../agents/agentReachSources.js';
+import type { AgentCredentialReach } from '../credentials/agentCredentialGrants.js';
 import {
   requireBroadReachConfirmation,
   withPluginRow,
@@ -1800,6 +1801,11 @@ async function republishTeamsPackage(
 
 export interface OperatorAgentsRouterOptions {
   /**
+   * #2319 / ADR-0290 — the credentials granted to an agent and their declared
+   * hosts, listed in its reach as `credential_hosts`. Absent = an empty list.
+   */
+  credentialReach?: ((agentId: string) => Promise<readonly AgentCredentialReach[]>) | undefined;
+  /**
    * #1942 — whether a package store (uploaded or built-in) holds the plugin.
    * An assigned plugin without one runs nowhere, whatever its row says; the
    * plugin lists mark it `package_missing`. Absent = not checked.
@@ -2432,21 +2438,45 @@ export function createOperatorAgentsRouter(
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
 
+  /** #2319 — the credentials an agent reaches, in the reach's wire form. */
+  const credentialHosts = async (agentId: string) =>
+    ((await options.credentialReach?.(agentId)) ?? []).map((c) => ({
+      credential_id: c.credentialId,
+      name: c.name,
+      kind: c.kind,
+      host: c.host,
+    }));
+
+  /** #2319 — for the directory: a failed credential lookup lists none for
+   *  that agent (logged) instead of hiding every agent's reach. */
+  const credentialHostsOrNone = async (agentId: string): Promise<Awaited<ReturnType<typeof credentialHosts>>> => {
+    try {
+      return await credentialHosts(agentId);
+    } catch (err) {
+      console.error('[operator-agents] credential hosts for the directory FAILED:', err instanceof Error ? err.message : String(err));
+      return [];
+    }
+  };
+
   /**
    * #2054 — the reach of every listed agent. The directory must not fail
    * because the graph store hiccups: an agent whose reach could not be
    * computed is listed with `reach: null` (the UI says so), and the cause is
    * logged.
    */
+
   const directoryReach = async (
     agents: readonly { id: string; plugins: readonly { pluginId: string; enabled: boolean }[] }[],
-  ): Promise<Map<string, ReturnType<typeof reachDto>>> => {
-    const out = new Map<string, ReturnType<typeof reachDto>>();
+  ): Promise<Map<string, ReturnType<typeof reachDto> & { credential_hosts: Awaited<ReturnType<typeof credentialHosts>> }>> => {
+    const out = new Map<string, ReturnType<typeof reachDto> & { credential_hosts: Awaited<ReturnType<typeof credentialHosts>> }>();
     try {
       const sources = reachSources();
       const env = await loadReachEnvironment(sources);
       for (const a of agents) {
-        out.set(a.id, reachDto(await loadAgentReach(sources, env, a.id, a.plugins)));
+        out.set(a.id, {
+          ...reachDto(await loadAgentReach(sources, env, a.id, a.plugins)),
+          credential_hosts: await credentialHostsOrNone(a.id),
+        });
       }
     } catch (err) {
       console.error(
@@ -2582,6 +2612,7 @@ export function createOperatorAgentsRouter(
       res.json({
         slug: existing.slug,
         ...reachDto(await loadAgentReach(sources, env, existing.id, rows)),
+        credential_hosts: await credentialHosts(existing.id),
       });
     } catch (err) {
       badRequest(res, err);

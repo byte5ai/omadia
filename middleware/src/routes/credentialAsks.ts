@@ -56,6 +56,9 @@ export interface CredentialAskRoutesDeps {
   readonly maxAskTtlMs?: number;
   /** Clock, injected for tests. Defaults to `() => new Date()`. */
   readonly now?: () => Date;
+  /** #2319 — called once per approve/deny that resolved an ask (the agent
+   *  tool's delivery back to the asking conversation). Fire-and-forget. */
+  readonly onResolved?: (ask: CredentialAsk) => Promise<void> | void;
 }
 
 const DEFAULT_ASK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -267,6 +270,14 @@ export function createCredentialAskRouter(deps: CredentialAskRoutesDeps): Router
           return;
         }
         res.json(toAskBody(ask));
+        // #2319 — post the decision back to the asking conversation. After
+        // the response, never awaited: a failed post must not turn a
+        // recorded decision into a 500.
+        if (deps.onResolved) {
+          void Promise.resolve()
+            .then(() => deps.onResolved?.(ask))
+            .catch((err: unknown) => console.warn(`[credential-asks] decision hook failed — ${errMsg(err)}`));
+        }
       } catch (err) {
         res.status(500).json({ code: `credential_ask.${action}_failed`, message: errMsg(err) });
       }
@@ -304,6 +315,7 @@ function toAskBody(ask: CredentialAsk): Record<string, unknown> {
     purpose: ask.purpose,
     mode: ask.mode,
     requested_grant_expires_at: ask.requestedGrantExpiresAt?.toISOString() ?? null,
+    requested_grant_valid_seconds: ask.requestedGrantValidSeconds ?? null,
     ask_expires_at: ask.askExpiresAt.toISOString(),
     status: ask.status,
     created_at: ask.createdAt.toISOString(),

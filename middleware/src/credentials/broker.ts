@@ -59,6 +59,7 @@ import {
 import { recordBrokerOutcome, type BrokerDenialReason } from './brokerMetrics.js';
 import { buildOutboundRequest, needsInjectionKey } from './brokerOutbound.js';
 import {
+  isScrubbableSecret,
   readBodyCapped,
   sanitizeResponseHeaders,
   scrubBody,
@@ -292,6 +293,19 @@ export class CredentialBroker {
     }
     if (!grant || !isGrantActive(grant, now)) this.deny(ctx, 'no-active-grant');
 
+    // Read and unseal before the `once` gate: both are non-mutating, and a
+    // secret the scrub could not recognise must be refused before it burns
+    // the caller's one-time permission (#2319).
+    let material: EncryptedSecretMaterial | undefined;
+    try {
+      material = await this.deps.store.getSecretMaterial(credentialId);
+    } catch {
+      this.deny(ctx, 'store-unavailable');
+    }
+    if (!material) this.deny(ctx, 'credential-not-found');
+    const secret = this.deps.unseal(material);
+    if (!isScrubbableSecret(secret, declaration.injectionScheme)) this.deny(ctx, 'secret-too-short');
+
     // The atomic gate for `once` grants: deliberately the LAST check before
     // dispatch, see the module header.
     if (grant.mode === 'once') {
@@ -303,15 +317,6 @@ export class CredentialBroker {
       }
       if (!consumed) this.deny(ctx, 'grant-consumed-concurrently');
     }
-
-    let material: EncryptedSecretMaterial | undefined;
-    try {
-      material = await this.deps.store.getSecretMaterial(credentialId);
-    } catch {
-      this.deny(ctx, 'store-unavailable');
-    }
-    if (!material) this.deny(ctx, 'credential-not-found');
-    const secret = this.deps.unseal(material);
 
     const { url, headers, droppedHeaderNames } = buildOutboundRequest(
       declaredHost,
