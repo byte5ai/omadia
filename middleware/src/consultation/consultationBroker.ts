@@ -47,6 +47,7 @@ import {
   type ConsultationRunScope,
   type DiscretionAuditEntry,
   type LabelSet,
+  today,
 } from '@omadia/orchestrator';
 
 import type {
@@ -189,7 +190,8 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
     // routine capture) do not, so none of B's raw data leaves its shield.
     const outer = {
       turnId: '',
-      turnDate: parent?.turnDate ?? new Date().toISOString().slice(0, 10),
+      // #2379 — outside a turn, today in the turn zone, never a UTC date.
+      turnDate: parent?.turnDate ?? today(),
       ...(parent?.chatParticipants ? { chatParticipants: parent.chatParticipants } : {}),
       ...(parent?.mcpUserKey ? { mcpUserKey: parent.mcpUserKey } : {}),
       // ADR-0206 — a consultation inside an unattended run is unattended too.

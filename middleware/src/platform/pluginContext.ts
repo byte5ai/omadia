@@ -69,6 +69,7 @@ import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
 import {
   MEMORY_TOOL_NAME,
+  today,
   turnContext,
 } from '@omadia/orchestrator';
 import { MemoryToolHandler } from '@omadia/memory';
@@ -1517,7 +1518,9 @@ export function createPluginMcpAccessor(
       return turnContext.run(
         {
           turnId: current?.turnId ?? '',
-          turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
+          // #2379 — a turn-less call (activate time, jobs) dates itself in
+          // the turn zone (`today()`), not in UTC.
+          turnDate: current?.turnDate ?? today(),
           ...(current?.turnStartedAt ? { turnStartedAt: current.turnStartedAt } : {}),
           ...(current?.turnTimeZone ? { turnTimeZone: current.turnTimeZone } : {}),
           ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),

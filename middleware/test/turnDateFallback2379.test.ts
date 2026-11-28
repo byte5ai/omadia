@@ -2,12 +2,14 @@
  * #2379 — kernel sites that open a scope outside a turn date it in the turn
  * zone (`today()`), not in UTC, and carry the turn's frozen zone along.
  *
- *  - `ctx.mcp.callTool` inside a turn keeps the turn's clock and zone.
+ *  - `ctx.mcp.callTool` outside a turn at 00:30 Berlin names the Berlin date
+ *    (it used to name yesterday's UTC date), and inside a turn keeps the
+ *    turn's clock and zone.
  *  - A consultation hands the asker's user zone to the colleague's turn.
  *  - The web chat reads the browser's zone from the `omadia-tz` cookie, valid
  *    IANA zones only.
  */
-import { describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import type { Request } from 'express';
@@ -45,7 +47,16 @@ function mcpRegistry(seen: Array<TurnContextValue | undefined>) {
   return { get: <T>(name: string) => (name === 'mcp' ? (service as T) : undefined) };
 }
 
-describe('#2379 · ctx.mcp carries the turn clock and zone', () => {
+describe('#2379 · ctx.mcp dates a turn-less call in the turn zone', () => {
+  afterEach(() => mock.timers.reset());
+
+  it('00:30 Berlin outside a turn is the Berlin date, not the UTC date', async () => {
+    mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-27T23:30:00Z') });
+    const seen: Array<TurnContextValue | undefined> = [];
+    await createPluginMcpAccessor('@x/p', mcpRegistry(seen)).callTool(SERVER_ID, 'sum', {});
+    assert.equal(seen[0]?.turnDate, '2026-11-28');
+  });
+
   it('inside a turn it keeps the turn\'s frozen clock and zone', async () => {
     const seen: Array<TurnContextValue | undefined> = [];
     const clock = turnClock(new Date('2026-11-28T03:30:00Z'), 'America/New_York');
